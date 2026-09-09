@@ -25,8 +25,62 @@ need_cmd() {
   fi
 }
 
-# 本机出口 IP（用于打印访问地址，公网请用云服务器公网 IP）
+# 一次性前置安装指引（国内镜像，免 sudo）：缺少 node/pnpm 时打印
+install_help() {
+  cat <<'EOF'
+未检测到 Node.js(>=20) 或 pnpm。这是一次性前置安装（全程国内镜像，免 sudo）：
+
+  # 1) 从 gitee 克隆 nvm
+  git clone https://gitee.com/mirrors/nvm.git ~/.nvm
+
+  # 2) 让 bash 加载 nvm
+  cat >> ~/.bashrc <<'NVM_INIT'
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+NVM_INIT
+  source ~/.bashrc
+
+  # 3) 用淘宝镜像装 Node 20
+  export NVM_NODEJS_ORG_MIRROR=https://npmmirror.com/mirrors/node
+  nvm install 20
+  nvm use 20
+  node -v        # 应显示 v20.x
+
+  # 4) npm 换淘宝源，装 pnpm 和 pm2
+  npm config set registry https://registry.npmmirror.com
+  npm install -g pnpm pm2
+
+装完回到本目录再跑一次：bash scripts/manage.sh start
+EOF
+}
+
+# 启动前自检：node/pnpm 必须存在且 node>=20，否则打印安装指引并退出
+preflight() {
+  if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
+    err "缺少运行所需命令（node / pnpm）。"
+    install_help
+    exit 1
+  fi
+  local node_major
+  node_major="$(node -p 'process.versions.node.split(".")[0]')"
+  if [ "$node_major" -lt 20 ]; then
+    err "Node 版本过低（$(node -v)），需 >= 20。请按下面重装："
+    install_help
+    exit 1
+  fi
+}
+
+# 本机 IP（优先公网，用于打印访问地址）
+# 云服务器对外要用公网 IP；私网 IP 浏览器连不上。阿里云元数据 100.100.100.200
+# 仅实例内可达、不走外网；取不到（非阿里云/无公网）则退回内网 IP。
 my_ip() {
+  local pub=""
+  pub="$(curl -s --max-time 2 http://100.100.100.200/latest/meta-data/public-ipv4 2>/dev/null | tr -dc '0-9.' || true)"
+  [ -z "$pub" ] && pub="$(curl -s --max-time 2 http://100.100.100.200/latest/meta-data/eipv4 2>/dev/null | tr -dc '0-9.' || true)"
+  if [ -n "$pub" ]; then
+    echo "$pub"
+    return
+  fi
   command -v hostname >/dev/null 2>&1 && hostname -I 2>/dev/null | awk '{print $1; exit}' || echo "127.0.0.1"
 }
 
@@ -34,21 +88,13 @@ ensure_pm2() {
   if ! command -v pm2 >/dev/null 2>&1; then
     log "未检测到 pm2，正在全局安装…"
     need_cmd npm
-    npm install -g pm2
+    npm install -g pm2 --registry=https://registry.npmmirror.com
   fi
 }
 
 cmd_start() {
-  need_cmd node
-  need_cmd pnpm
+  preflight
   ensure_pm2
-
-  # Node 版本检查（>=20）
-  node_major="$(node -p 'process.versions.node.split(".")[0]')"
-  if [ "$node_major" -lt 20 ]; then
-    err "Node 版本过低（$(node -v)），需 >= 20。"
-    exit 1
-  fi
 
   # 装依赖（首次 clone 后 node_modules 不存在）
   if [ ! -d node_modules ]; then
@@ -70,7 +116,7 @@ cmd_start() {
 
   IP="$(my_ip)"
   log "✅ 已启动。浏览器访问：http://$IP:$PORT"
-  log "（云服务器请用公网 IP，并确认安全组已放行 $PORT 端口）"
+  log "（若上方不是公网 IP，请到云控制台查看公网 IP；并确认安全组已放行 $PORT 端口）"
   log "查看日志：bash scripts/manage.sh logs"
 }
 
