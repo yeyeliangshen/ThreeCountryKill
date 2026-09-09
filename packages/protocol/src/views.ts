@@ -1,0 +1,60 @@
+import type { Card } from './card';
+import type { Phase } from './intent';
+
+// —— 服务端按玩家裁剪后下发的"视图"，不泄露他人手牌 ——
+
+// 单个玩家的公开信息
+export interface PlayerView {
+  seatId: string;
+  name: string;
+  heroId: string | null; // 选将阶段未定，为 null
+  hp: number;
+  maxHp: number;
+  handCount: number;
+  isAlive: boolean;
+  // 装备区/判定区在首期为空，先留结构供后续扩展
+  equipmentCount: number;
+  judgmentCount: number;
+}
+
+export type PromptKind = 'play' | 'respondSha' | 'respondDeath' | 'discard' | 'pickHero';
+
+// 告诉玩家当前需要做什么 + 合法选项（服务端权威计算后下发）
+export interface PromptView {
+  kind: PromptKind;
+  message: string;
+  // 可用的牌 id
+  legalCardIds: string[];
+  // 可选的目标 seatId
+  legalTargetIds: string[];
+  // 此提示需要选几个目标
+  mustSelectTargetCount: number;
+  // 选将阶段：发给我的武将 id 列表（仅 pickHero 有）
+  legalHeroIds?: string[];
+}
+
+export interface LogEntry {
+  message: string;
+  kind: string;
+}
+
+// 大厅阶段的座位
+export interface SeatView {
+  seatId: string;
+  name: string | null;
+  isHost: boolean;
+  connected: boolean;
+  heroId: string | null;
+}
+
+// 下发给某个玩家的完整快照
+export interface Snapshot {
+  seatId: string; // 此快照属于哪个座位
+  roomCode: string;
+  started: boolean;
+  players: PlayerView[];
+  myHand: Card[]; // 仅本人手牌完整下发
+  turn: { seatId: string; phase: Phase };
+  prompt: PromptView | null; // 轮到你行动时非空
+  log: LogEntry[];
+}
