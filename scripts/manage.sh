@@ -70,14 +70,37 @@ preflight() {
   fi
 }
 
-# 本机 IP（优先公网，用于打印访问地址）
-# 云服务器对外要用公网 IP；私网 IP 浏览器连不上。阿里云元数据 100.100.100.200
-# 仅实例内可达、不走外网；取不到（非阿里云/无公网）则退回内网 IP。
+# 判断是否为合法 IPv4（4 段、各 1-3 位数字）。
+# 用于过滤元数据/回显服务返回的错误页、JSON 等非 IP 乱码。
+is_ipv4() {
+  [ -n "$1" ] && printf '%s\n' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+}
+
+# 取阿里云元数据（实例内可达、不走外网）。IMDSv2 token 优先，IMDSv1 兜底。
+# 元数据正常返回纯 IP 文本；若返回错误页/JSON，会被调用方的 is_ipv4 过滤掉。
+meta_get() {
+  local path="$1" token
+  token="$(curl -s --max-time 2 -X PUT -H 'X-aliyun-ecs-metadata-token-ttl-seconds:60' \
+    http://100.100.100.200/latest/api/token 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+  if [ -n "$token" ]; then
+    curl -s --max-time 2 -H "X-aliyun-ecs-metadata-token: $token" \
+      "http://100.100.100.200${path}" 2>/dev/null | head -n1 | tr -d '[:space:]' || true
+  else
+    curl -s --max-time 2 "http://100.100.100.200${path}" 2>/dev/null | head -n1 | tr -d '[:space:]' || true
+  fi
+}
+
+# 本机出口 IP（优先公网，用于打印访问地址）。依次尝试：
+# 1) 阿里云元数据 public-ipv4 / eipv4
+# 2) 公网 IP 回显服务（api.ipify.org / 4.ipw.cn，需公网出口）
+# 3) 退回内网 IP（hostname -I）——浏览器连不上，仅作兜底显示
 my_ip() {
   local pub=""
-  pub="$(curl -s --max-time 2 http://100.100.100.200/latest/meta-data/public-ipv4 2>/dev/null | tr -dc '0-9.' || true)"
-  [ -z "$pub" ] && pub="$(curl -s --max-time 2 http://100.100.100.200/latest/meta-data/eipv4 2>/dev/null | tr -dc '0-9.' || true)"
-  if [ -n "$pub" ]; then
+  pub="$(meta_get /latest/meta-data/public-ipv4)"
+  is_ipv4 "$pub" || pub="$(meta_get /latest/meta-data/eipv4)"
+  is_ipv4 "$pub" || pub="$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+  is_ipv4 "$pub" || pub="$(curl -s --max-time 3 https://4.ipw.cn 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+  if is_ipv4 "$pub"; then
     echo "$pub"
     return
   fi
