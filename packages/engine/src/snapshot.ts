@@ -16,8 +16,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     isAlive: p.alive,
     equipmentCount: p.equipment.length,
     judgmentCount: p.judgment.length,
-    // 身份：主公公开，其余仅本人可见
-    role: isMe || isLord ? p.role : null,
+  // 身份：主公公开；阵亡后亮身份；游戏结束全员亮身份；其余仅本人可见
+  role: isMe || isLord || !p.alive || state.gameOver ? p.role : null,
     // 队伍：2v2 公开，其余模式为 null
     team: state.mode === '2v2' ? p.team : null,
   };

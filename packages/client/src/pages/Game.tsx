@@ -171,7 +171,12 @@ export function Game() {
             const hero = getHero(p.heroId);
             return (
               <div key={p.seatId} className={`player ${!p.isAlive ? 'dead' : ''} team-${p.team ?? 0}`}>
-                <div className="p-name">{p.name}</div>
+                <div className="p-name">
+                  {p.name}
+                  {snapshot.mode === 'junzheng' && p.role && (
+                    <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
+                  )}
+                </div>
                 <div className="p-hero">{hero?.name ?? '?'}</div>
                 <div className="p-hp">
                   {Array.from({ length: p.maxHp }).map((_, i) => (
@@ -216,7 +221,10 @@ export function Game() {
               <div className="p-name">
                 {p.name}
                 {isCurrent && <span className="dot">●</span>}
-                {isLord && <span className="lord-tag">主</span>}
+                {isLord && p.isAlive && <span className="lord-tag">主</span>}
+                {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
+                  <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
+                )}
               </div>
               <div className="p-hero">{hero?.name ?? '?'}</div>
               <div className="p-hp">

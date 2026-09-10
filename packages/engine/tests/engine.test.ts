@@ -557,4 +557,76 @@ describe('军争模式', () => {
     expect(state.gameOver).toBe(true);
     expect(state.winner).toBe('renegade');
   });
+
+  it('主公先手：选将结束后第一回合从主公开始', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+      { seatId: C, name: '丙' },
+      { seatId: D, name: '丁' },
+      { seatId: E, name: '戊' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: 'junzheng' });
+    // 所有玩家从发将中选第一张
+    for (const p of state.players) {
+      const options = state.draft!.deals[p.seatId];
+      ok(act(state, p.seatId, { type: 'pickHero', heroId: options[0] }));
+    }
+    // finishDraft 后第一回合应从主公开始
+    const lord = state.players.find((p) => p.role === 'lord')!;
+    const firstTurnSeatId = state.seatOrder[state.turn.seatIndex];
+    expect(firstTurnSeatId).toBe(lord.seatId);
+  });
+
+  it('死亡亮身份：阵亡玩家的身份对所有人公开', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+        { seatId: E, name: '戊', heroId: 'vanilla', hand: [] },
+      ],
+      'junzheng',
+    );
+    const rebel = state.players.find((p) => p.role === 'rebel')!;
+    const loyal = state.players.find((p) => p.role === 'loyal')!;
+    // 反贼阵亡
+    rebel.alive = false;
+    rebel.hp = 0;
+    // 忠臣视角能看到反贼身份
+    const snap = toSnapshot(state, loyal.seatId);
+    const rebelView = snap.players.find((p) => p.seatId === rebel.seatId)!;
+    expect(rebelView.role).toBe('rebel');
+  });
+
+  it('游戏结束：全员身份公开', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+        { seatId: E, name: '戊', heroId: 'vanilla', hand: [] },
+      ],
+      'junzheng',
+    );
+    const lord = state.players.find((p) => p.role === 'lord')!;
+    lord.hp = 1;
+    // A 杀主公 → 主公死 → 反贼胜
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
+    ok(act(state, lord.seatId, { type: 'pass' }));
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    expect(state.gameOver).toBe(true);
+    // 游戏结束后，从任意视角看所有人的身份都应可见
+    const viewer = state.players.find((p) => p.role === 'renegade')!;
+    const snap = toSnapshot(state, viewer.seatId);
+    for (const p of snap.players) {
+      expect(p.role).not.toBeNull();
+    }
+  });
 });

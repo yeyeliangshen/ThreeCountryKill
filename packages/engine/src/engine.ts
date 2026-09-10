@@ -12,7 +12,7 @@ import {
   type Player,
 } from './model';
 import { buildDeck, drawOne, shuffle } from './deck';
-import { HEROES, getHero, heroCanUseAs, heroShaLimit } from './heroes';
+import { HEROES, getHero, heroCanUseAs, heroShaLimit, ROLE_NAME } from './heroes';
 import type { HookContext, Timing } from './timing';
 
 // —— 对外 API ——
@@ -295,7 +295,8 @@ function doDeath(state: GameState, dyingId: string): void {
   dying.equipment = [];
   for (const c of dying.judgment) state.discard.push(c);
   dying.judgment = [];
-  pushLog(state, 'death', `${dying.name} 阵亡。`);
+  const roleText = dying.role ? `（${ROLE_NAME[dying.role]}）` : '';
+  pushLog(state, 'death', `${dying.name} 阵亡${roleText}。`);
   runHooks(state, 'death', dying, {});
 
   if (checkWin(state)) return;
@@ -628,5 +629,11 @@ function finishDraft(state: GameState): void {
     }
   }
   pushLog(state, 'deal', '选将结束，发放初始手牌。');
-  startTurn(state, 0);
+  // 军争：主公先手；其余模式：座次 0 先手
+  let firstSeat = 0;
+  if (state.mode === 'junzheng') {
+    const lord = state.players.find((p) => p.role === 'lord');
+    if (lord) firstSeat = state.seatOrder.indexOf(lord.seatId);
+  }
+  startTurn(state, firstSeat);
 }
