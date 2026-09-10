@@ -1,4 +1,4 @@
-import type { Intent } from '@sgs/protocol';
+import type { GameMode, Intent, RoleId } from '@sgs/protocol';
 import {
   alivePlayers,
   aliveSeatsFrom,
@@ -89,9 +89,14 @@ function endTurn(state: GameState): void {
   runHooks(state, 'turnEnd', cur);
   const next = nextAliveSeat(state, state.turn.seatIndex);
   if (next === state.turn.seatIndex) {
-    state.gameOver = true;
-    state.pending = null;
-    state.turn.phase = 'gameOver';
+    // 兜底：仅剩 1 人 → 判胜负
+    checkWin(state);
+    if (!state.gameOver) {
+      state.gameOver = true;
+      state.pending = null;
+      state.turn.phase = 'gameOver';
+      pushLog(state, 'gameover', '游戏结束。');
+    }
     return;
   }
   startTurn(state, next);
@@ -209,6 +214,76 @@ function enterNearDeath(state: GameState, attack: AttackContext): void {
   pushLog(state, 'nearDeath', `${dying.name} 濒死，等待出桃救援。`);
 }
 
+/** 设定胜方并写日志，返回 true 表示游戏结束 */
+function setWinner(state: GameState, winner: string): true {
+  state.gameOver = true;
+  state.pending = null;
+  state.turn.phase = 'gameOver';
+  state.winner = winner || null;
+  let msg: string;
+  if (state.mode === 'junzheng') {
+    msg =
+      winner === 'rebel'
+        ? '游戏结束，反贼胜利。'
+        : winner === 'lord'
+          ? '游戏结束，主忠方胜利。'
+          : winner === 'renegade'
+            ? '游戏结束，内奸胜利。'
+            : '游戏结束。';
+  } else if (state.mode === '2v2') {
+    msg =
+      winner === 'team0'
+        ? '游戏结束，队伍1（座位1/3）胜利。'
+        : winner === 'team1'
+          ? '游戏结束，队伍2（座位2/4）胜利。'
+          : '游戏结束。';
+  } else {
+    const wp = getPlayer(state, winner);
+    msg = wp ? `游戏结束，${wp.name} 获胜。` : '游戏结束。';
+  }
+  pushLog(state, 'gameover', msg);
+  return true;
+}
+
+/** 死亡后检查胜负：返回 true 表示游戏已结束 */
+function checkWin(state: GameState): boolean {
+  const alive = alivePlayers(state);
+
+  if (state.mode === '2v2') {
+    const team0Alive = alive.some((p) => p.team === 0);
+    const team1Alive = alive.some((p) => p.team === 1);
+    if (!team0Alive) return setWinner(state, 'team1');
+    if (!team1Alive) return setWinner(state, 'team0');
+    return false;
+  }
+
+  if (state.mode === 'junzheng') {
+    // 仅剩 1 人：根据存活者身份判定
+    if (alive.length === 1) {
+      const sole = alive[0]!;
+      if (sole.role === 'renegade') return setWinner(state, 'renegade');
+      if (sole.role === 'lord' || sole.role === 'loyal') return setWinner(state, 'lord');
+      if (sole.role === 'rebel') return setWinner(state, 'rebel');
+      return setWinner(state, '');
+    }
+    // 主公阵亡 → 反贼胜
+    const lord = alive.find((p) => p.role === 'lord');
+    if (!lord) return setWinner(state, 'rebel');
+    // 反贼与内奸全灭 → 主忠胜
+    const rebelsAlive = alive.some((p) => p.role === 'rebel');
+    const renegadesAlive = alive.some((p) => p.role === 'renegade');
+    if (!rebelsAlive && !renegadesAlive) return setWinner(state, 'lord');
+    return false;
+  }
+
+  // melee：最后存活者胜
+  if (alive.length <= 1) {
+    if (alive.length === 1) return setWinner(state, alive[0]!.seatId);
+    return setWinner(state, '');
+  }
+  return false;
+}
+
 function doDeath(state: GameState, dyingId: string): void {
   const dying = getPlayerOrThrow(state, dyingId);
   dying.alive = false;
@@ -223,18 +298,7 @@ function doDeath(state: GameState, dyingId: string): void {
   pushLog(state, 'death', `${dying.name} 阵亡。`);
   runHooks(state, 'death', dying, {});
 
-  const alive = alivePlayers(state);
-  if (alive.length <= 1) {
-    state.gameOver = true;
-    state.pending = null;
-    state.turn.phase = 'gameOver';
-    if (alive.length === 1) {
-      pushLog(state, 'gameover', `游戏结束，${alive[0]!.name} 获胜。`);
-    } else {
-      pushLog(state, 'gameover', '游戏结束。');
-    }
-    return;
-  }
+  if (checkWin(state)) return;
   // 回到当前回合玩家（伤害来源）的出牌阶段
   resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
 }
@@ -347,7 +411,10 @@ function respondSha(
   const responder = getPlayerOrThrow(state, seatId);
   const card = responder.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  if (card.type !== 'shan') return err('只能用【闪】响应');
+  const hero = getHero(responder.heroId)!;
+  // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
+  if (card.type !== 'shan' && !heroCanUseAs(hero, card, 'shan'))
+    return err('只能用【闪】响应');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
   pending.attack.dodged = true;
@@ -365,7 +432,9 @@ function respondDeathSave(
   const saver = getPlayerOrThrow(state, seatId);
   const card = saver.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  if (card.type !== 'tao' && card.type !== 'jiu')
+  const hero = getHero(saver.heroId)!;
+  // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
+  if (card.type !== 'tao' && card.type !== 'jiu' && !heroCanUseAs(hero, card, 'tao'))
     return err('只能用【桃】（或【酒】当桃）救人');
   removeCard(saver.hand, card.id);
   state.discard.push(card);
@@ -446,13 +515,23 @@ function onDiscard(
 
 const DEFAULT_HERO_DEAL_COUNT = 3;
 
+// 军争标准身份表（5-8 人）
+const JUNZHENG_ROLES: Record<number, RoleId[]> = {
+  5: ['lord', 'loyal', 'rebel', 'rebel', 'renegade'],
+  6: ['lord', 'loyal', 'rebel', 'rebel', 'rebel', 'renegade'],
+  7: ['lord', 'loyal', 'loyal', 'rebel', 'rebel', 'rebel', 'renegade'],
+  8: ['lord', 'loyal', 'loyal', 'rebel', 'rebel', 'rebel', 'rebel', 'renegade'],
+};
+
 export function createGame(
   seats: SeatSetup[],
   roomCode: string,
-  heroDealCount?: number,
+  opts?: { mode?: GameMode; heroDealCount?: number },
 ): GameState {
-  // 发将数 K，钳制在 [1, 5]
-  const k = Math.max(1, Math.min(5, heroDealCount ?? DEFAULT_HERO_DEAL_COUNT));
+  const mode: GameMode = opts?.mode ?? 'melee';
+  const k = Math.max(1, Math.min(5, opts?.heroDealCount ?? DEFAULT_HERO_DEAL_COUNT));
+  const n = seats.length;
+
   const players: Player[] = seats.map((s) => ({
     seatId: s.seatId,
     name: s.name,
@@ -464,24 +543,36 @@ export function createGame(
     judgment: [],
     alive: true,
     flags: { shaCountThisTurn: 0, jiuActive: false },
+    role: null,
+    team: null,
   }));
   const seatOrder = seats.map((s) => s.seatId);
 
-  // 随机发将：把武将池重复到足够张数，洗牌后每人发 k 张
-  // （首期池仅 3 个，允许跨玩家重复，待武将库扩充后再做全局唯一）
-  const poolNeeded = seats.length * k;
-  const heroPool: string[] = [];
-  while (heroPool.length < poolNeeded) {
-    for (const h of HEROES) heroPool.push(h.id);
+  // 按模式分配身份/队伍
+  if (mode === '2v2') {
+    // A B A B 座次：1,3→team0；2,4→team1
+    players.forEach((p, i) => {
+      p.team = i % 2 === 0 ? 0 : 1;
+    });
+  } else if (mode === 'junzheng') {
+    const roleTable = JUNZHENG_ROLES[n];
+    if (!roleTable) throw new Error(`军争模式需 5-8 人，当前 ${n} 人`);
+    const roles = shuffle([...roleTable]);
+    players.forEach((p, i) => {
+      p.role = roles[i]!;
+    });
   }
-  const shuffledPool = shuffle(heroPool).slice(0, poolNeeded);
+
+  // 随机发将：每人从洗牌后的武将池独立发 k 张，保证同一玩家不重复
+  const heroIds = HEROES.map((h) => h.id);
   const deals: Record<string, string[]> = {};
   for (const s of seats) {
-    deals[s.seatId] = shuffledPool.splice(0, k);
+    deals[s.seatId] = shuffle(heroIds).slice(0, k);
   }
 
   const state: GameState = {
     roomCode,
+    mode,
     players,
     seatOrder,
     deck: shuffle(buildDeck()),
@@ -491,6 +582,7 @@ export function createGame(
     draft: { deals, pendingSeats: seatOrder.slice() },
     started: true,
     gameOver: false,
+    winner: null,
     log: [],
   };
   pushLog(state, 'start', '游戏开始，随机发将。');
@@ -521,7 +613,11 @@ function finishDraft(state: GameState): void {
   for (const p of state.players) {
     const hero = getHero(p.heroId) ?? getHero('vanilla')!;
     p.maxHp = hero.maxHp;
-    p.hp = hero.maxHp;
+    // 军争：主公体力上限 +1
+    if (state.mode === 'junzheng' && p.role === 'lord') {
+      p.maxHp = hero.maxHp + 1;
+    }
+    p.hp = p.maxHp;
   }
   state.draft = null;
   // 初始手牌：每人 4 张（首回合玩家随后再摸 2，见 startTurn）

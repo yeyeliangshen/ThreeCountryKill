@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyIntent, createGame, getHero, toSnapshot, type GameState, type SeatSetup } from '../src';
-import type { Card, CardType, Suit } from '@sgs/protocol';
+import type { Card, CardType, GameMode, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
 function mk(id: string, type: CardType, suit: Suit = 'spade', rank = 1): Card {
@@ -46,8 +46,36 @@ function makeGame(seats: SeatOpts[]): GameState {
   return state;
 }
 
+/** 同 makeGame，但可指定模式（保留 createGame 设定的 role/team） */
+function makeGameMode(seats: SeatOpts[], mode: GameMode): GameState {
+  const setup: SeatSetup[] = seats.map((s) => ({
+    seatId: s.seatId,
+    name: s.name,
+    heroId: s.heroId,
+  }));
+  const state = createGame(setup, 'TEST', { mode });
+  state.draft = null;
+  for (const s of seats) {
+    const p = state.players.find((pl) => pl.seatId === s.seatId)!;
+    const hero = getHero(s.heroId);
+    p.heroId = s.heroId;
+    p.maxHp = hero?.maxHp ?? 4;
+    p.hp = s.hp ?? p.maxHp;
+    p.hand = s.hand.slice();
+    p.flags = { shaCountThisTurn: 0, jiuActive: false };
+  }
+  const first = state.seatOrder[0]!;
+  state.turn = { seatIndex: 0, phase: 'play' };
+  state.pending = { kind: 'play', seatId: first };
+  state.log = [];
+  return state;
+}
+
 const A = 's0';
 const B = 's1';
+const C = 's2';
+const D = 's3';
+const E = 's4';
 
 function act(state: GameState, seatId: string, intent: Parameters<typeof applyIntent>[2]) {
   return applyIntent(state, seatId, intent);
@@ -246,7 +274,7 @@ describe('选将阶段（开局随机发将）', () => {
       { seatId: A, name: '张三' },
       { seatId: B, name: '李四' },
     ];
-    const state = createGame(setup, 'TEST', 3);
+    const state = createGame(setup, 'TEST', { heroDealCount: 3 });
 
     // 处于选将阶段
     expect(state.draft).not.toBeNull();
@@ -299,9 +327,9 @@ describe('选将阶段（开局随机发将）', () => {
       { seatId: B, name: '李四' },
     ];
     expect(createGame(setup, 'T').draft!.deals[A]).toHaveLength(3);
-    expect(createGame(setup, 'T', 0).draft!.deals[A]).toHaveLength(1);
-    expect(createGame(setup, 'T', 99).draft!.deals[A]).toHaveLength(5);
-    expect(createGame(setup, 'T', 2).draft!.deals[A]).toHaveLength(2);
+    expect(createGame(setup, 'T', { heroDealCount: 0 }).draft!.deals[A]).toHaveLength(1);
+    expect(createGame(setup, 'T', { heroDealCount: 99 }).draft!.deals[A]).toHaveLength(5);
+    expect(createGame(setup, 'T', { heroDealCount: 2 }).draft!.deals[A]).toHaveLength(2);
   });
 
   it('不能选未发到的武将', () => {
@@ -309,8 +337,224 @@ describe('选将阶段（开局随机发将）', () => {
       { seatId: A, name: '张三' },
       { seatId: B, name: '李四' },
     ];
-    const state = createGame(setup, 'TEST', 3);
+    const state = createGame(setup, 'TEST', { heroDealCount: 3 });
     // vanilla 未必在 A 的发将中，随便挑一个不在的应被拒
     fail(act(state, A, { type: 'pickHero', heroId: '__not_dealt__' }));
+  });
+
+  it('扩池后跨玩家发将不重复（随机性回归）', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '张三' },
+      { seatId: B, name: '李四' },
+    ];
+    const state = createGame(setup, 'TEST', { heroDealCount: 3 });
+    const aDeals = state.draft!.deals[A];
+    const bDeals = state.draft!.deals[B];
+    // 池已扩到 12+，6 张从 13 池中抽不重复 → 两人发将集应有差异
+    const aSet = new Set(aDeals);
+    const bSet = new Set(bDeals);
+    const same = aDeals.every((id) => bSet.has(id)) && bDeals.every((id) => aSet.has(id));
+    expect(same).toBe(false);
+  });
+
+  it('同一玩家发将不重复（n×k 超过武将池时的回归）', () => {
+    // 5 人 × 3 张 = 15 张，超过 13 个武将 → 旧逻辑可能给同一人发重复武将
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+      { seatId: C, name: '丙' },
+      { seatId: D, name: '丁' },
+      { seatId: E, name: '戊' },
+    ];
+    for (let trial = 0; trial < 50; trial++) {
+      const state = createGame(setup, 'TEST', { heroDealCount: 3 });
+      for (const seat of setup) {
+        const deals = state.draft!.deals[seat.seatId];
+        const unique = new Set(deals);
+        expect(unique.size).toBe(deals.length);
+      }
+    }
+  });
+});
+
+// ——————————————————————————————————————————
+
+describe('2v2 模式', () => {
+  it('队伍分配：A B A B → s0/s2=team0, s1/s3=team1', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+      { seatId: C, name: '丙' },
+      { seatId: D, name: '丁' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: '2v2' });
+    expect(state.mode).toBe('2v2');
+    expect(state.players[0]!.team).toBe(0);
+    expect(state.players[1]!.team).toBe(1);
+    expect(state.players[2]!.team).toBe(0);
+    expect(state.players[3]!.team).toBe(1);
+  });
+
+  it('某队全灭 → 对方队胜', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei', hand: [sha('a1'), sha('a2')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 1 },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [], hp: 1 },
+      ],
+      '2v2',
+    );
+    // A(team0) 杀 B(team1, hp1) → B 阵亡
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // B 不出闪
+    // B 濒死，求桃轮询 [B, C, D, A]
+    expect(state.pending?.kind).toBe('respondDeath');
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    // B 阵亡，但 D 仍存活 → 未结束
+    expect(state.players.find((p) => p.seatId === B)!.alive).toBe(false);
+    expect(state.gameOver).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+
+    // A 杀 D(team1, hp1) → D 阵亡 → team1 全灭 → team0 胜
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [D] }));
+    ok(act(state, D, { type: 'pass' }));
+    // D 濒死，求桃轮询 [D, A, C]（B 已死不在队列）
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('team0');
+  });
+});
+
+// ——————————————————————————————————————————
+
+describe('军争模式', () => {
+  it('身份分配：5人 = 主1忠1反2内1', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+      { seatId: C, name: '丙' },
+      { seatId: D, name: '丁' },
+      { seatId: E, name: '戊' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: 'junzheng' });
+    expect(state.mode).toBe('junzheng');
+    const roles = state.players.map((p) => p.role);
+    expect(roles.filter((r) => r === 'lord')).toHaveLength(1);
+    expect(roles.filter((r) => r === 'loyal')).toHaveLength(1);
+    expect(roles.filter((r) => r === 'rebel')).toHaveLength(2);
+    expect(roles.filter((r) => r === 'renegade')).toHaveLength(1);
+  });
+
+  it('快照身份可见性：主公公开、其余仅本人可见', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+        { seatId: E, name: '戊', heroId: 'vanilla', hand: [] },
+      ],
+      'junzheng',
+    );
+    const lord = state.players.find((p) => p.role === 'lord')!;
+    const rebel = state.players.find((p) => p.role === 'rebel')!;
+    // 主公视角：自己 role=lord，他人中主公可见但这里自己是主公
+    const snapLord = toSnapshot(state, lord.seatId);
+    const meInLordSnap = snapLord.players.find((p) => p.seatId === lord.seatId)!;
+    expect(meInLordSnap.role).toBe('lord');
+    // 反贼视角：自己 role=rebel，主公 role=lord（公开），其他人 role=null
+    const snapRebel = toSnapshot(state, rebel.seatId);
+    const meInRebelSnap = snapRebel.players.find((p) => p.seatId === rebel.seatId)!;
+    expect(meInRebelSnap.role).toBe('rebel');
+    const lordInRebelSnap = snapRebel.players.find((p) => p.seatId === lord.seatId)!;
+    expect(lordInRebelSnap.role).toBe('lord'); // 主公公开
+    // 其他人（非主公非自己）的 role 应为 null
+    const others = snapRebel.players.filter(
+      (p) => p.seatId !== rebel.seatId && p.seatId !== lord.seatId,
+    );
+    for (const p of others) {
+      expect(p.role).toBeNull();
+    }
+  });
+
+  it('主公阵亡 → 反贼胜利', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+        { seatId: E, name: '戊', heroId: 'vanilla', hand: [] },
+      ],
+      'junzheng',
+    );
+    // 找到主公，设体力为 1
+    const lord = state.players.find((p) => p.role === 'lord')!;
+    lord.hp = 1;
+    // A 攻击主公
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
+    ok(act(state, lord.seatId, { type: 'pass' })); // 主公不出闪
+    // 主公濒死，全员弃权（不出桃救）
+    expect(state.pending?.kind).toBe('respondDeath');
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    // 主公阵亡 → 反贼胜
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('rebel');
+  });
+
+  it('内奸独活 → 内奸胜利', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+        { seatId: E, name: '戊', heroId: 'vanilla', hand: [] },
+      ],
+      'junzheng',
+    );
+    // 找到内奸
+    const renegade = state.players.find((p) => p.role === 'renegade')!;
+    // 让内奸成为当前回合玩家
+    const renIdx = state.seatOrder.indexOf(renegade.seatId);
+    state.turn = { seatIndex: renIdx, phase: 'play' };
+    state.pending = { kind: 'play', seatId: renegade.seatId };
+    renegade.hand = [sha('r1')];
+    // 其他玩家中只留一个存活且体力为 1（其余设为已死）
+    const others = state.players.filter((p) => p.seatId !== renegade.seatId);
+    for (let i = 0; i < others.length; i++) {
+      if (i === 0) {
+        others[i]!.hp = 1;
+        others[i]!.alive = true;
+      } else {
+        others[i]!.hp = 0;
+        others[i]!.alive = false;
+      }
+    }
+    const victim = others[0]!;
+    // 内奸杀 victim → victim 阵亡 → 仅剩内奸 → 内奸胜
+    ok(act(state, renegade.seatId, { type: 'playCard', cardId: 'r1', targetIds: [victim.seatId] }));
+    ok(act(state, victim.seatId, { type: 'pass' }));
+    // victim 濒死，轮询 [victim, renegade]
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('renegade');
   });
 });

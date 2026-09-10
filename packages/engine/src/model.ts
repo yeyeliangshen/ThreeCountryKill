@@ -1,4 +1,4 @@
-import type { Card, CardType, LogEntry, Phase } from '@sgs/protocol';
+import type { Card, CardType, GameMode, LogEntry, Phase, RoleId } from '@sgs/protocol';
 
 // —— 玩家状态 ——
 export interface PlayerFlags {
@@ -19,6 +19,8 @@ export interface Player {
   judgment: Card[]; // 首期为空，留结构
   alive: boolean;
   flags: PlayerFlags;
+  role: RoleId | null; // 身份（军争），选将阶段未定
+  team: 0 | 1 | null; // 队伍（2v2），非 2v2 为 null
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）
@@ -51,6 +53,7 @@ export interface DraftState {
 
 export interface GameState {
   roomCode: string;
+  mode: GameMode; // 当前对局模式
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];
@@ -60,6 +63,7 @@ export interface GameState {
   draft: DraftState | null; // 非空表示处于选将阶段
   started: boolean;
   gameOver: boolean;
+  winner: string | null; // 胜方标识（阵营/队伍/身份方），未结束时为 null
   log: LogEntry[];
 }
 

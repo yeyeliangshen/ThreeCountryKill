@@ -1,5 +1,5 @@
 // 房间：座位管理 + 意图驱动引擎 + 按座位裁剪广播 + 断线重连占位
-import type { Intent, ServerMessage, SeatView } from '@sgs/protocol';
+import type { GameMode, Intent, ServerMessage, SeatView } from '@sgs/protocol';
 import {
   applyIntent,
   createGame,
@@ -9,6 +9,28 @@ import {
   type SeatSetup,
 } from '@sgs/engine';
 import type { WebSocket } from 'ws';
+
+/** 模式所需人数校验 */
+function modeMinPlayers(mode: GameMode): number {
+  switch (mode) {
+    case '2v2':
+      return 4;
+    case 'junzheng':
+      return 5;
+    default:
+      return 2;
+  }
+}
+function modeMaxPlayers(mode: GameMode): number {
+  switch (mode) {
+    case '2v2':
+      return 4;
+    case 'junzheng':
+      return 8;
+    default:
+      return 8;
+  }
+}
 
 /** 单个座位的服务端视图：名字 + 是否在线 + 武将 + 持有连接 */
 export interface SeatEntry {
@@ -25,6 +47,7 @@ export class Room {
   readonly maxSeats: number;
   seats: SeatEntry[];
   hostSeatId: string | null = null;
+  pendingMode: GameMode = 'melee';
   game: GameState | null = null;
   started = false;
 
@@ -78,17 +101,34 @@ export class Room {
     return { ok: true, seatId };
   }
 
-  /** 房主开局：收集已落座者 → createGame（武将改为开局后随机发、各自选 1） */
-  startGame(seatId: string, heroDealCount?: number): { ok: true } | { ok: false; error: string } {
+  /** 房主切换模式（大厅阶段） */
+  setMode(seatId: string, mode: GameMode): { ok: true } | { ok: false; error: string } {
+    if (this.started) return { ok: false, error: '游戏已开始' };
+    if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能切换模式' };
+    if (mode === 'guozhan') return { ok: false, error: '国战模式敬请期待' };
+    this.pendingMode = mode;
+    return { ok: true };
+  }
+
+  /** 房主开局：收集已落座者 → createGame（按模式分配身份/队伍） */
+  startGame(
+    seatId: string,
+    mode: GameMode,
+    heroDealCount?: number,
+  ): { ok: true } | { ok: false; error: string } {
     if (this.started) return { ok: false, error: '游戏已开始' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能开始游戏' };
     const occupied = this.seats.filter((s) => s.name !== null);
-    if (occupied.length < 2) return { ok: false, error: '至少需要 2 人' };
+    const n = occupied.length;
+    const min = modeMinPlayers(mode);
+    const max = modeMaxPlayers(mode);
+    if (n < min) return { ok: false, error: `${mode === '2v2' ? '2v2' : mode === 'junzheng' ? '军争' : '混战'}模式至少需要 ${min} 人` };
+    if (n > max) return { ok: false, error: `${mode}模式最多 ${max} 人` };
     const setups: SeatSetup[] = occupied.map((s) => ({
       seatId: s.seatId,
       name: s.name!,
     }));
-    this.game = createGame(setups, this.roomCode, heroDealCount);
+    this.game = createGame(setups, this.roomCode, { mode, heroDealCount });
     this.started = true;
     return { ok: true };
   }
@@ -128,6 +168,7 @@ export class Room {
           seats,
           started: this.started,
           mySeatId: s.seatId,
+          mode: this.pendingMode,
         });
       }
     }

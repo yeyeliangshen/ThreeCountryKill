@@ -1,6 +1,6 @@
 // 全局状态：连接、大厅、快照；ws 收发；断线自动重连按 seatId 恢复
 import { create } from 'zustand';
-import type { ClientMessage, Intent, SeatView, ServerMessage, Snapshot } from '@sgs/protocol';
+import type { ClientMessage, GameMode, Intent, SeatView, ServerMessage, Snapshot } from '@sgs/protocol';
 
 export type Screen = 'join' | 'lobby' | 'game';
 
@@ -9,6 +9,7 @@ export interface LobbyState {
   seats: SeatView[];
   started: boolean;
   mySeatId: string | null;
+  mode: GameMode;
 }
 
 interface Store {
@@ -33,6 +34,7 @@ interface Store {
   disconnect: () => void;
   send: (msg: ClientMessage) => void;
   claimSeat: (seatId: string) => void;
+  setMode: (mode: GameMode) => void;
   startGame: () => void;
   sendIntent: (intent: Intent) => void;
   pickHero: (heroId: string) => void;
@@ -70,6 +72,7 @@ export const useStore = create<Store>()((set, get) => {
             seats: msg.seats,
             started: msg.started,
             mySeatId: msg.mySeatId,
+            mode: msg.mode,
           },
           screen: msg.started ? 'game' : 'lobby',
           error: null,
@@ -180,7 +183,10 @@ export const useStore = create<Store>()((set, get) => {
       get().send({ type: 'claimSeat', seatId });
     },
 
-    startGame: () => get().send({ type: 'startGame', heroDealCount: get().heroDealCount }),
+    setMode: (mode) => get().send({ type: 'setMode', mode }),
+
+    startGame: () =>
+      get().send({ type: 'startGame', mode: get().lobby?.mode ?? 'melee', heroDealCount: get().heroDealCount }),
 
     sendIntent: (intent) => get().send({ type: 'intent', intent }),
 

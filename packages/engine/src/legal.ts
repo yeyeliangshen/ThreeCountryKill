@@ -84,7 +84,11 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
 
 function buildRespondShaPrompt(state: GameState, seatId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const legalCardIds = player.hand.filter((c) => c.type === 'shan').map((c) => c.id);
+  const hero = getHero(player.heroId)!;
+  // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
+  const legalCardIds = player.hand
+    .filter((c) => c.type === 'shan' || heroCanUseAs(hero, c, 'shan'))
+    .map((c) => c.id);
   return {
     kind: 'respondSha',
     message: '你被【杀】指定为目标：出【闪】或弃权',
@@ -100,9 +104,11 @@ function buildRespondDeathPrompt(
   dyingId: string,
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
+  const hero = getHero(player.heroId)!;
   const dying = getPlayerOrThrow(state, dyingId);
+  // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
   const legalCardIds = player.hand
-    .filter((c) => c.type === 'tao' || c.type === 'jiu')
+    .filter((c) => c.type === 'tao' || c.type === 'jiu' || heroCanUseAs(hero, c, 'tao'))
     .map((c) => c.id);
   return {
     kind: 'respondDeath',

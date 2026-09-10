@@ -1,6 +1,12 @@
 import type { Card } from './card';
 import type { Phase } from './intent';
 
+// —— 游戏模式 ——
+export type GameMode = 'junzheng' | '2v2' | 'melee' | 'guozhan';
+
+// —— 身份（军争模式） ——
+export type RoleId = 'lord' | 'loyal' | 'rebel' | 'renegade';
+
 // —— 服务端按玩家裁剪后下发的"视图"，不泄露他人手牌 ——
 
 // 单个玩家的公开信息
@@ -15,6 +21,10 @@ export interface PlayerView {
   // 装备区/判定区在首期为空，先留结构供后续扩展
   equipmentCount: number;
   judgmentCount: number;
+  // 身份（军争）：主公对所有人公开，其余仅本人可见（他人视图为 null）
+  role?: RoleId | null;
+  // 队伍（2v2）：公开
+  team?: 0 | 1 | null;
 }
 
 export type PromptKind = 'play' | 'respondSha' | 'respondDeath' | 'discard' | 'pickHero';
@@ -52,9 +62,11 @@ export interface Snapshot {
   seatId: string; // 此快照属于哪个座位
   roomCode: string;
   started: boolean;
+  mode: GameMode; // 当前对局模式
   players: PlayerView[];
   myHand: Card[]; // 仅本人手牌完整下发
   turn: { seatId: string; phase: Phase };
   prompt: PromptView | null; // 轮到你行动时非空
+  winner: string | null; // 游戏未结束时为 null；结束时为胜方标识
   log: LogEntry[];
 }

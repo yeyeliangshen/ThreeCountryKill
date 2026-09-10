@@ -1,10 +1,20 @@
+import type { GameMode } from '@sgs/protocol';
 import { useStore } from '../store';
+
+// 各模式中文名 + 人数要求（与服务端 modeMinPlayers/modeMaxPlayers 保持一致）
+const MODE_INFO: { mode: GameMode; label: string; min: number; max: number; disabled?: boolean }[] = [
+  { mode: 'melee', label: '混战', min: 2, max: 8 },
+  { mode: '2v2', label: '2v2', min: 4, max: 4 },
+  { mode: 'junzheng', label: '军争（身份）', min: 5, max: 8 },
+  { mode: 'guozhan', label: '国战', min: 2, max: 8, disabled: true },
+];
 
 export function Lobby() {
   const lobby = useStore((s) => s.lobby);
   const claimSeat = useStore((s) => s.claimSeat);
   const heroDealCount = useStore((s) => s.heroDealCount);
   const setForm = useStore((s) => s.setForm);
+  const setMode = useStore((s) => s.setMode);
   const startGame = useStore((s) => s.startGame);
   const disconnect = useStore((s) => s.disconnect);
 
@@ -12,8 +22,12 @@ export function Lobby() {
   const mySeatId = lobby.mySeatId;
   const mySeat = lobby.seats.find((s) => s.seatId === mySeatId);
   const occupied = lobby.seats.filter((s) => s.name);
-  const allReady = occupied.length >= 2;
   const amHost = mySeat?.isHost;
+  const currentMode = lobby.mode;
+  const modeInfo = MODE_INFO.find((m) => m.mode === currentMode);
+  const playerCount = occupied.length;
+  const canStart =
+    amHost && modeInfo && playerCount >= modeInfo.min && playerCount <= modeInfo.max;
 
   return (
     <div className="lobby">
@@ -23,6 +37,38 @@ export function Lobby() {
           退出
         </button>
       </header>
+
+      {/* 模式选择 */}
+      <section className="mode-selector">
+        <div className="mode-selector-title">游戏模式</div>
+        <div className="mode-buttons">
+          {MODE_INFO.map((m) => {
+            const active = currentMode === m.mode;
+            return (
+              <button
+                key={m.mode}
+                className={`mode-btn ${active ? 'active' : ''} ${m.disabled ? 'disabled' : ''}`}
+                disabled={!amHost || m.disabled}
+                onClick={() => !m.disabled && setMode(m.mode)}
+              >
+                {m.label}
+                {m.disabled && <small> 敬请期待</small>}
+                {!m.disabled && (
+                  <small>
+                    {' '}
+                    {m.min === m.max ? `${m.min}人` : `${m.min}-${m.max}人`}
+                  </small>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {!amHost && (
+          <div className="hint">
+            房主选择：{modeInfo?.label ?? currentMode}
+          </div>
+        )}
+      </section>
 
       <section className="seats-grid">
         {lobby.seats.map((s) => {
@@ -61,8 +107,10 @@ export function Lobby() {
                 }}
               />
             </label>
-            <button className="primary big" disabled={!allReady} onClick={startGame}>
-              {allReady ? '开始游戏' : `等待玩家入座（${occupied.length} 人）`}
+            <button className="primary big" disabled={!canStart} onClick={startGame}>
+              {canStart
+                ? '开始游戏'
+                : `等待玩家入座（${playerCount}/${modeInfo?.min ?? 2} 人）`}
             </button>
           </div>
         ) : (

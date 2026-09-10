@@ -123,6 +123,7 @@ wss.on('connection', (ws: WebSocket) => {
           seats: room.seatViews(),
           started: room.started,
           mySeatId: seatId,
+          mode: room.pendingMode,
         });
         room.broadcastLobby();
         break;
@@ -144,12 +145,26 @@ wss.on('connection', (ws: WebSocket) => {
         break;
       }
 
+      case 'setMode': {
+        if (!room || !seatId) {
+          send(ws, { type: 'error', message: '请先落座' });
+          break;
+        }
+        const res = room.setMode(seatId, msg.mode);
+        if (!res.ok) {
+          send(ws, { type: 'error', message: res.error });
+          break;
+        }
+        room.broadcastLobby();
+        break;
+      }
+
       case 'startGame': {
         if (!room || !seatId) {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.startGame(seatId, msg.heroDealCount);
+        const res = room.startGame(seatId, msg.mode, msg.heroDealCount);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;

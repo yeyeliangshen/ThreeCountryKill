@@ -520,3 +520,103 @@ button:disabled {
   transform: translateY(-4px);
   border-color: var(--gold);
 }
+
+/* —— 模式选择器 —— */
+.mode-selector {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mode-selector-title {
+  font-size: 13px;
+  color: var(--muted);
+}
+.mode-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mode-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--panel-2);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.mode-btn.active {
+  border-color: var(--gold);
+  background: var(--panel-2);
+  color: var(--gold);
+}
+.mode-btn:disabled,
+.mode-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* —— 身份/队伍徽章 —— */
+.role-badge {
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.role-lord {
+  background: var(--gold);
+  color: #1a1208;
+}
+.role-loyal {
+  background: #2e6fb5;
+  color: #fff;
+}
+.role-rebel {
+  background: var(--red);
+  color: #fff;
+}
+.role-renegade {
+  background: #6b4ab5;
+  color: #fff;
+}
+.lord-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  background: var(--gold);
+  color: #1a1208;
+  border-radius: 3px;
+}
+
+/* 2v2 队伍色：顶部细条区分 */
+.player.team-0 {
+  border-top: 3px solid #4a7fb5;
+}
+.player.team-1 {
+  border-top: 3px solid #b56a4a;
+}
+.me-bar.team-0 {
+  border-left: 3px solid #4a7fb5;
+}
+.me-bar.team-1 {
+  border-left: 3px solid #b56a4a;
+}
+
+/* —— 游戏结束覆盖层 —— */
+.game-over-screen {
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 40px;
+}
+.game-over-banner {
+  text-align: center;
+  margin-bottom: 16px;
+}
+.game-over-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--gold);
+}
