@@ -1,4 +1,4 @@
-import type { PlayerView, Snapshot } from '@sgs/protocol';
+import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -31,10 +31,13 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     maxHp: p.maxHp,
     handCount: p.hand.length,
     isAlive: p.alive,
-    equipmentCount: [p.equipment.weapon, p.equipment.armor, p.equipment.plusMount, p.equipment.minusMount].filter(
-      Boolean,
-    ).length,
-    judgmentCount: p.judgment.length,
+    equipment: [
+      p.equipment.weapon,
+      p.equipment.armor,
+      p.equipment.plusMount,
+      p.equipment.minusMount,
+    ].filter(Boolean) as Card[],
+    judgment: p.judgment.slice(),
     // 身份：主公公开；阵亡后亮身份；游戏结束全员亮身份；其余仅本人可见
     role: isMe || isLord || !p.alive || state.gameOver ? p.role : null,
     // 队伍：2v2 公开，其余模式为 null

@@ -1757,3 +1757,36 @@ describe('国战进阶（Step 7）', () => {
     expect(state.winner).toBe('ambitionist');
   });
 });
+
+// ——————————————————————————————————————————
+
+describe('快照：装备与判定区公开信息（Step 8）', () => {
+  it('装备牌在快照中公开可见', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = wpn('w1');
+    a.equipment.armor = { id: 'ar1', type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' };
+    const snapB = toSnapshot(state, B);
+    const aView = snapB.players.find((p) => p.seatId === A)!;
+    expect(aView.equipment).toHaveLength(2);
+    expect(aView.equipment.some((c) => c.id === 'w1')).toBe(true);
+    expect(aView.equipment.some((c) => c.id === 'ar1')).toBe(true);
+  });
+
+  it('判定区延时锦囊在快照中公开可见', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.judgment.push(lebu('l1'), shandian('s1'));
+    const snapB = toSnapshot(state, B);
+    const aView = snapB.players.find((p) => p.seatId === A)!;
+    expect(aView.judgment).toHaveLength(2);
+    expect(aView.judgment.some((c) => c.id === 'l1')).toBe(true);
+    expect(aView.judgment.some((c) => c.id === 's1')).toBe(true);
+  });
+});

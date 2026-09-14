@@ -21,9 +21,10 @@ export interface PlayerView {
   maxHp: number;
   handCount: number;
   isAlive: boolean;
-  // 装备区/判定区在首期为空，先留结构供后续扩展
-  equipmentCount: number;
-  judgmentCount: number;
+  // 装备区（公开）：非空槽位的牌
+  equipment: Card[];
+  // 判定区（公开）：延时锦囊牌
+  judgment: Card[];
   // 身份（军争）：主公对所有人公开，其余仅本人可见（他人视图为 null）
   role?: RoleId | null;
   // 队伍（2v2）：公开
