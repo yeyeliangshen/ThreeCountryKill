@@ -6,7 +6,7 @@ const MODE_INFO: { mode: GameMode; label: string; min: number; max: number; disa
   { mode: 'melee', label: '混战', min: 2, max: 8 },
   { mode: '2v2', label: '2v2', min: 4, max: 4 },
   { mode: 'junzheng', label: '军争（身份）', min: 5, max: 8 },
-  { mode: 'guozhan', label: '国战', min: 2, max: 8, disabled: true },
+  { mode: 'guozhan', label: '国战', min: 2, max: 8 },
 ];
 
 export function Lobby() {

@@ -38,6 +38,8 @@ interface Store {
   startGame: () => void;
   sendIntent: (intent: Intent) => void;
   pickHero: (heroId: string) => void;
+  pickHeroes: (heroId: string, deputyHeroId: string) => void;
+  revealHero: (heroId: string) => void;
   dismissError: () => void;
 }
 
@@ -191,6 +193,11 @@ export const useStore = create<Store>()((set, get) => {
     sendIntent: (intent) => get().send({ type: 'intent', intent }),
 
     pickHero: (heroId) => get().sendIntent({ type: 'pickHero', heroId }),
+
+    pickHeroes: (heroId, deputyHeroId) =>
+      get().sendIntent({ type: 'pickHero', heroId, deputyHeroId }),
+
+    revealHero: (heroId) => get().sendIntent({ type: 'revealHero', heroId }),
 
     dismissError: () => set({ error: null }),
   };

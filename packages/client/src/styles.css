@@ -605,6 +605,44 @@ button:disabled {
   border-left: 3px solid #b56a4a;
 }
 
+/* —— 国战阵营色 —— */
+.player.faction-shu { border-top: 3px solid #d9453a; }
+.player.faction-wei { border-top: 3px solid #4a7fb5; }
+.player.faction-wu { border-top: 3px solid #5a9b3a; }
+.player.faction-qun { border-top: 3px solid #8a8270; }
+.me-bar.faction-shu { border-left: 3px solid #d9453a; }
+.me-bar.faction-wei { border-left: 3px solid #4a7fb5; }
+.me-bar.faction-wu { border-left: 3px solid #5a9b3a; }
+.me-bar.faction-qun { border-left: 3px solid #8a8270; }
+.faction-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.faction-badge.shu { background: #d9453a; color: #fff; }
+.faction-badge.wei { background: #4a7fb5; color: #fff; }
+.faction-badge.wu { background: #5a9b3a; color: #fff; }
+.faction-badge.qun { background: #8a8270; color: #fff; }
+.hero-card .hero-slot-tag {
+  font-size: 10px;
+  color: var(--gold);
+  font-weight: 600;
+}
+.hero-card.faction-shu { border-bottom: 2px solid #d9453a; }
+.hero-card.faction-wei { border-bottom: 2px solid #4a7fb5; }
+.hero-card.faction-wu { border-bottom: 2px solid #5a9b3a; }
+.hero-card.faction-qun { border-bottom: 2px solid #8a8270; }
+.me-hero-deputy {
+  color: var(--muted);
+  font-size: 12px;
+}
+.reveal-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 /* —— 游戏结束覆盖层 —— */
 .game-over-screen {
   align-items: center;

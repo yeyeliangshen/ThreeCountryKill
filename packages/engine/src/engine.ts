@@ -1,4 +1,4 @@
-import type { GameMode, Intent, RoleId } from '@sgs/protocol';
+import type { Faction, GameMode, Intent, RoleId } from '@sgs/protocol';
 import {
   alivePlayers,
   aliveSeatsFrom,
@@ -12,7 +12,15 @@ import {
   type Player,
 } from './model';
 import { buildDeck, drawOne, shuffle } from './deck';
-import { HEROES, getHero, heroCanUseAs, heroShaLimit, ROLE_NAME } from './heroes';
+import {
+  HEROES,
+  FACTION_NAME,
+  getHero,
+  heroCanUseAs,
+  heroShaLimit,
+  ROLE_NAME,
+  type Hero,
+} from './heroes';
 import type { HookContext, Timing } from './timing';
 
 // —— 对外 API ——
@@ -39,15 +47,29 @@ function removeCard(hand: import('@sgs/protocol').Card[], id: string) {
   return c ?? null;
 }
 
-// 在某时机运行玩家自身武将的触发钩子。返回 false 表示被取消。
+/** 国战：返回已亮将的武将列表（暗将不返回）；非国战：返回主将（单元素数组） */
+export function activeHeroes(state: GameState, player: Player): Hero[] {
+  const heroes: Hero[] = [];
+  if (player.heroId) {
+    const h = getHero(player.heroId);
+    if (h && (state.mode !== 'guozhan' || player.heroRevealed)) heroes.push(h);
+  }
+  if (player.deputyHeroId) {
+    const h = getHero(player.deputyHeroId);
+    if (h && (state.mode !== 'guozhan' || player.deputyRevealed)) heroes.push(h);
+  }
+  return heroes;
+}
+
+// 在某时机运行玩家已激活武将的触发钩子。返回 false 表示被取消。
 function runHooks(
   state: GameState,
   timing: Timing,
   player: Player,
   payload?: unknown,
 ): boolean {
-  const hero = getHero(player.heroId);
-  const hooks = hero?.hooks?.filter((h) => h.timing === timing) ?? [];
+  const heroes = activeHeroes(state, player);
+  const hooks = heroes.flatMap((hero) => hero.hooks?.filter((h) => h.timing === timing) ?? []);
   hooks.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
   const ctx: HookContext = { state, player, timing, payload };
   for (const h of hooks) {
@@ -125,8 +147,9 @@ function playSha(
   targetIds: string[],
   asType: import('@sgs/protocol').CardType,
 ): ApplyResult {
-  const hero = getHero(source.heroId)!;
-  if (source.flags.shaCountThisTurn >= heroShaLimit(hero))
+  const heroes = activeHeroes(state, source);
+  const maxSha = Math.max(1, ...heroes.map(heroShaLimit));
+  if (source.flags.shaCountThisTurn >= maxSha)
     return err('本回合出杀数已达上限');
   if (targetIds.length !== 1) return err('杀需指定 1 名目标');
   const targetId = targetIds[0]!;
@@ -237,6 +260,9 @@ function setWinner(state: GameState, winner: string): true {
         : winner === 'team1'
           ? '游戏结束，队伍2（座位2/4）胜利。'
           : '游戏结束。';
+  } else if (state.mode === 'guozhan') {
+    const fname = (winner && FACTION_NAME[winner as Faction]) || '';
+    msg = fname ? `游戏结束，${fname}势力胜利。` : '游戏结束。';
   } else {
     const wp = getPlayer(state, winner);
     msg = wp ? `游戏结束，${wp.name} 获胜。` : '游戏结束。';
@@ -276,6 +302,17 @@ function checkWin(state: GameState): boolean {
     return false;
   }
 
+  if (state.mode === 'guozhan') {
+    if (alive.length === 0) return false;
+    if (alive.length === 1)
+      return setWinner(state, alive[0]!.faction ?? alive[0]!.seatId);
+    const factions = new Set(alive.map((p) => p.faction));
+    if (factions.size === 1 && !factions.has('ambitionist')) {
+      return setWinner(state, [...factions][0]!);
+    }
+    return false;
+  }
+
   // melee：最后存活者胜
   if (alive.length <= 1) {
     if (alive.length === 1) return setWinner(state, alive[0]!.seatId);
@@ -295,8 +332,14 @@ function doDeath(state: GameState, dyingId: string): void {
   dying.equipment = [];
   for (const c of dying.judgment) state.discard.push(c);
   dying.judgment = [];
+  // 国战：阵亡时亮双将
+  if (state.mode === 'guozhan') {
+    dying.heroRevealed = true;
+    dying.deputyRevealed = true;
+  }
   const roleText = dying.role ? `（${ROLE_NAME[dying.role]}）` : '';
-  pushLog(state, 'death', `${dying.name} 阵亡${roleText}。`);
+  const factionText = dying.faction ? `（${FACTION_NAME[dying.faction]}）` : '';
+  pushLog(state, 'death', `${dying.name} 阵亡${roleText}${factionText}。`);
   runHooks(state, 'death', dying, {});
 
   if (checkWin(state)) return;
@@ -330,6 +373,8 @@ export function applyIntent(
       return onEndPhase(state, seatId);
     case 'discard':
       return onDiscard(state, seatId, intent);
+    case 'revealHero':
+      return onRevealHero(state, seatId, intent);
     default:
       return err('未知意图');
   }
@@ -350,8 +395,9 @@ function onPlayCard(
   const as = intent.as ?? card.type;
   // 转化合法性（武圣：红牌当杀）
   if (intent.as && intent.as !== card.type) {
-    const hero = getHero(player.heroId)!;
-    if (!heroCanUseAs(hero, card, intent.as)) return err('不能将该牌转化为该类型');
+    const heroes = activeHeroes(state, player);
+    if (!heroes.some((h) => heroCanUseAs(h, card, intent.as!)))
+      return err('不能将该牌转化为该类型');
   }
 
   if (as === 'sha') return playSha(state, player, card, intent.targetIds, as);
@@ -412,9 +458,9 @@ function respondSha(
   const responder = getPlayerOrThrow(state, seatId);
   const card = responder.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  const hero = getHero(responder.heroId)!;
+  const heroes = activeHeroes(state, responder);
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
-  if (card.type !== 'shan' && !heroCanUseAs(hero, card, 'shan'))
+  if (card.type !== 'shan' && !heroes.some((h) => heroCanUseAs(h, card, 'shan')))
     return err('只能用【闪】响应');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
@@ -433,9 +479,9 @@ function respondDeathSave(
   const saver = getPlayerOrThrow(state, seatId);
   const card = saver.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  const hero = getHero(saver.heroId)!;
+  const heroes = activeHeroes(state, saver);
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
-  if (card.type !== 'tao' && card.type !== 'jiu' && !heroCanUseAs(hero, card, 'tao'))
+  if (card.type !== 'tao' && card.type !== 'jiu' && !heroes.some((h) => heroCanUseAs(h, card, 'tao')))
     return err('只能用【桃】（或【酒】当桃）救人');
   removeCard(saver.hand, card.id);
   state.discard.push(card);
@@ -510,6 +556,30 @@ function onDiscard(
   return { ok: true };
 }
 
+/** 国战：出牌阶段主动亮将 */
+function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyResult {
+  if (intent.type !== 'revealHero') return err('亮将：请指定要亮的武将');
+  if (state.mode !== 'guozhan') return err('非国战模式不能亮将');
+  const pending = state.pending;
+  if (!pending || pending.kind !== 'play' || pending.seatId !== seatId)
+    return err('只能在你的出牌阶段亮将');
+  const player = getPlayerOrThrow(state, seatId);
+  if (intent.heroId === player.heroId) {
+    if (player.heroRevealed) return err('主将已亮');
+    player.heroRevealed = true;
+    const hero = getHero(player.heroId);
+    pushLog(state, 'reveal', `${player.name} 亮将：${hero?.name ?? '未知'}。`);
+  } else if (intent.heroId === player.deputyHeroId) {
+    if (player.deputyRevealed) return err('副将已亮');
+    player.deputyRevealed = true;
+    const hero = getHero(player.deputyHeroId);
+    pushLog(state, 'reveal', `${player.name} 亮将：${hero?.name ?? '未知'}。`);
+  } else {
+    return err('该武将不是你的武将');
+  }
+  return { ok: true };
+}
+
 // ——————————————————————————————————————————
 // 建局
 // ——————————————————————————————————————————
@@ -530,13 +600,17 @@ export function createGame(
   opts?: { mode?: GameMode; heroDealCount?: number },
 ): GameState {
   const mode: GameMode = opts?.mode ?? 'melee';
-  const k = Math.max(1, Math.min(5, opts?.heroDealCount ?? DEFAULT_HERO_DEAL_COUNT));
+  const isGuozhan = mode === 'guozhan';
+  const k = isGuozhan
+    ? 7
+    : Math.max(1, Math.min(5, opts?.heroDealCount ?? DEFAULT_HERO_DEAL_COUNT));
   const n = seats.length;
 
   const players: Player[] = seats.map((s) => ({
     seatId: s.seatId,
     name: s.name,
     heroId: null, // 选将阶段未定
+    deputyHeroId: null, // 副将（国战），非国战为 null
     hp: 0,
     maxHp: 0,
     hand: [],
@@ -546,6 +620,9 @@ export function createGame(
     flags: { shaCountThisTurn: 0, jiuActive: false },
     role: null,
     team: null,
+    heroRevealed: !isGuozhan, // 非国战恒 true，国战开局暗置
+    deputyRevealed: !isGuozhan,
+    faction: null,
   }));
   const seatOrder = seats.map((s) => s.seatId);
 
@@ -565,7 +642,9 @@ export function createGame(
   }
 
   // 随机发将：每人从洗牌后的武将池独立发 k 张，保证同一玩家不重复
-  const heroIds = HEROES.map((h) => h.id);
+  // 国战排除中立武将（阵营武将池 16 个）
+  const poolHeroes = isGuozhan ? HEROES.filter((h) => h.faction !== 'neutral') : HEROES;
+  const heroIds = poolHeroes.map((h) => h.id);
   const deals: Record<string, string[]> = {};
   for (const s of seats) {
     deals[s.seatId] = shuffle(heroIds).slice(0, k);
@@ -595,14 +674,31 @@ export function createGame(
 // ——————————————————————————————————————————
 
 function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResult {
-  if (intent.type !== 'pickHero') return err('选将阶段：请选择 1 位武将');
+  if (intent.type !== 'pickHero') return err('选将阶段：请选择武将');
   const draft = state.draft;
   if (!draft) return err('当前不在选将阶段');
   if (!draft.pendingSeats.includes(seatId)) return err('你已经选过将了');
   const options = draft.deals[seatId];
   if (!options || !options.includes(intent.heroId)) return err('该武将不在你发到的将中');
   const player = getPlayerOrThrow(state, seatId);
-  player.heroId = intent.heroId;
+
+  if (state.mode === 'guozhan') {
+    const deputyId = intent.deputyHeroId;
+    if (!deputyId) return err('国战需选 2 位武将（主将 + 副将）');
+    if (!options.includes(deputyId)) return err('副将不在你发到的将中');
+    if (deputyId === intent.heroId) return err('主将与副将不能相同');
+    const mainHero = getHero(intent.heroId);
+    const deputyHero = getHero(deputyId);
+    if (!mainHero || !deputyHero) return err('武将不存在');
+    if (mainHero.faction !== deputyHero.faction)
+      return err('国战需选 2 位同阵营武将');
+    player.heroId = intent.heroId;
+    player.deputyHeroId = deputyId;
+    player.faction = mainHero.faction;
+  } else {
+    player.heroId = intent.heroId;
+  }
+
   draft.pendingSeats = draft.pendingSeats.filter((s) => s !== seatId);
   pushLog(state, 'pickHero', `${player.name} 已选定武将。`);
   if (draft.pendingSeats.length === 0) finishDraft(state);
@@ -612,11 +708,21 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
 /** 全员选完：设定武将体力、发初始手牌、进入第一回合 */
 function finishDraft(state: GameState): void {
   for (const p of state.players) {
-    const hero = getHero(p.heroId) ?? getHero('vanilla')!;
-    p.maxHp = hero.maxHp;
-    // 军争：主公体力上限 +1
-    if (state.mode === 'junzheng' && p.role === 'lord') {
-      p.maxHp = hero.maxHp + 1;
+    if (state.mode === 'guozhan') {
+      const main = getHero(p.heroId);
+      const deputy = getHero(p.deputyHeroId);
+      if (main && deputy) {
+        p.maxHp = Math.ceil((main.maxHp + deputy.maxHp) / 2);
+      } else {
+        p.maxHp = main?.maxHp ?? 4;
+      }
+    } else {
+      const hero = getHero(p.heroId) ?? getHero('vanilla')!;
+      p.maxHp = hero.maxHp;
+      // 军争：主公体力上限 +1
+      if (state.mode === 'junzheng' && p.role === 'lord') {
+        p.maxHp = hero.maxHp + 1;
+      }
     }
     p.hp = p.maxHp;
   }

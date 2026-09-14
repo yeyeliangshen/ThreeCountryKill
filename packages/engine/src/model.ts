@@ -1,4 +1,4 @@
-import type { Card, CardType, GameMode, LogEntry, Phase, RoleId } from '@sgs/protocol';
+import type { Card, CardType, Faction, GameMode, LogEntry, Phase, RoleId } from '@sgs/protocol';
 
 // —— 玩家状态 ——
 export interface PlayerFlags {
@@ -21,6 +21,10 @@ export interface Player {
   flags: PlayerFlags;
   role: RoleId | null; // 身份（军争），选将阶段未定
   team: 0 | 1 | null; // 队伍（2v2），非 2v2 为 null
+  deputyHeroId: string | null; // 副将（国战），非国战为 null
+  heroRevealed: boolean; // 主将是否已亮将（国战用，非国战恒 true）
+  deputyRevealed: boolean; // 副将是否已亮将（国战用，非国战恒 true）
+  faction: Faction | null; // 阵营（国战用），非国战为 null
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）

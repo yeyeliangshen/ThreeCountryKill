@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CARD_TYPE_NAME, SUIT_NAME, isRed, type Card, type CardType, type GameMode, type PlayerView } from '@sgs/protocol';
-import { getHero, ROLE_NAME } from '@sgs/engine';
+import { CARD_TYPE_NAME, SUIT_NAME, isRed, type Card, type CardType, type Faction, type GameMode, type PlayerView } from '@sgs/protocol';
+import { getHero, ROLE_NAME, FACTION_NAME } from '@sgs/engine';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -19,6 +19,19 @@ const MODE_NAME: Record<GameMode, string> = {
   guozhan: '国战',
 };
 
+/** 国战：武将显示——亮将后显示名，未亮显示「暗将」 */
+function heroDisplay(p: PlayerView, mode: GameMode): string {
+  if (mode === 'guozhan') {
+    const main = p.heroRevealed && p.heroId ? getHero(p.heroId)?.name : null;
+    const deputy = p.deputyRevealed && p.deputyHeroId ? getHero(p.deputyHeroId)?.name : null;
+    if (main && deputy) return `${main} / ${deputy}`;
+    if (main) return `${main} · 暗将`;
+    if (deputy) return `暗将 · ${deputy}`;
+    return '暗将';
+  }
+  return getHero(p.heroId)?.name ?? '?';
+}
+
 /** 把服务端 winner 字符串转成人类可读的胜方文案 */
 function winnerText(mode: GameMode, winner: string, players: PlayerView[]): string {
   if (mode === 'junzheng') {
@@ -32,6 +45,10 @@ function winnerText(mode: GameMode, winner: string, players: PlayerView[]): stri
     if (winner === 'team1') return '队伍2胜利';
     return '游戏结束';
   }
+  if (mode === 'guozhan') {
+    const fname = FACTION_NAME[winner as Faction];
+    return fname ? `${fname}势力胜利` : '游戏结束';
+  }
   // melee：winner 是存活者 seatId
   const wp = players.find((p) => p.seatId === winner);
   return wp ? `${wp.name} 获胜` : '游戏结束';
@@ -41,6 +58,8 @@ export function Game() {
   const snapshot = useStore((s) => s.snapshot);
   const sendIntent = useStore((s) => s.sendIntent);
   const pickHero = useStore((s) => s.pickHero);
+  const pickHeroes = useStore((s) => s.pickHeroes);
+  const revealHero = useStore((s) => s.revealHero);
 
   // 出牌阶段：选中一张需目标的牌后，再选目标
   const [selected, setSelected] = useState<{ cardId: string; as?: CardType } | null>(null);
@@ -48,24 +67,31 @@ export function Game() {
   const [picks, setPicks] = useState<string[]>([]);
   // 选将阶段：已选中但未确认的武将（防误触）
   const [pickedHero, setPickedHero] = useState<string | null>(null);
+  // 国战选将：主将 + 副将
+  const [mainPick, setMainPick] = useState<string | null>(null);
+  const [deputyPick, setDeputyPick] = useState<string | null>(null);
 
   // 提示一变就清空本地选择
   useEffect(() => {
     setSelected(null);
     setPicks([]);
     setPickedHero(null);
+    setMainPick(null);
+    setDeputyPick(null);
   }, [snapshot?.prompt]);
 
   if (!snapshot) return <div className="game loading">加载中…</div>;
 
   const me = snapshot.players.find((p) => p.seatId === snapshot.seatId)!;
   const myHero = getHero(me.heroId);
+  const myDeputyHero = getHero(me.deputyHeroId);
   const others = snapshot.players.filter((p) => p.seatId !== snapshot.seatId);
   const prompt = snapshot.prompt;
   const legalSet = new Set(prompt?.legalCardIds ?? []);
   const targetSet = new Set(prompt?.legalTargetIds ?? []);
   const myTurn = snapshot.turn.seatId === snapshot.seatId;
   const isGameOver = snapshot.turn.phase === 'gameOver' && snapshot.winner !== null;
+  const isGuozhan = snapshot.mode === 'guozhan';
 
   // —— 出牌：选中需目标的牌 ——
   function pickPlayCard(card: Card) {
@@ -108,9 +134,85 @@ export function Game() {
     sendIntent({ type: 'discard', cardIds: picks });
   }
 
+  // —— 国战选将：点击武将分配主将/副将槽位 ——
+  function pickGuozhanHero(id: string) {
+    if (id === mainPick) { setMainPick(null); return; }       // 取消主将
+    if (id === deputyPick) { setDeputyPick(null); return; }   // 取消副将
+    if (!mainPick) { setMainPick(id); return; }               // 主将空 → 设主将
+    if (!deputyPick) {                                         // 副将空 → 检查同阵营
+      const mainHero = getHero(mainPick);
+      const h = getHero(id);
+      if (mainHero && h && mainHero.faction === h.faction) {
+        setDeputyPick(id);
+      } else {
+        setMainPick(id);   // 不同阵营：替换主将，清空副将
+      }
+      return;
+    }
+    setMainPick(id);   // 两槽满 → 替换主将，清空副将
+    setDeputyPick(null);
+  }
+
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
   if (snapshot.turn.phase === 'draft') {
     const options = prompt?.kind === 'pickHero' ? prompt.legalHeroIds ?? [] : [];
+    const guozhanCanConfirm = !!mainPick && !!deputyPick && mainPick !== deputyPick;
+
+    if (isGuozhan) {
+      return (
+        <div className="draft">
+          <div className="draft-title">选将阶段 · 国战</div>
+          {options.length > 0 ? (
+            <>
+              <div className="hero-list">
+                {options.map((id) => {
+                  const h = getHero(id);
+                  if (!h) return null;
+                  const isMain = mainPick === id;
+                  const isDeputy = deputyPick === id;
+                  return (
+                    <button
+                      key={id}
+                      className={`hero-card faction-${h.faction} ${isMain || isDeputy ? 'picked' : ''}`}
+                      onClick={() => pickGuozhanHero(id)}
+                    >
+                      <div className="hero-name">
+                        {h.name}
+                      </div>
+                      <div className="hero-hp">体力 {h.maxHp}</div>
+                      <div className="hero-skills">
+                        {h.skills.map((sk) => (
+                          <div key={sk.name}>
+                            <b>{sk.name}</b>
+                          </div>
+                        ))}
+                      </div>
+                      {isMain && <div className="hero-slot-tag">主将</div>}
+                      {isDeputy && <div className="hero-slot-tag">副将</div>}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                className="primary big"
+                disabled={!guozhanCanConfirm}
+                onClick={() => {
+                  if (mainPick && deputyPick) pickHeroes(mainPick, deputyPick);
+                }}
+              >
+                {guozhanCanConfirm
+                  ? `确认：${getHero(mainPick)?.name ?? ''} + ${getHero(deputyPick)?.name ?? ''}`
+                  : '请选择 2 位同阵营武将'}
+              </button>
+            </>
+          ) : (
+            <div className="hint">已选将，等待其他玩家…</div>
+          )}
+        </div>
+      );
+    }
+
+    // 非国战：单选将
     return (
       <div className="draft">
         <div className="draft-title">选将阶段</div>
@@ -169,15 +271,23 @@ export function Game() {
         <div className="players-row">
           {snapshot.players.map((p) => {
             const hero = getHero(p.heroId);
+            const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
             return (
-              <div key={p.seatId} className={`player ${!p.isAlive ? 'dead' : ''} team-${p.team ?? 0}`}>
+              <div key={p.seatId} className={`player ${!p.isAlive ? 'dead' : ''} team-${p.team ?? 0} ${factionClass}`}>
                 <div className="p-name">
                   {p.name}
                   {snapshot.mode === 'junzheng' && p.role && (
                     <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
                   )}
+                  {isGuozhan && p.faction && (
+                    <span className={`faction-badge ${p.faction}`}>{FACTION_NAME[p.faction]}</span>
+                  )}
                 </div>
-                <div className="p-hero">{hero?.name ?? '?'}</div>
+                <div className="p-hero">
+                  {isGuozhan
+                    ? `${hero?.name ?? '?'} / ${getHero(p.deputyHeroId)?.name ?? '?'}`
+                    : (hero?.name ?? '?')}
+                </div>
                 <div className="p-hp">
                   {Array.from({ length: p.maxHp }).map((_, i) => (
                     <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
@@ -206,15 +316,15 @@ export function Game() {
       {/* 其他玩家 */}
       <div className="players-row">
         {others.map((p) => {
-          const hero = getHero(p.heroId);
           const isTarget = !!selected && targetSet.has(p.seatId) && p.isAlive;
           const isCurrent = snapshot.turn.seatId === p.seatId;
           const isLord = p.role === 'lord';
           const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
+          const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
           return (
             <button
               key={p.seatId}
-              className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${teamClass}`}
+              className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${teamClass} ${factionClass}`}
               onClick={isTarget ? () => pickTarget(p.seatId) : undefined}
               disabled={!isTarget}
             >
@@ -225,8 +335,11 @@ export function Game() {
                 {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
                   <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
                 )}
+                {isGuozhan && p.faction && (
+                  <span className={`faction-badge ${p.faction}`}>{FACTION_NAME[p.faction]}</span>
+                )}
               </div>
-              <div className="p-hero">{hero?.name ?? '?'}</div>
+              <div className="p-hero">{heroDisplay(p, snapshot.mode)}</div>
               <div className="p-hp">
                 {Array.from({ length: p.maxHp }).map((_, i) => (
                   <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
@@ -258,15 +371,46 @@ export function Game() {
       </div>
 
       {/* 我的玩家条 */}
-      <div className={`me-bar ${myTurn ? 'my-turn' : ''} ${snapshot.mode === '2v2' ? `team-${me.team ?? 0}` : ''}`}>
+      <div className={`me-bar ${myTurn ? 'my-turn' : ''} ${snapshot.mode === '2v2' ? `team-${me.team ?? 0}` : ''} ${isGuozhan && me.faction ? `faction-${me.faction}` : ''}`}>
         <span className="me-name">{me.name}</span>
         {me.role && snapshot.mode === 'junzheng' && (
           <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
         )}
-        <span className="me-hero">{myHero?.name}</span>
+        {isGuozhan && me.faction && (
+          <span className={`faction-badge ${me.faction}`}>{FACTION_NAME[me.faction]}</span>
+        )}
+        {isGuozhan ? (
+          <>
+            <span className="me-hero">
+              {myHero?.name ?? '?'}
+              {!me.heroRevealed && '（暗）'}
+            </span>
+            <span className="me-hero-deputy">
+              {myDeputyHero?.name ?? '?'}
+              {!me.deputyRevealed && '（暗）'}
+            </span>
+          </>
+        ) : (
+          <span className="me-hero">{myHero?.name}</span>
+        )}
         <span className="me-hp">
           体力 {me.hp}/{me.maxHp}
         </span>
+        {/* 国战：出牌阶段亮将按钮 */}
+        {isGuozhan && myTurn && prompt?.kind === 'play' && (
+          <>
+            {!me.heroRevealed && me.heroId && (
+              <button className="ghost reveal-btn" onClick={() => revealHero(me.heroId!)}>
+                亮主将
+              </button>
+            )}
+            {!me.deputyRevealed && me.deputyHeroId && (
+              <button className="ghost reveal-btn" onClick={() => revealHero(me.deputyHeroId!)}>
+                亮副将
+              </button>
+            )}
+          </>
+        )}
       </div>
 
       {/* 提示/操作区 */}

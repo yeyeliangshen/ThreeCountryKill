@@ -7,6 +7,9 @@ export type GameMode = 'junzheng' | '2v2' | 'melee' | 'guozhan';
 // —— 身份（军争模式） ——
 export type RoleId = 'lord' | 'loyal' | 'rebel' | 'renegade';
 
+// —— 阵营（国战模式） ——
+export type Faction = 'shu' | 'wei' | 'wu' | 'qun' | 'neutral' | 'ambitionist';
+
 // —— 服务端按玩家裁剪后下发的"视图"，不泄露他人手牌 ——
 
 // 单个玩家的公开信息
@@ -25,6 +28,14 @@ export interface PlayerView {
   role?: RoleId | null;
   // 队伍（2v2）：公开
   team?: 0 | 1 | null;
+  // 副将（国战）：暗置时对他人为 null
+  deputyHeroId?: string | null;
+  // 阵营（国战）：未亮将时对他人为 null
+  faction?: Faction | null;
+  // 主将是否已亮将（国战公开信息）
+  heroRevealed?: boolean;
+  // 副将是否已亮将（国战公开信息）
+  deputyRevealed?: boolean;
 }
 
 export type PromptKind = 'play' | 'respondSha' | 'respondDeath' | 'discard' | 'pickHero';

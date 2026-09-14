@@ -105,7 +105,6 @@ export class Room {
   setMode(seatId: string, mode: GameMode): { ok: true } | { ok: false; error: string } {
     if (this.started) return { ok: false, error: '游戏已开始' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能切换模式' };
-    if (mode === 'guozhan') return { ok: false, error: '国战模式敬请期待' };
     this.pendingMode = mode;
     return { ok: true };
   }
@@ -122,8 +121,10 @@ export class Room {
     const n = occupied.length;
     const min = modeMinPlayers(mode);
     const max = modeMaxPlayers(mode);
-    if (n < min) return { ok: false, error: `${mode === '2v2' ? '2v2' : mode === 'junzheng' ? '军争' : '混战'}模式至少需要 ${min} 人` };
-    if (n > max) return { ok: false, error: `${mode}模式最多 ${max} 人` };
+    const modeName =
+      mode === '2v2' ? '2v2' : mode === 'junzheng' ? '军争' : mode === 'guozhan' ? '国战' : '混战';
+    if (n < min) return { ok: false, error: `${modeName}模式至少需要 ${min} 人` };
+    if (n > max) return { ok: false, error: `${modeName}模式最多 ${max} 人` };
     const setups: SeatSetup[] = occupied.map((s) => ({
       seatId: s.seatId,
       name: s.name!,

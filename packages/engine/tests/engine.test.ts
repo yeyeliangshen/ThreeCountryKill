@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyIntent, createGame, getHero, toSnapshot, type GameState, type SeatSetup } from '../src';
-import type { Card, CardType, GameMode, Suit } from '@sgs/protocol';
+import type { Card, CardType, Faction, GameMode, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
 function mk(id: string, type: CardType, suit: Suit = 'spade', rank = 1): Card {
@@ -489,7 +489,7 @@ describe('军争模式', () => {
   it('主公阵亡 → 反贼胜利', () => {
     const state = makeGameMode(
       [
-        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
         { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
         { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
         { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
@@ -500,8 +500,13 @@ describe('军争模式', () => {
     // 找到主公，设体力为 1
     const lord = state.players.find((p) => p.role === 'lord')!;
     lord.hp = 1;
-    // A 攻击主公
-    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
+    // 角色随机分配，找一个非主公玩家作为攻击者
+    const attacker = state.players.find((p) => p.role !== 'lord')!;
+    const attackerIdx = state.seatOrder.indexOf(attacker.seatId);
+    state.turn = { seatIndex: attackerIdx, phase: 'play' };
+    state.pending = { kind: 'play', seatId: attacker.seatId };
+    attacker.hand = [sha('a1')];
+    ok(act(state, attacker.seatId, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
     ok(act(state, lord.seatId, { type: 'pass' })); // 主公不出闪
     // 主公濒死，全员弃权（不出桃救）
     expect(state.pending?.kind).toBe('respondDeath');
@@ -603,7 +608,7 @@ describe('军争模式', () => {
   it('游戏结束：全员身份公开', () => {
     const state = makeGameMode(
       [
-        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
         { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
         { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
         { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
@@ -613,8 +618,13 @@ describe('军争模式', () => {
     );
     const lord = state.players.find((p) => p.role === 'lord')!;
     lord.hp = 1;
-    // A 杀主公 → 主公死 → 反贼胜
-    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
+    // 角色随机分配，找一个非主公玩家作为攻击者
+    const attacker = state.players.find((p) => p.role !== 'lord')!;
+    const attackerIdx = state.seatOrder.indexOf(attacker.seatId);
+    state.turn = { seatIndex: attackerIdx, phase: 'play' };
+    state.pending = { kind: 'play', seatId: attacker.seatId };
+    attacker.hand = [sha('a1')];
+    ok(act(state, attacker.seatId, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
     ok(act(state, lord.seatId, { type: 'pass' }));
     if (state.pending?.kind === 'respondDeath') {
       for (const seat of state.pending.askQueue) {
@@ -628,5 +638,275 @@ describe('军争模式', () => {
     for (const p of snap.players) {
       expect(p.role).not.toBeNull();
     }
+  });
+});
+
+// ——————————————————————————————————————————
+
+describe('国战模式', () => {
+  // 国战中局辅助：设置主将+副将+阵营+暗将状态，跳过选将
+  interface GuozhanSeatOpts extends SeatOpts {
+    deputyHeroId: string;
+    faction: Faction;
+  }
+  function makeGuozhanGame(seats: GuozhanSeatOpts[]): GameState {
+    const setup: SeatSetup[] = seats.map((s) => ({
+      seatId: s.seatId,
+      name: s.name,
+      heroId: s.heroId,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((pl) => pl.seatId === s.seatId)!;
+      const mainHero = getHero(s.heroId)!;
+      const deputyHero = getHero(s.deputyHeroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = false;
+      p.deputyRevealed = false;
+      p.maxHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = s.hand.slice();
+      p.flags = { shaCountThisTurn: 0, jiuActive: false };
+    }
+    const first = state.seatOrder[0]!;
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  /** 从发到的武将中找 2 个同阵营的 */
+  function findSameFactionPair(deals: string[]): { main: string; deputy: string } | null {
+    const factionOf = (id: string) => getHero(id)?.faction;
+    for (let i = 0; i < deals.length; i++) {
+      for (let j = i + 1; j < deals.length; j++) {
+        if (factionOf(deals[i]!) === factionOf(deals[j]!)) {
+          return { main: deals[i]!, deputy: deals[j]! };
+        }
+      }
+    }
+    return null;
+  }
+
+  it('选将：每人发 7 张，选 2 张同阵营，验证双将与阵营正确设置', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    expect(state.mode).toBe('guozhan');
+    expect(state.draft).not.toBeNull();
+    // 每人发 7 张
+    expect(state.draft!.deals[A]).toHaveLength(7);
+    expect(state.draft!.deals[B]).toHaveLength(7);
+    // 发将池不含中立
+    for (const id of state.draft!.deals[A]) {
+      expect(getHero(id)?.faction).not.toBe('neutral');
+    }
+
+    // A 选 2 张同阵营武将
+    const pairA = findSameFactionPair(state.draft!.deals[A]!)!;
+    expect(pairA).not.toBeNull();
+    ok(act(state, A, { type: 'pickHero', heroId: pairA.main, deputyHeroId: pairA.deputy }));
+    const pa = state.players.find((p) => p.seatId === A)!;
+    expect(pa.heroId).toBe(pairA.main);
+    expect(pa.deputyHeroId).toBe(pairA.deputy);
+    expect(pa.faction).toBe(getHero(pairA.main)!.faction);
+
+    // B 也选
+    const pairB = findSameFactionPair(state.draft!.deals[B]!)!;
+    ok(act(state, B, { type: 'pickHero', heroId: pairB.main, deputyHeroId: pairB.deputy }));
+    // 选将结束，进入出牌阶段
+    expect(state.draft).toBeNull();
+    expect(state.turn.phase).toBe('play');
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('同阵营校验：选不同阵营的 2 将 → 应返回 error', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    // 7 张从 4 阵营池（16 将）中发，最大阵营 5 张，必含不同阵营对
+    const dealsA = state.draft!.deals[A]!;
+    let diff1 = '';
+    let diff2 = '';
+    for (let i = 0; i < dealsA.length; i++) {
+      for (let j = i + 1; j < dealsA.length; j++) {
+        if (getHero(dealsA[i]!)?.faction !== getHero(dealsA[j]!)?.faction) {
+          diff1 = dealsA[i]!;
+          diff2 = dealsA[j]!;
+          break;
+        }
+      }
+      if (diff1) break;
+    }
+    expect(diff1).toBeTruthy(); // 保证找到了不同阵营对
+    fail(act(state, A, { type: 'pickHero', heroId: diff1, deputyHeroId: diff2 }));
+  });
+
+  it('体力计算：maxHp = ceil((主将 + 副将) / 2)', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    const pairA = findSameFactionPair(state.draft!.deals[A]!)!;
+    const mainHero = getHero(pairA.main)!;
+    const deputyHero = getHero(pairA.deputy)!;
+    const expectedHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
+    ok(act(state, A, { type: 'pickHero', heroId: pairA.main, deputyHeroId: pairA.deputy }));
+    const pairB = findSameFactionPair(state.draft!.deals[B]!)!;
+    ok(act(state, B, { type: 'pickHero', heroId: pairB.main, deputyHeroId: pairB.deputy }));
+    const pa = state.players.find((p) => p.seatId === A)!;
+    expect(pa.maxHp).toBe(expectedHp);
+    expect(pa.hp).toBe(expectedHp);
+  });
+
+  it('暗将隐藏：未亮将时他人快照 heroId/deputyHeroId/faction 均为 null', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    // A 的视角看 B：未亮将 → 全 null
+    const snapA = toSnapshot(state, A);
+    const bView = snapA.players.find((p) => p.seatId === B)!;
+    expect(bView.heroId).toBeNull();
+    expect(bView.deputyHeroId).toBeNull();
+    expect(bView.faction).toBeNull();
+    // heroRevealed/deputyRevealed 是公开信息
+    expect(bView.heroRevealed).toBe(false);
+    expect(bView.deputyRevealed).toBe(false);
+    // 自己看自己：完整可见
+    const aView = snapA.players.find((p) => p.seatId === A)!;
+    expect(aView.heroId).toBe('zhangfei');
+    expect(aView.deputyHeroId).toBe('guanyu');
+    expect(aView.faction).toBe('shu');
+  });
+
+  it('亮将：出牌阶段发 revealHero → 他人快照可见武将名和阵营', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    // A 在自己的出牌阶段，亮主将
+    ok(act(state, A, { type: 'revealHero', heroId: 'zhangfei' }));
+    const pa = state.players.find((p) => p.seatId === A)!;
+    expect(pa.heroRevealed).toBe(true);
+    expect(pa.deputyRevealed).toBe(false);
+    // B 的视角看 A：主将已亮 → heroId 可见、faction 可见
+    const snapB = toSnapshot(state, B);
+    const aView = snapB.players.find((p) => p.seatId === A)!;
+    expect(aView.heroId).toBe('zhangfei');
+    expect(aView.faction).toBe('shu');
+    // 副将未亮 → 仍 null
+    expect(aView.deputyHeroId).toBeNull();
+    expect(aView.deputyRevealed).toBe(false);
+
+    // 再亮副将
+    ok(act(state, A, { type: 'revealHero', heroId: 'guanyu' }));
+    expect(pa.deputyRevealed).toBe(true);
+    const snapB2 = toSnapshot(state, B);
+    const aView2 = snapB2.players.find((p) => p.seatId === A)!;
+    expect(aView2.deputyHeroId).toBe('guanyu');
+  });
+
+  it('亮将校验：非国战模式不能亮将', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      ],
+      'melee',
+    );
+    fail(act(state, A, { type: 'revealHero', heroId: 'vanilla' }));
+  });
+
+  it('亮将校验：非自己回合不能亮将', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    // B 不是当前回合玩家，亮将应失败
+    fail(act(state, B, { type: 'revealHero', heroId: 'xuchu' }));
+  });
+
+  it('阵亡亮将：杀死玩家 → 他人快照可见双将名和阵营', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+    ]);
+    // A 杀 B (hp1) → B 阵亡
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // B 濒死，轮询
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    const pb = state.players.find((p) => p.seatId === B)!;
+    expect(pb.alive).toBe(false);
+    // 阵亡后双将亮
+    expect(pb.heroRevealed).toBe(true);
+    expect(pb.deputyRevealed).toBe(true);
+    // A 的视角看 B：阵亡 → 双将可见
+    const snapA = toSnapshot(state, A);
+    const bView = snapA.players.find((p) => p.seatId === B)!;
+    expect(bView.heroId).toBe('xuchu');
+    expect(bView.deputyHeroId).toBe('zhenji');
+    expect(bView.faction).toBe('wei');
+  });
+
+  it('阵营胜利：杀死其它阵营所有玩家 → 剩余阵营获胜', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'lvbu', deputyHeroId: 'diaochan', faction: 'qun', hand: [], hp: 1 },
+    ]);
+    // 亮主将张飞（咆哮：无限出杀），否则暗将只能出 1 杀
+    ok(act(state, A, { type: 'revealHero', heroId: 'zhangfei' }));
+    // A(shu) 杀 B(wei, hp1) → B 阵亡
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    // B 阵亡，但 C(qun) 仍存活 → 未结束
+    expect(state.gameOver).toBe(false);
+    // A 杀 C(qun, hp1) → C 阵亡 → 只剩 A(shu) → 蜀势力胜
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('shu');
+  });
+
+  it('同阵营多人存活 → 该阵营胜', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'machao', deputyHeroId: 'huangzhong', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'lvbu', deputyHeroId: 'diaochan', faction: 'qun', hand: [], hp: 1 },
+    ]);
+    // A(shu) 杀 C(qun, hp1) → C 阵亡 → 只剩 A、B（均 shu）→ 蜀势力胜
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    if (state.pending?.kind === 'respondDeath') {
+      for (const seat of state.pending.askQueue) {
+        ok(act(state, seat, { type: 'pass' }));
+      }
+    }
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('shu');
   });
 });

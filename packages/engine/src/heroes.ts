@@ -1,5 +1,5 @@
 import { isRed } from '@sgs/protocol';
-import type { Card, CardType, RoleId } from '@sgs/protocol';
+import type { Card, CardType, Faction, RoleId } from '@sgs/protocol';
 import type { HookRegistration } from './timing';
 import type { AttackContext } from './model';
 
@@ -12,7 +12,7 @@ import type { AttackContext } from './model';
 export interface Hero {
   id: string;
   name: string;
-  faction: 'shu' | 'wei' | 'wu' | 'qun' | 'neutral';
+  faction: Faction;
   maxHp: number;
   /**
    * 转化技：能否把 card 当 type 使用/打出。
@@ -151,6 +151,38 @@ const HUATUO: Hero = {
   skills: [{ name: '急救', desc: '你的回合外，可以将一张红色牌当【桃】使用。' }],
 };
 
+const SUNQUAN: Hero = {
+  id: 'sunquan',
+  name: '孙权',
+  faction: 'wu',
+  maxHp: 4,
+  skills: [{ name: '制衡', desc: '（技能待复刻）' }],
+};
+
+const ZHOUYU: Hero = {
+  id: 'zhouyu',
+  name: '周瑜',
+  faction: 'wu',
+  maxHp: 3,
+  skills: [{ name: '反间', desc: '（技能待复刻）' }],
+};
+
+const GANNING: Hero = {
+  id: 'ganning',
+  name: '甘宁',
+  faction: 'wu',
+  maxHp: 4,
+  skills: [{ name: '奇袭', desc: '（技能待复刻）' }],
+};
+
+const HUANGGAI: Hero = {
+  id: 'huanggai',
+  name: '黄盖',
+  faction: 'wu',
+  maxHp: 4,
+  skills: [{ name: '苦肉', desc: '（技能待复刻）' }],
+};
+
 const VANILLA: Hero = {
   id: 'vanilla',
   name: '平民',
@@ -172,6 +204,10 @@ export const HEROES: Hero[] = [
   XIAHOUDUN,
   XUCHU,
   HUATUO,
+  SUNQUAN,
+  ZHOUYU,
+  GANNING,
+  HUANGGAI,
   VANILLA,
 ];
 
@@ -198,4 +234,14 @@ export const ROLE_NAME: Record<RoleId, string> = {
   loyal: '忠臣',
   rebel: '反贼',
   renegade: '内奸',
+};
+
+// —— 阵营显示名（国战模式） ——
+export const FACTION_NAME: Record<Faction, string> = {
+  shu: '蜀',
+  wei: '魏',
+  wu: '吴',
+  qun: '群',
+  neutral: '中立',
+  ambitionist: '野心家',
 };

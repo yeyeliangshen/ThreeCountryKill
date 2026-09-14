@@ -16,5 +16,7 @@ export type Intent =
   | { type: 'endPhase' }
   // 弃牌阶段弃牌
   | { type: 'discard'; cardIds: string[] }
-  // 选将阶段：从发到的武将中选 1 位
-  | { type: 'pickHero'; heroId: string };
+  // 选将阶段：从发到的武将中选 1 位（国战选 2 位，副将 id 传 deputyHeroId）
+  | { type: 'pickHero'; heroId: string; deputyHeroId?: string }
+  // 国战：出牌阶段主动亮将（传入要亮的武将 id）
+  | { type: 'revealHero'; heroId: string };

@@ -1,7 +1,8 @@
 import type { PromptView } from '@sgs/protocol';
 import type { GameState } from './model';
 import { getPlayerOrThrow } from './model';
-import { getHero, heroCanUseAs, heroShaLimit } from './heroes';
+import { heroCanUseAs, heroShaLimit } from './heroes';
+import { activeHeroes } from './engine';
 
 // 根据 pending 状态，给"被询问的玩家"构建提示（含合法选项）。
 // 其它玩家的 prompt 为 null（他们只是在等待）。
@@ -11,7 +12,10 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
     if (state.draft.pendingSeats.includes(seatId)) {
       return {
         kind: 'pickHero',
-        message: '请从发到的武将中选 1 位',
+        message:
+          state.mode === 'guozhan'
+            ? '请从发到的武将中选 2 位同阵营武将（主将 + 副将）'
+            : '请从发到的武将中选 1 位',
         legalCardIds: [],
         legalTargetIds: [],
         mustSelectTargetCount: 1,
@@ -46,14 +50,15 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
 
 function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const hero = getHero(player.heroId)!;
-  const canSha = player.flags.shaCountThisTurn < heroShaLimit(hero);
+  const heroes = activeHeroes(state, player);
+  const maxSha = Math.max(1, ...heroes.map(heroShaLimit));
+  const canSha = player.flags.shaCountThisTurn < maxSha;
   const legalCardIds: string[] = [];
   const seen = new Set<string>();
   for (const card of player.hand) {
     if (seen.has(card.id)) continue;
     // 杀（或可转化的红牌）——受出杀上限限制
-    if (canSha && (card.type === 'sha' || heroCanUseAs(hero, card, 'sha'))) {
+    if (canSha && (card.type === 'sha' || heroes.some((h) => heroCanUseAs(h, card, 'sha')))) {
       legalCardIds.push(card.id);
       seen.add(card.id);
       continue;
@@ -84,10 +89,10 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
 
 function buildRespondShaPrompt(state: GameState, seatId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const hero = getHero(player.heroId)!;
+  const heroes = activeHeroes(state, player);
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
   const legalCardIds = player.hand
-    .filter((c) => c.type === 'shan' || heroCanUseAs(hero, c, 'shan'))
+    .filter((c) => c.type === 'shan' || heroes.some((h) => heroCanUseAs(h, c, 'shan')))
     .map((c) => c.id);
   return {
     kind: 'respondSha',
@@ -104,11 +109,14 @@ function buildRespondDeathPrompt(
   dyingId: string,
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const hero = getHero(player.heroId)!;
+  const heroes = activeHeroes(state, player);
   const dying = getPlayerOrThrow(state, dyingId);
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
   const legalCardIds = player.hand
-    .filter((c) => c.type === 'tao' || c.type === 'jiu' || heroCanUseAs(hero, c, 'tao'))
+    .filter(
+      (c) =>
+        c.type === 'tao' || c.type === 'jiu' || heroes.some((h) => heroCanUseAs(h, c, 'tao')),
+    )
     .map((c) => c.id);
   return {
     kind: 'respondDeath',
