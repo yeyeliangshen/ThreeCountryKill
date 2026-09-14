@@ -1,5 +1,5 @@
-import type { Faction, GameMode, Intent, RoleId } from '@sgs/protocol';
-import { CARD_TYPE_NAME, EQUIP_NAME, cardLabel, isDelayedTrick, isEquipCard } from '@sgs/protocol';
+import type { Faction, GameMode, Intent, RoleId, TrickType } from '@sgs/protocol';
+import { CARD_TYPE_NAME, EQUIP_NAME, cardLabel, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
 import {
   alivePlayers,
   aliveSeatsFrom,
@@ -13,6 +13,7 @@ import {
   type GameState,
   type Pending,
   type Player,
+  type TrickContext,
 } from './model';
 import { canTarget, distance } from './distance';
 import { buildDeck, drawOne, shuffle } from './deck';
@@ -251,6 +252,18 @@ function endTurn(state: GameState): void {
 /** 回到某玩家的出牌阶段（伤害结算后恢复来源回合） */
 function resumePlay(state: GameState, sourceId: string): void {
   if (state.gameOver) return;
+  // AOE 锦囊被濒死中断后，恢复时继续推进锦囊
+  if (state.ongoingTrick) {
+    const ctx = state.ongoingTrick;
+    state.ongoingTrick = null;
+    const source = getPlayer(state, ctx.sourceId);
+    if (!source || !source.alive) {
+      endTurn(state);
+      return;
+    }
+    advanceTrick(state, ctx);
+    return;
+  }
   const source = getPlayer(state, sourceId);
   if (!source || !source.alive) {
     endTurn(state);
@@ -328,7 +341,7 @@ function finishAttack(state: GameState, attack: AttackContext): void {
   if (attack.dodged) {
     pushLog(state, 'resolve', `【杀】被闪避。`);
     runHooks(state, 'afterResolve', target, { attack });
-    resumePlay(state, attack.sourceId);
+    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
     return;
   }
 
@@ -347,7 +360,7 @@ function finishAttack(state: GameState, attack: AttackContext): void {
   if (target.hp <= 0) {
     enterNearDeath(state, attack);
   } else {
-    resumePlay(state, attack.sourceId);
+    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
   }
 }
 
@@ -544,6 +557,7 @@ function onPlayCard(
   if (as === 'jiu') return playJiu(state, player, card);
   if (isEquipCard(card)) return playEquip(state, player, card);
   if (isDelayedTrick(card)) return playDelayedTrick(state, player, card, intent.targetIds);
+  if (isInstantTrick(card)) return playTrick(state, player, card, intent);
   return err('该牌不能在出牌阶段主动使用');
 }
 
@@ -632,6 +646,630 @@ function playDelayedTrick(
   return { ok: true };
 }
 
+// ——————————————————————————————————————————
+// 即时锦囊
+// ——————————————————————————————————————————
+
+/** 即时锦囊入口：校验目标 → 出牌 → 无懈询问 → 结算 */
+function playTrick(
+  state: GameState,
+  player: Player,
+  card: import('@sgs/protocol').Card,
+  intent: Extract<Intent, { type: 'playCard' }>,
+): ApplyResult {
+  // 无懈可击不能主动使用
+  if (card.type === 'wuxie') return err('【无懈可击】不能主动使用');
+
+  const type = card.type as TrickType;
+
+  // 校验目标数与距离
+  if (type === 'wuzhong' || type === 'taoyuan') {
+    // 自身/全体：无需指定目标
+  } else if (type === 'guohe' || type === 'shunshou' || type === 'juedou' || type === 'huogong') {
+    if (intent.targetIds.length !== 1) return err('需指定 1 名目标');
+    const tid = intent.targetIds[0]!;
+    if (tid === player.seatId) return err('不能以自己为目标');
+    const t = getPlayer(state, tid);
+    if (!t || !t.alive) return err('目标无效');
+    if (type === 'shunshou' && distance(state, player.seatId, tid) > 1)
+      return err('顺手牵羊目标超出距离 1');
+  } else if (type === 'jiedao') {
+    if (intent.targetIds.length !== 2)
+      return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');
+    const [holderId, shaTargetId] = intent.targetIds;
+    const holder = getPlayer(state, holderId!);
+    if (!holder || !holder.alive) return err('武器持有者无效');
+    if (!holder.equipment.weapon) return err('目标没有武器');
+    const shaTarget = getPlayer(state, shaTargetId!);
+    if (!shaTarget || !shaTarget.alive) return err('出杀目标无效');
+    if (shaTargetId === holderId) return err('不能指定武器持有者自身为出杀目标');
+    if (!canTarget(state, holderId!, shaTargetId!))
+      return err('出杀目标超出武器持有者攻击范围');
+  } else if (type === 'nanman' || type === 'wanjian') {
+    // AOE：无需指定目标
+  }
+
+  // 出牌
+  removeCard(player.hand, card.id);
+  state.discard.push(card);
+  pushLog(state, 'trick', `${player.name} 使用了【${CARD_TYPE_NAME[type]}】。`);
+  runHooks(state, 'useCard', player, { card });
+
+  // 构建 TrickContext
+  const ctx: TrickContext = {
+    sourceId: player.seatId,
+    card,
+    responders: [],
+    responderIndex: 0,
+    targetId: type === 'guohe' || type === 'shunshou' || type === 'juedou' || type === 'huogong'
+      ? intent.targetIds[0]
+      : undefined,
+    targetCardId: intent.targetCardId,
+    shaTargetId: type === 'jiedao' ? intent.targetIds[1] : undefined,
+  };
+
+  // AOE：所有其他存活玩家按座次依次响应
+  if (type === 'nanman' || type === 'wanjian') {
+    const sourceIdx = state.seatOrder.indexOf(player.seatId);
+    ctx.responders = aliveSeatsFrom(
+      state,
+      state.seatOrder[nextAliveSeat(state, sourceIdx)]!,
+    ).filter((s) => s !== player.seatId);
+  }
+  // 单目标响应锦囊：responders = [target]
+  if (type === 'juedou' || type === 'huogong' || type === 'jiedao') {
+    ctx.responders = [intent.targetIds[0]!];
+    if (type === 'juedou') ctx.duelTurn = 'target';
+  }
+
+  // 无懈可击询问轮
+  const sourceIdx = state.seatOrder.indexOf(player.seatId);
+  const wuxieQueue = aliveSeatsFrom(
+    state,
+    state.seatOrder[nextAliveSeat(state, sourceIdx)]!,
+  ).filter((s) => s !== player.seatId);
+  if (wuxieQueue.length > 0) {
+    state.pending = { kind: 'wuxieQueue', ctx, askQueue: wuxieQueue, askIndex: 0 };
+  } else {
+    resolveTrick(state, ctx);
+  }
+  return { ok: true };
+}
+
+/** 无懈可击询问结束后的锦囊结算 */
+function resolveTrick(state: GameState, ctx: TrickContext): void {
+  const source = getPlayer(state, ctx.sourceId);
+  if (!source || !source.alive) {
+    endTurn(state);
+    return;
+  }
+  const type = ctx.card.type as TrickType;
+  switch (type) {
+    case 'wuzhong': {
+      for (let i = 0; i < 2; i++) {
+        const c = drawOne(state);
+        if (c) source.hand.push(c);
+      }
+      pushLog(state, 'trick', `${source.name} 摸了 2 张牌。`);
+      resumePlay(state, ctx.sourceId);
+      return;
+    }
+    case 'taoyuan': {
+      for (const p of alivePlayers(state)) {
+        if (p.hp < p.maxHp) {
+          p.hp++;
+          pushLog(state, 'tao', `${p.name} 回复 1 点体力。`);
+        }
+      }
+      resumePlay(state, ctx.sourceId);
+      return;
+    }
+    case 'guohe':
+      resolveGuohe(state, ctx);
+      return;
+    case 'shunshou':
+      resolveShunshou(state, ctx);
+      return;
+    case 'juedou':
+      resolveJuedou(state, ctx);
+      return;
+    case 'huogong':
+      resolveHuogong(state, ctx);
+      return;
+    case 'jiedao':
+      resolveJiedao(state, ctx);
+      return;
+    case 'nanman':
+    case 'wanjian':
+      // AOE：从第一个响应者开始
+      if (ctx.responders.length === 0) {
+        resumePlay(state, ctx.sourceId);
+        return;
+      }
+      enterTrickResponse(state, ctx);
+      return;
+    default:
+      resumePlay(state, ctx.sourceId);
+  }
+}
+
+/** 过河拆桥：弃目标 1 张牌 */
+function resolveGuohe(state: GameState, ctx: TrickContext): void {
+  const target = getPlayer(state, ctx.targetId!);
+  if (!target || !target.alive) {
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  const card = pickTargetCard(state, target, ctx.targetCardId);
+  if (card) {
+    state.discard.push(card);
+    pushLog(
+      state,
+      'trick',
+      `${getPlayer(state, ctx.sourceId)!.name} 拆了 ${target.name} 的【${cardLabel(card)}】。`,
+    );
+  } else {
+    pushLog(state, 'trick', `${target.name} 没有牌可拆。`);
+  }
+  resumePlay(state, ctx.sourceId);
+}
+
+/** 顺手牵羊：获得目标 1 张牌 */
+function resolveShunshou(state: GameState, ctx: TrickContext): void {
+  const source = getPlayer(state, ctx.sourceId)!;
+  const target = getPlayer(state, ctx.targetId!);
+  if (!target || !target.alive) {
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  const card = pickTargetCard(state, target, ctx.targetCardId);
+  if (card) {
+    source.hand.push(card);
+    pushLog(
+      state,
+      'trick',
+      `${source.name} 从 ${target.name} 处获得了【${cardLabel(card)}】。`,
+    );
+  } else {
+    pushLog(state, 'trick', `${target.name} 没有牌可偷。`);
+  }
+  resumePlay(state, ctx.sourceId);
+}
+
+/** 从目标的牌中选取一张（优先指定明牌区，否则随机手牌，再否则随机装备/判定） */
+function pickTargetCard(
+  state: GameState,
+  target: Player,
+  targetCardId: string | undefined,
+): import('@sgs/protocol').Card | null {
+  // 指定的明牌区牌（装备/判定）
+  if (targetCardId) {
+    const eq = target.equipment;
+    for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount'] as const) {
+      const c = eq[slot];
+      if (c?.id === targetCardId) {
+        eq[slot] = null;
+        return c;
+      }
+    }
+    const ji = target.judgment.findIndex((c) => c.id === targetCardId);
+    if (ji >= 0) {
+      const [c] = target.judgment.splice(ji, 1);
+      return c ?? null;
+    }
+  }
+  // 随机手牌
+  if (target.hand.length > 0) {
+    const idx = Math.floor(Math.random() * target.hand.length);
+    const [c] = target.hand.splice(idx, 1);
+    return c ?? null;
+  }
+  // 随机装备/判定
+  const eq = target.equipment;
+  const visible: import('@sgs/protocol').Card[] = [
+    eq.weapon,
+    eq.armor,
+    eq.plusMount,
+    eq.minusMount,
+    ...target.judgment,
+  ].filter((c): c is import('@sgs/protocol').Card => c !== null);
+  if (visible.length === 0) return null;
+  const pick = visible[Math.floor(Math.random() * visible.length)]!;
+  if (pick.type === 'weapon') eq.weapon = null;
+  else if (pick.type === 'armor') eq.armor = null;
+  else if (pick.type === 'plusMount') eq.plusMount = null;
+  else if (pick.type === 'minusMount') eq.minusMount = null;
+  else {
+    const ji = target.judgment.findIndex((c) => c.id === pick.id);
+    if (ji >= 0) target.judgment.splice(ji, 1);
+  }
+  return pick;
+}
+
+/** 决斗：目标先出杀，交替进行 */
+function resolveJuedou(state: GameState, ctx: TrickContext): void {
+  const targetId = ctx.responders[0]!;
+  const target = getPlayer(state, targetId);
+  if (!target || !target.alive) {
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  pushLog(state, 'trick', `${target.name} 需打出【杀】或受 1 点伤害。`);
+  state.pending = { kind: 'respondTrick', responderId: targetId, ctx: { ...ctx, duelTurn: 'target' } };
+}
+
+/** 火攻：目标展示一张手牌 */
+function resolveHuogong(state: GameState, ctx: TrickContext): void {
+  const targetId = ctx.responders[0]!;
+  const target = getPlayer(state, targetId);
+  if (!target || !target.alive) {
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  if (target.hand.length === 0) {
+    pushLog(state, 'trick', `${target.name} 没有手牌，【火攻】无效。`);
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  pushLog(state, 'trick', `${target.name} 需展示一张手牌。`);
+  state.pending = { kind: 'respondTrick', responderId: targetId, ctx };
+}
+
+/** 借刀杀人：武器持有者选择出杀或交出武器 */
+function resolveJiedao(state: GameState, ctx: TrickContext): void {
+  const holderId = ctx.responders[0]!;
+  const holder = getPlayer(state, holderId);
+  if (!holder || !holder.alive || !holder.equipment.weapon) {
+    pushLog(state, 'trick', `目标无武器，【借刀杀人】无效。`);
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  pushLog(state, 'trick', `${holder.name} 需打出【杀】或交出武器。`);
+  state.pending = { kind: 'respondTrick', responderId: holderId, ctx };
+}
+
+/** AOE：进入第一个响应者的 respondTrick */
+function enterTrickResponse(state: GameState, ctx: TrickContext): void {
+  // 跳过已阵亡的响应者
+  while (ctx.responderIndex < ctx.responders.length) {
+    const r = getPlayer(state, ctx.responders[ctx.responderIndex]!);
+    if (r && r.alive) break;
+    ctx.responderIndex++;
+  }
+  if (ctx.responderIndex >= ctx.responders.length) {
+    resumePlay(state, ctx.sourceId);
+    return;
+  }
+  const rId = ctx.responders[ctx.responderIndex]!;
+  const r = getPlayerOrThrow(state, rId);
+  pushLog(
+    state,
+    'trick',
+    `轮到 ${r.name} 响应【${CARD_TYPE_NAME[ctx.card.type as import('@sgs/protocol').CardType]}】。`,
+  );
+  state.pending = { kind: 'respondTrick', responderId: rId, ctx };
+}
+
+/** AOE：推进到下一个响应者 */
+function advanceTrick(state: GameState, ctx: TrickContext): void {
+  ctx.responderIndex++;
+  enterTrickResponse(state, ctx);
+}
+
+/** respondTrick → 按 trick 类型分发 */
+function onRespondTrick(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const type = ctx.card.type as TrickType;
+  switch (type) {
+    case 'juedou':
+      return respondDuelSha(state, seatId, intent, ctx);
+    case 'huogong':
+      return respondHuogongCard(state, seatId, intent, ctx);
+    case 'jiedao':
+      return respondJiedaoSha(state, seatId, intent, ctx);
+    case 'nanman':
+      return respondNanmanSha(state, seatId, intent, ctx);
+    case 'wanjian':
+      return respondWanjianShan(state, seatId, intent, ctx);
+    default:
+      return err('该锦囊无需响应');
+  }
+}
+
+/** passTrick → 按 trick 类型分发 */
+function onPassTrick(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  const type = ctx.card.type as TrickType;
+  switch (type) {
+    case 'juedou':
+      return passDuel(state, seatId, ctx);
+    case 'huogong':
+      return passHuogong(state, seatId, ctx);
+    case 'jiedao':
+      return passJiedao(state, seatId, ctx);
+    case 'nanman':
+      return passAoeTrick(state, seatId, ctx);
+    case 'wanjian':
+      return passAoeTrick(state, seatId, ctx);
+    default:
+      return err('该锦囊无需响应');
+  }
+}
+
+// —— 决斗 ——
+
+function respondDuelSha(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const responder = getPlayerOrThrow(state, seatId);
+  const card = responder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+  if (card.type !== 'sha') return err('决斗需打出【杀】');
+  removeCard(responder.hand, card.id);
+  state.discard.push(card);
+  pushLog(state, 'trick', `${responder.name} 打出了【杀】。`);
+  // 切换出杀方
+  const newTurn = ctx.duelTurn === 'target' ? 'source' : 'target';
+  const newResponderId = newTurn === 'source' ? ctx.sourceId : ctx.responders[0]!;
+  const newResponder = getPlayer(state, newResponderId);
+  if (!newResponder || !newResponder.alive) {
+    // 对方已死 → 本方胜，无伤害
+    resumePlay(state, ctx.sourceId);
+    return { ok: true };
+  }
+  pushLog(state, 'trick', `轮到 ${newResponder.name} 打出【杀】或受 1 点伤害。`);
+  state.pending = { kind: 'respondTrick', responderId: newResponderId, ctx: { ...ctx, duelTurn: newTurn } };
+  return { ok: true };
+}
+
+function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  const victim = getPlayerOrThrow(state, seatId);
+  pushLog(state, 'trick', `${victim.name} 弃权，受到 1 点伤害。`);
+  const attack: AttackContext = {
+    sourceId: ctx.sourceId,
+    cardId: ctx.card.id,
+    asType: ctx.card.type,
+    targetId: victim.seatId,
+    damage: 1,
+    dodged: false,
+  };
+  runHooks(state, 'damageDealt', victim, { damage: 1, attack });
+  victim.hp -= 1;
+  pushLog(state, 'damage', `${victim.name} 受到 1 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`);
+  runHooks(state, 'afterDamage', victim, { damage: 1, attack });
+  if (victim.hp <= 0) {
+    enterNearDeath(state, attack);
+  } else {
+    resumePlay(state, ctx.sourceId);
+  }
+  return { ok: true };
+}
+
+// —— 火攻 ——
+
+function respondHuogongCard(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const responder = getPlayerOrThrow(state, seatId);
+  const card = responder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+
+  if (!ctx.revealedSuit) {
+    // 阶段一：目标展示手牌（牌不弃，留在手中）
+    pushLog(state, 'trick', `${responder.name} 展示了【${cardLabel(card)}】。`);
+    state.pending = {
+      kind: 'respondTrick',
+      responderId: ctx.sourceId,
+      ctx: { ...ctx, revealedSuit: card.suit },
+    };
+    return { ok: true };
+  }
+
+  // 阶段二：来源弃同花色牌 → 造成 1 点火属性伤害
+  if (card.suit !== ctx.revealedSuit) return err('花色不符');
+  removeCard(responder.hand, card.id);
+  state.discard.push(card);
+  pushLog(state, 'trick', `${responder.name} 弃置了【${cardLabel(card)}】。`);
+  const target = getPlayerOrThrow(state, ctx.responders[0]!);
+  pushLog(state, 'trick', `${target.name} 受到 1 点火属性伤害。`);
+  const attack: AttackContext = {
+    sourceId: ctx.sourceId,
+    cardId: ctx.card.id,
+    asType: ctx.card.type,
+    targetId: target.seatId,
+    damage: 1,
+    dodged: false,
+    attribute: 'fire',
+  };
+  runHooks(state, 'damageDealt', target, { damage: 1, attack });
+  target.hp -= 1;
+  pushLog(state, 'damage', `${target.name} 受到 1 点火属性伤害，剩余 ${Math.max(0, target.hp)} 体力。`);
+  runHooks(state, 'afterDamage', target, { damage: 1, attack });
+  if (target.hp <= 0) {
+    enterNearDeath(state, attack);
+  } else {
+    resumePlay(state, ctx.sourceId);
+  }
+  return { ok: true };
+}
+
+function passHuogong(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  if (!ctx.revealedSuit) {
+    // 目标拒绝展示 → 火攻无效（无伤害）
+    pushLog(state, 'trick', `${getPlayer(state, seatId)!.name} 拒绝展示，【火攻】无效。`);
+    resumePlay(state, ctx.sourceId);
+    return { ok: true };
+  }
+  // 来源拒绝弃牌 → 无伤害
+  pushLog(state, 'trick', `${getPlayer(state, seatId)!.name} 拒绝弃牌，【火攻】无效。`);
+  resumePlay(state, ctx.sourceId);
+  return { ok: true };
+}
+
+// —— 借刀杀人 ——
+
+function respondJiedaoSha(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const holder = getPlayerOrThrow(state, seatId);
+  const card = holder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+  if (card.type !== 'sha') return err('需打出【杀】');
+  const shaTargetId = ctx.shaTargetId!;
+  const shaTarget = getPlayer(state, shaTargetId);
+  if (!shaTarget || !shaTarget.alive) return err('出杀目标无效');
+  removeCard(holder.hand, card.id);
+  state.discard.push(card);
+  pushLog(
+    state,
+    'trick',
+    `${holder.name} 对 ${shaTarget.name} 使用了【杀】。`,
+  );
+  // 进入正常的杀响应流程
+  const attack: AttackContext = {
+    sourceId: holder.seatId,
+    cardId: card.id,
+    asType: 'sha',
+    targetId: shaTargetId,
+    damage: 1,
+    dodged: false,
+    requiredShan: 1,
+  };
+  runHooks(state, 'useCard', holder, { card });
+  runHooks(state, 'becomeTarget', shaTarget, { attack });
+  state.pending = { kind: 'respondSha', responderId: shaTargetId, attack };
+  return { ok: true };
+}
+
+function passJiedao(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  const holder = getPlayerOrThrow(state, seatId);
+  // 交出武器
+  const weapon = holder.equipment.weapon;
+  if (!weapon) return err('你没有武器');
+  holder.equipment.weapon = null;
+  const source = getPlayer(state, ctx.sourceId);
+  if (source) {
+    source.hand.push(weapon);
+    pushLog(state, 'trick', `${holder.name} 将【${EQUIP_NAME[weapon.equipName!] ?? '武器'}】交给 ${source.name}。`);
+  } else {
+    state.discard.push(weapon);
+  }
+  resumePlay(state, ctx.sourceId);
+  return { ok: true };
+}
+
+// —— 南蛮入侵 / 万箭齐发 ——
+
+function respondNanmanSha(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const responder = getPlayerOrThrow(state, seatId);
+  const card = responder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+  if (card.type !== 'sha') return err('南蛮入侵需打出【杀】');
+  removeCard(responder.hand, card.id);
+  state.discard.push(card);
+  pushLog(state, 'trick', `${responder.name} 打出了【杀】。`);
+  advanceTrick(state, ctx);
+  return { ok: true };
+}
+
+function respondWanjianShan(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const responder = getPlayerOrThrow(state, seatId);
+  const card = responder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+  if (card.type !== 'shan') return err('万箭齐发需打出【闪】');
+  removeCard(responder.hand, card.id);
+  state.discard.push(card);
+  pushLog(state, 'trick', `${responder.name} 打出了【闪】。`);
+  advanceTrick(state, ctx);
+  return { ok: true };
+}
+
+/** AOE 弃权：受 1 点伤害，可能触发濒死中断 */
+function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  const victim = getPlayerOrThrow(state, seatId);
+  pushLog(state, 'trick', `${victim.name} 弃权，受到 1 点伤害。`);
+  const attack: AttackContext = {
+    sourceId: ctx.sourceId,
+    cardId: ctx.card.id,
+    asType: ctx.card.type,
+    targetId: victim.seatId,
+    damage: 1,
+    dodged: false,
+  };
+  runHooks(state, 'damageDealt', victim, { damage: 1, attack });
+  victim.hp -= 1;
+  pushLog(state, 'damage', `${victim.name} 受到 1 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`);
+  runHooks(state, 'afterDamage', victim, { damage: 1, attack });
+  if (victim.hp <= 0) {
+    // 濒死中断：暂存 trick 上下文，救人/死亡后恢复
+    state.ongoingTrick = ctx;
+    enterNearDeath(state, attack);
+  } else {
+    advanceTrick(state, ctx);
+  }
+  return { ok: true };
+}
+
+// —— 无懈可击 ——
+
+function onRespondWuxie(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  pending: Extract<Pending, { kind: 'wuxieQueue' }>,
+): ApplyResult {
+  const asked = pending.askQueue[pending.askIndex];
+  if (asked !== seatId) return err('当前不是你响应');
+  const responder = getPlayerOrThrow(state, seatId);
+  const card = responder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+  if (card.type !== 'wuxie') return err('只能使用【无懈可击】');
+  removeCard(responder.hand, card.id);
+  state.discard.push(card);
+  pushLog(
+    state,
+    'trick',
+    `${responder.name} 使用了【无懈可击】，取消了【${CARD_TYPE_NAME[pending.ctx.card.type as import('@sgs/protocol').CardType]}】。`,
+  );
+  // 锦囊被取消 → 回到来源出牌阶段
+  resumePlay(state, pending.ctx.sourceId);
+  return { ok: true };
+}
+
+function onPassWuxie(
+  state: GameState,
+  pending: Extract<Pending, { kind: 'wuxieQueue' }>,
+): ApplyResult {
+  pending.askIndex++;
+  if (pending.askIndex >= pending.askQueue.length) {
+    // 无人打出无懈 → 锦囊生效
+    resolveTrick(state, pending.ctx);
+  }
+  return { ok: true };
+}
+
 function onRespondCard(
   state: GameState,
   seatId: string,
@@ -643,6 +1281,12 @@ function onRespondCard(
   }
   if (pending.kind === 'respondDeath' && pending.askQueue[pending.askIndex] === seatId) {
     return respondDeathSave(state, seatId, intent, pending);
+  }
+  if (pending.kind === 'respondTrick' && pending.responderId === seatId) {
+    return onRespondTrick(state, seatId, intent, pending.ctx);
+  }
+  if (pending.kind === 'wuxieQueue' && pending.askQueue[pending.askIndex] === seatId) {
+    return onRespondWuxie(state, seatId, intent, pending);
   }
   return err('当前你不能响应');
 }
@@ -715,6 +1359,14 @@ function onPass(state: GameState, seatId: string): ApplyResult {
       doDeath(state, pending.dyingId);
     }
     return { ok: true };
+  }
+  if (pending.kind === 'respondTrick' && pending.responderId === seatId) {
+    return onPassTrick(state, seatId, pending.ctx);
+  }
+  if (pending.kind === 'wuxieQueue') {
+    const asked = pending.askQueue[pending.askIndex];
+    if (asked !== seatId) return err('当前不是你响应');
+    return onPassWuxie(state, pending);
   }
   return err('当前不能弃权');
 }
@@ -859,6 +1511,7 @@ export function createGame(
     gameOver: false,
     winner: null,
     log: [],
+    ongoingTrick: null,
   };
   pushLog(state, 'start', '游戏开始，随机发将。');
   return state;

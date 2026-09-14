@@ -13,6 +13,18 @@ const jiu = (id: string, suit: Suit = 'spade') => mk(id, 'jiu', suit);
 const lebu = (id: string, suit: Suit = 'spade') => mk(id, 'lebu', suit);
 const shandian = (id: string, suit: Suit = 'spade') => mk(id, 'shandian', suit);
 const bingliang = (id: string, suit: Suit = 'spade') => mk(id, 'bingliang', suit);
+// 即时锦囊
+const wuzhong = (id: string) => mk(id, 'wuzhong', 'heart');
+const guohe = (id: string) => mk(id, 'guohe', 'spade');
+const shunshou = (id: string) => mk(id, 'shunshou', 'spade');
+const juedou = (id: string) => mk(id, 'juedou', 'spade');
+const nanman = (id: string) => mk(id, 'nanman', 'spade');
+const wanjian = (id: string) => mk(id, 'wanjian', 'heart');
+const huogong = (id: string) => mk(id, 'huogong', 'heart');
+const taoyuan = (id: string) => mk(id, 'taoyuan', 'heart');
+const wuxie = (id: string) => mk(id, 'wuxie', 'spade');
+const jiedao = (id: string) => mk(id, 'jiedao', 'club');
+const wpn = (id: string): Card => ({ id, type: 'weapon', suit: 'spade', rank: 1, equipName: 'qinggang', range: 2 });
 
 interface SeatOpts {
   seatId: string;
@@ -88,6 +100,20 @@ function ok(res: ReturnType<typeof applyIntent>, msg?: string) {
 }
 function fail(res: ReturnType<typeof applyIntent>) {
   if (res.ok) throw new Error('预期失败但成功了');
+}
+/** 快速跳过无懈可击询问轮（所有人弃权） */
+function passWuxie(state: GameState) {
+  while (state.pending?.kind === 'wuxieQueue') {
+    const asked = state.pending.askQueue[state.pending.askIndex]!;
+    ok(act(state, asked, { type: 'pass' }));
+  }
+}
+/** 快速跳过濒死救援轮（所有人弃权） */
+function passDeathSaves(state: GameState) {
+  while (state.pending?.kind === 'respondDeath') {
+    const asked = state.pending.askQueue[state.pending.askIndex]!;
+    ok(act(state, asked, { type: 'pass' }));
+  }
 }
 
 // ——————————————————————————————————————————
@@ -914,6 +940,257 @@ describe('国战模式', () => {
     }
     expect(state.gameOver).toBe(true);
     expect(state.winner).toBe('shu');
+  });
+});
+
+// ——————————————————————————————————————————
+
+describe('即时锦囊', () => {
+  it('无中生有：自己摸 2 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [wuzhong('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('过河拆桥：弃目标 1 张手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand).toHaveLength(0);
+    expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
+  });
+
+  it('过河拆桥：可拆指定装备', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.weapon = wpn('w1');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'w1' }));
+    passWuxie(state);
+    expect(b.equipment.weapon).toBeNull();
+    expect(state.discard.some((c) => c.id === 'w1')).toBe(true);
+  });
+
+  it('顺手牵羊：获得目标 1 张手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [shunshou('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand).toHaveLength(0);
+  });
+
+  it('决斗：交替出杀，不出者受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // B 先出杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // A 出杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    // B 无杀 → 弃权受伤
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'pass' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+  });
+
+  it('火攻：展示同花色 → 弃牌 → 火属性伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [huogong('a1'), mk('a2', 'sha', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // B 展示手牌（红桃）
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // A 弃同花色牌
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+  });
+
+  it('借刀杀人：持有者交出武器', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [jiedao('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.weapon = wpn('w1');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'pass' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand.some((c) => c.id === 'w1')).toBe(true);
+    expect(b.equipment.weapon).toBeNull();
+  });
+
+  it('南蛮入侵：依次出杀或受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // B 出杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // C 弃权 → 受伤
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, C, { type: 'pass' }));
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.hp).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('万箭齐发：依次出闪或受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [wanjian('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // B 出闪
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // C 弃权 → 受伤
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, C, { type: 'pass' }));
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.hp).toBe(3);
+  });
+
+  it('桃园结义：所有存活回 1 体力', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [taoyuan('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 3 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [], hp: 2 },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(a.hp).toBe(4); // 满血不回
+    expect(b.hp).toBe(4);
+    expect(c.hp).toBe(3);
+  });
+
+  it('无懈可击：取消锦囊效果', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [wuzhong('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [wuxie('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    expect(state.pending?.kind).toBe('wuxieQueue');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(0); // 没有摸牌（锦囊被取消）
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('无懈可击不能主动使用', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [wuxie('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+  });
+
+  it('南蛮入侵：濒死救援后继续推进', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [tao('c1')], hp: 1 },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // B 出杀
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // C 弃权 → 受 1 伤害 → hp=0 → 濒死
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+    // C 用桃自救
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.hp).toBe(1);
+    expect(c.alive).toBe(true);
+    // 回到 A 的出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('南蛮入侵：无人救援 → 阵亡后继续', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [], hp: 1 },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    ok(act(state, C, { type: 'pass' }));
+    // C 濒死 → 无人有桃 → 阵亡
+    passDeathSaves(state);
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.alive).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('借刀杀人：持有者出杀 → 正常结算', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [jiedao('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [shan('c1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.weapon = wpn('w1');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }));
+    passWuxie(state);
+    // B 对 C 出杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // C 出闪
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    // 回到 A 的出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.hp).toBe(4); // 未受伤
   });
 });
 

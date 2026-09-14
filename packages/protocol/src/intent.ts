@@ -6,9 +6,10 @@ export type Phase = 'judgment' | 'draw' | 'play' | 'discard' | 'turnEnd' | 'game
 // 客户端发给服务端的"意图"：玩家想做什么
 // 服务端拿意图喂给引擎做权威判定，再裁剪广播
 export type Intent =
-  // 主动出牌：出牌阶段打杀(指定目标)/桃(自回)/酒(自buff)
-  | { type: 'playCard'; cardId: string; as?: CardType; targetIds: string[] }
-  // 响应提示：被杀时出闪、濒死时出桃
+  // 主动出牌：出牌阶段打杀(指定目标)/桃(自回)/酒(自buff)/装备/锦囊
+  // targetCardId: 过河拆桥/顺手牵羊时指定目标明牌区(装备/判定)的具体牌
+  | { type: 'playCard'; cardId: string; as?: CardType; targetIds: string[]; targetCardId?: string }
+  // 响应提示：被杀时出闪、濒死时出桃、锦囊响应(出杀/出闪/展示牌/弃牌)
   | { type: 'respondCard'; cardId: string; as?: CardType }
   // 不响应（弃权）
   | { type: 'pass' }

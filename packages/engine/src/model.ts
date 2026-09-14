@@ -1,4 +1,4 @@
-import type { Card, CardType, DamageAttribute, Faction, GameMode, LogEntry, Phase, RoleId } from '@sgs/protocol';
+import type { Card, CardType, DamageAttribute, Faction, GameMode, LogEntry, Phase, RoleId, Suit } from '@sgs/protocol';
 
 // —— 装备区 ——
 /** 4 个槽位：武器 / 防具 / +1马(防御马) / −1马(进攻马) */
@@ -74,6 +74,24 @@ export interface AttackContext {
   requiredShan?: number;
 }
 
+// 即时锦囊结算上下文（贯穿：打出→无懈可击询问→结算→响应）
+export interface TrickContext {
+  sourceId: string;
+  card: Card;
+  // 过河拆桥/顺手牵羊：目标与指定的明牌区牌
+  targetId?: string;
+  targetCardId?: string;
+  // 南蛮/万箭：需依次响应的存活玩家队列
+  responders: string[];
+  responderIndex: number;
+  // 决斗：当前该谁出杀（target=目标方，source=来源方）
+  duelTurn?: 'target' | 'source';
+  // 火攻：目标展示的手牌花色
+  revealedSuit?: Suit;
+  // 借刀杀人：被指定出杀的目标（targetIds[1]）
+  shaTargetId?: string;
+}
+
 // 引擎"暂停等待玩家输入"的几种状态
 export type Pending =
   // 出牌阶段：你可继续出牌或结束
@@ -83,7 +101,11 @@ export type Pending =
   // 濒死求桃：按座次轮询每个玩家
   | { kind: 'respondDeath'; dyingId: string; askQueue: string[]; askIndex: number }
   // 弃牌阶段：弃到上限
-  | { kind: 'discard'; seatId: string; count: number };
+  | { kind: 'discard'; seatId: string; count: number }
+  // 锦囊响应：出杀(南蛮/决斗/借刀)/出闪(万箭)/展示牌(火攻)/弃牌(火攻)
+  | { kind: 'respondTrick'; responderId: string; ctx: TrickContext }
+  // 无懈可击询问轮：全体依次可打出无懈
+  | { kind: 'wuxieQueue'; ctx: TrickContext; askQueue: string[]; askIndex: number };
 
 // 选将阶段：每人随机发到 K 张武将，各自选 1（并发，全选完才开局）
 export interface DraftState {
@@ -101,6 +123,8 @@ export interface GameState {
   turn: { seatIndex: number; phase: Phase };
   pending: Pending | null;
   draft: DraftState | null; // 非空表示处于选将阶段
+  // AOE锦囊(南蛮/万箭)被濒死中断时暂存上下文，near-death结算后继续下一个响应者
+  ongoingTrick: TrickContext | null;
   started: boolean;
   gameOver: boolean;
   winner: string | null; // 胜方标识（阵营/队伍/身份方），未结束时为 null

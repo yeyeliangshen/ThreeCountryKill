@@ -1,6 +1,6 @@
 import type { PromptView } from '@sgs/protocol';
-import { isDelayedTrick, isEquipCard } from '@sgs/protocol';
-import type { GameState } from './model';
+import { CARD_TYPE_NAME, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
+import type { GameState, TrickContext } from './model';
 import { getPlayerOrThrow } from './model';
 import { heroCanUseAs, heroShaLimit } from './heroes';
 import { activeHeroes } from './engine';
@@ -46,6 +46,14 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
     case 'discard':
       if (pending.seatId !== seatId) return null;
       return buildDiscardPrompt(state, seatId, pending.count);
+
+    case 'respondTrick':
+      if (pending.responderId !== seatId) return null;
+      return buildRespondTrickPrompt(state, seatId, pending.ctx);
+
+    case 'wuxieQueue':
+      if (pending.askQueue[pending.askIndex] !== seatId) return null;
+      return buildWuxiePrompt(state, seatId, pending.ctx);
   }
   return null;
 }
@@ -106,6 +114,30 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     if (card.type === 'jiu') {
       legalCardIds.push(card.id);
       seen.add(card.id);
+    }
+    // 即时锦囊（无懈可击不能主动使用）
+    if (isInstantTrick(card) && card.type !== 'wuxie') {
+      const trickType = card.type;
+      let legal = false;
+      if (trickType === 'wuzhong' || trickType === 'taoyuan') {
+        legal = true; // 自身 / 全体，无需目标
+      } else if (trickType === 'shunshou') {
+        legal = state.players.some(
+          (p) => p.alive && p.seatId !== seatId && distance(state, seatId, p.seatId) <= 1,
+        );
+      } else if (trickType === 'jiedao') {
+        // 需要一个有武器的其他玩家
+        legal = state.players.some(
+          (p) => p.alive && p.seatId !== seatId && p.equipment.weapon !== null,
+        );
+      } else {
+        // 决斗 / 火攻 / 南蛮 / 万箭 / 过河拆桥：有其他存活玩家即可
+        legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+      }
+      if (legal) {
+        legalCardIds.push(card.id);
+        seen.add(card.id);
+      }
     }
   }
   const legalTargetIds = state.players
@@ -173,5 +205,82 @@ function buildDiscardPrompt(
     legalCardIds: player.hand.map((c) => c.id),
     legalTargetIds: [],
     mustSelectTargetCount: count,
+  };
+}
+
+function buildRespondTrickPrompt(
+  state: GameState,
+  seatId: string,
+  ctx: TrickContext,
+): PromptView {
+  const player = getPlayerOrThrow(state, seatId);
+  const heroes = activeHeroes(state, player);
+  const trickName = CARD_TYPE_NAME[ctx.card.type];
+  let message: string;
+  let legalCardIds: string[];
+
+  switch (ctx.card.type) {
+    case 'juedou':
+      message = `【决斗】：打出【杀】或弃权（受 1 点伤害）`;
+      legalCardIds = player.hand
+        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .map((c) => c.id);
+      break;
+    case 'huogong':
+      if (!ctx.revealedSuit) {
+        message = `【火攻】：展示一张手牌或弃权`;
+        legalCardIds = player.hand.map((c) => c.id);
+      } else {
+        message = `【火攻】：弃一张${ctx.revealedSuit === 'heart' || ctx.revealedSuit === 'diamond' ? '红色' : '黑色'}${ctx.revealedSuit}花色手牌，或弃权`;
+        legalCardIds = player.hand
+          .filter((c) => c.suit === ctx.revealedSuit)
+          .map((c) => c.id);
+      }
+      break;
+    case 'jiedao':
+      message = `【借刀杀人】：打出【杀】或弃权（交出武器）`;
+      legalCardIds = player.hand
+        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .map((c) => c.id);
+      break;
+    case 'nanman':
+      message = `【南蛮入侵】：打出【杀】或弃权（受 1 点伤害）`;
+      legalCardIds = player.hand
+        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .map((c) => c.id);
+      break;
+    case 'wanjian':
+      message = `【万箭齐发】：打出【闪】或弃权（受 1 点伤害）`;
+      legalCardIds = player.hand
+        .filter((c) => c.type === 'shan' || heroes.some((h) => heroCanUseAs(h, c, 'shan')))
+        .map((c) => c.id);
+      break;
+    default:
+      message = `响应【${trickName}】`;
+      legalCardIds = player.hand.map((c) => c.id);
+  }
+
+  return {
+    kind: 'respondTrick',
+    message,
+    legalCardIds,
+    legalTargetIds: [],
+    mustSelectTargetCount: 0,
+  };
+}
+
+function buildWuxiePrompt(
+  state: GameState,
+  seatId: string,
+  ctx: TrickContext,
+): PromptView {
+  const player = getPlayerOrThrow(state, seatId);
+  const trickName = CARD_TYPE_NAME[ctx.card.type];
+  return {
+    kind: 'wuxieQueue',
+    message: `是否使用【无懈可击】取消【${trickName}】？`,
+    legalCardIds: player.hand.filter((c) => c.type === 'wuxie').map((c) => c.id),
+    legalTargetIds: [],
+    mustSelectTargetCount: 0,
   };
 }

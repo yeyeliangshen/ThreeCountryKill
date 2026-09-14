@@ -38,7 +38,14 @@ export interface PlayerView {
   deputyRevealed?: boolean;
 }
 
-export type PromptKind = 'play' | 'respondSha' | 'respondDeath' | 'discard' | 'pickHero';
+export type PromptKind =
+  | 'play'
+  | 'respondSha'
+  | 'respondDeath'
+  | 'discard'
+  | 'pickHero'
+  | 'respondTrick'
+  | 'wuxieQueue';
 
 // 告诉玩家当前需要做什么 + 合法选项（服务端权威计算后下发）
 export interface PromptView {
