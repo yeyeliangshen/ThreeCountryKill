@@ -1790,3 +1790,122 @@ describe('快照：装备与判定区公开信息（Step 8）', () => {
     expect(aView.judgment.some((c) => c.id === 's1')).toBe(true);
   });
 });
+
+// ——————————————————————————————————————————
+
+describe('装备与距离（Step 10 补充）', () => {
+  it('装备替换：同槽位装备 → 旧装备进弃牌堆', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [wpn('w2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = wpn('w1'); // 已有旧武器
+    ok(act(state, A, { type: 'playCard', cardId: 'w2', targetIds: [] }));
+    expect(a.equipment.weapon!.id).toBe('w2');
+    // 旧武器进弃牌堆
+    expect(state.discard.some((c) => c.id === 'w1')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'w2')).toBe(false);
+  });
+
+  it('距离校验：无武器时杀只能打距离1的目标', () => {
+    // 3人局：A→B 距离1，A→C 距离1（圆形相邻）
+    // B 装备 +1马后 A→B 距离2，无武器打不到
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.plusMount = { id: 'pm1', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    // A 无武器，攻击范围=1；B 有+1马，距离=2 → 打不到
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // C 无马，距离=1 → 可以打
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+  });
+
+  it('武器扩展攻击范围：range=2 可打到距离2的目标', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = wpn('w1'); // range=2
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.plusMount = { id: 'pm1', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    // 距离2，武器range=2 → 可达
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+  });
+
+  it('−1马缩短距离：可打到原本距离2的目标', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    // A 装备 -1马 → 对 B（有+1马）距离从2降为1
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.minusMount = { id: 'mm1', type: 'minusMount', suit: 'spade', rank: 1, equipName: 'chitu' };
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.plusMount = { id: 'pm1', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    // 无武器 range=1，-1马把距离2降为1 → 可达
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+  });
+});
+
+describe('酒限1次救人（Step 10 补充）', () => {
+  it('同一回合酒救人仅限1次', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', hand: [sha('a1'), sha('a2'), jiu('j1'), jiu('j2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 1 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // A 出杀 → B 不闪 → B 濒死
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 弃权不闪
+    // 濒死救援队列从濒死者起 → B 先被询问，B 弃权后轮到 A
+    expect(state.pending!.kind).toBe('respondDeath');
+    ok(act(state, B, { type: 'pass' })); // B 自己先弃权
+    // A 用酒救人（第1次）→ 成功
+    ok(act(state, A, { type: 'respondCard', cardId: 'j1' }));
+    expect(b.hp).toBe(1);
+    expect(b.alive).toBe(true);
+    // A 再次出杀（张飞可出多杀）→ B 再濒死
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 弃权不闪
+    ok(act(state, B, { type: 'pass' })); // B 弃权 death save
+    // A 再用酒救人（第2次）→ 应失败（限1次/回合）
+    expect(state.pending!.kind).toBe('respondDeath');
+    fail(act(state, A, { type: 'respondCard', cardId: 'j2' }));
+  });
+});
+
+describe('死亡弃装备与判定区（Step 10 补充）', () => {
+  it('阵亡时装备4槽与判定区全部进弃牌堆', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 1 },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // A 装武器(range=2) → 攻击范围3 ≥ 距离2（B 有+1马）
+    a.equipment.weapon = wpn('aw');
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.weapon = wpn('bw');
+    b.equipment.armor = { id: 'ba', type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' };
+    b.equipment.plusMount = { id: 'bp', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    b.equipment.minusMount = { id: 'bm', type: 'minusMount', suit: 'spade', rank: 1, equipName: 'chitu' };
+    b.judgment.push(lebu('bl'));
+    // 出杀打死 B（1血）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 弃权不闪
+    passDeathSaves(state);
+    expect(b.alive).toBe(false);
+    // B 的装备4槽与判定牌全部进弃牌堆
+    expect(state.discard.some((c) => c.id === 'bw')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'ba')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'bp')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'bm')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'bl')).toBe(true);
+  });
+});
