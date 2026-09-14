@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react';
-import { CARD_TYPE_NAME, SUIT_NAME, isRed, type Card, type CardType, type Faction, type GameMode, type PlayerView } from '@sgs/protocol';
-import { getHero, ROLE_NAME, FACTION_NAME } from '@sgs/engine';
+import {
+  CARD_TYPE_NAME, EQUIP_NAME, SUIT_NAME, cardLabel,
+  isRed, isBasicCard, isEquipCard, isInstantTrick, isDelayedTrick,
+  type Card, type CardType, type Faction, type GameMode, type PlayerView, type Snapshot,
+} from '@sgs/protocol';
+import { getHero, heroCanUseAs, ROLE_NAME, FACTION_NAME, type Hero, type ActiveSkill } from '@sgs/engine';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
+  judgment: '判定',
   draw: '摸牌',
   play: '出牌',
   discard: '弃牌',
@@ -54,15 +59,88 @@ function winnerText(mode: GameMode, winner: string, players: PlayerView[]): stri
   return wp ? `${wp.name} 获胜` : '游戏结束';
 }
 
+/** 出牌阶段：这张牌需要选几个目标 */
+function targetCount(card: Card): number {
+  if (isEquipCard(card)) return 0;
+  if (card.type === 'tao' || card.type === 'jiu') return 0;
+  if (card.type === 'wuzhong' || card.type === 'taoyuan') return 0;
+  if (card.type === 'shandian') return 0;
+  if (card.type === 'nanman' || card.type === 'wanjian') return 0;
+  if (card.type === 'jiedao') return 2;
+  return 1; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang
+}
+
+/** 这张牌能否在出牌阶段直接使用（无需转化） */
+function isDirectlyPlayable(card: Card): boolean {
+  if (card.type === 'sha' || card.type === 'tao' || card.type === 'jiu') return true;
+  if (isEquipCard(card)) return true;
+  if (isDelayedTrick(card)) return true;
+  if (isInstantTrick(card) && card.type !== 'wuxie') return true;
+  return false;
+}
+
+/** 从快照获取当前玩家的活跃武将（国战：已亮将；其他：主将） */
+function getMyActiveHeroes(me: PlayerView, isGuozhan: boolean): Hero[] {
+  if (isGuozhan) {
+    const heroes: Hero[] = [];
+    if (me.heroRevealed && me.heroId) {
+      const h = getHero(me.heroId);
+      if (h) heroes.push(h);
+    }
+    if (me.deputyRevealed && me.deputyHeroId) {
+      const h = getHero(me.deputyHeroId);
+      if (h) heroes.push(h);
+    }
+    return heroes;
+  }
+  return me.heroId ? ([getHero(me.heroId)].filter(Boolean) as Hero[]) : [];
+}
+
+/** 国战鏖战状态：仅 2 个非野心家阵营存活 */
+function isAoyuMode(snapshot: Snapshot): boolean {
+  if (snapshot.mode !== 'guozhan') return false;
+  const alive = snapshot.players.filter((p) => p.isAlive);
+  const factions = new Set(
+    alive.map((p) => p.faction).filter((f): f is Faction => !!f && f !== 'ambitionist'),
+  );
+  return factions.size === 2;
+}
+
+/** 出牌阶段：确定牌的 `as` 转化类型 */
+function cardAsType(card: Card, heroes: Hero[], aoyu: boolean): CardType | undefined {
+  if (isDirectlyPlayable(card)) return undefined;
+  const conversions: CardType[] = ['sha', 'guohe', 'tao', 'shan'];
+  for (const type of conversions) {
+    if (heroes.some((h) => heroCanUseAs(h, card, type))) return type;
+  }
+  if (aoyu && card.type === 'tao') return 'sha';
+  return undefined;
+}
+
+/** 从武将列表中查找技能定义 */
+function findSkill(heroes: Hero[], skillId: string): ActiveSkill | undefined {
+  for (const h of heroes) {
+    const sk = h.activeSkills?.find((s) => s.id === skillId);
+    if (sk) return sk;
+  }
+  return undefined;
+}
+
 export function Game() {
   const snapshot = useStore((s) => s.snapshot);
   const sendIntent = useStore((s) => s.sendIntent);
   const pickHero = useStore((s) => s.pickHero);
   const pickHeroes = useStore((s) => s.pickHeroes);
   const revealHero = useStore((s) => s.revealHero);
+  const useSkill = useStore((s) => s.useSkill);
 
   // 出牌阶段：选中一张需目标的牌后，再选目标
-  const [selected, setSelected] = useState<{ cardId: string; as?: CardType } | null>(null);
+  const [selected, setSelected] = useState<{
+    cardId: string;
+    as?: CardType;
+    need: number;
+    picked: string[];
+  } | null>(null);
   // 弃牌阶段：已选待弃的牌
   const [picks, setPicks] = useState<string[]>([]);
   // 选将阶段：已选中但未确认的武将（防误触）
@@ -70,6 +148,13 @@ export function Game() {
   // 国战选将：主将 + 副将
   const [mainPick, setMainPick] = useState<string | null>(null);
   const [deputyPick, setDeputyPick] = useState<string | null>(null);
+  // 主动技能交互模式
+  const [skillMode, setSkillMode] = useState<{
+    skillId: string;
+    skill: ActiveSkill;
+    cardIds: string[];
+    targetIds: string[];
+  } | null>(null);
 
   // 提示一变就清空本地选择
   useEffect(() => {
@@ -78,6 +163,7 @@ export function Game() {
     setPickedHero(null);
     setMainPick(null);
     setDeputyPick(null);
+    setSkillMode(null);
   }, [snapshot?.prompt]);
 
   if (!snapshot) return <div className="game loading">加载中…</div>;
@@ -92,31 +178,49 @@ export function Game() {
   const myTurn = snapshot.turn.seatId === snapshot.seatId;
   const isGameOver = snapshot.turn.phase === 'gameOver' && snapshot.winner !== null;
   const isGuozhan = snapshot.mode === 'guozhan';
+  const aoyu = isAoyuMode(snapshot);
+  const myHeroes = getMyActiveHeroes(me, isGuozhan);
+  const skillIds = prompt?.kind === 'play' ? prompt.legalSkillIds ?? [] : [];
 
   // —— 出牌：选中需目标的牌 ——
   function pickPlayCard(card: Card) {
     if (!prompt || prompt.kind !== 'play' || !legalSet.has(card.id)) return;
-    if (card.type === 'tao' || card.type === 'jiu') {
-      sendIntent({ type: 'playCard', cardId: card.id, targetIds: [] });
+    const need = targetCount(card);
+    if (need === 0) {
+      // 无需目标：直接出
+      const as = cardAsType(card, myHeroes, aoyu);
+      sendIntent({
+        type: 'playCard',
+        cardId: card.id,
+        ...(as ? { as } : {}),
+        targetIds: [],
+      });
       return;
     }
-    // 杀（直接或武圣转化）——需选目标
-    const as: CardType | undefined = card.type === 'sha' ? undefined : 'sha';
-    setSelected({ cardId: card.id, as });
+    // 需目标：进入选择模式
+    const as = cardAsType(card, myHeroes, aoyu);
+    setSelected({ cardId: card.id, ...(as ? { as } : {}), need, picked: [] });
   }
 
   function pickTarget(targetId: string) {
     if (!selected) return;
+    const next = [...selected.picked, targetId];
+    if (next.length < selected.need) {
+      // 还需继续选目标
+      setSelected({ ...selected, picked: next });
+      return;
+    }
+    // 目标选满 → 发送
     sendIntent({
       type: 'playCard',
       cardId: selected.cardId,
       ...(selected.as ? { as: selected.as } : {}),
-      targetIds: [targetId],
+      targetIds: next,
     });
     setSelected(null);
   }
 
-  // —— 响应杀/濒死：直接出牌 ——
+  // —— 响应杀/濒死/锦囊/无懈：直接出牌（引擎自动检测转化） ——
   function pickRespondCard(card: Card) {
     if (!prompt || !legalSet.has(card.id)) return;
     sendIntent({ type: 'respondCard', cardId: card.id });
@@ -132,6 +236,42 @@ export function Game() {
   function confirmDiscard() {
     if (picks.length !== prompt?.mustSelectTargetCount) return;
     sendIntent({ type: 'discard', cardIds: picks });
+  }
+
+  // —— 主动技能交互 ——
+  function enterSkillMode(skillId: string) {
+    const skill = findSkill(myHeroes, skillId);
+    if (!skill) return;
+    setSkillMode({ skillId, skill, cardIds: [], targetIds: [] });
+  }
+  function toggleSkillCard(cardId: string) {
+    if (!skillMode) return;
+    setSkillMode((prev) => {
+      if (!prev) return prev;
+      const has = prev.cardIds.includes(cardId);
+      // 离间/反间只需1张牌，制衡可多张
+      const maxCards = prev.skill.id === 'lilian' || prev.skill.id === 'fanjian' ? 1 : 99;
+      if (has) return { ...prev, cardIds: prev.cardIds.filter((c) => c !== cardId) };
+      if (prev.cardIds.length >= maxCards) return prev;
+      return { ...prev, cardIds: [...prev.cardIds, cardId] };
+    });
+  }
+  function toggleSkillTarget(targetId: string) {
+    if (!skillMode) return;
+    setSkillMode((prev) => {
+      if (!prev) return prev;
+      const has = prev.targetIds.includes(targetId);
+      const { minTargets, maxTargets } = prev.skill;
+      if (has) return { ...prev, targetIds: prev.targetIds.filter((t) => t !== targetId) };
+      if (prev.targetIds.length >= maxTargets) return prev;
+      return { ...prev, targetIds: [...prev.targetIds, targetId] };
+    });
+  }
+  function confirmSkill() {
+    if (!skillMode) return;
+    const { skillId, cardIds, targetIds } = skillMode;
+    useSkill(skillId, cardIds, targetIds);
+    setSkillMode(null);
   }
 
   // —— 国战选将：点击武将分配主将/副将槽位 ——
@@ -151,6 +291,25 @@ export function Game() {
     }
     setMainPick(id);   // 两槽满 → 替换主将，清空副将
     setDeputyPick(null);
+  }
+
+  // 判定当前选中牌的目标提示文案
+  function selectedHint(): string {
+    if (!selected) return '';
+    if (selected.need === 2) {
+      if (selected.picked.length === 0) return '请选择武器持有者';
+      return '请选择出杀目标';
+    }
+    return '请选择目标（点上方对手）';
+  }
+
+  // 技能确认按钮是否可用
+  function skillCanConfirm(): boolean {
+    if (!skillMode) return false;
+    const { skill, cardIds, targetIds } = skillMode;
+    const cardsOk = !skill.needsCards || cardIds.length >= 1;
+    const targetsOk = targetIds.length >= skill.minTargets && targetIds.length <= skill.maxTargets;
+    return cardsOk && targetsOk;
   }
 
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
@@ -311,12 +470,45 @@ export function Game() {
     );
   }
 
+  // 是否处于"选目标"或"技能模式"的交互态
+  const targeting = !!selected || !!skillMode;
+
+  // 判断某对手是否可被点击（选目标 / 技能选目标）
+  function canClickTarget(p: PlayerView): boolean {
+    if (!p.isAlive) return false;
+    if (!targeting) return false;
+    if (skillMode) {
+      if (skillMode.targetIds.includes(p.seatId)) return true;
+      return targetSet.has(p.seatId) && skillMode.targetIds.length < skillMode.skill.maxTargets;
+    }
+    if (selected) {
+      if (selected.picked.includes(p.seatId)) return true;
+      return targetSet.has(p.seatId) && selected.picked.length < selected.need;
+    }
+    return false;
+  }
+
+  function handleTargetClick(p: PlayerView) {
+    if (skillMode) {
+      toggleSkillTarget(p.seatId);
+      return;
+    }
+    if (selected) {
+      if (selected.picked.includes(p.seatId)) return; // 已选
+      pickTarget(p.seatId);
+    }
+  }
+
   return (
     <div className="game">
       {/* 其他玩家 */}
       <div className="players-row">
         {others.map((p) => {
-          const isTarget = !!selected && targetSet.has(p.seatId) && p.isAlive;
+          const isTarget = canClickTarget(p);
+          const isPickedTarget = targeting && (
+            (selected?.picked.includes(p.seatId)) ||
+            (skillMode?.targetIds.includes(p.seatId))
+          );
           const isCurrent = snapshot.turn.seatId === p.seatId;
           const isLord = p.role === 'lord';
           const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
@@ -324,8 +516,8 @@ export function Game() {
           return (
             <button
               key={p.seatId}
-              className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${teamClass} ${factionClass}`}
-              onClick={isTarget ? () => pickTarget(p.seatId) : undefined}
+              className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${teamClass} ${factionClass}`}
+              onClick={isTarget ? () => handleTargetClick(p) : undefined}
               disabled={!isTarget}
             >
               <div className="p-name">
@@ -346,6 +538,24 @@ export function Game() {
                 ))}
               </div>
               <div className="p-hand">手 {p.handCount}</div>
+              {/* 装备区 */}
+              {p.equipment.length > 0 && (
+                <div className="p-equip">
+                  {p.equipment.map((c) => (
+                    <span key={c.id} className={`equip-icon equip-${c.type}`}>
+                      {c.equipName ? EQUIP_NAME[c.equipName] : CARD_TYPE_NAME[c.type]}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {/* 判定区 */}
+              {p.judgment.length > 0 && (
+                <div className="p-judge">
+                  {p.judgment.map((c) => (
+                    <span key={c.id} className="judge-icon">{CARD_TYPE_NAME[c.type]}</span>
+                  ))}
+                </div>
+              )}
               {!p.isAlive && <div className="p-dead">阵亡</div>}
             </button>
           );
@@ -396,8 +606,26 @@ export function Game() {
         <span className="me-hp">
           体力 {me.hp}/{me.maxHp}
         </span>
+        {/* 我的装备区 */}
+        {me.equipment.length > 0 && (
+          <span className="me-equip">
+            {me.equipment.map((c) => (
+              <span key={c.id} className={`equip-icon equip-${c.type}`}>
+                {c.equipName ? EQUIP_NAME[c.equipName] : CARD_TYPE_NAME[c.type]}
+              </span>
+            ))}
+          </span>
+        )}
+        {/* 我的判定区 */}
+        {me.judgment.length > 0 && (
+          <span className="me-judge">
+            {me.judgment.map((c) => (
+              <span key={c.id} className="judge-icon">{CARD_TYPE_NAME[c.type]}</span>
+            ))}
+          </span>
+        )}
         {/* 国战：出牌阶段亮将按钮 */}
-        {isGuozhan && myTurn && prompt?.kind === 'play' && (
+        {isGuozhan && myTurn && prompt?.kind === 'play' && !skillMode && (
           <>
             {!me.heroRevealed && me.heroId && (
               <button className="ghost reveal-btn" onClick={() => revealHero(me.heroId!)}>
@@ -417,6 +645,60 @@ export function Game() {
       {prompt ? (
         <div className={`prompt prompt-${prompt.kind}`}>
           <div className="prompt-msg">{prompt.message}</div>
+
+          {/* 出牌阶段：技能按钮 + 结束出牌 */}
+          {prompt.kind === 'play' && !skillMode && !selected && (
+            <>
+              {skillIds.length > 0 && (
+                <div className="skill-buttons">
+                  {skillIds.map((sid) => {
+                    const skill = findSkill(myHeroes, sid);
+                    if (!skill) return null;
+                    return (
+                      <button
+                        key={sid}
+                        className="skill-btn"
+                        onClick={() => enterSkillMode(sid)}
+                      >
+                        {skill.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
+                结束出牌
+              </button>
+            </>
+          )}
+
+          {/* 技能交互模式 */}
+          {prompt.kind === 'play' && skillMode && (
+            <div className="skill-mode">
+              <span className="hint">
+                【{skillMode.skill.name}】
+                {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请选择手牌'}
+                {skillMode.skill.minTargets > 0 && skillMode.targetIds.length < skillMode.skill.minTargets && ` · 请选${skillMode.skill.minTargets - skillMode.targetIds.length > 0 ? '目标' : ''}目标`}
+              </span>
+              <button
+                className="primary"
+                disabled={!skillCanConfirm()}
+                onClick={confirmSkill}
+              >
+                确认技能
+              </button>
+              <button className="ghost" onClick={() => setSkillMode(null)}>
+                取消
+              </button>
+            </div>
+          )}
+
+          {/* 选目标提示 */}
+          {selected && prompt.kind === 'play' && (
+            <span className="hint">{selectedHint()}</span>
+          )}
+
+          {/* 弃权按钮（响应类提示） */}
           {prompt.kind === 'respondSha' && (
             <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
               弃权（不出闪）
@@ -427,6 +709,16 @@ export function Game() {
               弃权（不救）
             </button>
           )}
+          {prompt.kind === 'respondTrick' && (
+            <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
+              弃权
+            </button>
+          )}
+          {prompt.kind === 'wuxieQueue' && (
+            <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
+              不使用
+            </button>
+          )}
           {prompt.kind === 'discard' && (
             <button
               className="primary"
@@ -435,14 +727,6 @@ export function Game() {
             >
               弃牌（{picks.length}/{prompt.mustSelectTargetCount}）
             </button>
-          )}
-          {prompt.kind === 'play' && (
-            <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
-              结束出牌
-            </button>
-          )}
-          {selected && prompt.kind === 'play' && (
-            <span className="hint">请选择目标（点上方对手）</span>
           )}
         </div>
       ) : (
@@ -458,13 +742,23 @@ export function Game() {
           const isPick =
             (prompt?.kind === 'discard' && picks.includes(card.id)) ||
             (prompt?.kind === 'play' && selected?.cardId === card.id);
+          const isSkillCard = !!skillMode && skillMode.cardIds.includes(card.id);
+          const fireClass = card.type === 'sha' && card.attribute === 'fire' ? 'fire-attr' : '';
+          const thunderClass = card.type === 'sha' && card.attribute === 'thunder' ? 'thunder-attr' : '';
+          // 技能模式下需要选手牌 → 全手牌可点
+          const skillCardClickable = !!skillMode && skillMode.skill.needsCards;
+          const cardDisabled = skillMode ? !skillCardClickable : !legal;
           return (
             <button
               key={card.id}
-              className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''}`}
-              disabled={!legal}
+              className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass}`}
+              disabled={cardDisabled}
               onClick={() => {
                 if (!prompt) return;
+                if (skillMode) {
+                  if (skillCardClickable) toggleSkillCard(card.id);
+                  return;
+                }
                 if (prompt.kind === 'pickHero') return;
                 if (prompt.kind === 'play') pickPlayCard(card);
                 else if (prompt.kind === 'discard') togglePick(card.id);
@@ -472,7 +766,13 @@ export function Game() {
               }}
             >
               <span className="c-suit">{SUIT_NAME[card.suit]}</span>
-              <span className="c-type">{CARD_TYPE_NAME[card.type]}</span>
+              <span className="c-type">
+                {card.type === 'sha' && card.attribute === 'fire'
+                  ? '火杀'
+                  : card.type === 'sha' && card.attribute === 'thunder'
+                    ? '雷杀'
+                    : CARD_TYPE_NAME[card.type]}
+              </span>
             </button>
           );
         })}

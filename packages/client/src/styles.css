@@ -658,3 +658,138 @@ button:disabled {
   font-weight: 700;
   color: var(--gold);
 }
+
+/* —— 装备区 —— */
+.p-equip,
+.me-equip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+}
+.me-equip {
+  margin-left: 4px;
+}
+.equip-icon {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--text);
+  white-space: nowrap;
+}
+.equip-weapon {
+  background: #3a3020;
+  color: var(--gold);
+}
+.equip-armor {
+  background: #1e3040;
+  color: #7ab5d4;
+}
+.equip-plusMount {
+  background: #1e3a20;
+  color: #6ab56a;
+}
+.equip-minusMount {
+  background: #3a1e20;
+  color: #d47a6a;
+}
+
+/* —— 判定区 —— */
+.p-judge,
+.me-judge {
+  display: flex;
+  gap: 3px;
+  justify-content: center;
+}
+.me-judge {
+  margin-left: 4px;
+}
+.judge-icon {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #2a1e3a;
+  color: #b56ad4;
+  white-space: nowrap;
+}
+
+/* —— 火杀/雷杀 —— */
+.card.fire-attr {
+  border-color: #e85a2a;
+  box-shadow: 0 0 4px rgba(232, 90, 42, 0.4);
+}
+.card.thunder-attr {
+  border-color: #8a4ad4;
+  box-shadow: 0 0 4px rgba(138, 74, 212, 0.4);
+}
+
+/* —— 主动技能按钮 —— */
+.skill-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+.skill-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid var(--gold);
+  background: transparent;
+  color: var(--gold);
+  border-radius: 8px;
+  font-weight: 600;
+}
+.skill-btn:hover {
+  background: var(--panel-2);
+}
+
+/* —— 技能交互模式 —— */
+.skill-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* —— 响应类提示 —— */
+.prompt-respondTrick {
+  background: #3a2a20;
+  border: 1px solid #d47a2a;
+}
+.prompt-wuxieQueue {
+  background: #2a1e3a;
+  border: 1px solid #8a4ad4;
+}
+.prompt-activeSkill {
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+}
+
+/* —— 已选目标高亮 —— */
+.player.picked-target {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green);
+  animation: none;
+}
+
+/* —— 新增日志样式 —— */
+.log-equip {
+  color: var(--gold);
+}
+.log-judge,
+.log-lebu,
+.log-bingliang,
+.log-shandian {
+  color: #b56ad4;
+}
+.log-trick {
+  color: #d4a84b;
+}
+.log-skill {
+  color: #6ab5d4;
+}
+.log-reveal {
+  color: var(--green);
+}

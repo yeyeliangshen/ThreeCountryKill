@@ -40,6 +40,7 @@ interface Store {
   pickHero: (heroId: string) => void;
   pickHeroes: (heroId: string, deputyHeroId: string) => void;
   revealHero: (heroId: string) => void;
+  useSkill: (skillId: string, cardIds: string[], targetIds: string[]) => void;
   dismissError: () => void;
 }
 
@@ -198,6 +199,9 @@ export const useStore = create<Store>()((set, get) => {
       get().sendIntent({ type: 'pickHero', heroId, deputyHeroId }),
 
     revealHero: (heroId) => get().sendIntent({ type: 'revealHero', heroId }),
+
+    useSkill: (skillId, cardIds, targetIds) =>
+      get().sendIntent({ type: 'useSkill', skillId, cardIds, targetIds }),
 
     dismissError: () => set({ error: null }),
   };
