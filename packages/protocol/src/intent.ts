@@ -1,7 +1,7 @@
 import type { CardType } from './card';
 
 // 回合阶段
-export type Phase = 'draw' | 'play' | 'discard' | 'turnEnd' | 'gameOver' | 'draft';
+export type Phase = 'judgment' | 'draw' | 'play' | 'discard' | 'turnEnd' | 'gameOver' | 'draft';
 
 // 客户端发给服务端的"意图"：玩家想做什么
 // 服务端拿意图喂给引擎做权威判定，再裁剪广播

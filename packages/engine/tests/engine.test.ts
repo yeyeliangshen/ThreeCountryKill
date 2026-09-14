@@ -10,6 +10,9 @@ const sha = (id: string, suit: Suit = 'spade') => mk(id, 'sha', suit);
 const shan = (id: string, suit: Suit = 'heart') => mk(id, 'shan', suit);
 const tao = (id: string, suit: Suit = 'heart') => mk(id, 'tao', suit);
 const jiu = (id: string, suit: Suit = 'spade') => mk(id, 'jiu', suit);
+const lebu = (id: string, suit: Suit = 'spade') => mk(id, 'lebu', suit);
+const shandian = (id: string, suit: Suit = 'spade') => mk(id, 'shandian', suit);
+const bingliang = (id: string, suit: Suit = 'spade') => mk(id, 'bingliang', suit);
 
 interface SeatOpts {
   seatId: string;
@@ -911,5 +914,154 @@ describe('国战模式', () => {
     }
     expect(state.gameOver).toBe(true);
     expect(state.winner).toBe('shu');
+  });
+});
+
+// ——————————————————————————————————————————
+// 判定阶段与延时锦囊
+// ——————————————————————————————————————————
+describe('延时锦囊：放置', () => {
+  it('闪电：置于自己判定区', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [shandian('sd1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'sd1', targetIds: [] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.judgment).toHaveLength(1);
+    expect(a.judgment[0]!.type).toBe('shandian');
+    expect(a.hand).toHaveLength(0);
+  });
+
+  it('乐不思蜀：置于距离1内的目标判定区', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [lebu('lb1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [B] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.judgment).toHaveLength(1);
+    expect(b.judgment[0]!.type).toBe('lebu');
+  });
+
+  it('乐不思蜀：不能以自己为目标', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [lebu('lb1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [A] }));
+  });
+
+  it('乐不思蜀：距离>1的目标无效', () => {
+    // 4人圆桌：A 与 C 距离 2（无武器/马）
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [lebu('lb1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [C] }));
+  });
+
+  it('同类延时锦囊：目标判定区上限1张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [lebu('lb1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    fail(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [B] }));
+  });
+});
+
+describe('判定阶段：延时锦囊结算', () => {
+  it('乐不思蜀非红桃 → 跳过出牌阶段', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    // 控制判定牌：黑桃5（非红桃）置于牌堆顶（drawOne 从末尾 pop）
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    // A 结束出牌 → 弃牌(空手) → endTurn → startTurn(B)
+    ok(act(state, A, { type: 'endPhase' }));
+    // B 判定 skipPlay → 跳过出牌 → 弃牌 → endTurn → startTurn(C)
+    expect(b.flags.skipPlay).toBe(true);
+    expect(b.judgment).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: C });
+  });
+
+  it('乐不思蜀红桃 → 不跳过出牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    state.deck.push(mk('jc', 'tao', 'heart', 1));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.flags.skipPlay).toBe(false);
+    expect(b.judgment).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('兵粮寸断非梅花 → 跳过摸牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(bingliang('bl0'));
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.flags.skipDraw).toBe(true);
+    expect(b.hand).toHaveLength(0);
+    expect(b.judgment).toHaveLength(0);
+  });
+
+  it('兵粮寸断梅花 → 不跳过摸牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(bingliang('bl0'));
+    state.deck.push(mk('jc', 'sha', 'club', 5));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.flags.skipDraw).toBe(false);
+    expect(b.hand).toHaveLength(2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('闪电黑桃2-9 → 3点雷电伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.hp = 4;
+    b.judgment.push(shandian('sd0'));
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.hp).toBe(1);
+    expect(b.judgment).toHaveLength(0);
+  });
+
+  it('闪电非黑桃2-9 → 传递给下家', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(shandian('sd0'));
+    state.deck.push(mk('jc', 'tao', 'heart', 1));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.judgment).toHaveLength(0);
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.judgment).toHaveLength(1);
+    expect(c.judgment[0]!.type).toBe('shandian');
   });
 });

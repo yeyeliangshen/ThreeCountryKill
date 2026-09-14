@@ -1,5 +1,5 @@
 import type { Faction, GameMode, Intent, RoleId } from '@sgs/protocol';
-import { CARD_TYPE_NAME, EQUIP_NAME, isEquipCard } from '@sgs/protocol';
+import { CARD_TYPE_NAME, EQUIP_NAME, cardLabel, isDelayedTrick, isEquipCard } from '@sgs/protocol';
 import {
   alivePlayers,
   aliveSeatsFrom,
@@ -14,7 +14,7 @@ import {
   type Pending,
   type Player,
 } from './model';
-import { canTarget } from './distance';
+import { canTarget, distance } from './distance';
 import { buildDeck, drawOne, shuffle } from './deck';
 import {
   HEROES,
@@ -88,25 +88,145 @@ function runHooks(
 // ——————————————————————————————————————————
 
 function startTurn(state: GameState, seatIndex: number): void {
-  state.turn = { seatIndex, phase: 'draw' };
+  state.turn = { seatIndex, phase: 'judgment' };
   const player = getPlayerOrThrow(state, state.seatOrder[seatIndex]!);
   // 回合开始重置本回合标记
   player.flags = emptyFlags();
   runHooks(state, 'turnStart', player);
 
-  // 摸牌阶段：摸 2 张
+  // 判定阶段：处理判定区延时锦囊
+  state.turn.phase = 'judgment';
+  runHooks(state, 'judgePhase', player);
+  processJudgmentPhase(state, player);
+  // 闪电伤害可能导致濒死
+  if (player.hp <= 0) {
+    enterNearDeath(state, {
+      sourceId: player.seatId,
+      cardId: '',
+      asType: 'shandian',
+      targetId: player.seatId,
+      damage: 3,
+      dodged: false,
+      attribute: 'thunder',
+    });
+    return;
+  }
+
+  continueTurnAfterJudgment(state, player);
+}
+
+/** 判定阶段后继续：摸牌 → 出牌（处理 skipDraw/skipPlay） */
+function continueTurnAfterJudgment(state: GameState, player: Player): void {
+  // 摸牌阶段：摸 2 张（兵粮寸断可跳过）
   state.turn.phase = 'draw';
   runHooks(state, 'drawPhase', player);
-  for (let i = 0; i < 2; i++) {
-    const c = drawOne(state);
-    if (c) player.hand.push(c);
+  if (!player.flags.skipDraw) {
+    for (let i = 0; i < 2; i++) {
+      const c = drawOne(state);
+      if (c) player.hand.push(c);
+    }
+    pushLog(state, 'draw', `${player.name} 摸了 2 张牌。`);
+  } else {
+    pushLog(state, 'draw', `${player.name} 被【兵粮寸断】影响，跳过摸牌阶段。`);
   }
-  pushLog(state, 'draw', `${player.name} 摸了 2 张牌。`);
 
-  // 出牌阶段
-  state.turn.phase = 'play';
-  runHooks(state, 'playPhase', player);
-  state.pending = { kind: 'play', seatId: player.seatId };
+  // 出牌阶段（乐不思蜀可跳过）
+  if (!player.flags.skipPlay) {
+    state.turn.phase = 'play';
+    runHooks(state, 'playPhase', player);
+    state.pending = { kind: 'play', seatId: player.seatId };
+  } else {
+    pushLog(state, 'lebu', `${player.name} 被【乐不思蜀】影响，跳过出牌阶段。`);
+    goToDiscardPhase(state, player);
+  }
+}
+
+/** 进入弃牌阶段：检查手牌上限 */
+function goToDiscardPhase(state: GameState, player: Player): void {
+  state.turn.phase = 'discard';
+  runHooks(state, 'discardPhase', player);
+  const over = player.hand.length - handLimit(player);
+  if (over > 0) {
+    state.pending = { kind: 'discard', seatId: player.seatId, count: over };
+  } else {
+    endTurn(state);
+  }
+}
+
+/** 判定阶段：逐张处理判定区延时锦囊 */
+function processJudgmentPhase(state: GameState, player: Player): void {
+  const judgments = player.judgment.slice();
+  player.judgment = [];
+  for (const trick of judgments) {
+    const judgeCard = drawOne(state);
+    if (!judgeCard) break; // 牌堆耗尽
+    pushLog(
+      state,
+      'judge',
+      `${player.name} 判定：${cardLabel(judgeCard)}（${CARD_TYPE_NAME[trick.type]}）。`,
+    );
+
+    switch (trick.type) {
+      case 'lebu':
+        // 乐不思蜀：非红桃 → 跳过出牌阶段
+        if (judgeCard.suit !== 'heart') {
+          player.flags.skipPlay = true;
+          pushLog(state, 'lebu', `${player.name} 被【乐不思蜀】影响，将跳过出牌阶段。`);
+        } else {
+          pushLog(state, 'lebu', `${player.name} 的【乐不思蜀】判定为红桃，无效。`);
+        }
+        state.discard.push(trick);
+        break;
+      case 'bingliang':
+        // 兵粮寸断：非梅花 → 跳过摸牌阶段
+        if (judgeCard.suit !== 'club') {
+          player.flags.skipDraw = true;
+          pushLog(state, 'bingliang', `${player.name} 被【兵粮寸断】影响，将跳过摸牌阶段。`);
+        } else {
+          pushLog(state, 'bingliang', `${player.name} 的【兵粮寸断】判定为梅花，无效。`);
+        }
+        state.discard.push(trick);
+        break;
+      case 'shandian': {
+        // 闪电：黑桃2-9 → 3点雷电伤害+弃闪电；否则 → 移到下家判定区
+        if (judgeCard.suit === 'spade' && judgeCard.rank >= 2 && judgeCard.rank <= 9) {
+          pushLog(
+            state,
+            'shandian',
+            `${player.name} 的【闪电】判定为黑桃${judgeCard.rank}，受到3点雷电伤害！`,
+          );
+          state.discard.push(trick);
+          player.hp -= 3;
+          runHooks(state, 'damageDealt', player, { damage: 3, attribute: 'thunder' });
+          runHooks(state, 'afterDamage', player, { damage: 3, attribute: 'thunder' });
+          pushLog(
+            state,
+            'damage',
+            `${player.name} 受到 3 点雷电伤害，剩余 ${Math.max(0, player.hp)} 体力。`,
+          );
+        } else {
+          // 不触发 → 移到下家判定区
+          const nextIdx = nextAliveSeat(state, state.seatOrder.indexOf(player.seatId));
+          const nextPlayer = getPlayer(state, state.seatOrder[nextIdx]!);
+          if (nextPlayer && nextPlayer.seatId !== player.seatId) {
+            nextPlayer.judgment.push(trick);
+            pushLog(
+              state,
+              'shandian',
+              `${player.name} 的【闪电】判定不触发，【闪电】移到 ${nextPlayer.name} 的判定区。`,
+            );
+          } else {
+            state.discard.push(trick);
+          }
+        }
+        break;
+      }
+      default:
+        state.discard.push(trick);
+        break;
+    }
+    state.discard.push(judgeCard);
+  }
 }
 
 function endTurn(state: GameState): void {
@@ -134,6 +254,11 @@ function resumePlay(state: GameState, sourceId: string): void {
   const source = getPlayer(state, sourceId);
   if (!source || !source.alive) {
     endTurn(state);
+    return;
+  }
+  // 判定阶段濒死恢复 → 继续到摸牌阶段
+  if (state.turn.phase === 'judgment') {
+    continueTurnAfterJudgment(state, source);
     return;
   }
   state.turn.phase = 'play';
@@ -418,6 +543,7 @@ function onPlayCard(
   if (as === 'tao') return playTao(state, player, card);
   if (as === 'jiu') return playJiu(state, player, card);
   if (isEquipCard(card)) return playEquip(state, player, card);
+  if (isDelayedTrick(card)) return playDelayedTrick(state, player, card, intent.targetIds);
   return err('该牌不能在出牌阶段主动使用');
 }
 
@@ -461,6 +587,47 @@ function playEquip(
   player.equipment[slot] = card;
   const name = card.equipName ? EQUIP_NAME[card.equipName] : CARD_TYPE_NAME[card.type];
   pushLog(state, 'equip', `${player.name} 装备了【${name}】。`);
+  runHooks(state, 'useCard', player, { card });
+  return { ok: true };
+}
+
+/** 延时锦囊：放入目标判定区
+ *  闪电→置于自己判定区；乐不思蜀/兵粮寸断→目标为他人且距离≤1
+ *  判定区同类延时锦囊上限1张 */
+function playDelayedTrick(
+  state: GameState,
+  player: Player,
+  card: import('@sgs/protocol').Card,
+  targetIds: string[],
+): ApplyResult {
+  const type = card.type as 'lebu' | 'shandian' | 'bingliang';
+  if (type === 'shandian') {
+    // 闪电：置于自己判定区
+    if (player.judgment.some((t) => t.type === 'shandian'))
+      return err('你的判定区已有【闪电】');
+    removeCard(player.hand, card.id);
+    player.judgment.push(card);
+    pushLog(state, 'shandian', `${player.name} 将【闪电】置于自己的判定区。`);
+    runHooks(state, 'useCard', player, { card });
+    return { ok: true };
+  }
+  // 乐不思蜀 / 兵粮寸断：目标为其他存活玩家，距离≤1
+  if (targetIds.length !== 1) return err('需指定 1 名目标');
+  const targetId = targetIds[0]!;
+  if (targetId === player.seatId) return err('不能以自己为目标');
+  const target = getPlayer(state, targetId);
+  if (!target || !target.alive) return err('目标无效');
+  if (distance(state, player.seatId, targetId) > 1)
+    return err('目标超出距离1');
+  if (target.judgment.some((t) => t.type === type))
+    return err('目标判定区已有同类延时锦囊');
+  removeCard(player.hand, card.id);
+  target.judgment.push(card);
+  pushLog(
+    state,
+    type,
+    `${player.name} 将【${CARD_TYPE_NAME[type]}】置于 ${target.name} 的判定区。`,
+  );
   runHooks(state, 'useCard', player, { card });
   return { ok: true };
 }
@@ -557,15 +724,7 @@ function onEndPhase(state: GameState, seatId: string): ApplyResult {
   if (pending.kind !== 'play' || pending.seatId !== seatId)
     return err('不是你的出牌阶段');
   const player = getPlayerOrThrow(state, seatId);
-  // 进入弃牌阶段
-  state.turn.phase = 'discard';
-  runHooks(state, 'discardPhase', player);
-  const over = player.hand.length - handLimit(player);
-  if (over > 0) {
-    state.pending = { kind: 'discard', seatId, count: over };
-  } else {
-    endTurn(state);
-  }
+  goToDiscardPhase(state, player);
   return { ok: true };
 }
 

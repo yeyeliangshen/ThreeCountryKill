@@ -1,9 +1,10 @@
 import type { PromptView } from '@sgs/protocol';
-import { isEquipCard } from '@sgs/protocol';
+import { isDelayedTrick, isEquipCard } from '@sgs/protocol';
 import type { GameState } from './model';
 import { getPlayerOrThrow } from './model';
 import { heroCanUseAs, heroShaLimit } from './heroes';
 import { activeHeroes } from './engine';
+import { distance } from './distance';
 
 // 根据 pending 状态，给"被询问的玩家"构建提示（含合法选项）。
 // 其它玩家的 prompt 为 null（他们只是在等待）。
@@ -64,6 +65,29 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     if (isEquipCard(card)) {
       legalCardIds.push(card.id);
       seen.add(card.id);
+      continue;
+    }
+    // 延时锦囊：闪电→自己判定区无同类即可；乐不思蜀/兵粮寸断→存在可达目标(distance≤1且目标判定区无同类)
+    if (isDelayedTrick(card)) {
+      const trickType = card.type as 'lebu' | 'shandian' | 'bingliang';
+      if (trickType === 'shandian') {
+        if (!player.judgment.some((t) => t.type === 'shandian')) {
+          legalCardIds.push(card.id);
+          seen.add(card.id);
+        }
+      } else {
+        const hasTarget = state.players.some(
+          (p) =>
+            p.alive &&
+            p.seatId !== seatId &&
+            !p.judgment.some((t) => t.type === trickType) &&
+            distance(state, seatId, p.seatId) <= 1,
+        );
+        if (hasTarget) {
+          legalCardIds.push(card.id);
+          seen.add(card.id);
+        }
+      }
       continue;
     }
     // 杀（或可转化的红牌）——受出杀上限限制

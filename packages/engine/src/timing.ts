@@ -5,6 +5,7 @@ import type { GameState, Player } from './model';
 // 武将触发技可挂在某时机上，对结算进行修改/打断（首期 2 武将不用，但机制就位）。
 export type Timing =
   | 'turnStart'
+  | 'judgePhase' // 判定阶段开始
   | 'drawPhase'
   | 'playPhase'
   | 'discardPhase'
