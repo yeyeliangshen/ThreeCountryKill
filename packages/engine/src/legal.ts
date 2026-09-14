@@ -1,4 +1,5 @@
 import type { PromptView } from '@sgs/protocol';
+import { isEquipCard } from '@sgs/protocol';
 import type { GameState } from './model';
 import { getPlayerOrThrow } from './model';
 import { heroCanUseAs, heroShaLimit } from './heroes';
@@ -51,12 +52,20 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
 function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   const heroes = activeHeroes(state, player);
-  const maxSha = Math.max(1, ...heroes.map(heroShaLimit));
+  // 诸葛连弩：本回合可出无限杀
+  const hasZhuge = player.equipment.weapon?.equipName === 'zhuge';
+  const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
   const canSha = player.flags.shaCountThisTurn < maxSha;
   const legalCardIds: string[] = [];
   const seen = new Set<string>();
   for (const card of player.hand) {
     if (seen.has(card.id)) continue;
+    // 装备牌：总是可使用
+    if (isEquipCard(card)) {
+      legalCardIds.push(card.id);
+      seen.add(card.id);
+      continue;
+    }
     // 杀（或可转化的红牌）——受出杀上限限制
     if (canSha && (card.type === 'sha' || heroes.some((h) => heroCanUseAs(h, card, 'sha')))) {
       legalCardIds.push(card.id);
@@ -83,7 +92,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     message: '你的出牌阶段：出牌或结束',
     legalCardIds,
     legalTargetIds,
-    mustSelectTargetCount: 1,
+    // 装备/桃/酒不需要目标；杀需1目标，客户端按牌类型判断
+    mustSelectTargetCount: 0,
   };
 }
 

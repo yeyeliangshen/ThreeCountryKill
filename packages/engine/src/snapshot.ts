@@ -31,7 +31,9 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     maxHp: p.maxHp,
     handCount: p.hand.length,
     isAlive: p.alive,
-    equipmentCount: p.equipment.length,
+    equipmentCount: [p.equipment.weapon, p.equipment.armor, p.equipment.plusMount, p.equipment.minusMount].filter(
+      Boolean,
+    ).length,
     judgmentCount: p.judgment.length,
     // 身份：主公公开；阵亡后亮身份；游戏结束全员亮身份；其余仅本人可见
     role: isMe || isLord || !p.alive || state.gameOver ? p.role : null,

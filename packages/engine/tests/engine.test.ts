@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyIntent, createGame, getHero, toSnapshot, type GameState, type SeatSetup } from '../src';
+import { applyIntent, createGame, getHero, toSnapshot, emptyFlags, type GameState, type SeatSetup } from '../src';
 import type { Card, CardType, Faction, GameMode, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
@@ -36,7 +36,7 @@ function makeGame(seats: SeatOpts[]): GameState {
     p.maxHp = hero?.maxHp ?? 4;
     p.hp = s.hp ?? p.maxHp;
     p.hand = s.hand.slice();
-    p.flags = { shaCountThisTurn: 0, jiuActive: false };
+    p.flags = emptyFlags();
   }
   // 让第一个玩家进入出牌阶段（覆盖 createGame 的默认开局）
   const first = state.seatOrder[0]!;
@@ -62,7 +62,7 @@ function makeGameMode(seats: SeatOpts[], mode: GameMode): GameState {
     p.maxHp = hero?.maxHp ?? 4;
     p.hp = s.hp ?? p.maxHp;
     p.hand = s.hand.slice();
-    p.flags = { shaCountThisTurn: 0, jiuActive: false };
+    p.flags = emptyFlags();
   }
   const first = state.seatOrder[0]!;
   state.turn = { seatIndex: 0, phase: 'play' };
@@ -506,6 +506,8 @@ describe('军争模式', () => {
     state.turn = { seatIndex: attackerIdx, phase: 'play' };
     state.pending = { kind: 'play', seatId: attacker.seatId };
     attacker.hand = [sha('a1')];
+    // 给攻击者装武器（方天画戟 range 4），确保距离足够打到主公
+    attacker.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'spade', rank: 5, equipName: 'fangtian', range: 4 };
     ok(act(state, attacker.seatId, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
     ok(act(state, lord.seatId, { type: 'pass' })); // 主公不出闪
     // 主公濒死，全员弃权（不出桃救）
@@ -624,6 +626,7 @@ describe('军争模式', () => {
     state.turn = { seatIndex: attackerIdx, phase: 'play' };
     state.pending = { kind: 'play', seatId: attacker.seatId };
     attacker.hand = [sha('a1')];
+    attacker.equipment.weapon = { id: 'w2', type: 'weapon', suit: 'spade', rank: 5, equipName: 'fangtian', range: 4 };
     ok(act(state, attacker.seatId, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
     ok(act(state, lord.seatId, { type: 'pass' }));
     if (state.pending?.kind === 'respondDeath') {
@@ -669,7 +672,7 @@ describe('国战模式', () => {
       p.maxHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
       p.hp = s.hp ?? p.maxHp;
       p.hand = s.hand.slice();
-      p.flags = { shaCountThisTurn: 0, jiuActive: false };
+      p.flags = emptyFlags();
     }
     const first = state.seatOrder[0]!;
     state.turn = { seatIndex: 0, phase: 'play' };

@@ -1,7 +1,10 @@
 import type { Faction, GameMode, Intent, RoleId } from '@sgs/protocol';
+import { CARD_TYPE_NAME, EQUIP_NAME, isEquipCard } from '@sgs/protocol';
 import {
   alivePlayers,
   aliveSeatsFrom,
+  emptyEquipment,
+  emptyFlags,
   getPlayer,
   getPlayerOrThrow,
   nextAliveSeat,
@@ -11,6 +14,7 @@ import {
   type Pending,
   type Player,
 } from './model';
+import { canTarget } from './distance';
 import { buildDeck, drawOne, shuffle } from './deck';
 import {
   HEROES,
@@ -87,7 +91,7 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.turn = { seatIndex, phase: 'draw' };
   const player = getPlayerOrThrow(state, state.seatOrder[seatIndex]!);
   // 回合开始重置本回合标记
-  player.flags = { shaCountThisTurn: 0, jiuActive: false };
+  player.flags = emptyFlags();
   runHooks(state, 'turnStart', player);
 
   // 摸牌阶段：摸 2 张
@@ -148,7 +152,9 @@ function playSha(
   asType: import('@sgs/protocol').CardType,
 ): ApplyResult {
   const heroes = activeHeroes(state, source);
-  const maxSha = Math.max(1, ...heroes.map(heroShaLimit));
+  // 诸葛连弩：本回合可出无限杀
+  const hasZhuge = source.equipment.weapon?.equipName === 'zhuge';
+  const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
   if (source.flags.shaCountThisTurn >= maxSha)
     return err('本回合出杀数已达上限');
   if (targetIds.length !== 1) return err('杀需指定 1 名目标');
@@ -156,6 +162,9 @@ function playSha(
   if (targetId === source.seatId) return err('不能对自己使用杀');
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) return err('目标无效');
+  // 距离校验：攻击范围 ≥ 距离
+  if (!canTarget(state, source.seatId, targetId))
+    return err('目标超出攻击范围');
 
   removeCard(source.hand, card.id);
   state.discard.push(card);
@@ -175,6 +184,8 @@ function playSha(
     targetId,
     damage,
     dodged: false,
+    attribute: card.attribute,
+    requiredShan: 1,
   };
   pushLog(state, 'sha', `${source.name} 对 ${target.name} 使用了【杀】。`);
   runHooks(state, 'useCard', source, { attack });
@@ -328,8 +339,11 @@ function doDeath(state: GameState, dyingId: string): void {
   // 阵亡：手牌 / 装备 / 判定区全部进弃牌堆
   for (const c of dying.hand) state.discard.push(c);
   dying.hand = [];
-  for (const c of dying.equipment) state.discard.push(c);
-  dying.equipment = [];
+  const eq = dying.equipment;
+  for (const c of [eq.weapon, eq.armor, eq.plusMount, eq.minusMount]) {
+    if (c) state.discard.push(c);
+  }
+  dying.equipment = emptyEquipment();
   for (const c of dying.judgment) state.discard.push(c);
   dying.judgment = [];
   // 国战：阵亡时亮双将
@@ -403,6 +417,7 @@ function onPlayCard(
   if (as === 'sha') return playSha(state, player, card, intent.targetIds, as);
   if (as === 'tao') return playTao(state, player, card);
   if (as === 'jiu') return playJiu(state, player, card);
+  if (isEquipCard(card)) return playEquip(state, player, card);
   return err('该牌不能在出牌阶段主动使用');
 }
 
@@ -429,6 +444,23 @@ function playJiu(
   state.discard.push(card);
   player.flags.jiuActive = true;
   pushLog(state, 'jiu', `${player.name} 使用了【酒】，下一张杀伤害+1。`);
+  runHooks(state, 'useCard', player, { card });
+  return { ok: true };
+}
+
+/** 装备牌：放入对应槽位，旧装备进弃牌堆 */
+function playEquip(
+  state: GameState,
+  player: Player,
+  card: import('@sgs/protocol').Card,
+): ApplyResult {
+  removeCard(player.hand, card.id);
+  const slot = card.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount';
+  const old = player.equipment[slot];
+  if (old) state.discard.push(old);
+  player.equipment[slot] = card;
+  const name = card.equipName ? EQUIP_NAME[card.equipName] : CARD_TYPE_NAME[card.type];
+  pushLog(state, 'equip', `${player.name} 装备了【${name}】。`);
   runHooks(state, 'useCard', player, { card });
   return { ok: true };
 }
@@ -483,8 +515,12 @@ function respondDeathSave(
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
   if (card.type !== 'tao' && card.type !== 'jiu' && !heroes.some((h) => heroCanUseAs(h, card, 'tao')))
     return err('只能用【桃】（或【酒】当桃）救人');
+  // 酒当桃救人：限1次/回合
+  if (card.type === 'jiu' && saver.flags.taoSaveCountThisTurn > 0)
+    return err('本回合已用过酒救人');
   removeCard(saver.hand, card.id);
   state.discard.push(card);
+  if (card.type === 'jiu') saver.flags.taoSaveCountThisTurn++;
   const dying = getPlayerOrThrow(state, pending.dyingId);
   dying.hp = Math.max(dying.hp, 0) + 1;
   pushLog(
@@ -614,10 +650,10 @@ export function createGame(
     hp: 0,
     maxHp: 0,
     hand: [],
-    equipment: [],
+    equipment: emptyEquipment(),
     judgment: [],
     alive: true,
-    flags: { shaCountThisTurn: 0, jiuActive: false },
+    flags: emptyFlags(),
     role: null,
     team: null,
     heroRevealed: !isGuozhan, // 非国战恒 true，国战开局暗置

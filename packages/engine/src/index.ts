@@ -2,6 +2,7 @@
 export * from './model';
 export * from './timing';
 export * from './heroes';
+export * from './distance';
 export { createGame, applyIntent, type SeatSetup, type ApplyResult } from './engine';
 export { toSnapshot } from './snapshot';
 export { buildPrompt } from './legal';

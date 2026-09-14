@@ -1,4 +1,17 @@
-import type { Card, CardType, Faction, GameMode, LogEntry, Phase, RoleId } from '@sgs/protocol';
+import type { Card, CardType, DamageAttribute, Faction, GameMode, LogEntry, Phase, RoleId } from '@sgs/protocol';
+
+// —— 装备区 ——
+/** 4 个槽位：武器 / 防具 / +1马(防御马) / −1马(进攻马) */
+export interface Equipment {
+  weapon: Card | null;
+  armor: Card | null;
+  plusMount: Card | null;
+  minusMount: Card | null;
+}
+
+export function emptyEquipment(): Equipment {
+  return { weapon: null, armor: null, plusMount: null, minusMount: null };
+}
 
 // —— 玩家状态 ——
 export interface PlayerFlags {
@@ -6,6 +19,25 @@ export interface PlayerFlags {
   shaCountThisTurn: number;
   /** 本回合酒buff：下一张杀伤害+1 */
   jiuActive: boolean;
+  /** 本回合已用酒救次数（限1次/回合） */
+  taoSaveCountThisTurn: number;
+  /** 本回合已用主动技能标记 */
+  skillUsedThisTurn: Record<string, boolean>;
+  /** 跳过出牌阶段（乐不思蜀） */
+  skipPlay: boolean;
+  /** 跳过摸牌阶段（兵粮寸断） */
+  skipDraw: boolean;
+}
+
+export function emptyFlags(): PlayerFlags {
+  return {
+    shaCountThisTurn: 0,
+    jiuActive: false,
+    taoSaveCountThisTurn: 0,
+    skillUsedThisTurn: {},
+    skipPlay: false,
+    skipDraw: false,
+  };
 }
 
 export interface Player {
@@ -15,8 +47,8 @@ export interface Player {
   hp: number;
   maxHp: number;
   hand: Card[];
-  equipment: Card[]; // 首期为空，留结构
-  judgment: Card[]; // 首期为空，留结构
+  equipment: Equipment;
+  judgment: Card[]; // 延时锦囊判定区
   alive: boolean;
   flags: PlayerFlags;
   role: RoleId | null; // 身份（军争），选将阶段未定
@@ -36,6 +68,10 @@ export interface AttackContext {
   targetId: string;
   damage: number;
   dodged: boolean;
+  /** 伤害属性（火/雷） */
+  attribute?: DamageAttribute;
+  /** 需要的闪数（默认1，吕布·无双=2，马超·铁骑/黄忠·烈弓=Infinity 不可闪避） */
+  requiredShan?: number;
 }
 
 // 引擎"暂停等待玩家输入"的几种状态
