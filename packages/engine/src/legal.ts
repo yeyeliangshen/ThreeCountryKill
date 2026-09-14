@@ -54,6 +54,10 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
     case 'wuxieQueue':
       if (pending.askQueue[pending.askIndex] !== seatId) return null;
       return buildWuxiePrompt(state, seatId, pending.ctx);
+
+    case 'activeSkill':
+      // 多步技能交互的提示由具体技能构建（Step 6 实现）
+      return null;
   }
   return null;
 }
@@ -143,6 +147,18 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const legalTargetIds = state.players
     .filter((p) => p.alive && p.seatId !== seatId)
     .map((p) => p.seatId);
+  // 可用主动技能
+  const legalSkillIds: string[] = [];
+  for (const hero of heroes) {
+    for (const skill of hero.activeSkills ?? []) {
+      if (
+        skill.canUse(state, player) &&
+        !(skill.oncePerTurn && player.flags.skillUsedThisTurn[skill.id])
+      ) {
+        legalSkillIds.push(skill.id);
+      }
+    }
+  }
   return {
     kind: 'play',
     message: '你的出牌阶段：出牌或结束',
@@ -150,6 +166,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     legalTargetIds,
     // 装备/桃/酒不需要目标；杀需1目标，客户端按牌类型判断
     mustSelectTargetCount: 0,
+    legalSkillIds,
   };
 }
 

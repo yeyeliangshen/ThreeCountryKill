@@ -105,7 +105,9 @@ export type Pending =
   // 锦囊响应：出杀(南蛮/决斗/借刀)/出闪(万箭)/展示牌(火攻)/弃牌(火攻)
   | { kind: 'respondTrick'; responderId: string; ctx: TrickContext }
   // 无懈可击询问轮：全体依次可打出无懈
-  | { kind: 'wuxieQueue'; ctx: TrickContext; askQueue: string[]; askIndex: number };
+  | { kind: 'wuxieQueue'; ctx: TrickContext; askQueue: string[]; askIndex: number }
+  // 主动技能：出牌阶段使用主动技能（多步交互时暂停）
+  | { kind: 'activeSkill'; seatId: string; skillId: string };
 
 // 选将阶段：每人随机发到 K 张武将，各自选 1（并发，全选完才开局）
 export interface DraftState {

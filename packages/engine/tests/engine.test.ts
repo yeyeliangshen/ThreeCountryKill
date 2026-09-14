@@ -1342,3 +1342,29 @@ describe('判定阶段：延时锦囊结算', () => {
     expect(c.judgment[0]!.type).toBe('shandian');
   });
 });
+
+// ——————————————————————————————————————————
+
+describe('主动技能框架', () => {
+  it('useSkill 路由：无该技能 → 失败', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(
+      act(state, A, { type: 'useSkill', skillId: 'nonexistent', targetIds: [] }),
+    );
+  });
+
+  it('useSkill 非出牌阶段 → 失败', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    // A 对 B 出杀 → 进入 respondSha，B 尝试用技能 → 应失败
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    fail(
+      act(state, B, { type: 'useSkill', skillId: 'test', targetIds: [] }),
+    );
+  });
+});

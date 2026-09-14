@@ -1,11 +1,13 @@
+import type { Card } from '@sgs/protocol';
 import type { GameState, Player } from './model';
 
 // 事件时序点（时机）。
 // 引擎自身控制流会按这些顺序推进，并在每个时机调用 runHooks；
-// 武将触发技可挂在某时机上，对结算进行修改/打断（首期 2 武将不用，但机制就位）。
+// 武将触发技可挂在某时机上，对结算进行修改/打断。
 export type Timing =
   | 'turnStart'
   | 'judgePhase' // 判定阶段开始
+  | 'beforeJudge' // 判定牌生效前（鬼才替判）
   | 'drawPhase'
   | 'playPhase'
   | 'discardPhase'
@@ -28,10 +30,12 @@ export interface HookContext {
   payload?: unknown;
 }
 
-// 钩子返回：{ cancel: true } 可取消当前事件（对应"打断"）
+// 钩子返回：
+//   { cancel: true } → 取消当前事件（becomeTarget 时 = 自动闪避）
+//   { replaceCard } → 替换判定牌（beforeJudge 时 = 鬼才替判）
 export type HookResult =
   | void
-  | { cancel?: boolean };
+  | { cancel?: boolean; replaceCard?: Card };
 
 export type HookHandler = (ctx: HookContext) => HookResult;
 

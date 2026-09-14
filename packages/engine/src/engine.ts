@@ -24,6 +24,7 @@ import {
   heroCanUseAs,
   heroShaLimit,
   ROLE_NAME,
+  type ActiveSkill,
   type Hero,
 } from './heroes';
 import type { HookContext, Timing } from './timing';
@@ -159,13 +160,26 @@ function processJudgmentPhase(state: GameState, player: Player): void {
   const judgments = player.judgment.slice();
   player.judgment = [];
   for (const trick of judgments) {
-    const judgeCard = drawOne(state);
+    let judgeCard = drawOne(state);
     if (!judgeCard) break; // 牌堆耗尽
     pushLog(
       state,
       'judge',
       `${player.name} 判定：${cardLabel(judgeCard)}（${CARD_TYPE_NAME[trick.type]}）。`,
     );
+
+    // beforeJudge：鬼才等技能可替换判定牌
+    const judgeHeroes = activeHeroes(state, player);
+    const judgeHooks = judgeHeroes.flatMap((h) => h.hooks?.filter((hk) => hk.timing === 'beforeJudge') ?? []);
+    judgeHooks.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+    for (const hk of judgeHooks) {
+      const res = hk.handler({ state, player, timing: 'beforeJudge', payload: { trick, judgeCard } });
+      if (res?.replaceCard) {
+        state.discard.push(judgeCard);
+        judgeCard = res.replaceCard;
+        pushLog(state, 'judge', `${player.name} 将判定牌替换为${cardLabel(judgeCard)}。`);
+      }
+    }
 
     switch (trick.type) {
       case 'lebu':
@@ -327,7 +341,12 @@ function playSha(
   };
   pushLog(state, 'sha', `${source.name} 对 ${target.name} 使用了【杀】。`);
   runHooks(state, 'useCard', source, { attack });
-  runHooks(state, 'becomeTarget', target, { attack });
+  if (!runHooks(state, 'becomeTarget', target, { attack })) {
+    // becomeTarget 被取消 → 自动闪避（如八卦阵/被动闪避技）
+    attack.dodged = true;
+    finishAttack(state, attack);
+    return { ok: true };
+  }
 
   // 暂停：等待目标响应（出闪或弃权）
   state.pending = { kind: 'respondSha', responderId: targetId, attack };
@@ -527,6 +546,8 @@ export function applyIntent(
       return onDiscard(state, seatId, intent);
     case 'revealHero':
       return onRevealHero(state, seatId, intent);
+    case 'useSkill':
+      return onUseSkill(state, seatId, intent);
     default:
       return err('未知意图');
   }
@@ -1148,7 +1169,11 @@ function respondJiedaoSha(
     requiredShan: 1,
   };
   runHooks(state, 'useCard', holder, { card });
-  runHooks(state, 'becomeTarget', shaTarget, { attack });
+  if (!runHooks(state, 'becomeTarget', shaTarget, { attack })) {
+    attack.dodged = true;
+    finishAttack(state, attack);
+    return { ok: true };
+  }
   state.pending = { kind: 'respondSha', responderId: shaTargetId, attack };
   return { ok: true };
 }
@@ -1423,6 +1448,55 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
     pushLog(state, 'reveal', `${player.name} 亮将：${hero?.name ?? '未知'}。`);
   } else {
     return err('该武将不是你的武将');
+  }
+  return { ok: true };
+}
+
+/** 主动技能：出牌阶段使用武将主动技能 */
+function onUseSkill(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'useSkill' }>,
+): ApplyResult {
+  const pending = state.pending!;
+  if (pending.kind !== 'play' || pending.seatId !== seatId)
+    return err('不是你的出牌阶段');
+  const player = getPlayerOrThrow(state, seatId);
+  const heroes = activeHeroes(state, player);
+  // 查找技能
+  let skill: ActiveSkill | undefined;
+  for (const hero of heroes) {
+    skill = hero.activeSkills?.find((s) => s.id === intent.skillId);
+    if (skill) break;
+  }
+  if (!skill) return err('你没有这个技能');
+  // 检查可用性
+  if (!skill.canUse(state, player)) return err('该技能当前不可使用');
+  // 限 1 次/回合
+  if (skill.oncePerTurn && player.flags.skillUsedThisTurn[skill.id])
+    return err('该技能本回合已使用');
+  // 目标数校验
+  if (
+    intent.targetIds.length < skill.minTargets ||
+    intent.targetIds.length > skill.maxTargets
+  )
+    return err(`目标数量不符（需 ${skill.minTargets}-${skill.maxTargets}）`);
+  // 弃牌校验
+  if (skill.needsCards) {
+    if (!intent.cardIds || intent.cardIds.length === 0)
+      return err('该技能需要弃牌');
+    for (const id of intent.cardIds) {
+      if (!player.hand.some((c) => c.id === id)) return err('弃的牌不在手中');
+    }
+  }
+  // 标记已使用（执行前标记，防重入）
+  if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = true;
+  // 执行
+  const result = skill.execute(state, player, intent);
+  if (typeof result === 'string') {
+    // 执行失败：回滚标记
+    if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = false;
+    return err(result);
   }
   return { ok: true };
 }

@@ -20,4 +20,6 @@ export type Intent =
   // 选将阶段：从发到的武将中选 1 位（国战选 2 位，副将 id 传 deputyHeroId）
   | { type: 'pickHero'; heroId: string; deputyHeroId?: string }
   // 国战：出牌阶段主动亮将（传入要亮的武将 id）
-  | { type: 'revealHero'; heroId: string };
+  | { type: 'revealHero'; heroId: string }
+  // 主动技能：出牌阶段使用武将主动技能（制衡/苦肉/离间等）
+  | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] };

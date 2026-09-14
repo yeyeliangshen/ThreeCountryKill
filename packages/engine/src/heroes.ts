@@ -1,13 +1,35 @@
 import { isRed } from '@sgs/protocol';
-import type { Card, CardType, Faction, RoleId } from '@sgs/protocol';
+import type { Card, CardType, Faction, Intent, RoleId } from '@sgs/protocol';
 import type { HookRegistration } from './timing';
-import type { AttackContext } from './model';
+import type { AttackContext, GameState, Player } from './model';
 
 // —— 武将定义 ——
 // canUseAs：转化技（能否把 card 当 type 使用/打出）。
 // shaLimit：被动修改器（本回合最多可出杀数，默认 1）。
 // hooks：触发技钩子。
+// activeSkills：主动技能（出牌阶段可主动发动）。
 // skills：UI 展示用技能描述。
+
+/** 主动技能接口 */
+export interface ActiveSkill {
+  id: string;
+  name: string;
+  /** 限 1 次/回合 */
+  oncePerTurn?: boolean;
+  /** 目标数范围 */
+  minTargets: number;
+  maxTargets: number;
+  /** 是否需要弃牌（制衡/苦肉/离间） */
+  needsCards?: boolean;
+  /** 当前是否可用 */
+  canUse: (state: GameState, player: Player) => boolean;
+  /** 执行技能：返回 void=成功，string=错误消息 */
+  execute: (
+    state: GameState,
+    player: Player,
+    intent: Extract<Intent, { type: 'useSkill' }>,
+  ) => void | string;
+}
 
 export interface Hero {
   id: string;
@@ -29,6 +51,8 @@ export interface Hero {
   shaLimit?: () => number;
   /** 触发技钩子 */
   hooks?: HookRegistration[];
+  /** 主动技能 */
+  activeSkills?: ActiveSkill[];
   /** UI 展示用技能描述 */
   skills: { name: string; desc: string }[];
 }

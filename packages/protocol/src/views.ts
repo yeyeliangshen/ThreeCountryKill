@@ -45,7 +45,8 @@ export type PromptKind =
   | 'discard'
   | 'pickHero'
   | 'respondTrick'
-  | 'wuxieQueue';
+  | 'wuxieQueue'
+  | 'activeSkill';
 
 // 告诉玩家当前需要做什么 + 合法选项（服务端权威计算后下发）
 export interface PromptView {
@@ -59,6 +60,8 @@ export interface PromptView {
   mustSelectTargetCount: number;
   // 选将阶段：发给我的武将 id 列表（仅 pickHero 有）
   legalHeroIds?: string[];
+  // 出牌阶段：可用的主动技能 id 列表（仅 play 有）
+  legalSkillIds?: string[];
 }
 
 export interface LogEntry {
