@@ -26,6 +26,7 @@ import {
   ROLE_NAME,
   type ActiveSkill,
   type Hero,
+  type SkillApi,
 } from './heroes';
 import type { HookContext, Timing } from './timing';
 
@@ -168,16 +169,19 @@ function processJudgmentPhase(state: GameState, player: Player): void {
       `${player.name} 判定：${cardLabel(judgeCard)}（${CARD_TYPE_NAME[trick.type]}）。`,
     );
 
-    // beforeJudge：鬼才等技能可替换判定牌
-    const judgeHeroes = activeHeroes(state, player);
-    const judgeHooks = judgeHeroes.flatMap((h) => h.hooks?.filter((hk) => hk.timing === 'beforeJudge') ?? []);
-    judgeHooks.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
-    for (const hk of judgeHooks) {
-      const res = hk.handler({ state, player, timing: 'beforeJudge', payload: { trick, judgeCard } });
-      if (res?.replaceCard) {
-        state.discard.push(judgeCard);
-        judgeCard = res.replaceCard;
-        pushLog(state, 'judge', `${player.name} 将判定牌替换为${cardLabel(judgeCard)}。`);
+    // beforeJudge：鬼才等技能可替换判定牌（所有存活玩家均可触发）
+    for (const p of state.players) {
+      if (!p.alive) continue;
+      const judgeHeroes = activeHeroes(state, p);
+      const judgeHooks = judgeHeroes.flatMap((h) => h.hooks?.filter((hk) => hk.timing === 'beforeJudge') ?? []);
+      judgeHooks.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+      for (const hk of judgeHooks) {
+        const res = hk.handler({ state, player: p, timing: 'beforeJudge', payload: { trick, judgeCard } });
+        if (res?.replaceCard) {
+          state.discard.push(judgeCard);
+          judgeCard = res.replaceCard;
+          pushLog(state, 'judge', `${p.name} 将判定牌替换为${cardLabel(judgeCard)}。`);
+        }
       }
     }
 
@@ -344,6 +348,12 @@ function playSha(
   if (!runHooks(state, 'becomeTarget', target, { attack })) {
     // becomeTarget 被取消 → 自动闪避（如八卦阵/被动闪避技）
     attack.dodged = true;
+    finishAttack(state, attack);
+    return { ok: true };
+  }
+
+  // 不可闪避（马超·铁骑/黄忠·烈弓判定为红色或满足条件）
+  if (attack.requiredShan === Infinity) {
     finishAttack(state, attack);
     return { ok: true };
   }
@@ -576,6 +586,9 @@ function onPlayCard(
   if (as === 'sha') return playSha(state, player, card, intent.targetIds, as);
   if (as === 'tao') return playTao(state, player, card);
   if (as === 'jiu') return playJiu(state, player, card);
+  // 转化锦囊（甘宁·奇袭：黑色牌当过河拆桥）
+  if (as !== card.type && isInstantTrick({ ...card, type: as }))
+    return playTrick(state, player, { ...card, type: as }, intent);
   if (isEquipCard(card)) return playEquip(state, player, card);
   if (isDelayedTrick(card)) return playDelayedTrick(state, player, card, intent.targetIds);
   if (isInstantTrick(card)) return playTrick(state, player, card, intent);
@@ -984,6 +997,8 @@ function onRespondTrick(
   intent: Extract<Intent, { type: 'respondCard' }>,
   ctx: TrickContext,
 ): ApplyResult {
+  // 离间虚拟锦囊
+  if (ctx.skillId === 'lilian') return respondLilianSha(state, seatId, intent, ctx);
   const type = ctx.card.type as TrickType;
   switch (type) {
     case 'juedou':
@@ -1003,6 +1018,8 @@ function onRespondTrick(
 
 /** passTrick → 按 trick 类型分发 */
 function onPassTrick(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  // 离间虚拟锦囊
+  if (ctx.skillId === 'lilian') return passLilian(state, seatId, ctx);
   const type = ctx.card.type as TrickType;
   switch (type) {
     case 'juedou':
@@ -1168,9 +1185,14 @@ function respondJiedaoSha(
     dodged: false,
     requiredShan: 1,
   };
-  runHooks(state, 'useCard', holder, { card });
+  runHooks(state, 'useCard', holder, { attack });
   if (!runHooks(state, 'becomeTarget', shaTarget, { attack })) {
     attack.dodged = true;
+    finishAttack(state, attack);
+    return { ok: true };
+  }
+  // 不可闪避
+  if (attack.requiredShan === Infinity) {
     finishAttack(state, attack);
     return { ok: true };
   }
@@ -1192,6 +1214,73 @@ function passJiedao(state: GameState, seatId: string, ctx: TrickContext): ApplyR
     state.discard.push(weapon);
   }
   resumePlay(state, ctx.sourceId);
+  return { ok: true };
+}
+
+// —— 离间（貂蝉主动技能：虚拟锦囊）——
+
+/** 离间响应：A 对 B 出杀 */
+function respondLilianSha(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+  ctx: TrickContext,
+): ApplyResult {
+  const responder = getPlayerOrThrow(state, seatId);
+  const card = responder.hand.find((c) => c.id === intent.cardId);
+  if (!card) return err('你没有这张牌');
+  if (card.type !== 'sha') return err('需打出【杀】');
+  const shaTargetId = ctx.shaTargetId!;
+  const shaTarget = getPlayer(state, shaTargetId);
+  if (!shaTarget || !shaTarget.alive) return err('出杀目标无效');
+  removeCard(responder.hand, card.id);
+  state.discard.push(card);
+  pushLog(state, 'skill', `${responder.name} 对 ${shaTarget.name} 使用了【杀】。`);
+  const attack: AttackContext = {
+    sourceId: responder.seatId,
+    cardId: card.id,
+    asType: 'sha',
+    targetId: shaTargetId,
+    damage: 1,
+    dodged: false,
+    requiredShan: 1,
+  };
+  runHooks(state, 'useCard', responder, { attack });
+  if (!runHooks(state, 'becomeTarget', shaTarget, { attack })) {
+    attack.dodged = true;
+    finishAttack(state, attack);
+    return { ok: true };
+  }
+  // 不可闪避
+  if (attack.requiredShan === Infinity) {
+    finishAttack(state, attack);
+    return { ok: true };
+  }
+  state.pending = { kind: 'respondSha', responderId: shaTargetId, attack };
+  return { ok: true };
+}
+
+/** 离间弃权：A 不出杀 → 受 1 点伤害 */
+function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
+  const victim = getPlayerOrThrow(state, seatId);
+  pushLog(state, 'skill', `${victim.name} 弃权，受到 1 点伤害。`);
+  const attack: AttackContext = {
+    sourceId: ctx.sourceId,
+    cardId: ctx.card.id,
+    asType: 'sha',
+    targetId: victim.seatId,
+    damage: 1,
+    dodged: false,
+  };
+  runHooks(state, 'damageDealt', victim, { damage: 1, attack });
+  victim.hp -= 1;
+  pushLog(state, 'damage', `${victim.name} 受到 1 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`);
+  runHooks(state, 'afterDamage', victim, { damage: 1, attack });
+  if (victim.hp <= 0) {
+    enterNearDeath(state, attack);
+  } else {
+    resumePlay(state, ctx.sourceId);
+  }
   return { ok: true };
 }
 
@@ -1332,8 +1421,15 @@ function respondSha(
     return err('只能用【闪】响应');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
-  pending.attack.dodged = true;
   pushLog(state, 'shan', `${responder.name} 使用了【闪】。`);
+  // 吕布·无双：需出2张闪，出1张后减1，>1则继续等
+  const required = pending.attack.requiredShan ?? 1;
+  if (required > 1) {
+    pending.attack.requiredShan = required - 1;
+    pushLog(state, 'shan', `${responder.name} 还需出 ${required - 1} 张【闪】。`);
+    return { ok: true };
+  }
+  pending.attack.dodged = true;
   finishAttack(state, pending.attack);
   return { ok: true };
 }
@@ -1491,8 +1587,49 @@ function onUseSkill(
   }
   // 标记已使用（执行前标记，防重入）
   if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = true;
+  // 创建引擎内部 API 注入技能执行（避免 heroes→engine 循环依赖）
+  const api: SkillApi = {
+    dealDamage: (target, damage, sourceId, attribute) => {
+      const attack: AttackContext = {
+        sourceId,
+        cardId: '',
+        asType: 'sha',
+        targetId: target.seatId,
+        damage,
+        dodged: false,
+        attribute,
+      };
+      runHooks(state, 'damageDealt', target, { damage, attack });
+      target.hp -= damage;
+      pushLog(
+        state,
+        'damage',
+        `${target.name} 受到 ${damage} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
+      );
+      runHooks(state, 'afterDamage', target, { damage, attack });
+      if (target.hp <= 0) enterNearDeath(state, attack);
+    },
+    loseHp: (target, amount) => {
+      target.hp -= amount;
+      pushLog(
+        state,
+        'damage',
+        `${target.name} 失去 ${amount} 点体力，剩余 ${Math.max(0, target.hp)} 体力。`,
+      );
+      if (target.hp <= 0) {
+        enterNearDeath(state, {
+          sourceId: target.seatId,
+          cardId: '',
+          asType: 'sha',
+          targetId: target.seatId,
+          damage: amount,
+          dodged: false,
+        });
+      }
+    },
+  };
   // 执行
-  const result = skill.execute(state, player, intent);
+  const result = skill.execute(state, player, intent, api);
   if (typeof result === 'string') {
     // 执行失败：回滚标记
     if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = false;

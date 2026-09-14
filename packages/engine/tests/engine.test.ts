@@ -1368,3 +1368,201 @@ describe('主动技能框架', () => {
     );
   });
 });
+
+// ——————————————————————————————————————————
+
+describe('武将技能（Step 6）', () => {
+  // 1. 甘宁·奇袭：黑色牌当【过河拆桥】
+  it('甘宁·奇袭：黑色闪当过河拆桥，拆目标手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甘宁', heroId: 'ganning', hand: [shan('a1', 'spade')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    // 黑桃闪当过河拆桥，对 B 使用
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'guohe', targetIds: [B] }));
+    passWuxie(state);
+    // B 的手牌被拆
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 2. 马超·铁骑：红色判定 → 不可闪避
+  it('马超·铁骑：判定红色 → 杀不可闪避', () => {
+    const state = makeGame([
+      { seatId: A, name: '马超', heroId: 'machao', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    // 控制判定牌为红桃
+    state.deck.push(mk('jc', 'tao', 'heart', 1));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // B 受到伤害（不可闪避），且手牌中仍有闪（未使用）
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+    expect(b.hand).toHaveLength(1);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 3. 黄忠·烈弓：目标手牌数≥己 → 不可闪避
+  it('黄忠·烈弓：目标手牌≥己 → 杀不可闪避', () => {
+    const state = makeGame([
+      { seatId: A, name: '黄忠', heroId: 'huangzhong', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1'), tao('b2')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // A 出杀后手牌 0，B 手牌 2 ≥ 0 → 不可闪避
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+    expect(b.hand).toHaveLength(2); // 未使用闪
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 4. 吕布·无双：需 2 张闪 → 全出则闪避
+  it('吕布·无双：目标出 2 张闪 → 闪避成功', () => {
+    const state = makeGame([
+      { seatId: A, name: '吕布', heroId: 'lvbu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1'), shan('b2')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    // B 出第一张闪 → 还需 1 张
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(state.pending?.kind).toBe('respondSha');
+    // B 出第二张闪 → 闪避
+    ok(act(state, B, { type: 'respondCard', cardId: 'b2' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(4);
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 5. 吕布·无双：只出 1 张闪 → 弃权 → 受伤害
+  it('吕布·无双：目标出 1 张闪后弃权 → 受伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '吕布', heroId: 'lvbu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // B 出 1 张闪 → 还需 1 张
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(state.pending?.kind).toBe('respondSha');
+    // B 弃权 → 受伤害
+    ok(act(state, B, { type: 'pass' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 6. 夏侯惇·刚烈：非红桃判定 → 来源弃 1 牌
+  it('夏侯惇·刚烈：非红桃判定 → 来源弃 1 张手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '夏侯惇', heroId: 'xiahoudun', hand: [] },
+    ]);
+    // 控制判定牌为黑桃（非红桃）
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // B 弃权（不出闪）→ 受伤害 → 刚烈触发
+    ok(act(state, B, { type: 'pass' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+    // A 出杀后剩 1 张，刚烈弃 1 张 → 0 张
+    expect(a.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 7. 司马懿·鬼才：替换不利判定牌
+  it('司马懿·鬼才：用红桃手牌替换非红桃判定牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '司马懿', heroId: 'simayi', hand: [tao('a1', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    // B 判定区有乐不思蜀
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    // 控制判定牌为黑桃（对乐不思蜀不利）
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    // A 结束出牌 → B 回合开始 → 判定阶段
+    ok(act(state, A, { type: 'endPhase' }));
+    // 司马懿用红桃替换 → 乐不思蜀无效 → B 不跳过出牌
+    expect(b.flags.skipPlay).toBe(false);
+    // A 的红桃手牌已用于替换
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(0);
+    // B 进入出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  // 8. 孙权·制衡：弃牌摸等量
+  it('孙权·制衡：弃 2 张牌 → 摸 2 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '孙权', heroId: 'sunquan', hand: [sha('a1'), shan('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    // 控制摸到的牌
+    state.deck.push(mk('d1', 'sha', 'club', 2));
+    state.deck.push(mk('d2', 'shan', 'diamond', 3));
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ['a1', 'a2'], targetIds: [] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(2);
+    expect(a.flags.skillUsedThisTurn['zhiheng']).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 9. 黄盖·苦肉：失去 1 体力 → 摸 2 张
+  it('黄盖·苦肉：失去 1 体力 → 摸 2 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '黄盖', heroId: 'huanggai', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck.push(mk('d1', 'sha', 'club', 2));
+    state.deck.push(mk('d2', 'shan', 'diamond', 3));
+    ok(act(state, A, { type: 'useSkill', skillId: 'kurou', targetIds: [] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hp).toBe(3);
+    expect(a.hand).toHaveLength(2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 10. 貂蝉·离间：令男性 A 对男性 B 出杀
+  it('貂蝉·离间：令关羽对张飞出杀，张飞不出 → 受伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '貂蝉', heroId: 'diaochan', hand: [sha('a1')] },
+      { seatId: B, name: '关羽', heroId: 'guanyu', hand: [sha('b1')] },
+      { seatId: C, name: '张飞', heroId: 'zhangfei', hand: [] },
+    ]);
+    // 貂蝉弃 1 牌，选 B（关羽）对 C（张飞）出杀
+    ok(act(state, A, { type: 'useSkill', skillId: 'lilian', cardIds: ['a1'], targetIds: [B, C] }));
+    // B 被要求出杀 → B 出杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // C 被要求出闪 → C 弃权 → 受伤害
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, C, { type: 'pass' }));
+    const c = state.players.find((p) => p.seatId === C)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(c.hp).toBe(3);
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  // 11. 周瑜·反间：目标交出不同类型牌
+  it('周瑜·反间：展示杀 → 目标交出闪（不同类型）', () => {
+    const state = makeGame([
+      { seatId: A, name: '周瑜', heroId: 'zhouyu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['a1'], targetIds: [B] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // B 交出闪（不同类型），获得杀
+    expect(a.hand).toHaveLength(1);
+    expect(a.hand[0]!.id).toBe('b1');
+    expect(b.hand).toHaveLength(1);
+    expect(b.hand[0]!.id).toBe('a1');
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});

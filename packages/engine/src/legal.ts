@@ -1,6 +1,6 @@
 import type { PromptView } from '@sgs/protocol';
 import { CARD_TYPE_NAME, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
-import type { GameState, TrickContext } from './model';
+import type { AttackContext, GameState, TrickContext } from './model';
 import { getPlayerOrThrow } from './model';
 import { heroCanUseAs, heroShaLimit } from './heroes';
 import { activeHeroes } from './engine';
@@ -37,7 +37,7 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
 
     case 'respondSha':
       if (pending.responderId !== seatId) return null;
-      return buildRespondShaPrompt(state, seatId);
+      return buildRespondShaPrompt(state, seatId, pending.attack);
 
     case 'respondDeath':
       if (pending.askQueue[pending.askIndex] !== seatId) return null;
@@ -143,6 +143,14 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         seen.add(card.id);
       }
     }
+    // 转化锦囊（甘宁·奇袭：黑色牌当过河拆桥）
+    if (!seen.has(card.id) && heroes.some((h) => heroCanUseAs(h, card, 'guohe'))) {
+      const legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+      if (legal) {
+        legalCardIds.push(card.id);
+        seen.add(card.id);
+      }
+    }
   }
   const legalTargetIds = state.players
     .filter((p) => p.alive && p.seatId !== seatId)
@@ -170,16 +178,25 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   };
 }
 
-function buildRespondShaPrompt(state: GameState, seatId: string): PromptView {
+function buildRespondShaPrompt(
+  state: GameState,
+  seatId: string,
+  attack: AttackContext,
+): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   const heroes = activeHeroes(state, player);
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
   const legalCardIds = player.hand
     .filter((c) => c.type === 'shan' || heroes.some((h) => heroCanUseAs(h, c, 'shan')))
     .map((c) => c.id);
+  const required = attack.requiredShan ?? 1;
+  const message =
+    required > 1
+      ? `你被【杀】指定为目标：需出 ${required} 张【闪】或弃权`
+      : '你被【杀】指定为目标：出【闪】或弃权';
   return {
     kind: 'respondSha',
-    message: '你被【杀】指定为目标：出【闪】或弃权',
+    message,
     legalCardIds,
     legalTargetIds: [],
     mustSelectTargetCount: 0,
@@ -235,6 +252,19 @@ function buildRespondTrickPrompt(
   const trickName = CARD_TYPE_NAME[ctx.card.type];
   let message: string;
   let legalCardIds: string[];
+
+  // 离间虚拟锦囊：打出【杀】或弃权
+  if (ctx.skillId === 'lilian') {
+    return {
+      kind: 'respondTrick',
+      message: '【离间】：打出【杀】或弃权（受 1 点伤害）',
+      legalCardIds: player.hand
+        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .map((c) => c.id),
+      legalTargetIds: [],
+      mustSelectTargetCount: 0,
+    };
+  }
 
   switch (ctx.card.type) {
     case 'juedou':

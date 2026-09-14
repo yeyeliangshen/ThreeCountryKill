@@ -90,6 +90,8 @@ export interface TrickContext {
   revealedSuit?: Suit;
   // 借刀杀人：被指定出杀的目标（targetIds[1]）
   shaTargetId?: string;
+  // 主动技能创建的虚拟锦囊标识（离间=lilian）
+  skillId?: string;
 }
 
 // 引擎"暂停等待玩家输入"的几种状态
