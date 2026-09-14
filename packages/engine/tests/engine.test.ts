@@ -1566,3 +1566,194 @@ describe('武将技能（Step 6）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });
+
+// ——————————————————————————————————————————
+
+describe('国战进阶（Step 7）', () => {
+  // 国战中局辅助（与「国战模式」describe 中的同名函数一致）
+  interface GuozhanSeatOpts extends SeatOpts {
+    deputyHeroId: string;
+    faction: Faction;
+  }
+  function makeGuozhanGame(seats: GuozhanSeatOpts[]): GameState {
+    const setup: SeatSetup[] = seats.map((s) => ({
+      seatId: s.seatId,
+      name: s.name,
+      heroId: s.heroId,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((pl) => pl.seatId === s.seatId)!;
+      const mainHero = getHero(s.heroId)!;
+      const deputyHero = getHero(s.deputyHeroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = false;
+      p.deputyRevealed = false;
+      p.maxHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = s.hand.slice();
+      p.flags = emptyFlags();
+    }
+    const first = state.seatOrder[0]!;
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  // —— 辅助：构造指定发将的国战对局，走完选将流程 ——
+  const POOL = [
+    'guanyu', 'zhangfei', 'zhaoyun', 'machao', 'huangzhong',
+    'lvbu', 'diaochan', 'huatuo',
+    'zhenji', 'simayi', 'xiahoudun', 'xuchu',
+    'sunquan', 'zhouyu', 'ganning', 'huanggai',
+  ];
+  function makeGuozhanDraft(
+    seatPicks: { seatId: string; name: string; main: string; deputy: string }[],
+  ): GameState {
+    const setup: SeatSetup[] = seatPicks.map((s) => ({
+      seatId: s.seatId,
+      name: s.name,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    for (const s of seatPicks) {
+      const desired = [s.main, s.deputy];
+      const rest = POOL.filter((id) => !desired.includes(id)).slice(0, 5);
+      state.draft!.deals[s.seatId] = [...desired, ...rest];
+    }
+    for (const s of seatPicks) {
+      ok(act(state, s.seatId, { type: 'pickHero', heroId: s.main, deputyHeroId: s.deputy }));
+    }
+    return state;
+  }
+
+  // 1. 珠联璧合
+  it('珠联璧合：关羽+张飞 → maxHp +1', () => {
+    const state = makeGuozhanDraft([
+      { seatId: A, name: '甲', main: 'guanyu', deputy: 'zhangfei' },
+      { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 关羽(4)+张飞(4) → ceil(8/2)=4 + 1(珠联璧合) = 5
+    expect(a.maxHp).toBe(5);
+    // 许褚(4)+甄姬(3) → ceil(7/2)=4，无珠联璧合
+    expect(b.maxHp).toBe(4);
+  });
+
+  it('珠联璧合：吕布+貂蝉 → maxHp +1', () => {
+    const state = makeGuozhanDraft([
+      { seatId: A, name: '甲', main: 'lvbu', deputy: 'diaochan' },
+      { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 吕布(4)+貂蝉(3) → ceil(7/2)=4 + 1(珠联璧合) = 5
+    expect(a.maxHp).toBe(5);
+  });
+
+  // 2. 野心家分配
+  it('野心家分配：4 人局 3 蜀 → 最后一个蜀变为野心家', () => {
+    const state = makeGuozhanDraft([
+      { seatId: A, name: '甲', main: 'guanyu', deputy: 'zhangfei' },
+      { seatId: B, name: '乙', main: 'zhaoyun', deputy: 'machao' },
+      { seatId: C, name: '丙', main: 'huangzhong', deputy: 'guanyu' },
+      { seatId: D, name: '丁', main: 'xuchu', deputy: 'zhenji' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    const d = state.players.find((p) => p.seatId === D)!;
+    expect(a.faction).toBe('shu');
+    expect(b.faction).toBe('shu');
+    // C 是最后一个蜀 → 变为野心家（3 蜀 > ceil(4/2)=2，多 1 人）
+    expect(c.faction).toBe('ambitionist');
+    expect(d.faction).toBe('wei');
+  });
+
+  // 3. 鏖战桃当杀
+  it('鏖战：2 阵营存活时桃可当杀使用', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [tao('t1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    // 2 人国战 = 2 阵营存活 → 鏖战激活
+    // A 用桃当杀打 B
+    ok(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [B], as: 'sha' }));
+    // B 无闪 → 进入响应杀
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(4 - 1);
+  });
+
+  it('鏖战未激活（3 阵营）时桃不能当杀', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [tao('t1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'sunquan', deputyHeroId: 'zhouyu', faction: 'wu', hand: [] },
+    ]);
+    // 3 阵营存活 → 鏖战未激活
+    fail(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [B], as: 'sha' }));
+  });
+
+  // 4. 被动亮将
+  it('被动亮将：成为杀目标时自动亮双将', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [shan('b1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.heroRevealed).toBe(false);
+    expect(b.deputyRevealed).toBe(false);
+    // A 对 B 出杀 → B 被动亮将
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(b.heroRevealed).toBe(true);
+    expect(b.deputyRevealed).toBe(true);
+  });
+
+  it('被动亮将：濒死时自动亮双将', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // A 杀 B(hp1) → B 受伤 hp→0 → 濒死被动亮将
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // B 应已被动亮将并进入濒死
+    expect(b.heroRevealed).toBe(true);
+    expect(b.deputyRevealed).toBe(true);
+    expect(state.pending?.kind).toBe('respondDeath');
+  });
+
+  // 5. 阵营多数胜利
+  it('阵营多数胜利：3 存活中 2 蜀 → 蜀胜', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhaoyun', deputyHeroId: 'machao', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 4 },
+      { seatId: D, name: '丁', heroId: 'simayi', deputyHeroId: 'xiahoudun', faction: 'wei', hand: [], hp: 1 },
+    ]);
+    // A 杀 D(hp1) → D 阵亡 → 存活 [A,B,C]，蜀 2 > half(3)=1 → 蜀胜
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [D] }));
+    ok(act(state, D, { type: 'pass' }));
+    passDeathSaves(state);
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('shu');
+  });
+
+  it('野心家胜利：最后存活者为野心家 → 野心家胜', () => {
+    const state = makeGuozhanGame([
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'ambitionist', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+    ]);
+    // A 杀 B(hp1) → B 阵亡 → 仅 A(野心家)存活 → 野心家胜
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    passDeathSaves(state);
+    expect(state.gameOver).toBe(true);
+    expect(state.winner).toBe('ambitionist');
+  });
+});

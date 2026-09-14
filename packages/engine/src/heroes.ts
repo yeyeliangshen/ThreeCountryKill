@@ -66,6 +66,8 @@ export interface Hero {
   hooks?: HookRegistration[];
   /** 主动技能 */
   activeSkills?: ActiveSkill[];
+  /** 珠联璧合：与另一武将搭配时获得加成 */
+  combo?: { with: string; bonus: 'hp' | 'skill' };
   /** UI 展示用技能描述 */
   skills: { name: string; desc: string }[];
 }
@@ -77,6 +79,7 @@ const GUANYU: Hero = {
   maxHp: 4,
   gender: 'male',
   canUseAs: (card, type) => type === 'sha' && isRed(card),
+  combo: { with: 'zhangfei', bonus: 'hp' },
   skills: [{ name: '武圣', desc: '你可以将一张红色牌当【杀】使用或打出。' }],
 };
 
@@ -87,6 +90,7 @@ const ZHANGFEI: Hero = {
   maxHp: 4,
   gender: 'male',
   shaLimit: () => Infinity,
+  combo: { with: 'guanyu', bonus: 'hp' },
   skills: [{ name: '咆哮', desc: '出牌阶段，你可以使用任意数量的【杀】。' }],
 };
 
@@ -161,6 +165,7 @@ const LVBU: Hero = {
   faction: 'qun',
   maxHp: 4,
   gender: 'male',
+  combo: { with: 'diaochan', bonus: 'hp' },
   // 无双：目标需出2张【闪】
   hooks: [
     {
@@ -181,6 +186,7 @@ const DIAOCHAN: Hero = {
   faction: 'qun',
   maxHp: 3,
   gender: 'female',
+  combo: { with: 'lvbu', bonus: 'hp' },
   // 离间：弃1牌→选2名男性角色→令A对B出杀，A不出则受1伤害
   activeSkills: [
     {
@@ -352,6 +358,7 @@ const SUNQUAN: Hero = {
   faction: 'wu',
   maxHp: 4,
   gender: 'male',
+  combo: { with: 'zhouyu', bonus: 'hp' },
   // 制衡：弃任意张牌→摸等量
   activeSkills: [
     {
@@ -389,6 +396,7 @@ const ZHOUYU: Hero = {
   faction: 'wu',
   maxHp: 3,
   gender: 'male',
+  combo: { with: 'sunquan', bonus: 'hp' },
   // 反间（简化）：展示1手牌给目标→目标若有不同类型手牌则交给周瑜，否则受1伤害
   activeSkills: [
     {

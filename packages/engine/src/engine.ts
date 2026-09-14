@@ -1,4 +1,4 @@
-import type { Faction, GameMode, Intent, RoleId, TrickType } from '@sgs/protocol';
+import type { Card, CardType, Faction, GameMode, Intent, RoleId, TrickType } from '@sgs/protocol';
 import { CARD_TYPE_NAME, EQUIP_NAME, cardLabel, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
 import {
   alivePlayers,
@@ -66,6 +66,44 @@ export function activeHeroes(state: GameState, player: Player): Hero[] {
     if (h && (state.mode !== 'guozhan' || player.deputyRevealed)) heroes.push(h);
   }
   return heroes;
+}
+
+/** 鏖战：国战残局仅 2 个非野心家阵营存活时，桃可当杀使用 */
+export function isAoyu(state: GameState): boolean {
+  if (state.mode !== 'guozhan') return false;
+  const alive = alivePlayers(state);
+  const factions = new Set(
+    alive.map((p) => p.faction).filter((f) => f && f !== 'ambitionist'),
+  );
+  return factions.size === 2;
+}
+
+/** 国战被动亮将：成为目标或濒死前自动亮将（使技能生效） */
+function passiveReveal(state: GameState, player: Player): void {
+  if (state.mode !== 'guozhan') return;
+  if (!player.heroRevealed && player.heroId) {
+    player.heroRevealed = true;
+    const hero = getHero(player.heroId);
+    if (hero) pushLog(state, 'reveal', `${player.name} 被动亮将：${hero.name}。`);
+  }
+  if (!player.deputyRevealed && player.deputyHeroId) {
+    player.deputyRevealed = true;
+    const hero = getHero(player.deputyHeroId);
+    if (hero) pushLog(state, 'reveal', `${player.name} 被动亮将：${hero.name}。`);
+  }
+}
+
+/** 检查玩家是否可将 card 当 type 使用（含鏖战桃当杀） */
+export function canUseAsCard(
+  state: GameState,
+  player: Player,
+  card: Card,
+  type: CardType,
+): boolean {
+  const heroes = activeHeroes(state, player);
+  if (heroes.some((h) => heroCanUseAs(h, card, type))) return true;
+  if (isAoyu(state) && type === 'sha' && card.type === 'tao') return true;
+  return false;
 }
 
 // 在某时机运行玩家已激活武将的触发钩子。返回 false 表示被取消。
@@ -345,6 +383,8 @@ function playSha(
   };
   pushLog(state, 'sha', `${source.name} 对 ${target.name} 使用了【杀】。`);
   runHooks(state, 'useCard', source, { attack });
+  // 国战被动亮将：成为目标前自动亮将
+  passiveReveal(state, target);
   if (!runHooks(state, 'becomeTarget', target, { attack })) {
     // becomeTarget 被取消 → 自动闪避（如八卦阵/被动闪避技）
     attack.dodged = true;
@@ -399,6 +439,8 @@ function finishAttack(state: GameState, attack: AttackContext): void {
 
 function enterNearDeath(state: GameState, attack: AttackContext): void {
   const dying = getPlayerOrThrow(state, attack.targetId);
+  // 国战被动亮将：濒死时自动亮将
+  passiveReveal(state, dying);
   runHooks(state, 'nearDeath', dying, { attack });
   // 从濒死者起、按座次轮询每个存活玩家能否出桃
   const queue = aliveSeatsFrom(state, dying.seatId);
@@ -484,6 +526,20 @@ function checkWin(state: GameState): boolean {
     if (alive.length === 0) return false;
     if (alive.length === 1)
       return setWinner(state, alive[0]!.faction ?? alive[0]!.seatId);
+    // 统计存活阵营
+    const factionCounts = new Map<string, number>();
+    for (const p of alive) {
+      const f = p.faction ?? 'neutral';
+      factionCounts.set(f, (factionCounts.get(f) ?? 0) + 1);
+    }
+    // 某非野心家阵营存活数 > 半数 → 该阵营胜
+    const half = Math.floor(alive.length / 2);
+    for (const [f, count] of factionCounts) {
+      if (f !== 'ambitionist' && f !== 'neutral' && count > half) {
+        return setWinner(state, f);
+      }
+    }
+    // 仅剩同一非野心家阵营 → 胜
     const factions = new Set(alive.map((p) => p.faction));
     if (factions.size === 1 && !factions.has('ambitionist')) {
       return setWinner(state, [...factions][0]!);
@@ -576,10 +632,9 @@ function onPlayCard(
   if (!card) return err('你没有这张牌');
 
   const as = intent.as ?? card.type;
-  // 转化合法性（武圣：红牌当杀）
+  // 转化合法性（武圣：红牌当杀；鏖战：桃当杀）
   if (intent.as && intent.as !== card.type) {
-    const heroes = activeHeroes(state, player);
-    if (!heroes.some((h) => heroCanUseAs(h, card, intent.as!)))
+    if (!canUseAsCard(state, player, card, intent.as!))
       return err('不能将该牌转化为该类型');
   }
 
@@ -1229,7 +1284,8 @@ function respondLilianSha(
   const responder = getPlayerOrThrow(state, seatId);
   const card = responder.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  if (card.type !== 'sha') return err('需打出【杀】');
+  if (card.type !== 'sha' && !canUseAsCard(state, responder, card, 'sha'))
+    return err('需打出【杀】');
   const shaTargetId = ctx.shaTargetId!;
   const shaTarget = getPlayer(state, shaTargetId);
   if (!shaTarget || !shaTarget.alive) return err('出杀目标无效');
@@ -1295,7 +1351,8 @@ function respondNanmanSha(
   const responder = getPlayerOrThrow(state, seatId);
   const card = responder.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  if (card.type !== 'sha') return err('南蛮入侵需打出【杀】');
+  if (card.type !== 'sha' && !canUseAsCard(state, responder, card, 'sha'))
+    return err('南蛮入侵需打出【杀】');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
   pushLog(state, 'trick', `${responder.name} 打出了【杀】。`);
@@ -1312,7 +1369,8 @@ function respondWanjianShan(
   const responder = getPlayerOrThrow(state, seatId);
   const card = responder.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
-  if (card.type !== 'shan') return err('万箭齐发需打出【闪】');
+  if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
+    return err('万箭齐发需打出【闪】');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
   pushLog(state, 'trick', `${responder.name} 打出了【闪】。`);
@@ -1772,6 +1830,14 @@ function finishDraft(state: GameState): void {
       const deputy = getHero(p.deputyHeroId);
       if (main && deputy) {
         p.maxHp = Math.ceil((main.maxHp + deputy.maxHp) / 2);
+        // 珠联璧合：主副将构成组合 → 体力上限 +1
+        if (
+          (main.combo && main.combo.with === deputy.id && main.combo.bonus === 'hp') ||
+          (deputy.combo && deputy.combo.with === main.id && deputy.combo.bonus === 'hp')
+        ) {
+          p.maxHp += 1;
+          pushLog(state, 'combo', `${p.name} 触发珠联璧合，体力上限 +1。`);
+        }
       } else {
         p.maxHp = main?.maxHp ?? 4;
       }
@@ -1784,6 +1850,26 @@ function finishDraft(state: GameState): void {
       }
     }
     p.hp = p.maxHp;
+  }
+  // 野心家分配：某阵营人数 > 总人数/2 → 多余者变为野心家
+  if (state.mode === 'guozhan') {
+    const total = state.players.length;
+    const factionPlayers = new Map<string, Player[]>();
+    for (const p of state.players) {
+      const f = p.faction ?? 'neutral';
+      if (!factionPlayers.has(f)) factionPlayers.set(f, []);
+      factionPlayers.get(f)!.push(p);
+    }
+    for (const [f, players] of factionPlayers) {
+      if (f !== 'ambitionist' && f !== 'neutral' && players.length > Math.ceil(total / 2)) {
+        const excess = players.length - Math.ceil(total / 2);
+        // 按座位顺序，最后加入该阵营的玩家变为野心家
+    for (let i = players.length - excess; i < players.length; i++) {
+          players[i]!.faction = 'ambitionist';
+          pushLog(state, 'faction', `${players[i]!.name} 因阵营人数过多，变为野心家。`);
+        }
+      }
+    }
   }
   state.draft = null;
   // 初始手牌：每人 4 张（首回合玩家随后再摸 2，见 startTurn）

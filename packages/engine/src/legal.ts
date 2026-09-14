@@ -2,8 +2,8 @@ import type { PromptView } from '@sgs/protocol';
 import { CARD_TYPE_NAME, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
 import type { AttackContext, GameState, TrickContext } from './model';
 import { getPlayerOrThrow } from './model';
-import { heroCanUseAs, heroShaLimit } from './heroes';
-import { activeHeroes } from './engine';
+import { heroShaLimit } from './heroes';
+import { activeHeroes, canUseAsCard } from './engine';
 import { distance } from './distance';
 
 // 根据 pending 状态，给"被询问的玩家"构建提示（含合法选项）。
@@ -102,8 +102,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       }
       continue;
     }
-    // 杀（或可转化的红牌）——受出杀上限限制
-    if (canSha && (card.type === 'sha' || heroes.some((h) => heroCanUseAs(h, card, 'sha')))) {
+    // 杀（或可转化的红牌 / 鏖战桃当杀）——受出杀上限限制
+    if (canSha && (card.type === 'sha' || canUseAsCard(state, player, card, 'sha'))) {
       legalCardIds.push(card.id);
       seen.add(card.id);
       continue;
@@ -144,7 +144,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       }
     }
     // 转化锦囊（甘宁·奇袭：黑色牌当过河拆桥）
-    if (!seen.has(card.id) && heroes.some((h) => heroCanUseAs(h, card, 'guohe'))) {
+    if (!seen.has(card.id) && canUseAsCard(state, player, card, 'guohe')) {
       const legal = state.players.some((p) => p.alive && p.seatId !== seatId);
       if (legal) {
         legalCardIds.push(card.id);
@@ -184,10 +184,9 @@ function buildRespondShaPrompt(
   attack: AttackContext,
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const heroes = activeHeroes(state, player);
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
   const legalCardIds = player.hand
-    .filter((c) => c.type === 'shan' || heroes.some((h) => heroCanUseAs(h, c, 'shan')))
+    .filter((c) => c.type === 'shan' || canUseAsCard(state, player, c, 'shan'))
     .map((c) => c.id);
   const required = attack.requiredShan ?? 1;
   const message =
@@ -209,13 +208,12 @@ function buildRespondDeathPrompt(
   dyingId: string,
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const heroes = activeHeroes(state, player);
   const dying = getPlayerOrThrow(state, dyingId);
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
   const legalCardIds = player.hand
     .filter(
       (c) =>
-        c.type === 'tao' || c.type === 'jiu' || heroes.some((h) => heroCanUseAs(h, c, 'tao')),
+        c.type === 'tao' || c.type === 'jiu' || canUseAsCard(state, player, c, 'tao'),
     )
     .map((c) => c.id);
   return {
@@ -248,7 +246,6 @@ function buildRespondTrickPrompt(
   ctx: TrickContext,
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
-  const heroes = activeHeroes(state, player);
   const trickName = CARD_TYPE_NAME[ctx.card.type];
   let message: string;
   let legalCardIds: string[];
@@ -259,7 +256,7 @@ function buildRespondTrickPrompt(
       kind: 'respondTrick',
       message: '【离间】：打出【杀】或弃权（受 1 点伤害）',
       legalCardIds: player.hand
-        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
         .map((c) => c.id),
       legalTargetIds: [],
       mustSelectTargetCount: 0,
@@ -270,7 +267,7 @@ function buildRespondTrickPrompt(
     case 'juedou':
       message = `【决斗】：打出【杀】或弃权（受 1 点伤害）`;
       legalCardIds = player.hand
-        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
         .map((c) => c.id);
       break;
     case 'huogong':
@@ -287,19 +284,19 @@ function buildRespondTrickPrompt(
     case 'jiedao':
       message = `【借刀杀人】：打出【杀】或弃权（交出武器）`;
       legalCardIds = player.hand
-        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
         .map((c) => c.id);
       break;
     case 'nanman':
       message = `【南蛮入侵】：打出【杀】或弃权（受 1 点伤害）`;
       legalCardIds = player.hand
-        .filter((c) => c.type === 'sha' || heroes.some((h) => heroCanUseAs(h, c, 'sha')))
+        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
         .map((c) => c.id);
       break;
     case 'wanjian':
       message = `【万箭齐发】：打出【闪】或弃权（受 1 点伤害）`;
       legalCardIds = player.hand
-        .filter((c) => c.type === 'shan' || heroes.some((h) => heroCanUseAs(h, c, 'shan')))
+        .filter((c) => c.type === 'shan' || canUseAsCard(state, player, c, 'shan'))
         .map((c) => c.id);
       break;
     default:
