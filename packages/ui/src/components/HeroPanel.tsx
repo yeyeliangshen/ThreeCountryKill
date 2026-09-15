@@ -1,11 +1,10 @@
-// 武将面板：原画 + 体力勾玉 + 技能名。
+// 武将面板。
 //
-// 布局（自上而下）：
-//   原画（没有原画时用占位框）—— 体力勾玉竖排叠在原画右上角
-//   名字 / 身份阵营标记 / 装备区 / 判定区
-//   技能名（只显示名字，悬停看效果；能发动时点一下就发动）
+// 结构（从左到右）：
+//   技能按钮列 | 国家 / 武将名 / 血量 列 | 原画（完整显示，不裁切）
+// 血量是绿色勾玉，竖排。不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
-// 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下即可，见 heroArt.ts。
+// 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
 import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
 import {
   cardDescription,
@@ -74,12 +73,6 @@ function Portrait({
         <span className="portrait-name">{slot.name}</span>
       )}
       {slot.hidden && <span className="portrait-dim">暗</span>}
-      {/* 体力：绿色勾玉，竖排在原画右上角 */}
-      <span className="portrait-hp">
-        {Array.from({ length: maxHp }).map((_, i) => (
-          <span key={i} className={`hp-cell ${i < hp ? 'on' : ''}`} />
-        ))}
-      </span>
       {slot.slotLabel && <span className="portrait-tag">{slot.slotLabel}</span>}
       {slot.onReveal && (
         <button className="portrait-reveal" onClick={slot.onReveal}>
@@ -93,53 +86,14 @@ function Portrait({
 export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
+  // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
+  const faction = mode === 'guozhan' ? me.faction : slots[0]?.faction ?? null;
   const factionClass = mode === 'guozhan' && me.faction ? `faction-${me.faction}` : '';
+
   return (
     <div className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'}`}>
-      <div className="hero-portraits">
-        {slots.map((s, i) => (
-          <Portrait key={i} slot={s} hp={me.hp} maxHp={me.maxHp} bind={bind} />
-        ))}
-      </div>
-
-      <div className="hero-head">
-        <span className="me-name">{me.name}</span>
-        <span className="hero-names">{slots.map((s) => s.name).join(' + ')}</span>
-        {me.role && mode === 'junzheng' && (
-          <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
-        )}
-        {mode === 'guozhan' && me.faction && (
-          <span className={`faction-badge ${me.faction}`}>{FACTION_NAME[me.faction]}</span>
-        )}
-        {/* 体力只靠原画右上角的勾玉表示，不再重复写数字
-            （准确数值在勾玉所在原画的悬停提示里） */}
-      </div>
-
-      {(me.equipment.length > 0 || me.judgment.length > 0) && (
-        <div className="hero-zones">
-          {me.equipment.map((c: Card) => (
-            <span
-              key={c.id}
-              className={`equip-icon equip-${c.type}`}
-              title={`${cardShortName(c)}\n${cardDescription(c)}`}
-            >
-              {cardShortName(c)}
-            </span>
-          ))}
-          {me.judgment.map((c: Card) => (
-            <span
-              key={c.id}
-              className="judge-icon"
-              title={`${cardShortName(c)}\n${cardDescription(c)}`}
-            >
-              {cardShortName(c)}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* 技能：只列名字，悬停看效果；能用的点一下就发动 */}
-      <div className="skill-list">
+      {/* 技能按钮列 */}
+      <div className="hero-skills">
         {skills.length === 0 ? (
           <span className="skill-none">无技能</span>
         ) : (
@@ -160,6 +114,50 @@ export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
             </button>
           ))
         )}
+      </div>
+
+      {/* 国家 / 武将名 / 血量 */}
+      <div className="hero-info">
+        {me.role && mode === 'junzheng' && (
+          <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
+        )}
+        {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+        <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
+        {/* 血量：绿色勾玉，竖排 */}
+        <span className="hi-hp">
+          {Array.from({ length: me.maxHp }).map((_, i) => (
+            <span key={i} className={`hp-cell ${i < me.hp ? 'on' : ''}`} />
+          ))}
+        </span>
+        {(me.equipment.length > 0 || me.judgment.length > 0) && (
+          <span className="hero-zones">
+            {me.equipment.map((c: Card) => (
+              <span
+                key={c.id}
+                className={`equip-icon equip-${c.type}`}
+                title={`${cardShortName(c)}\n${cardDescription(c)}`}
+              >
+                {cardShortName(c)}
+              </span>
+            ))}
+            {me.judgment.map((c: Card) => (
+              <span
+                key={c.id}
+                className="judge-icon"
+                title={`${cardShortName(c)}\n${cardDescription(c)}`}
+              >
+                {cardShortName(c)}
+              </span>
+            ))}
+          </span>
+        )}
+      </div>
+
+      {/* 原画：按 1 : 1.415 完整显示，不裁切 */}
+      <div className="hero-portraits">
+        {slots.map((s, i) => (
+          <Portrait key={i} slot={s} hp={me.hp} maxHp={me.maxHp} bind={bind} />
+        ))}
       </div>
 
       {tipNode}

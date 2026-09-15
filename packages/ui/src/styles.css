@@ -26,8 +26,9 @@
   --ink-soft: #6d5736;
   --table-max: 1120px;
   /* 右侧栏宽度（出牌记录 + 武将面板）。
-     桌面减内边距与栏间距后约 1094，左右约 1.9 : 1 */
-  --side-w: 380px;
+     桌面减内边距与栏间距后约 1094；侧栏 420 是给「技能列 + 信息列 + 原画」
+     三栏留的位置，原画能到 200 宽（高 283，完整不裁切） */
+  --side-w: 420px;
   /* 卡面：外描边、内侧印刷线、牌名墨色。
      桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
   --card-edge: #8a7048;
@@ -283,26 +284,24 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 原画铺满面板宽度：平分可用宽（国战两张就各占一半），
-     高度按 1:1.415 算但封顶 300，超出部分由 object-fit 裁掉。
-     这样两侧不会留白——之前固定 220 宽在 380 的面板里左右各空 80。 */
+  /* 比例跟原画一致（1 : 1.415），所以 object-fit 不会裁掉画面。
+     宽度平分剩余空间但封顶，高度由比例推出——原画完整显示。 */
   flex: 1 1 0;
   min-width: 0;
+  max-width: 200px;
   aspect-ratio: 1 / 1.415;
-  max-height: 300px;
 }
 /* 对手卡片上的小头像 */
 .portrait.small {
   flex: 0 0 auto;
   width: 40px;
+  max-width: none;
   aspect-ratio: 1 / 1.4;
 }
 .portrait-photo {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  /* 裁切时偏向画面上部，别把脸裁掉 */
-  object-position: center 22%;
   display: block;
 }
 /* 没原画时的名字占位：竖排，像一张卡 */
@@ -379,16 +378,17 @@ button:disabled {
   font-weight: 700;
 }
 
-/* —— 我的武将面板 —— */
+/* —— 我的武将面板 ——
+   从左到右：技能按钮列 | 国家 / 武将名 / 血量列 | 原画 */
 .hero-panel {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
   background: var(--panel);
   border-radius: 10px;
   padding: 8px;
   border: 1px solid transparent;
-  /* 和日志/提示区一条竖列，别跟着桌面拉满 */
   width: 100%;
   max-width: 760px;
   margin: 0 auto;
@@ -402,41 +402,59 @@ button:disabled {
 .hero-panel.dead {
   opacity: 0.5;
 }
+/* 技能按钮列 */
+.hero-skills {
+  flex: 0 0 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 国家 / 武将名 / 血量 列（按这个顺序自上而下） */
+.hero-info {
+  flex: 0 0 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.hi-name {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 14px;
+  text-align: center;
+  line-height: 1.2;
+}
+.hi-hp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+/* 原画：完整显示，按剩余宽度排 */
 .hero-portraits {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   gap: 6px;
   justify-content: center;
-}
-.hero-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  font-size: 13px;
-}
-.hero-names {
-  color: var(--gold);
-  font-weight: 700;
 }
 .hero-zones {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+  justify-content: center;
+  margin-top: auto;
 }
 
-/* —— 技能：只显示名字，悬停看效果 —— */
-.skill-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
+/* —— 技能：只显示名字，悬停看效果。竖排在原画左边的按钮列里 —— */
 .skill-none {
   font-size: 11px;
   color: var(--muted);
 }
 .skill-chip {
-  padding: 4px 14px;
-  border-radius: 999px;
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 8px;
   background: transparent;
   border: 1px solid var(--panel-2);
   font-size: 13px;
@@ -670,29 +688,6 @@ button:disabled {
 .log-tao,
 .log-shan {
   color: var(--green);
-}
-
-.me-bar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  background: var(--panel);
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-}
-.me-bar.my-turn {
-  border: 1px solid var(--gold);
-}
-.me-name {
-  font-weight: 600;
-}
-.me-hero {
-  color: var(--gold);
-}
-.me-hp {
-  color: var(--red);
-  margin-left: auto;
 }
 
 .prompt {
@@ -1017,22 +1012,12 @@ button:disabled {
 .player.team-1 {
   border-top: 3px solid #b56a4a;
 }
-.me-bar.team-0 {
-  border-left: 3px solid #4a7fb5;
-}
-.me-bar.team-1 {
-  border-left: 3px solid #b56a4a;
-}
 
 /* —— 国战阵营色 —— */
 .player.faction-shu { border-top: 3px solid #d9453a; }
 .player.faction-wei { border-top: 3px solid #4a7fb5; }
 .player.faction-wu { border-top: 3px solid #5a9b3a; }
 .player.faction-qun { border-top: 3px solid #8a8270; }
-.me-bar.faction-shu { border-left: 3px solid #d9453a; }
-.me-bar.faction-wei { border-left: 3px solid #4a7fb5; }
-.me-bar.faction-wu { border-left: 3px solid #5a9b3a; }
-.me-bar.faction-qun { border-left: 3px solid #8a8270; }
 .faction-badge {
   display: inline-block;
   padding: 1px 8px;
@@ -1053,10 +1038,6 @@ button:disabled {
 .hero-card.faction-wei { border-bottom: 2px solid #4a7fb5; }
 .hero-card.faction-wu { border-bottom: 2px solid #5a9b3a; }
 .hero-card.faction-qun { border-bottom: 2px solid #8a8270; }
-.me-hero-deputy {
-  color: var(--muted);
-  font-size: 12px;
-}
 .reveal-btn {
   padding: 4px 10px;
   font-size: 12px;
@@ -1079,15 +1060,11 @@ button:disabled {
 }
 
 /* —— 装备区 —— */
-.p-equip,
-.me-equip {
+.p-equip {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
   justify-content: center;
-}
-.me-equip {
-  margin-left: 4px;
 }
 .equip-icon {
   font-size: 10px;
@@ -1115,14 +1092,10 @@ button:disabled {
 }
 
 /* —— 判定区 —— */
-.p-judge,
-.me-judge {
+.p-judge {
   display: flex;
   gap: 3px;
   justify-content: center;
-}
-.me-judge {
-  margin-left: 4px;
 }
 .judge-icon {
   font-size: 10px;
@@ -1295,14 +1268,3 @@ button:disabled {
   color: var(--ink-soft);
 }
 
-/* —— 窄屏原画回到固定尺寸 ——
-   单列时面板有 600+ 宽，原画若继续铺满会变成一条 666×210 的横条（裁掉大半张画），
-   所以窄屏改回定宽 180（高 255）居中。
-   同样必须放在文件最后：.portrait 的声明在前面，同优先级下靠顺序取胜。 */
-@media (max-width: 879px) {
-  .portrait {
-    flex: 0 0 auto;
-    width: 180px;
-    max-height: none;
-  }
-}
