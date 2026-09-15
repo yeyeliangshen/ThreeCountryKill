@@ -111,9 +111,8 @@ export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
         {mode === 'guozhan' && me.faction && (
           <span className={`faction-badge ${me.faction}`}>{FACTION_NAME[me.faction]}</span>
         )}
-        <span className="hero-hp-text">
-          {me.hp}/{me.maxHp}
-        </span>
+        {/* 体力只靠原画右上角的勾玉表示，不再重复写数字
+            （准确数值在勾玉所在原画的悬停提示里） */}
       </div>
 
       {(me.equipment.length > 0 || me.judgment.length > 0) && (

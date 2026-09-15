@@ -283,10 +283,13 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 基准宽 220（原画比例 1 : 1.415，即高 311）；国战两张时按剩余空间等比缩 */
-  flex: 0 1 220px;
+  /* 原画铺满面板宽度：平分可用宽（国战两张就各占一半），
+     高度按 1:1.415 算但封顶 300，超出部分由 object-fit 裁掉。
+     这样两侧不会留白——之前固定 220 宽在 380 的面板里左右各空 80。 */
+  flex: 1 1 0;
   min-width: 0;
   aspect-ratio: 1 / 1.415;
+  max-height: 300px;
 }
 /* 对手卡片上的小头像 */
 .portrait.small {
@@ -298,6 +301,8 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* 裁切时偏向画面上部，别把脸裁掉 */
+  object-position: center 22%;
   display: block;
 }
 /* 没原画时的名字占位：竖排，像一张卡 */
@@ -412,12 +417,6 @@ button:disabled {
 .hero-names {
   color: var(--gold);
   font-weight: 700;
-}
-.hero-hp-text {
-  font-size: 12px;
-  font-weight: 700;
-  color: #8fd06a;
-  margin-left: auto;
 }
 .hero-zones {
   display: flex;
@@ -1296,11 +1295,14 @@ button:disabled {
   color: var(--ink-soft);
 }
 
-/* —— 窄屏原画缩小一档 ——
-   单列时 220×311 的原画会把操作区和手牌顶出屏幕。
-   同样必须放在文件最后：.portrait 的 flex 简写在前面，同优先级下靠顺序取胜。 */
+/* —— 窄屏原画回到固定尺寸 ——
+   单列时面板有 600+ 宽，原画若继续铺满会变成一条 666×210 的横条（裁掉大半张画），
+   所以窄屏改回定宽 180（高 255）居中。
+   同样必须放在文件最后：.portrait 的声明在前面，同优先级下靠顺序取胜。 */
 @media (max-width: 879px) {
   .portrait {
-    flex-basis: 148px;
+    flex: 0 0 auto;
+    width: 180px;
+    max-height: none;
   }
 }
