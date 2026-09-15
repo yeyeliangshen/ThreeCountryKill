@@ -66,6 +66,8 @@ export interface PromptView {
 }
 
 export interface LogEntry {
+  /** 对局内自增序号（快照只带最近若干条，客户端靠它识别新事件） */
+  id: number;
   message: string;
   kind: string;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyIntent, createGame, getHero, toSnapshot, emptyFlags, type GameState, type SeatSetup } from '../src';
+import { applyIntent, createGame, getHero, pushLog, toSnapshot, emptyFlags, type GameState, type SeatSetup } from '../src';
 import type { Card, CardType, Faction, GameMode, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
@@ -2144,5 +2144,54 @@ describe('发将不重复', () => {
         expect(Math.max(...counts.values())).toBeGreaterThanOrEqual(2);
       }
     }
+  });
+});
+
+// ——————————————————————————————————————————
+// 日志序号：客户端（音效）靠 id 识别新事件，不能靠长度——
+// 快照只下发最近 50 条，引擎日志本身也在 200 条封顶，长度会停止增长。
+// ——————————————————————————————————————————
+
+describe('日志序号', () => {
+  const seats: SeatSetup[] = [
+    { seatId: A, name: '甲', heroId: 'vanilla' },
+    { seatId: B, name: '乙', heroId: 'vanilla' },
+  ];
+
+  it('id 单调递增且连续', () => {
+    const state = createGame(seats, 'TEST');
+    for (let i = 0; i < 5; i++) pushLog(state, 'draw', `第 ${i} 条`);
+    const ids = state.log.map((e) => e.id);
+    expect(ids.length).toBeGreaterThanOrEqual(6);
+    for (let i = 1; i < ids.length; i++) {
+      expect(ids[i]).toBe(ids[i - 1]! + 1);
+    }
+  });
+
+  it('超过 200 条时丢弃最旧的，保留下来的 id 仍连续递增', () => {
+    const state = createGame(seats, 'TEST');
+    for (let i = 0; i < 240; i++) pushLog(state, 'draw', `x${i}`);
+    expect(state.log.length).toBe(200);
+    const ids = state.log.map((e) => e.id);
+    for (let i = 1; i < ids.length; i++) {
+      expect(ids[i]).toBe(ids[i - 1]! + 1);
+    }
+    // 最新一条的 id 反映真实累计条数（开局 1 条 + 240 条）
+    expect(ids[ids.length - 1]).toBe(240);
+  });
+
+  it('快照只带最近 50 条，客户端能用 id 分辨出哪条是新的', () => {
+    const state = createGame(seats, 'TEST');
+    for (let i = 0; i < 80; i++) pushLog(state, 'draw', `x${i}`);
+    const snap = toSnapshot(state, A);
+    expect(snap.log.length).toBe(50);
+    // 窗口里最后一条就是全局最后一条
+    const cursor = snap.log[snap.log.length - 1]!.id;
+    expect(cursor).toBe(state.log[state.log.length - 1]!.id);
+
+    // 再产生一条事件，客户端靠 id > cursor 认出它
+    pushLog(state, 'damage', '新事件');
+    const snap2 = toSnapshot(state, A);
+    expect(snap2.log.filter((e) => e.id > cursor).map((e) => e.kind)).toEqual(['damage']);
   });
 });

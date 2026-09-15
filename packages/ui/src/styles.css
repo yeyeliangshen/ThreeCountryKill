@@ -822,3 +822,35 @@ button:disabled {
 .card-tip-desc {
   color: #d8d0c0;
 }
+
+/* 声音开关（固定右上角，各界面都在） */
+.sound-ctl {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(18, 14, 10, 0.82);
+  border: 1px solid rgba(200, 168, 96, 0.4);
+}
+.sound-btn {
+  padding: 2px 6px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.sound-vol {
+  width: 72px;
+  height: 4px;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+.sound-hint {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}

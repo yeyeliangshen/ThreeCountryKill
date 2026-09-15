@@ -1831,6 +1831,7 @@ export function createGame(
     gameOver: false,
     winner: null,
     log: [],
+    logSeq: 0,
     ongoingTrick: null,
   };
   pushLog(state, 'start', '游戏开始，随机发将。');

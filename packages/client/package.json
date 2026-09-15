@@ -10,11 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@sgs/engine": "workspace:*",
-    "@sgs/protocol": "workspace:*",
+    "@sgs/ui": "workspace:*",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0",
-    "zustand": "^4.5.0"
+    "react-dom": "^18.3.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

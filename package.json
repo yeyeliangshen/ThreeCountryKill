@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n server,client -c blue,magenta \"pnpm --filter @sgs/server dev\" \"pnpm --filter @sgs/client dev\"",
     "build": "pnpm -r build",
-    "test": "pnpm --filter @sgs/engine test",
+    "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "format": "prettier --write ."
   },

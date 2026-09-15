@@ -135,6 +135,8 @@ export interface GameState {
   gameOver: boolean;
   winner: string | null; // 胜方标识（阵营/队伍/身份方），未结束时为 null
   log: LogEntry[];
+  /** 日志自增序号：快照只下发最近若干条，客户端靠它判断哪些是新事件 */
+  logSeq: number;
 }
 
 // —— 查询辅助 ——
@@ -179,7 +181,7 @@ export function alivePlayers(state: GameState): Player[] {
 }
 
 export function pushLog(state: GameState, kind: string, message: string): void {
-  state.log.push({ kind, message });
+  state.log.push({ id: state.logSeq++, kind, message });
   // 保留最近 200 条，避免无限增长
   if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
 }
