@@ -2663,3 +2663,81 @@ describe('新增技能（含国战版差异）', () => {
     expect(state.log.some((e) => e.message.includes('花色相同'))).toBe(true);
   });
 });
+
+// ——————————————————————————————————————————
+// 端到端：国战版反间走完「出牌 → 目标收到选择项 → 选择 → 结算」。
+// 用 toSnapshot 模拟服务端下发的报文、用 applyIntent 模拟客户端回传，
+// 也就是把 React 之外的一整条链路串起来——客户端只负责把
+// prompt.choiceOptions 渲染成按钮、把 id 回传成 chooseOption。
+// ——————————————————————————————————————————
+
+describe('端到端：国战版反间', () => {
+  function setupGuozhanFanjian() {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '周瑜', heroId: 'zhouyu', hand: [mk('f1', 'tao', 'heart', 7), mk('f2', 'sha', 'spade', 3)], hp: 3 },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('d1', 'shan', 'heart', 2), mk('d2', 'sha', 'club', 4)], hp: 4 },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.heroRevealed = true;
+    state.pending = { kind: 'play', seatId: A };
+    return state;
+  }
+
+  it('目标拿到的快照里带两个可点选项，且标题能看出是谁用什么牌发的', () => {
+    const state = setupGuozhanFanjian();
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    const snap = toSnapshot(state, B);
+    expect(snap.prompt?.kind).toBe('choice');
+    // 标题写清来源与牌，否则目标不知道自己为什么被问
+    expect(snap.prompt?.message).toContain('周瑜');
+    expect(snap.prompt?.message).toContain('红桃7'); // 展示的那张牌
+    const ids = snap.prompt?.choiceOptions?.map((o) => o.id);
+    expect(ids).toEqual(['discard', 'loseHp']);
+    // 两个选项的文案要是人话
+    const labels = snap.prompt?.choiceOptions?.map((o) => o.label) ?? [];
+    expect(labels[0]).toContain('弃置');
+    expect(labels[1]).toContain('失去 1 点体力');
+    // 出牌方此时没有任何提示（在等对方选择，界面显示“等待其他玩家行动…”）
+    expect(toSnapshot(state, A).prompt).toBeNull();
+  });
+
+  it('选「失去 1 点体力」：只掉血，手牌不动', () => {
+    const state = setupGuozhanFanjian();
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    const handBefore = b.hand.length; // 2 张 + 反间给过来的 1 张 = 3
+    expect(handBefore).toBe(3);
+    expect(b.hp).toBe(4);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'loseHp' }));
+    expect(b.hp).toBe(3);
+    expect(b.hand.length).toBe(handBefore); // 牌留着
+    expect(state.pending).toEqual({ kind: 'play', seatId: A }); // 回到出牌方的出牌阶段
+  });
+
+  it('选「弃同花色」：只弃同花色，别的牌和体力都不动', () => {
+    const state = setupGuozhanFanjian();
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand.length).toBe(3); // 红桃2(闪) + 梅花4(杀) + 反间给的红桃7
+    ok(act(state, B, { type: 'chooseOption', optionId: 'discard' }));
+    // 反间给的是红桃 → 弃掉所有红桃（红桃2 和 红桃7），只剩梅花4
+    expect(b.hand.map((c) => c.id)).toEqual(['d2']);
+    expect(b.hp).toBe(4); // 体力不动
+    expect(state.discard.some((c) => c.id === 'd1')).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('选项无效 / 不是被问的人 都应被拒', () => {
+    const state = setupGuozhanFanjian();
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    // 出牌方自己回传选择 → 拒绝
+    expect(act(state, A, { type: 'chooseOption', optionId: 'loseHp' }).ok).toBe(false);
+    // 目标回传不存在的选项 → 拒绝
+    expect(act(state, B, { type: 'chooseOption', optionId: 'nope' }).ok).toBe(false);
+    // 拒绝之后仍然停在等待选择的状态，不会卡死
+    expect(state.pending?.kind).toBe('choice');
+  });
+});

@@ -35,6 +35,8 @@ export interface SkillApi {
     title: string,
     options: { id: string; label: string }[],
     resolve: (state: GameState, player: Player, optionId: string) => void,
+    /** 选完把控制权还给谁（技能发起的必须填，否则出牌方会卡住） */
+    returnTo?: string,
   ) => void;
 }
 
@@ -817,6 +819,8 @@ const ZHOUYU: Hero = {
                 `弃置了 ${same.length} 张与【${cardLabel(card)}】花色相同的牌。`,
               );
             },
+            // 选完回到周瑜的出牌阶段，否则这一局就卡住了
+            player.seatId,
           );
         },
       },

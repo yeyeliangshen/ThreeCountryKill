@@ -55,7 +55,9 @@ const err = (message: string): ApplyResult => ({ ok: false, error: message });
  * 让某个角色在若干选项里选一个（通用「选择一项」）。
  * 用法：askChoice(state, target, '选择一项', [{id:'a',label:'…'},{id:'b',label:'…'}],
  *   (st, p, picked) => { …按 picked 继续结算… });
- * 选完由 chooseOption 意图调用 resolve，然后回到出牌阶段（若轮到出牌者）。
+ * 选完由 chooseOption 意图调用 resolve；若这次选择是某个技能在出牌阶段发起的，
+ * 一定要传 returnTo（通常是发起技能的玩家），否则选完之后 pending 会停在
+ * null，出牌方再也动不了——整局就卡死了。
  */
 export function askChoice(
   state: GameState,
@@ -63,8 +65,9 @@ export function askChoice(
   title: string,
   options: { id: string; label: string }[],
   resolve: (state: GameState, player: Player, optionId: string) => void,
+  returnTo?: string,
 ): void {
-  state.pending = { kind: 'choice', seatId, title, options, resolve };
+  state.pending = { kind: 'choice', seatId, title, options, resolve, returnTo };
 }
 
 /**
@@ -676,6 +679,10 @@ export function applyIntent(
         message: `${player.name} 选择了「${picked.label}」。`,
       });
       pending.resolve(state, player, picked.id);
+      // 选完若没有产生新的流程（濒死、下一张判定等），把控制权还给发起者
+      if (state.pending === null && pending.returnTo) {
+        resumePlay(state, pending.returnTo);
+      }
       return { ok: true };
     }
 

@@ -123,6 +123,12 @@ export type Pending =
       title: string;
       options: { id: string; label: string }[];
       resolve: (state: GameState, player: Player, optionId: string) => void;
+      /**
+       * 选完之后把控制权还给谁（回到他的出牌阶段）。
+       * 不填则选完就停在 pending=null —— 那会让出牌方再也动不了，
+       * 所以由技能发起的「选择一项」都应该填这个。
+       */
+      returnTo?: string;
     };
 
 // 选将阶段：每人随机发到 K 张武将，各自选 1（并发，全选完才开局）
