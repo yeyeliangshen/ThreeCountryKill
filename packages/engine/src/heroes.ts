@@ -70,6 +70,9 @@ export interface HeroVariant {
   combo?: Hero['combo'];
   /** 展示用技能列表（国战版可能与身份局不同） */
   skills?: Hero['skills'];
+  distanceFrom?: Hero['distanceFrom'];
+  extraDraw?: Hero['extraDraw'];
+  handLimit?: Hero['handLimit'];
 }
 
 export interface Hero {
@@ -96,6 +99,21 @@ export interface Hero {
   hooks?: HookRegistration[];
   /** 主动技能 */
   activeSkills?: ActiveSkill[];
+  /**
+   * 距离修正：你计算与其他角色的距离时减少这个值（马超·马术 = 1）。
+   * 锁定技，两个模式一致。
+   */
+  distanceFrom?: number;
+  /**
+   * 摸牌阶段额外多摸几张（周瑜·英姿 = 1）。
+   * 引擎取所有生效武将里的最大值。
+   */
+  extraDraw?: number;
+  /**
+   * 手牌上限的计算方式。不给则用默认（当前体力）。
+   * 周瑜·英姿（国战）追加「手牌上限 = 体力上限」。
+   */
+  handLimit?: (state: GameState, player: Player) => number;
   /** 珠联璧合：与另一武将搭配时获得加成 */
   combo?: { with: string; bonus: 'hp' | 'skill' };
   /** UI 展示用技能描述（身份局/军争版本） */
@@ -189,7 +207,12 @@ const MACHAO: Hero = {
       },
     },
   ],
-  skills: [{ name: '铁骑', desc: '当你使用【杀】指定目标后，你可以进行判定：若为红色，此【杀】不可被闪避。' }],
+  // 马术：锁定技，计算与其他角色的距离 -1（distance() 读这个字段）
+  distanceFrom: 1,
+  skills: [
+    { name: '马术', desc: '锁定技，你计算与其他角色的距离-1。' },
+    { name: '铁骑', desc: '当你使用【杀】指定目标后，你可以进行判定：若为红色，此【杀】不可被闪避。' },
+  ],
 };
 
 const HUANGZHONG: Hero = {
@@ -562,7 +585,26 @@ const ZHOUYU: Hero = {
       },
     },
   ],
-  skills: [{ name: '反间', desc: '出牌阶段限一次，展示一张手牌给目标：目标交回一张不同类型手牌，或受1伤害。（简化版）' }],
+  extraDraw: 1,
+  skills: [
+    { name: '英姿', desc: '摸牌阶段，你可以多摸一张牌。' },
+    { name: '反间', desc: '出牌阶段限一次，展示一张手牌给目标：目标交回一张不同类型手牌，或受1伤害。（简化版）' },
+  ],
+  // 国战（2.110 调整）：英姿改为锁定技，并追加「手牌上限 = 体力上限」
+  guozhan: {
+    extraDraw: 1,
+    handLimit: (_state, player) => player.maxHp,
+    skills: [
+      {
+        name: '英姿',
+        desc: '锁定技，摸牌阶段，你多摸一张牌；你的手牌上限等于你的体力上限。（国战版）',
+      },
+      {
+        name: '反间',
+        desc: '出牌阶段限一次，你可以展示一张手牌并将之交给一名其他角色，该角色选择一项：1.展示所有手牌，然后弃置与此牌花色相同的所有牌；2.失去1点体力。（国战版·尚未实现，当前为身份局简化版）',
+      },
+    ],
+  },
 };
 
 const GANNING: Hero = {
@@ -687,6 +729,29 @@ const HERO_MAP: Record<string, Hero> = Object.fromEntries(HEROES.map((h) => [h.i
 export function getHero(id: string | null | undefined): Hero | undefined {
   if (id == null) return undefined;
   return HERO_MAP[id];
+}
+
+/**
+ * 取某个玩家**当前生效**的武将（国战暗将不算，暗将技能一律不生效）。
+ *
+ * 放在 heroes.ts 而不是 engine.ts，是为了让 distance.ts 也能用：
+ * engine 依赖 distance，distance 不能再反向依赖 engine。
+ */
+export function revealedHeroes(
+  mode: GameMode,
+  p: {
+    heroId: string | null;
+    deputyHeroId: string | null;
+    heroRevealed: boolean;
+    deputyRevealed: boolean;
+  },
+): Hero[] {
+  const out: Hero[] = [];
+  const main = getHeroForMode(p.heroId, mode);
+  if (main && (mode !== 'guozhan' || p.heroRevealed)) out.push(main);
+  const deputy = getHeroForMode(p.deputyHeroId, mode);
+  if (deputy && (mode !== 'guozhan' || p.deputyRevealed)) out.push(deputy);
+  return out;
 }
 
 /**

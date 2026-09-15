@@ -29,6 +29,7 @@ import {
   FACTION_NAME,
   getHero,
   getHeroForMode,
+  revealedHeroes,
   heroCanUseAs,
   heroShaLimit,
   ROLE_NAME,
@@ -50,9 +51,14 @@ export type ApplyResult = { ok: true } | { ok: false; error: string };
 
 const err = (message: string): ApplyResult => ({ ok: false, error: message });
 
-// 手牌上限 = 当前体力
-function handLimit(player: Player): number {
-  return Math.max(0, player.hp);
+/**
+ * 手牌上限：默认 = 当前体力；技能可以覆盖（周瑜·英姿 = 体力上限）。
+ * 多个武将给出上限时取最宽松的那个。
+ */
+function handLimit(state: GameState, player: Player): number {
+  const heroes = revealedHeroes(state.mode, player);
+  if (heroes.length === 0) return Math.max(0, player.hp);
+  return Math.max(0, ...heroes.map((h) => (h.handLimit ? h.handLimit(state, player) : player.hp)));
 }
 
 function removeCard(hand: import('@sgs/protocol').Card[], id: string) {
@@ -70,16 +76,7 @@ function removeCard(hand: import('@sgs/protocol').Card[], id: string) {
  * activeSkills 都从 activeHeroes 拿 Hero），所以按模式取一次就够了。
  */
 export function activeHeroes(state: GameState, player: Player): Hero[] {
-  const heroes: Hero[] = [];
-  if (player.heroId) {
-    const h = getHeroForMode(player.heroId, state.mode);
-    if (h && (state.mode !== 'guozhan' || player.heroRevealed)) heroes.push(h);
-  }
-  if (player.deputyHeroId) {
-    const h = getHeroForMode(player.deputyHeroId, state.mode);
-    if (h && (state.mode !== 'guozhan' || player.deputyRevealed)) heroes.push(h);
-  }
-  return heroes;
+  return revealedHeroes(state.mode, player);
 }
 
 /** 鏖战：国战残局仅 2 个非野心家阵营存活时，桃可当杀使用 */
@@ -172,15 +169,18 @@ function startTurn(state: GameState, seatIndex: number): void {
 
 /** 判定阶段后继续：摸牌 → 出牌（处理 skipDraw/skipPlay） */
 function continueTurnAfterJudgment(state: GameState, player: Player): void {
-  // 摸牌阶段：摸 2 张（兵粮寸断可跳过）
+  // 摸牌阶段：摸 2 张（兵粮寸断可跳过；英姿等技能可加量）
   state.turn.phase = 'draw';
   runHooks(state, 'drawPhase', player);
   if (!player.flags.skipDraw) {
-    for (let i = 0; i < 2; i++) {
+    const heroes = revealedHeroes(state.mode, player);
+    const extra = heroes.length ? Math.max(0, ...heroes.map((h) => h.extraDraw ?? 0)) : 0;
+    const count = 2 + extra;
+    for (let i = 0; i < count; i++) {
       const c = drawOne(state);
       if (c) player.hand.push(c);
     }
-    pushLog(state, 'draw', `${player.name} 摸了 2 张牌。`);
+    pushLog(state, 'draw', `${player.name} 摸了 ${count} 张牌。`);
   } else {
     pushLog(state, 'draw', `${player.name} 被【兵粮寸断】影响，跳过摸牌阶段。`);
   }
@@ -200,7 +200,7 @@ function continueTurnAfterJudgment(state: GameState, player: Player): void {
 function goToDiscardPhase(state: GameState, player: Player): void {
   state.turn.phase = 'discard';
   runHooks(state, 'discardPhase', player);
-  const over = player.hand.length - handLimit(player);
+  const over = player.hand.length - handLimit(state, player);
   if (over > 0) {
     state.pending = { kind: 'discard', seatId: player.seatId, count: over };
   } else {

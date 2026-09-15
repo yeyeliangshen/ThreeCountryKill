@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
+  baseDistance,
+  canTarget,
   createGame,
+  distance,
   getHero,
   getHeroForMode,
   pushLog,
@@ -354,7 +357,9 @@ describe('选将阶段（开局随机发将）', () => {
     // 武将已定、初始手牌已发（首回合玩家再摸 2）
     const pa = state.players.find((p) => p.seatId === A)!;
     expect(pa.heroId).toBe(aPick);
-    expect(pa.hand).toHaveLength(4 + 2);
+    // 摸牌数不能写死 2：随机发到的武将可能有加成（周瑜·英姿 +1）
+    const drawCount = 2 + (getHero(aPick)!.extraDraw ?? 0);
+    expect(pa.hand).toHaveLength(4 + drawCount);
     const pb = state.players.find((p) => p.seatId === B)!;
     expect(pb.heroId).toBe(bPick);
     expect(pb.hand).toHaveLength(4);
@@ -2431,5 +2436,88 @@ describe('国战 / 军争 技能差异', () => {
     // 国战：2 既不 ≥ 体力4 也不 ≤ 攻击范围1 → 不发动
     ok(act(guo, A, { type: 'playCard', cardId: 's1', targetIds: [B] }));
     expect(guo.log.some((e) => e.message.includes('发动【烈弓】'))).toBe(false);
+  });
+});
+
+// ——————————————————————————————————————————
+// 距离 / 摸牌数 / 手牌上限 三类被动修改器。
+// 都是最新国战需要的机制：马术改距离、英姿加摸牌并把手牌上限抬到体力上限。
+// ——————————————————————————————————————————
+
+describe('被动修改器（距离 / 摸牌 / 手牌上限）', () => {
+  it('马术：马超计算与其他角色的距离 -1', () => {
+    const others: SeatOpts[] = [
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: 's2', name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: 's3', name: '丁', heroId: 'vanilla', hand: [] },
+    ];
+    const noMashu = makeGame([{ seatId: A, name: '甲', heroId: 'vanilla', hand: [] }, ...others]);
+    const withMashu = makeGame([{ seatId: A, name: '甲', heroId: 'machao', hand: [] }, ...others]);
+    // 4 人桌：s0 到 s2 的基础距离是 2
+    expect(baseDistance(noMashu, A, 's2')).toBe(2);
+    expect(distance(noMashu, A, 's2')).toBe(2);
+    // 马术 -1 → 距离 1，于是无武器也能打到原本 2 距离的对手
+    expect(distance(withMashu, A, 's2')).toBe(1);
+    expect(canTarget(withMashu, A, 's2')).toBe(true);
+    expect(canTarget(noMashu, A, 's2')).toBe(false);
+  });
+
+  it('马术：国战暗将时不生效，亮将后才生效', () => {
+    // 4 人桌：s0 到 s2 的基础距离是 2（3 人桌只有 1，测不出 -1）
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'machao', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: 's2', name: '丙', heroId: 'vanilla', hand: [] },
+        { seatId: 's3', name: '丁', heroId: 'vanilla', hand: [] },
+      ],
+      'guozhan',
+    );
+    const me = state.players.find((p) => p.seatId === A)!;
+    expect(me.heroRevealed).toBe(false);
+    expect(distance(state, A, 's2')).toBe(2);
+    me.heroRevealed = true;
+    expect(distance(state, A, 's2')).toBe(1);
+  });
+
+  it('英姿：摸牌阶段摸 3 张而不是 2 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhouyu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 甲结束回合 → 乙的回合开始（判定→摸牌），摸牌数由英姿 +1
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.hand).toHaveLength(3);
+    expect(state.log.some((e) => e.message.includes('摸了 3 张牌'))).toBe(true);
+  });
+
+  it('英姿（国战）：手牌上限 = 体力上限，低体力也不用弃满', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhouyu', hand: [], hp: 1 },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      ],
+      'guozhan',
+    );
+    const me = state.players.find((p) => p.seatId === A)!;
+    me.heroRevealed = true;
+    me.hand = [sha('d1'), sha('d2')];
+    expect(me.hp).toBe(1);
+    expect(me.maxHp).toBe(3);
+    // 默认上限是当前体力 1 → 2 张手牌要弃 1；英姿把上限抬到 3 → 不用弃
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).not.toBe('discard');
+  });
+
+  it('没有英姿时手牌上限仍是当前体力', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [], hp: 1 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const me = state.players.find((p) => p.seatId === A)!;
+    me.hand = [sha('d1'), sha('d2')];
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('discard');
   });
 });
