@@ -26,8 +26,8 @@
   --ink-soft: #6d5736;
   --table-max: 1120px;
   /* 右侧栏宽度（出牌记录 + 武将面板）。
-     桌面减去内边距与栏间距后约为 1072，左右比约 2.2 : 1 */
-  --side-w: 340px;
+     桌面减内边距与栏间距后约 1094，左右约 1.9 : 1 */
+  --side-w: 380px;
   /* 卡面：外描边、内侧印刷线、牌名墨色。
      桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
   --card-edge: #8a7048;
@@ -271,30 +271,37 @@ button:disabled {
   text-align: center;
 }
 
-/* —— 武将画像占位框 ——
-   还没有画像资源，先用带阵营色的方框顶着，里面放武将名。
-   有图之后把 .portrait-art 换成 <img> 即可，外面的框不用动。 */
+/* —— 武将原画框 ——
+   原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
+   没有原画的武将（如中立「平民」）回退成名字占位框。 */
 .portrait {
   position: relative;
-  flex: 0 0 auto;
   border-radius: 6px;
   background: linear-gradient(160deg, #2a3444 0%, #1a2130 100%);
   border: 1px solid var(--panel-2);
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
+  /* 基准宽 220（原画比例 1 : 1.415，即高 311）；国战两张时按剩余空间等比缩 */
+  flex: 0 1 220px;
+  min-width: 0;
+  aspect-ratio: 1 / 1.415;
 }
-.portrait.big {
-  width: 54px;
-  height: 76px;
-}
+/* 对手卡片上的小头像 */
 .portrait.small {
+  flex: 0 0 auto;
   width: 40px;
-  height: 56px;
+  aspect-ratio: 1 / 1.4;
 }
-.portrait-art {
-  /* 占位内容：武将名竖排，像一张卡 */
+.portrait-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 没原画时的名字占位：竖排，像一张卡 */
+.portrait-name {
   writing-mode: vertical-rl;
   font-size: 13px;
   font-weight: 700;
@@ -305,7 +312,7 @@ button:disabled {
   overflow: hidden;
   padding: 4px 0;
 }
-.portrait.small .portrait-art {
+.portrait.small .portrait-name {
   font-size: 10px;
   letter-spacing: 0;
   padding: 2px 0;
@@ -315,22 +322,41 @@ button:disabled {
 .portrait.faction-wei { border-color: #4a7fb5; }
 .portrait.faction-wu { border-color: #5a9b3a; }
 .portrait.faction-qun { border-color: #8a8270; }
-.portrait.unrevealed .portrait-art {
-  color: var(--muted);
+/* 国战暗将：原画压暗 */
+.portrait.unrevealed .portrait-photo {
+  filter: grayscale(0.85) brightness(0.5);
 }
 .portrait-dim {
   position: absolute;
-  top: 2px;
-  right: 3px;
-  font-size: 9px;
-  color: var(--muted);
+  top: 3px;
+  left: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* 体力：绿色勾玉，竖排叠在原画右上角。
+   原画颜色不可控，所以垫一层暗底保证勾玉看得清。 */
+.portrait-hp {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 3px;
+  border-radius: 9px;
+  background: rgba(8, 12, 8, 0.6);
 }
 .portrait-tag {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  font-size: 9px;
+  font-size: 11px;
   text-align: center;
   color: #1a1208;
   background: var(--gold);
@@ -340,8 +366,8 @@ button:disabled {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 2px 0;
-  font-size: 10px;
+  padding: 3px 0;
+  font-size: 12px;
   border-radius: 0;
   background: var(--gold);
   color: #1a1208;
@@ -351,13 +377,13 @@ button:disabled {
 /* —— 我的武将面板 —— */
 .hero-panel {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
   background: var(--panel);
   border-radius: 10px;
   padding: 8px;
   border: 1px solid transparent;
-  /* 和日志/提示区一条竖列（都是 760），别跟着桌面拉满，
-     否则技能行会变成一条中间空一大半的长条 */
+  /* 和日志/提示区一条竖列，别跟着桌面拉满 */
   width: 100%;
   max-width: 760px;
   margin: 0 auto;
@@ -374,13 +400,7 @@ button:disabled {
 .hero-portraits {
   display: flex;
   gap: 6px;
-}
-.hero-side {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+  justify-content: center;
 }
 .hero-head {
   display: flex;
@@ -389,16 +409,15 @@ button:disabled {
   flex-wrap: wrap;
   font-size: 13px;
 }
-.hero-hp {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  margin-left: auto;
+.hero-names {
+  color: var(--gold);
+  font-weight: 700;
 }
 .hero-hp-text {
-  font-size: 11px;
-  color: var(--red);
-  margin-left: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8fd06a;
+  margin-left: auto;
 }
 .hero-zones {
   display: flex;
@@ -406,77 +425,49 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-/* —— 技能列表 —— */
+/* —— 技能：只显示名字，悬停看效果 —— */
 .skill-list {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .skill-none {
   font-size: 11px;
   color: var(--muted);
 }
-.skill-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  text-align: left;
-  padding: 4px 8px;
-  border-radius: 6px;
+.skill-chip {
+  padding: 4px 14px;
+  border-radius: 999px;
   background: transparent;
   border: 1px solid var(--panel-2);
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 13px;
+  font-weight: 700;
   color: var(--muted);
 }
 /* 可以用的时候高亮成按钮的样子，点一下就发动 */
-.skill-row.usable {
+.skill-chip.usable {
   cursor: pointer;
   border-color: var(--gold);
-  background: rgba(212, 168, 75, 0.12);
-}
-.skill-row.usable:hover {
-  background: rgba(212, 168, 75, 0.22);
-}
-.skill-row.active {
-  border-color: var(--green);
-  background: rgba(90, 155, 58, 0.18);
-}
-.skill-row[aria-disabled='true'] {
-  cursor: default;
-}
-.sk-name {
-  flex: 0 0 auto;
-  font-weight: 700;
+  background: rgba(212, 168, 75, 0.14);
   color: var(--gold);
-  font-size: 12px;
 }
-.skill-row.active .sk-name {
+.skill-chip.usable:hover {
+  background: rgba(212, 168, 75, 0.26);
+}
+.skill-chip.active {
+  border-color: #5a9b3a;
+  background: rgba(90, 155, 58, 0.22);
   color: #8fd06a;
 }
-.sk-desc {
-  flex: 1;
-  min-width: 0;
-  color: var(--muted);
-}
-.skill-row.usable .sk-desc {
-  color: #ddd4be;
-}
-.sk-go {
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 700;
-  color: #1a1208;
-  background: var(--gold);
-  border-radius: 4px;
-  padding: 1px 6px;
-}
-.skill-row.active .sk-go {
-  background: var(--green);
-  color: #0f1a08;
+.skill-chip[aria-disabled='true'] {
+  cursor: default;
 }
 
-/* —— 牌桌 —— */
+/* —— 牌桌 ——
+   窄屏：两层容器用 display: contents "消失"，子元素直接排成单列，
+   靠 order 保证顺序是 对手 → 记录 → 武将 → 操作 → 手牌。
+   宽屏：左右两栏，左栏牌桌（对手在上、操作与手牌在下），
+   右栏上方出牌记录、下方武将面板。 */
 .game {
   flex: 1;
   display: flex;
@@ -484,51 +475,67 @@ button:disabled {
   gap: 8px;
   padding: 8px;
 }
-/* 宽屏：左右两栏。左栏是牌桌（对手在上、操作与手牌在下），
-   右栏上方是出牌记录、下方是武将面板。
-   这里用 grid 定位而不调整 DOM 顺序，窄屏单列时仍然保持
-   对手→记录→武将→操作→手牌 的合理顺序。 */
+.board,
+.side {
+  display: contents;
+}
+.players-row {
+  order: 1;
+}
+.center {
+  order: 2;
+}
+.hero-panel {
+  order: 3;
+}
+.prompt {
+  order: 4;
+}
+.hand {
+  order: 5;
+}
+
 @media (min-width: 880px) {
   .game {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--side-w);
-    grid-template-rows: auto 1fr auto auto;
-    grid-template-areas:
-      'players log'
-      '.       log'
-      'prompt  log'
-      'hand    hero';
-    gap: 8px 10px;
-    align-items: stretch;
+    flex-direction: row;
+    gap: 10px;
   }
-  .players-row {
-    grid-area: players;
+  .board {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
   }
-  .prompt {
-    grid-area: prompt;
-    max-width: none;
-    margin: 0;
+  /* 手牌压到底部：牌桌上牌就该在离自己最近的位置 */
+  .board .hand {
+    margin-top: auto;
   }
-  .hand {
-    grid-area: hand;
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 0 0 var(--side-w);
+    min-width: 0;
   }
-  /* 出牌记录：回合信息 + 日志合成一块面板，占满右上并自己滚动 */
-  .center {
-    grid-area: log;
-    max-width: none;
-    margin: 0;
+  /* 出牌记录：回合信息 + 日志合成一块面板，占满右上的剩余高度并自己滚动 */
+  .side .center {
+    flex: 1;
     min-height: 0;
+    max-width: none;
+    margin: 0;
     background: var(--panel);
     border-radius: 10px;
     padding: 8px;
   }
-  .center .log {
+  .side .log {
     background: transparent;
     padding: 0;
     min-height: 0;
   }
+  /* 武将面板按自身高度排在下半部分 */
   .hero-panel {
-    grid-area: hero;
+    flex: 0 0 auto;
     max-width: none;
     margin: 0;
   }
@@ -592,20 +599,21 @@ button:disabled {
 }
 /* 体力标记：勾玉。
    用「三圆角 + 一角直角」的方块转 45° 得到泪滴/逗号形，尾巴朝下。
-   想要更精细的形状可以换成内联 SVG path。 */
+   想要更精细的形状可以换成内联 SVG path。
+   颜色：绿色（空槽是暗色凹槽）。 */
 .hp-cell {
   width: 11px;
   height: 11px;
   border-radius: 50% 50% 50% 0;
   transform: rotate(-45deg);
-  background: #5a4632;
-  box-shadow: inset 0 0 0 1px rgba(255, 253, 245, 0.18);
+  background: #2f3a28;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
 .hp-cell.on {
-  background: radial-gradient(circle at 34% 30%, #ff9a76 0%, #d9453a 55%, #8e2119 100%);
+  background: radial-gradient(circle at 34% 30%, #b9f08a 0%, #5aa832 52%, #2f6a1a 100%);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 220, 200, 0.35),
-    0 0 5px rgba(217, 69, 58, 0.6);
+    inset 0 0 0 1px rgba(226, 255, 200, 0.4),
+    0 0 5px rgba(120, 200, 70, 0.6);
 }
 .p-hand {
   font-size: 11px;
@@ -1206,8 +1214,9 @@ button:disabled {
   color: var(--green);
 }
 
-/* 卡牌效果悬停提示（fixed 定位，避免被滚动容器裁切） */
-.card-tip {
+/* 悬停提示（fixed 定位，避免被 .hand / .log 这类滚动容器裁切）。
+   手牌和武将技能共用，见 components/HoverTip.tsx */
+.hover-tip {
   position: fixed;
   /* 多留一点距离：牌悬浮时会抬起 14px，贴太近会被压住 */
   transform: translate(-50%, calc(-100% - 22px));
@@ -1226,13 +1235,13 @@ button:disabled {
   pointer-events: none;
   z-index: 300;
 }
-.card-tip-name {
+.hover-tip-name {
   color: var(--gold);
   font-weight: 700;
   margin-bottom: 5px;
   font-size: 13px;
 }
-.card-tip-desc {
+.hover-tip-desc {
   color: #d8d0c0;
 }
 
@@ -1285,4 +1294,13 @@ button:disabled {
 .lobby-foot .hint,
 .lobby .hint {
   color: var(--ink-soft);
+}
+
+/* —— 窄屏原画缩小一档 ——
+   单列时 220×311 的原画会把操作区和手牌顶出屏幕。
+   同样必须放在文件最后：.portrait 的 flex 简写在前面，同优先级下靠顺序取胜。 */
+@media (max-width: 879px) {
+  .portrait {
+    flex-basis: 148px;
+  }
 }

@@ -6,6 +6,8 @@ import {
 } from '@sgs/protocol';
 import { getHero, heroCanUseAs, ROLE_NAME, FACTION_NAME, type Hero, type ActiveSkill } from '@sgs/engine';
 import { HeroPanel, type HeroSlot, type SkillRow } from '../components/HeroPanel';
+import { heroArt } from '../components/heroArt';
+import { useHoverTip } from '../components/HoverTip';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -156,8 +158,9 @@ export function Game() {
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
-  // 卡牌悬停效果提示（fixed 定位，避免被 .hand 的滚动容器裁切）
-  const [tip, setTip] = useState<{ x: number; y: number; card: Card } | null>(null);
+  // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
+  // 武将技能用的是同一套，见 components/HoverTip.tsx
+  const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
 
   // 提示一变就清空本地选择
   useEffect(() => {
@@ -509,11 +512,12 @@ export function Game() {
     }
   }
 
-  // —— 武将面板：画像占位 + 技能行 ——
+  // —— 武将面板：原画 + 体力勾玉 + 技能名 ——
   const canRevealNow = myTurn && prompt?.kind === 'play' && !skillMode && !selected;
   const heroSlots: HeroSlot[] = isGuozhan
     ? [
         {
+          heroId: me.heroId,
           name: myHero?.name ?? '?',
           faction: myHero?.faction ?? null,
           hidden: !me.heroRevealed,
@@ -524,6 +528,7 @@ export function Game() {
               : undefined,
         },
         {
+          heroId: me.deputyHeroId,
           name: myDeputyHero?.name ?? '?',
           faction: myDeputyHero?.faction ?? null,
           hidden: !me.deputyRevealed,
@@ -536,6 +541,7 @@ export function Game() {
       ]
     : [
         {
+          heroId: me.heroId,
           name: myHero?.name ?? '?',
           faction: myHero?.faction ?? null,
           hidden: false,
@@ -568,8 +574,10 @@ export function Game() {
 
   return (
     <div className="game">
-      {/* 其他玩家 */}
-      <div className="players-row">
+      {/* 左栏：牌桌（对手 / 操作 / 手牌）。窄屏时这层容器消失，直接排单列 */}
+      <div className="board">
+        {/* 其他玩家 */}
+        <div className="players-row">
         {others.map((p) => {
           const isTarget = canClickTarget(p);
           const isPickedTarget = targeting && (
@@ -580,6 +588,7 @@ export function Game() {
           const isLord = p.role === 'lord';
           const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
           const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
+          const art = heroArt(p.heroId);
           return (
             <button
               key={p.seatId}
@@ -589,8 +598,13 @@ export function Game() {
             >
               <div className="p-top">
                 {/* 画像占位框，和我自己的武将面板同一套视觉 */}
+                {/* 小头像：对手原画（没原画时回退成武将名） */}
                 <span className={`portrait small ${factionClass}`}>
-                  <span className="portrait-art">{heroDisplay(p, snapshot.mode)}</span>
+                  {art ? (
+                    <img className="portrait-photo" src={art} alt="" />
+                  ) : (
+                    <span className="portrait-name">{heroDisplay(p, snapshot.mode)}</span>
+                  )}
                 </span>
                 <span className="p-info">
                   <span className="p-name">
@@ -644,31 +658,9 @@ export function Game() {
             </button>
           );
         })}
-      </div>
-
-      {/* 中部：回合信息 + 日志 */}
-      <div className="center">
-        <div className="turn-info">
-          [{MODE_NAME[snapshot.mode]}]{' '}
-          {snapshot.players.find((p) => p.seatId === snapshot.turn.seatId)?.name} 的回合 ·{' '}
-          {PHASE_NAME[snapshot.turn.phase] ?? snapshot.turn.phase}
         </div>
-        {/* 出牌记录：宽屏时占满右上方，所以多留几条并自己滚动 */}
-        <div className="log" ref={logBoxRef}>
-          {snapshot.log
-            .slice(-40)
-            .map((l) => (
-              <div key={l.id} className={`log-line log-${l.kind}`}>
-                {l.message}
-              </div>
-            ))}
-        </div>
-      </div>
 
-      {/* 我的武将面板：画像占位 + 体力 + 技能（可点的技能直接在这里发动） */}
-      <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} skills={skillRows} />
-
-      {/* 提示/操作区 */}
+        {/* 提示/操作区 */}
       {prompt ? (
         <div className={`prompt prompt-${prompt.kind}`}>
           <div className="prompt-msg">{prompt.message}</div>
@@ -773,11 +765,11 @@ export function Game() {
               className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass}`}
               aria-disabled={cardDisabled}
               aria-label={cardLabel(card)}
-              onMouseEnter={(e) => {
-                const r = e.currentTarget.getBoundingClientRect();
-                setTip({ x: r.left + r.width / 2, y: r.top, card });
-              }}
-              onMouseLeave={() => setTip(null)}
+              onMouseEnter={bindTip(
+                `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
+                cardDescription(card),
+              ).onMouseEnter}
+              onMouseLeave={hideTip}
               onClick={() => {
                 if (cardDisabled) return;
                 if (!prompt) return;
@@ -804,17 +796,34 @@ export function Game() {
           );
         })}
       </div>
+      </div>
 
-      {/* 卡牌效果悬停提示 */}
-      {tip && (
-        <div className="card-tip" style={{ left: tip.x, top: tip.y }}>
-          <div className="card-tip-name">
-            {SUIT_NAME[tip.card.suit]}
-            {rankLabel(tip.card.rank)} · {cardShortName(tip.card)}
+      {/* 右栏：出牌记录（上）+ 武将面板（下）。
+          窄屏时这层容器消失，按 order 排成单列 */}
+      <aside className="side">
+        {/* 出牌记录 */}
+        <div className="center">
+          <div className="turn-info">
+            [{MODE_NAME[snapshot.mode]}]{' '}
+            {snapshot.players.find((p) => p.seatId === snapshot.turn.seatId)?.name} 的回合 ·{' '}
+            {PHASE_NAME[snapshot.turn.phase] ?? snapshot.turn.phase}
           </div>
-          <div className="card-tip-desc">{cardDescription(tip.card)}</div>
+          <div className="log" ref={logBoxRef}>
+            {snapshot.log
+              .slice(-40)
+              .map((l) => (
+                <div key={l.id} className={`log-line log-${l.kind}`}>
+                  {l.message}
+                </div>
+              ))}
+          </div>
         </div>
-      )}
+
+        {/* 我的武将面板 */}
+        <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} skills={skillRows} />
+      </aside>
+
+      {tipNode}
     </div>
   );
 }
