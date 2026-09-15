@@ -37,6 +37,9 @@ export function SoundToggle() {
         }}
       />
       {waiting && <span className="sound-hint">点击页面开启音乐</span>}
+      {!waiting && state.fileFailed && (
+        <span className="sound-hint">音乐文件加载失败，已用内置音乐</span>
+      )}
     </div>
   );
 }

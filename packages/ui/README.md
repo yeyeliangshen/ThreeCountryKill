@@ -29,7 +29,7 @@ assets/
 
 ## 怎么改
 
-**换/加背景音乐**：见 `assets/bgm/README.md`。没有文件时用内置合成音，放进去文件就自动优先。
+**换/加背景音乐**：见 `assets/bgm/README.md`。优先级是 `menu.*` / `battle.*` 专用文件 > `default.*` 兜底文件 > 内置合成音。当前放的是 `default.mp4`（三国杀开局音乐），菜单和对局共用。
 
 **加音效**：在 `sfx.ts` 的 `play()` 里加一个 `case`，在 `logSfx.ts` 里把引擎的日志 `kind` 映射过去。引擎日志 kind 的取值见 `packages/engine/src/engine.ts` 中的 `pushLog(...)` 调用。
 
@@ -56,6 +56,8 @@ __sgsAudio.sfx.play('damage')     // 单独试听某个音效
 ```
 
 `contextState` 为 `'running'` 才代表真的在出声；`'suspended'` 是浏览器还没拿到播放许可（用户还没交互过），此时界面右上角会提示「点击页面开启音乐」。
+
+`source` 为 `'file'` 表示用的是 `assets/bgm` 里的音乐文件，`'synth'` 表示内置合成音；`fileDuration` 有值说明文件确实被取到并解码成功。
 
 ## 两个容易踩的点
 

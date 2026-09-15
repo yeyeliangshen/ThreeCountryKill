@@ -1,8 +1,9 @@
 // 背景音乐。
 //
 // 音源优先级：
-//   1. packages/ui/assets/bgm/<场景>.mp3|ogg|m4a|wav —— 把文件放进去就自动生效
-//   2. 内置合成音 —— 用 Web Audio 现场合成的五声音阶循环，不需要任何音频文件
+//   1. packages/ui/assets/bgm/<场景>.mp3  —— 某个场景专用
+//   2. packages/ui/assets/bgm/default.*   —— 所有场景共用（没有专用文件时）
+//   3. 内置合成音 —— 用 Web Audio 现场合成的五声音阶循环，不需要任何音频文件
 //
 // 浏览器要求先有用户交互才允许出声，所以首次 play() 若被自动播放策略挂起，
 // 会在第一次 pointerdown / keydown 时自动恢复，不需要调用方配合。
@@ -24,22 +25,31 @@ export interface BgmState {
    * 'suspended' 说明还没拿到播放许可（浏览器要求先有用户交互）。
    */
   contextState: AudioContextState | null;
+  /** 音乐文件时长（秒）；null 表示没有文件或还没加载出来 */
+  fileDuration: number | null;
+  /** 音乐文件加载/解码失败，已退回合成音 */
+  fileFailed: boolean;
 }
 
 // —— 真实音乐文件（可选）——
-const MUSIC_FILES = import.meta.glob('../../assets/bgm/*.{mp3,ogg,m4a,wav}', {
+const MUSIC_FILES = import.meta.glob('../../assets/bgm/*.{mp3,ogg,m4a,mp4,wav}', {
   eager: true,
   query: '?url',
   import: 'default',
 }) as Record<string, string>;
 
-/** 按文件名匹配场景：battle.mp3 → 'battle' */
+/** 所有场景都不指定文件时用的兜底文件名 */
+const FALLBACK_NAME = 'default';
+
+/** 按文件名匹配场景：battle.mp3 → 'battle'；没有专用文件则用 default.* */
 function fileFor(scene: BgmScene): string | null {
+  let fallback: string | null = null;
   for (const [path, url] of Object.entries(MUSIC_FILES)) {
     const base = path.split('/').pop()?.replace(/\.[^.]+$/, '');
     if (base === scene) return url;
+    if (base === FALLBACK_NAME) fallback = url;
   }
-  return null;
+  return fallback;
 }
 
 // —— 合成音参数 ——
@@ -98,6 +108,8 @@ let state: BgmState = {
   source: null,
   blocked: false,
   contextState: null,
+  fileDuration: null,
+  fileFailed: false,
 };
 
 const listeners = new Set<() => void>();
@@ -113,6 +125,8 @@ let master: GainNode | null = null;
 let droneOscs: OscillatorNode[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let el: HTMLAudioElement | null = null;
+/** 当前正在播的文件 URL，用于判断换场景时要不要重头播 */
+let currentUrl: string | null = null;
 let nextNoteTime = 0;
 let step = 0;
 let unlockBound = false;
@@ -277,20 +291,40 @@ function stopSynth(): void {
 
 function stopFile(): void {
   if (el) {
+    el.onloadedmetadata = null;
+    el.onerror = null;
     el.pause();
     el = null;
   }
+  currentUrl = null;
+  if (state.fileDuration !== null) emit({ fileDuration: null });
 }
 
-function startFile(url: string): void {
+function startFile(url: string, scene: BgmScene): void {
+  currentUrl = url;
   if (!el) {
     el = new Audio(url);
     el.loop = true;
   } else if (!el.src.endsWith(url)) {
     el.src = url;
   }
-  el.volume = gain();
-  void el.play().catch(() => emit({ blocked: true }));
+  const audio = el;
+  audio.onloadedmetadata = () => {
+    if (el !== audio) return;
+    // duration 有值说明文件真的被取到并解码成功
+    emit({ fileDuration: Number.isFinite(audio.duration) ? audio.duration : null, fileFailed: false });
+  };
+  audio.onerror = () => {
+    if (el !== audio) return;
+    // 文件取不到或解码失败：退回内置合成音，别让玩家静默地没有声音
+    emit({ fileFailed: true, fileDuration: null, source: 'synth' });
+    stopFile();
+    startSynth(scene);
+  };
+  audio.volume = gain();
+  void audio.play().catch(() => {
+    if (el === audio) emit({ blocked: true });
+  });
 }
 
 // —— 对外 API ——
@@ -299,15 +333,23 @@ export const bgm = {
   play(scene: BgmScene): void {
     wantScene = scene;
     if (state.scene === scene) return;
+    const file = fileFor(scene);
+    // 两个场景用的是同一个文件（放的是 default.*）时接着播，
+    // 否则从菜单进对局会把音乐打断、从头开始
+    if (file && file === currentUrl) {
+      stopSynth();
+      emit({ scene, source: 'file', fileFailed: false, blocked: false });
+      return;
+    }
     stopSynth();
     stopFile();
-    const file = fileFor(scene);
+    emit({ scene, fileFailed: false, blocked: false });
     if (file) {
-      startFile(file);
-      emit({ scene, source: 'file', blocked: false });
+      emit({ source: 'file' });
+      startFile(file, scene);
     } else {
+      emit({ source: 'synth' });
       startSynth(scene);
-      emit({ scene, source: 'synth' });
     }
   },
 
