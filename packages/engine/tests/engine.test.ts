@@ -781,7 +781,7 @@ describe('国战模式', () => {
     fail(act(state, A, { type: 'pickHero', heroId: diff1, deputyHeroId: diff2 }));
   });
 
-  it('体力计算：maxHp = ceil((主将 + 副将) / 2)', () => {
+  it('体力计算：maxHp = floor((主将 + 副将) / 2)，珠联璧合再 +1', () => {
     const setup: SeatSetup[] = [
       { seatId: A, name: '甲' },
       { seatId: B, name: '乙' },
@@ -790,7 +790,12 @@ describe('国战模式', () => {
     const pairA = findSameFactionPair(state.draft!.deals[A]!)!;
     const mainHero = getHero(pairA.main)!;
     const deputyHero = getHero(pairA.deputy)!;
-    const expectedHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
+    // 官方规则：向下取整；若该组合为珠联璧合则体力上限再 +1
+    const isCombo =
+      (mainHero.combo?.with === deputyHero.id && mainHero.combo.bonus === 'hp') ||
+      (deputyHero.combo?.with === mainHero.id && deputyHero.combo.bonus === 'hp');
+    const expectedHp =
+      Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2) + (isCombo ? 1 : 0);
     ok(act(state, A, { type: 'pickHero', heroId: pairA.main, deputyHeroId: pairA.deputy }));
     const pairB = findSameFactionPair(state.draft!.deals[B]!)!;
     ok(act(state, B, { type: 'pickHero', heroId: pairB.main, deputyHeroId: pairB.deputy }));
@@ -1637,10 +1642,10 @@ describe('国战进阶（Step 7）', () => {
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
     const b = state.players.find((p) => p.seatId === B)!;
-    // 关羽(4)+张飞(4) → ceil(8/2)=4 + 1(珠联璧合) = 5
+    // 关羽(4)+张飞(4) → floor(8/2)=4 + 1(珠联璧合) = 5
     expect(a.maxHp).toBe(5);
-    // 许褚(4)+甄姬(3) → ceil(7/2)=4，无珠联璧合
-    expect(b.maxHp).toBe(4);
+    // 许褚(4)+甄姬(3) → floor(7/2)=3，无珠联璧合
+    expect(b.maxHp).toBe(3);
   });
 
   it('珠联璧合：吕布+貂蝉 → maxHp +1', () => {
@@ -1649,8 +1654,18 @@ describe('国战进阶（Step 7）', () => {
       { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
-    // 吕布(4)+貂蝉(3) → ceil(7/2)=4 + 1(珠联璧合) = 5
-    expect(a.maxHp).toBe(5);
+    // 吕布(4)+貂蝉(3) → floor(7/2)=3 + 1(珠联璧合) = 4
+    expect(a.maxHp).toBe(4);
+  });
+
+  it('体力上限向下取整：孙权+周瑜 → floor(3.5)=3 再 +1 = 4（原 ceil 会得 5）', () => {
+    const state = makeGuozhanDraft([
+      { seatId: A, name: '甲', main: 'sunquan', deputy: 'zhouyu' },
+      { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.maxHp).toBe(4);
+    expect(a.hp).toBe(4);
   });
 
   // 2. 野心家分配
@@ -1907,5 +1922,227 @@ describe('死亡弃装备与判定区（Step 10 补充）', () => {
     expect(state.discard.some((c) => c.id === 'bp')).toBe(true);
     expect(state.discard.some((c) => c.id === 'bm')).toBe(true);
     expect(state.discard.some((c) => c.id === 'bl')).toBe(true);
+  });
+});
+
+// ——————————————————————————————————————————
+// 装备特效（防具 + 标志性武器）
+// ——————————————————————————————————————————
+
+const armor = (id: string, equipName: string): Card => ({
+  id, type: 'armor', suit: 'club', rank: 2, equipName,
+});
+const weapon = (id: string, equipName: string, range = 2): Card => ({
+  id, type: 'weapon', suit: 'spade', rank: 5, equipName, range,
+});
+const fireSha = (id: string): Card => ({
+  id, type: 'sha', suit: 'heart', rank: 5, attribute: 'fire',
+});
+
+describe('装备特效：防具', () => {
+  it('仁王盾：黑色的杀对你无效（不询问闪、不扣血）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'renwang');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(b.hp).toBe(b.maxHp);
+    expect(state.pending!.kind).toBe('play'); // 未进入出闪询问
+  });
+
+  it('仁王盾：红色的杀仍然生效', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'renwang');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending!.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(b.maxHp - 1);
+  });
+
+  it('青釭剑无视防具：仁王盾对黑色杀失效', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('aw', 'qinggang');
+    b.equipment.armor = armor('ba', 'renwang');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending!.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(b.maxHp - 1);
+  });
+
+  it('藤甲：普通杀对你无效', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'tengjia');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(b.hp).toBe(b.maxHp);
+    expect(state.pending!.kind).toBe('play');
+  });
+
+  it('藤甲：火杀生效且火焰伤害 +1（1 点基础 → 2 点）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'tengjia');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(b.maxHp - 2);
+  });
+
+  it('藤甲：南蛮入侵对该角色无效（直接跳过询问）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('n1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'tengjia');
+    ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    passWuxie(state);
+    expect(b.hp).toBe(b.maxHp);
+    expect(state.pending!.kind).toBe('play');
+  });
+
+  it('八卦阵：判定为红色 → 视为出闪，不扣血', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'bagua');
+    state.deck.push(mk('jc', 'sha', 'heart', 5)); // 红桃 → 八卦阵成功
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(b.hp).toBe(b.maxHp);
+    expect(state.pending!.kind).toBe('play');
+    expect(state.discard.some((c) => c.id === 'jc')).toBe(true);
+  });
+
+  it('八卦阵：判定为黑色 → 未闪避，仍需出闪或受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = armor('ba', 'bagua');
+    state.deck.push(mk('jc', 'sha', 'spade', 5)); // 黑桃 → 失败
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending!.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(b.maxHp - 1);
+  });
+});
+
+describe('装备特效：武器', () => {
+  it('古锭刀：目标没有手牌时伤害 +1', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('aw', 'guding');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(b.maxHp - 2);
+  });
+
+  it('古锭刀：目标有手牌时伤害正常（1 点）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [tao('b1')] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('aw', 'guding');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(b.maxHp - 1);
+  });
+
+  it('七星宝刀：装备时弃置判定区与装备区其他所有牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [weapon('q1', 'qixing')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = weapon('ow', 'qinggang'); // 旧武器
+    a.equipment.armor = armor('oa', 'renwang');
+    a.judgment.push(lebu('jl'));
+    ok(act(state, A, { type: 'playCard', cardId: 'q1', targetIds: [] }));
+    expect(a.equipment.weapon!.id).toBe('q1'); // 七星宝刀自身保留
+    expect(a.equipment.armor).toBe(null);
+    expect(a.judgment.length).toBe(0);
+    expect(state.discard.some((c) => c.id === 'ow')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'oa')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'jl')).toBe(true);
+  });
+});
+
+// ——————————————————————————————————————————
+// 发将去重（修复：原先每人独立洗牌 → 跨玩家重复）
+// ——————————————————————————————————————————
+
+describe('发将不重复', () => {
+  const seats2: SeatSetup[] = [
+    { seatId: A, name: '甲' },
+    { seatId: B, name: '乙' },
+  ];
+
+  it('国战两人：发到的武将互不重复，且各自内部不重复', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan' });
+    const da = state.draft!.deals[A]!;
+    const db = state.draft!.deals[B]!;
+    expect(da.length).toBe(7);
+    expect(db.length).toBe(7);
+    expect(new Set(da).size).toBe(da.length);
+    expect(new Set(db).size).toBe(db.length);
+    expect(da.filter((id) => db.includes(id))).toEqual([]);
+  });
+
+  it('混战三人：每人发到的武将互不重复', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲' },
+        { seatId: B, name: '乙' },
+        { seatId: C, name: '丙' },
+      ],
+      'TEST',
+      { mode: 'melee', heroDealCount: 3 },
+    );
+    const seen = new Set<string>();
+    for (const seat of [A, B, C]) {
+      for (const id of state.draft!.deals[seat]!) {
+        expect(seen.has(id)).toBe(false);
+        seen.add(id);
+      }
+    }
+  });
+
+  it('国战反复建局：每人始终能凑出 ≥2 名同阵营武将', () => {
+    for (let i = 0; i < 40; i++) {
+      const state = createGame(seats2, 'TEST', { mode: 'guozhan' });
+      for (const seat of [A, B]) {
+        const counts = new Map<string, number>();
+        for (const id of state.draft!.deals[seat]!) {
+          const f = getHero(id)!.faction;
+          counts.set(f, (counts.get(f) ?? 0) + 1);
+        }
+        expect(Math.max(...counts.values())).toBeGreaterThanOrEqual(2);
+      }
+    }
   });
 });

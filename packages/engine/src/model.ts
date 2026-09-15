@@ -70,6 +70,8 @@ export interface AttackContext {
   dodged: boolean;
   /** 伤害属性（火/雷） */
   attribute?: DamageAttribute;
+  /** 作为【杀】使用的牌是否为红色（仁王盾判定用） */
+  cardRed?: boolean;
   /** 需要的闪数（默认1，吕布·无双=2，马超·铁骑/黄忠·烈弓=Infinity 不可闪避） */
   requiredShan?: number;
 }

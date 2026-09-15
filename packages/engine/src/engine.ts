@@ -1,5 +1,5 @@
 import type { Card, CardType, Faction, GameMode, Intent, RoleId, TrickType } from '@sgs/protocol';
-import { CARD_TYPE_NAME, EQUIP_NAME, cardLabel, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
+import { CARD_TYPE_NAME, EQUIP_NAME, cardLabel, isDelayedTrick, isEquipCard, isInstantTrick, isRed } from '@sgs/protocol';
 import {
   alivePlayers,
   aliveSeatsFrom,
@@ -16,6 +16,13 @@ import {
   type TrickContext,
 } from './model';
 import { canTarget, distance } from './distance';
+import {
+  applyQixingSweep,
+  armorNullifiesSha,
+  damageBonus,
+  tengjiaNullifiesAoe,
+  tryBaguaDodge,
+} from './equip';
 import { buildDeck, drawOne, shuffle } from './deck';
 import {
   HEROES,
@@ -379,6 +386,7 @@ function playSha(
     damage,
     dodged: false,
     attribute: card.attribute,
+    cardRed: isRed(card),
     requiredShan: 1,
   };
   pushLog(state, 'sha', `${source.name} 对 ${target.name} 使用了【杀】。`);
@@ -392,8 +400,25 @@ function playSha(
     return { ok: true };
   }
 
+  // 防具令此杀无效（仁王盾：黑杀；藤甲：普通杀）
+  const nullified = armorNullifiesSha(state, attack);
+  if (nullified) {
+    pushLog(state, 'resolve', `${target.name} 的【${nullified}】令此【杀】无效。`);
+    attack.dodged = true;
+    finishAttack(state, attack);
+    return { ok: true };
+  }
+
   // 不可闪避（马超·铁骑/黄忠·烈弓判定为红色或满足条件）
   if (attack.requiredShan === Infinity) {
+    finishAttack(state, attack);
+    return { ok: true };
+  }
+
+  // 八卦阵：需要出闪时自动判定，红色则视为出闪
+  if (tryBaguaDodge(state, attack)) {
+    pushLog(state, 'resolve', `${target.name} 的【八卦阵】判定为红色，视为出【闪】。`);
+    attack.dodged = true;
     finishAttack(state, attack);
     return { ok: true };
   }
@@ -416,14 +441,20 @@ function finishAttack(state: GameState, attack: AttackContext): void {
 
   // 命中：造成伤害
   runHooks(state, 'beforeResolve', target, { attack });
-  runHooks(state, 'damageDealt', target, { attack, damage: attack.damage });
-  target.hp -= attack.damage;
+  // 装备加成：古锭刀（目标无手牌+1）/ 藤甲（火焰伤害+1）
+  const bonus = damageBonus(state, attack);
+  const total = attack.damage + bonus;
+  if (bonus > 0) {
+    pushLog(state, 'damage', `${target.name} 受到的伤害 +${bonus}（装备特效）。`);
+  }
+  runHooks(state, 'damageDealt', target, { attack, damage: total });
+  target.hp -= total;
   pushLog(
     state,
     'damage',
-    `${target.name} 受到 ${attack.damage} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
+    `${target.name} 受到 ${total} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
   );
-  runHooks(state, 'afterDamage', target, { attack, damage: attack.damage });
+  runHooks(state, 'afterDamage', target, { attack, damage: total });
   runHooks(state, 'afterResolve', target, { attack });
 
   if (target.hp <= 0) {
@@ -690,6 +721,11 @@ function playEquip(
   player.equipment[slot] = card;
   const name = card.equipName ? EQUIP_NAME[card.equipName] : CARD_TYPE_NAME[card.type];
   pushLog(state, 'equip', `${player.name} 装备了【${name}】。`);
+  // 七星宝刀：置入装备区时弃置判定区与装备区其他所有牌
+  const swept = applyQixingSweep(state, player, card);
+  if (swept.length > 0) {
+    pushLog(state, 'equip', `${player.name} 的【七星宝刀】弃置了装备区与判定区其他 ${swept.length} 张牌。`);
+  }
   runHooks(state, 'useCard', player, { card });
   return { ok: true };
 }
@@ -1019,10 +1055,18 @@ function resolveJiedao(state: GameState, ctx: TrickContext): void {
 
 /** AOE：进入第一个响应者的 respondTrick */
 function enterTrickResponse(state: GameState, ctx: TrickContext): void {
-  // 跳过已阵亡的响应者
+  // 跳过已阵亡的响应者，以及被【藤甲】免疫的南蛮/万箭目标
   while (ctx.responderIndex < ctx.responders.length) {
-    const r = getPlayer(state, ctx.responders[ctx.responderIndex]!);
-    if (r && r.alive) break;
+    const seat = ctx.responders[ctx.responderIndex]!;
+    const r = getPlayer(state, seat);
+    if (r && r.alive) {
+      if (tengjiaNullifiesAoe(state, seat, ctx.card.type)) {
+        pushLog(state, 'resolve', `${r.name} 的【藤甲】令【${CARD_TYPE_NAME[ctx.card.type as import('@sgs/protocol').CardType]}】无效。`);
+        ctx.responderIndex++;
+        continue;
+      }
+      break;
+    }
     ctx.responderIndex++;
   }
   if (ctx.responderIndex >= ctx.responders.length) {
@@ -1757,13 +1801,20 @@ export function createGame(
     });
   }
 
-  // 随机发将：每人从洗牌后的武将池独立发 k 张，保证同一玩家不重复
-  // 国战排除中立武将（阵营武将池 16 个）
+  // 随机发将：武将池洗牌一次后按座次不重叠发牌，
+  // 避免多个玩家拿到同一名武将。池子发完则重洗剩余部分兜底。
+  // 国战排除中立武将；每人需拿到 ≥2 名同阵营武将才能选将，
+  // k=7 时按鸽巢原理在 ≤4 个阵营中必有 ≥2 同阵营，恒可满足。
   const poolHeroes = isGuozhan ? HEROES.filter((h) => h.faction !== 'neutral') : HEROES;
-  const heroIds = poolHeroes.map((h) => h.id);
+  const heroIds = shuffle(poolHeroes.map((h) => h.id));
   const deals: Record<string, string[]> = {};
+  let cursor = 0;
   for (const s of seats) {
-    deals[s.seatId] = shuffle(heroIds).slice(0, k);
+    if (cursor + k > heroIds.length) {
+      cursor = 0; // 池子不足（人太多）→ 从头复用，仅此时才可能出现重复
+    }
+    deals[s.seatId] = heroIds.slice(cursor, cursor + k);
+    cursor += k;
   }
 
   const state: GameState = {
@@ -1829,7 +1880,8 @@ function finishDraft(state: GameState): void {
       const main = getHero(p.heroId);
       const deputy = getHero(p.deputyHeroId);
       if (main && deputy) {
-        p.maxHp = Math.ceil((main.maxHp + deputy.maxHp) / 2);
+        // 官方规则：体力上限 = 两将体力之和 ÷ 2，向下取整
+        p.maxHp = Math.floor((main.maxHp + deputy.maxHp) / 2);
         // 珠联璧合：主副将构成组合 → 体力上限 +1
         if (
           (main.combo && main.combo.with === deputy.id && main.combo.bonus === 'hp') ||

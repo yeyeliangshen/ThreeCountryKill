@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  CARD_TYPE_NAME, EQUIP_NAME, SUIT_NAME, cardLabel,
+  SUIT_NAME, cardShortName, cardDescription,
   isRed, isBasicCard, isEquipCard, isInstantTrick, isDelayedTrick,
   type Card, type CardType, type Faction, type GameMode, type PlayerView, type Snapshot,
 } from '@sgs/protocol';
@@ -155,6 +155,8 @@ export function Game() {
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
+  // 卡牌悬停效果提示（fixed 定位，避免被 .hand 的滚动容器裁切）
+  const [tip, setTip] = useState<{ x: number; y: number; card: Card } | null>(null);
 
   // 提示一变就清空本地选择
   useEffect(() => {
@@ -542,8 +544,12 @@ export function Game() {
               {p.equipment.length > 0 && (
                 <div className="p-equip">
                   {p.equipment.map((c) => (
-                    <span key={c.id} className={`equip-icon equip-${c.type}`}>
-                      {c.equipName ? EQUIP_NAME[c.equipName] : CARD_TYPE_NAME[c.type]}
+                    <span
+                      key={c.id}
+                      className={`equip-icon equip-${c.type}`}
+                      title={`${cardShortName(c)}\n${cardDescription(c)}`}
+                    >
+                      {cardShortName(c)}
                     </span>
                   ))}
                 </div>
@@ -552,7 +558,13 @@ export function Game() {
               {p.judgment.length > 0 && (
                 <div className="p-judge">
                   {p.judgment.map((c) => (
-                    <span key={c.id} className="judge-icon">{CARD_TYPE_NAME[c.type]}</span>
+                    <span
+                      key={c.id}
+                      className="judge-icon"
+                      title={`${cardShortName(c)}\n${cardDescription(c)}`}
+                    >
+                      {cardShortName(c)}
+                    </span>
                   ))}
                 </div>
               )}
@@ -610,8 +622,12 @@ export function Game() {
         {me.equipment.length > 0 && (
           <span className="me-equip">
             {me.equipment.map((c) => (
-              <span key={c.id} className={`equip-icon equip-${c.type}`}>
-                {c.equipName ? EQUIP_NAME[c.equipName] : CARD_TYPE_NAME[c.type]}
+              <span
+                key={c.id}
+                className={`equip-icon equip-${c.type}`}
+                title={`${cardShortName(c)}\n${cardDescription(c)}`}
+              >
+                {cardShortName(c)}
               </span>
             ))}
           </span>
@@ -620,7 +636,13 @@ export function Game() {
         {me.judgment.length > 0 && (
           <span className="me-judge">
             {me.judgment.map((c) => (
-              <span key={c.id} className="judge-icon">{CARD_TYPE_NAME[c.type]}</span>
+              <span
+                key={c.id}
+                className="judge-icon"
+                title={`${cardShortName(c)}\n${cardDescription(c)}`}
+              >
+                {cardShortName(c)}
+              </span>
             ))}
           </span>
         )}
@@ -752,8 +774,14 @@ export function Game() {
             <button
               key={card.id}
               className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass}`}
-              disabled={cardDisabled}
+              aria-disabled={cardDisabled}
+              onMouseEnter={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setTip({ x: r.left + r.width / 2, y: r.top, card });
+              }}
+              onMouseLeave={() => setTip(null)}
               onClick={() => {
+                if (cardDisabled) return;
                 if (!prompt) return;
                 if (skillMode) {
                   if (skillCardClickable) toggleSkillCard(card.id);
@@ -766,17 +794,22 @@ export function Game() {
               }}
             >
               <span className="c-suit">{SUIT_NAME[card.suit]}</span>
-              <span className="c-type">
-                {card.type === 'sha' && card.attribute === 'fire'
-                  ? '火杀'
-                  : card.type === 'sha' && card.attribute === 'thunder'
-                    ? '雷杀'
-                    : CARD_TYPE_NAME[card.type]}
-              </span>
+              <span className="c-type">{cardShortName(card)}</span>
             </button>
           );
         })}
       </div>
+
+      {/* 卡牌效果悬停提示 */}
+      {tip && (
+        <div className="card-tip" style={{ left: tip.x, top: tip.y }}>
+          <div className="card-tip-name">
+            {SUIT_NAME[tip.card.suit]}
+            {cardShortName(tip.card)}
+          </div>
+          <div className="card-tip-desc">{cardDescription(tip.card)}</div>
+        </div>
+      )}
     </div>
   );
 }

@@ -793,3 +793,32 @@ button:disabled {
 .log-reveal {
   color: var(--green);
 }
+
+/* 卡牌效果悬停提示（fixed 定位，避免被滚动容器裁切） */
+.card-tip {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 8px));
+  width: 230px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(18, 14, 10, 0.97);
+  border: 1px solid var(--gold);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-align: left;
+  white-space: pre-wrap;
+  pointer-events: none;
+  z-index: 300;
+}
+.card-tip-name {
+  color: var(--gold);
+  font-weight: 700;
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+.card-tip-desc {
+  color: #d8d0c0;
+}
