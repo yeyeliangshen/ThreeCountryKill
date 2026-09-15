@@ -1191,6 +1191,11 @@ button:disabled {
   background: var(--panel-2);
   border: 1px solid var(--gold);
 }
+/* 通用「选择一项」：必须给底色，否则浅色文字压在浅色羊皮纸上看不清 */
+.prompt-choice {
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+}
 
 /* —— 已选目标高亮 —— */
 .player.picked-target {
