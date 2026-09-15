@@ -4,7 +4,15 @@ import {
   isRed, isBasicCard, isEquipCard, isInstantTrick, isDelayedTrick,
   type Card, type CardType, type Faction, type GameMode, type PlayerView, type Snapshot,
 } from '@sgs/protocol';
-import { getHero, heroCanUseAs, ROLE_NAME, FACTION_NAME, type Hero, type ActiveSkill } from '@sgs/engine';
+import {
+  getHero,
+  getHeroForMode,
+  heroCanUseAs,
+  ROLE_NAME,
+  FACTION_NAME,
+  type Hero,
+  type ActiveSkill,
+} from '@sgs/engine';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
@@ -84,20 +92,23 @@ function isDirectlyPlayable(card: Card): boolean {
 }
 
 /** 从快照获取当前玩家的活跃武将（国战：已亮将；其他：主将） */
-function getMyActiveHeroes(me: PlayerView, isGuozhan: boolean): Hero[] {
+function getMyActiveHeroes(me: PlayerView, mode: GameMode): Hero[] {
+  const isGuozhan = mode === 'guozhan';
   if (isGuozhan) {
     const heroes: Hero[] = [];
     if (me.heroRevealed && me.heroId) {
-      const h = getHero(me.heroId);
+      const h = getHeroForMode(me.heroId, mode);
       if (h) heroes.push(h);
     }
     if (me.deputyRevealed && me.deputyHeroId) {
-      const h = getHero(me.deputyHeroId);
+      const h = getHeroForMode(me.deputyHeroId, mode);
       if (h) heroes.push(h);
     }
     return heroes;
   }
-  return me.heroId ? ([getHero(me.heroId)].filter(Boolean) as Hero[]) : [];
+  // 非国战也必须按模式取：同一个武将国战/军争的技能不一样
+  const h = getHeroForMode(me.heroId, mode);
+  return h ? [h] : [];
 }
 
 /** 国战鏖战状态：仅 2 个非野心家阵营存活 */
@@ -183,8 +194,9 @@ export function Game() {
   if (!snapshot) return <div className="game loading">加载中…</div>;
 
   const me = snapshot.players.find((p) => p.seatId === snapshot.seatId)!;
-  const myHero = getHero(me.heroId);
-  const myDeputyHero = getHero(me.deputyHeroId);
+  // 技能说明要按模式取：国战与军争的同名技能描述不同
+  const myHero = getHeroForMode(me.heroId, snapshot.mode);
+  const myDeputyHero = getHeroForMode(me.deputyHeroId, snapshot.mode);
   const others = snapshot.players.filter((p) => p.seatId !== snapshot.seatId);
   const prompt = snapshot.prompt;
   const legalSet = new Set(prompt?.legalCardIds ?? []);
@@ -193,7 +205,7 @@ export function Game() {
   const isGameOver = snapshot.turn.phase === 'gameOver' && snapshot.winner !== null;
   const isGuozhan = snapshot.mode === 'guozhan';
   const aoyu = isAoyuMode(snapshot);
-  const myHeroes = getMyActiveHeroes(me, isGuozhan);
+  const myHeroes = getMyActiveHeroes(me, snapshot.mode);
   const skillIds = prompt?.kind === 'play' ? prompt.legalSkillIds ?? [] : [];
 
   // —— 出牌：选中需目标的牌 ——
@@ -263,8 +275,9 @@ export function Game() {
     setSkillMode((prev) => {
       if (!prev) return prev;
       const has = prev.cardIds.includes(cardId);
-      // 离间/反间只需1张牌，制衡可多张
-      const maxCards = prev.skill.id === 'lilian' || prev.skill.id === 'fanjian' ? 1 : 99;
+      // 上限由技能自己给（国战·制衡 = 体力上限，苦肉/离间/反间 = 1），
+      // 不在客户端按技能 id 硬编码——否则两边各写一套上限迟早对不上
+      const maxCards = prev.skill.maxCards?.({ maxHp: me.maxHp, handCount: me.handCount }) ?? 99;
       if (has) return { ...prev, cardIds: prev.cardIds.filter((c) => c !== cardId) };
       if (prev.cardIds.length >= maxCards) return prev;
       return { ...prev, cardIds: [...prev.cardIds, cardId] };

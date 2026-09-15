@@ -1,8 +1,9 @@
 import { cardLabel, isRed } from '@sgs/protocol';
-import type { Card, CardType, DamageAttribute, Faction, Intent, RoleId } from '@sgs/protocol';
+import type { Card, CardType, DamageAttribute, Faction, GameMode, Intent, RoleId } from '@sgs/protocol';
 import type { HookRegistration, Timing } from './timing';
 import type { AttackContext, GameState, Player } from './model';
 import { drawOne } from './deck';
+import { attackRange } from './distance';
 import { getPlayer, pushLog } from './model';
 
 // —— 武将定义 ——
@@ -11,6 +12,12 @@ import { getPlayer, pushLog } from './model';
 // hooks：触发技钩子。
 // activeSkills：主动技能（出牌阶段可主动发动）。
 // skills：UI 展示用技能描述。
+//
+// ⚠️ 国战与军争（身份局）的同名技能描述并不相同，各平台之间还有版本差异。
+//    身份局/军争版本写在 Hero 顶层字段；国战版本写在 hero.guozhan 里，
+//    只写与身份局不同的字段、其余沿用。取用时必须走 getHeroForMode()，
+//    否则国战会拿到身份局的技能。已核实的差异写在各自 guozhan 块的注释里
+//    （来源：萌娘百科/三国杀Wiki 的分模式技能表，取新国战即 2019 典藏版口径）。
 
 /** 引擎内部 API（由 engine.ts 注入，避免 heroes→engine 循环依赖） */
 export interface SkillApi {
@@ -18,6 +25,12 @@ export interface SkillApi {
   dealDamage: (target: Player, damage: number, sourceId: string, attribute?: DamageAttribute) => void;
   /** 失去体力（不触发伤害钩子，但触发濒死检查） */
   loseHp: (target: Player, amount: number) => void;
+}
+
+/** 主动技能「可选几张牌」的判断依据——服务端与客户端都构造得出来 */
+export interface SkillCardCtx {
+  maxHp: number;
+  handCount: number;
 }
 
 /** 主动技能接口 */
@@ -31,6 +44,12 @@ export interface ActiveSkill {
   maxTargets: number;
   /** 是否需要选择手牌（制衡/苦肉/离间/反间） */
   needsCards?: boolean;
+  /**
+   * 最多可选几张手牌。不给则由客户端按 99 处理。
+   * 做成函数是因为国战·制衡的上限是「你的体力上限」；参数只用两边都有的信息
+   * （服务端是 Player，客户端是 PlayerView），这样界面和引擎读同一份规则。
+   */
+  maxCards?: (ctx: SkillCardCtx) => number;
   /** 当前是否可用 */
   canUse: (state: GameState, player: Player) => boolean;
   /** 执行技能：返回 void=成功，string=错误消息 */
@@ -40,6 +59,17 @@ export interface ActiveSkill {
     intent: Extract<Intent, { type: 'useSkill' }>,
     api: SkillApi,
   ) => void | string;
+}
+
+/** 国战版本的技能覆盖：只写与身份局/军争不同的字段，其余沿用 Hero 顶层 */
+export interface HeroVariant {
+  canUseAs?: Hero['canUseAs'];
+  shaLimit?: Hero['shaLimit'];
+  hooks?: HookRegistration[];
+  activeSkills?: ActiveSkill[];
+  combo?: Hero['combo'];
+  /** 展示用技能列表（国战版可能与身份局不同） */
+  skills?: Hero['skills'];
 }
 
 export interface Hero {
@@ -68,8 +98,10 @@ export interface Hero {
   activeSkills?: ActiveSkill[];
   /** 珠联璧合：与另一武将搭配时获得加成 */
   combo?: { with: string; bonus: 'hp' | 'skill' };
-  /** UI 展示用技能描述 */
+  /** UI 展示用技能描述（身份局/军争版本） */
   skills: { name: string; desc: string }[];
+  /** 国战版本的技能覆盖，见文件顶部说明 */
+  guozhan?: HeroVariant;
 }
 
 const GUANYU: Hero = {
@@ -92,6 +124,32 @@ const ZHANGFEI: Hero = {
   shaLimit: () => Infinity,
   combo: { with: 'guanyu', bonus: 'hp' },
   skills: [{ name: '咆哮', desc: '出牌阶段，你可以使用任意数量的【杀】。' }],
+  // 国战（新国战）：咆哮追加「出牌阶段使用了第二张【杀】后，摸一张牌」
+  guozhan: {
+    hooks: [
+      {
+        timing: 'useCard',
+        handler: (ctx) => {
+          const payload = ctx.payload as { attack?: AttackContext } | undefined;
+          if (payload?.attack?.asType !== 'sha') return;
+          // useCard 在 shaCountThisTurn++ 之后触发，所以这里已经是含本张的计数
+          if (ctx.player.flags.shaCountThisTurn === 2) {
+            const c = drawOne(ctx.state);
+            if (c) {
+              ctx.player.hand.push(c);
+              pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【咆哮】，摸了 1 张牌。`);
+            }
+          }
+        },
+      },
+    ],
+    skills: [
+      {
+        name: '咆哮',
+        desc: '锁定技，出牌阶段，你使用【杀】无次数限制；你于出牌阶段使用第二张【杀】后，摸一张牌。（国战版）',
+      },
+    ],
+  },
 };
 
 const ZHAOYUN: Hero = {
@@ -157,6 +215,33 @@ const HUANGZHONG: Hero = {
     },
   ],
   skills: [{ name: '烈弓', desc: '当你使用【杀】指定目标后，若目标手牌数≥你或体力≤你，此【杀】不可被闪避。' }],
+  // 国战：烈弓的判定条件与身份局不同——
+  // 身份局比的是「目标手牌数/体力 vs 你的手牌数/体力」；
+  // 国战比的是「目标手牌数 vs 你的体力值 / 你的攻击范围」
+  guozhan: {
+    hooks: [
+      {
+        timing: 'useCard',
+        handler: (ctx) => {
+          const payload = ctx.payload as { attack?: AttackContext } | undefined;
+          if (payload?.attack?.asType !== 'sha') return;
+          const target = getPlayer(ctx.state, payload.attack.targetId);
+          if (!target) return;
+          const hand = target.hand.length;
+          if (hand >= ctx.player.hp || hand <= attackRange(ctx.player)) {
+            payload.attack.requiredShan = Infinity;
+            pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避！`);
+          }
+        },
+      },
+    ],
+    skills: [
+      {
+        name: '烈弓',
+        desc: '当你于出牌阶段内使用【杀】指定一名角色为目标后，若该角色手牌数不小于你的体力值或不大于你的攻击范围，你可以令其不能使用【闪】响应此【杀】。（国战版）',
+      },
+    ],
+  },
 };
 
 const LVBU: Hero = {
@@ -196,6 +281,7 @@ const DIAOCHAN: Hero = {
       minTargets: 2,
       maxTargets: 2,
       needsCards: true,
+      maxCards: () => 1,
       canUse: (state, player) => {
         if (player.hand.length === 0) return false;
         const males = state.players.filter(
@@ -388,6 +474,45 @@ const SUNQUAN: Hero = {
     },
   ],
   skills: [{ name: '制衡', desc: '出牌阶段限一次，你可以弃置任意张牌，然后摸等量的牌。' }],
+  // 国战：制衡限「至多 X 张」（X = 你的体力上限），身份局无张数上限
+  guozhan: {
+    activeSkills: [
+      {
+        id: 'zhiheng',
+        name: '制衡',
+        oncePerTurn: true,
+        minTargets: 0,
+        maxTargets: 0,
+        needsCards: true,
+        maxCards: (ctx) => ctx.maxHp,
+        canUse: (_state, player) => player.hand.length > 0,
+        execute: (state, player, intent, _api) => {
+          const ids = intent.cardIds ?? [];
+          if (ids.length === 0) return '请选择至少一张牌';
+          if (ids.length > player.maxHp)
+            return `国战【制衡】最多弃置 ${player.maxHp} 张（体力上限）`;
+          const discarded: Card[] = [];
+          for (const id of ids) {
+            const c = removeCard(player.hand, id);
+            if (!c) return `找不到手牌 ${id}`;
+            discarded.push(c);
+          }
+          for (const c of discarded) state.discard.push(c);
+          pushLog(state, 'skill', `${player.name} 发动【制衡】，弃 ${discarded.length} 张牌。`);
+          for (let i = 0; i < discarded.length; i++) {
+            const drawn = drawOne(state);
+            if (drawn) player.hand.push(drawn);
+          }
+        },
+      },
+    ],
+    skills: [
+      {
+        name: '制衡',
+        desc: '出牌阶段限一次，你可以弃置至多 X 张牌（X 为你的体力上限），然后摸等量的牌。（国战版）',
+      },
+    ],
+  },
 };
 
 const ZHOUYU: Hero = {
@@ -483,6 +608,50 @@ const HUANGGAI: Hero = {
     },
   ],
   skills: [{ name: '苦肉', desc: '出牌阶段，你可以失去 1 点体力，然后摸两张牌。（简化：限1次/回合）' }],
+  // 国战（新国战）：苦肉从「可多次发动、失1体力摸2张」改成
+  // 「限一次、弃一张牌、失1体力、摸三张，然后本回合可额外使用一张【杀】」
+  guozhan: {
+    activeSkills: [
+      {
+        id: 'kurou',
+        name: '苦肉',
+        oncePerTurn: true,
+        minTargets: 0,
+        maxTargets: 0,
+        needsCards: true,
+        maxCards: () => 1,
+        canUse: (_state, player) => player.hp > 0 && player.hand.length > 0,
+        execute: (state, player, intent, api) => {
+          const ids = intent.cardIds ?? [];
+          if (ids.length !== 1) return '请选择一张牌弃置';
+          const c = removeCard(player.hand, ids[0]!);
+          if (!c) return '找不到手牌';
+          state.discard.push(c);
+          pushLog(state, 'skill', `${player.name} 发动【苦肉】，弃置【${cardLabel(c)}】并失去 1 点体力。`, {
+            seat: player.seatId,
+            action: 'selfhurt',
+          });
+          api.loseHp(player, 1);
+          const drawn: Card[] = [];
+          for (let i = 0; i < 3; i++) {
+            const d = drawOne(state);
+            if (d) drawn.push(d);
+          }
+          player.hand.push(...drawn);
+          pushLog(state, 'skill', `${player.name} 摸了 ${drawn.length} 张牌。`);
+          // 本回合可额外使用一张【杀】：把已出杀数退 1（下限 0）即可
+          player.flags.shaCountThisTurn = Math.max(0, player.flags.shaCountThisTurn - 1);
+          pushLog(state, 'skill', `本回合可额外使用一张【杀】。`);
+        },
+      },
+    ],
+    skills: [
+      {
+        name: '苦肉',
+        desc: '出牌阶段限一次，你可以弃置一张牌，失去 1 点体力并摸三张牌，然后本回合可额外使用一张【杀】。（国战版）',
+      },
+    ],
+  },
 };
 
 const VANILLA: Hero = {
@@ -518,6 +687,22 @@ const HERO_MAP: Record<string, Hero> = Object.fromEntries(HEROES.map((h) => [h.i
 export function getHero(id: string | null | undefined): Hero | undefined {
   if (id == null) return undefined;
   return HERO_MAP[id];
+}
+
+/**
+ * 取某个模式下该武将的实际定义。
+ *
+ * **国战与军争的同名技能不一样**，所以引擎判定技能、界面展示技能说明时
+ * 都必须用这个函数；直接 getHero() 会拿到身份局版本。
+ */
+export function getHeroForMode(
+  id: string | null | undefined,
+  mode: GameMode,
+): Hero | undefined {
+  const base = getHero(id);
+  if (!base) return undefined;
+  if (mode !== 'guozhan' || !base.guozhan) return base;
+  return { ...base, ...base.guozhan };
 }
 
 /** 取武将每回合杀数上限，缺省 1 */

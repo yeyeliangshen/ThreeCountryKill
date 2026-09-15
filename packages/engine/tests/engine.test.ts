@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { applyIntent, createGame, getHero, pushLog, toSnapshot, emptyFlags, type GameState, type SeatSetup } from '../src';
+import {
+  applyIntent,
+  createGame,
+  getHero,
+  getHeroForMode,
+  pushLog,
+  toSnapshot,
+  emptyFlags,
+  type GameState,
+  type SeatSetup,
+} from '../src';
 import type { Card, CardType, Faction, GameMode, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
@@ -2300,5 +2310,126 @@ describe('日志动作标注', () => {
     pushLog(state, 'draw', '甲 摸了 2 张牌。');
     expect(lastLog(state).action).toBeUndefined();
     expect(lastLog(state).kind).toBe('draw');
+  });
+});
+
+// ——————————————————————————————————————————
+// 国战与军争的技能差异。
+// 同名技能在两个模式下**不是同一份**，所以：①取将必须走 getHeroForMode；
+// ②同一武将在两模式下行为确实不同。这里逐条钉住差异，防止以后又被合并。
+// ——————————————————————————————————————————
+
+describe('国战 / 军争 技能差异', () => {
+  // 技能版本只按「是否国战」分叉：军争与混战共用身份局那一套（见 getHeroForMode）。
+  // 军争模式要求 5-8 人，单人测试跑不起来，所以行为用例用混战代替；
+  // 定义层面的差异用 getHeroForMode 直接对比 军争 vs 国战。
+  /** 造一个指定模式、指定武将的对局，并把该玩家置于出牌阶段 */
+  function gameAs(mode: GameMode, heroId: string, hand: Card[] = [], hp = 3): GameState {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId, hand, hp },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      ],
+      mode,
+    );
+    // 国战要亮将后技能才生效
+    const me = state.players.find((p) => p.seatId === A)!;
+    me.heroRevealed = true;
+    me.deputyRevealed = true;
+    return state;
+  }
+
+  it('取将按模式返回不同定义：同一 id 在两个模式下不是同一份', () => {
+    const jun = getHeroForMode('sunquan', 'junzheng')!;
+    const guo = getHeroForMode('sunquan', 'guozhan')!;
+    expect(jun.skills[0]!.desc).not.toBe(guo.skills[0]!.desc);
+    expect(guo.skills[0]!.desc).toContain('体力上限');
+    // 没有国战覆盖的武将，两个模式是同一份
+    expect(getHeroForMode('guanyu', 'junzheng')).toBe(getHeroForMode('guanyu', 'guozhan'));
+  });
+
+  it('制衡：非国战不限张数，国战至多体力上限张', () => {
+    // 手牌 5 张、体力上限 3 → 国战只能弃 3 张
+    const hand = [sha('h1'), sha('h2'), sha('h3'), sha('h4'), sha('h5')];
+    const jun = gameAs('melee', 'sunquan', hand.slice(), 3);
+    const guo = gameAs('guozhan', 'sunquan', hand.slice(), 3);
+    const ids = hand.map((c) => c.id);
+
+    ok(act(jun, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ids, targetIds: [] }));
+    const guoRes = act(guo, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ids, targetIds: [] });
+    expect(guoRes.ok).toBe(false);
+    expect(guoRes.ok ? '' : guoRes.error).toContain('体力上限');
+
+    // 国战弃 3 张是合法的
+    ok(act(guo, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ids.slice(0, 3), targetIds: [] }));
+    expect(guo.log.some((e) => e.message.includes('弃 3 张牌'))).toBe(true);
+  });
+
+  it('苦肉：非国战不需弃牌摸2张，国战要弃1张且摸3张', () => {
+    const jun = gameAs('melee', 'huanggai', [sha('k1')], 3);
+    const guo = gameAs('guozhan', 'huanggai', [sha('k1'), sha('k2')], 3);
+
+    // 非国战：不选牌也能发动
+    ok(act(jun, A, { type: 'useSkill', skillId: 'kurou', cardIds: [], targetIds: [] }));
+    expect(jun.players.find((p) => p.seatId === A)!.hp).toBe(2);
+    expect(jun.log.some((e) => e.message.includes('摸了 2 张牌'))).toBe(true);
+
+    // 国战：必须先弃一张（国战版苦肉要弃牌）
+    const guoRes = act(guo, A, { type: 'useSkill', skillId: 'kurou', cardIds: [], targetIds: [] });
+    expect(guoRes.ok).toBe(false);
+    ok(act(guo, A, { type: 'useSkill', skillId: 'kurou', cardIds: ['k1'], targetIds: [] }));
+    expect(guo.players.find((p) => p.seatId === A)!.hp).toBe(2);
+    expect(guo.log.some((e) => e.message.includes('摸了 3 张牌'))).toBe(true);
+    // 额外一张杀：已出杀数被退到 0
+    expect(guo.players.find((p) => p.seatId === A)!.flags.shaCountThisTurn).toBe(0);
+  });
+
+  it('咆哮：国战在第二张杀后摸一张牌，非国战不摸', () => {
+    const mk3 = () => [sha('z1'), sha('z2'), sha('z3')];
+    const jun = gameAs('melee', 'zhangfei', mk3(), 4);
+    const guo = gameAs('guozhan', 'zhangfei', mk3(), 4);
+    for (const st of [jun, guo]) {
+      const me = st.players.find((p) => p.seatId === A)!;
+      me.hand = mk3();
+    }
+    // 第一张杀
+    for (const st of [jun, guo]) {
+      ok(act(st, A, { type: 'playCard', cardId: 'z1', targetIds: [B] }));
+      ok(act(st, B, { type: 'pass' }));
+    }
+    // 第二张杀：只有国战版会摸牌
+    for (const st of [jun, guo]) {
+      ok(act(st, A, { type: 'playCard', cardId: 'z2', targetIds: [B] }));
+      ok(act(st, B, { type: 'pass' }));
+    }
+    expect(jun.log.some((e) => e.message.includes('发动【咆哮】'))).toBe(false);
+    expect(guo.log.some((e) => e.message.includes('发动【咆哮】'))).toBe(true);
+  });
+
+  it('烈弓：国战判定条件不同（看体力值与攻击范围）', () => {
+    // 目标手牌 2 张；黄忠体力 4、无武器（攻击范围 1）
+    // 国战条件：手牌数 ≥ 你的体力值(4)？ 2 ≥ 4 否；手牌数 ≤ 攻击范围(1)？ 2 ≤ 1 否 → 不发动
+    // 军争条件：目标手牌数 ≥ 你的手牌数 或 目标体力 ≤ 你的体力 → 看下面的取值
+    const make = (mode: GameMode) => {
+      const st = makeGameMode(
+        [
+          { seatId: A, name: '甲', heroId: 'huangzhong', hand: [sha('s1')], hp: 4 },
+          { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('d1'), shan('d2')] },
+        ],
+        mode,
+      );
+      const me = st.players.find((p) => p.seatId === A)!;
+      me.heroRevealed = true;
+      me.deputyRevealed = true;
+      return st;
+    };
+    const jun = make('melee');
+    const guo = make('guozhan');
+    // 军争：目标手牌2 ≥ 黄忠手牌1 → 发动
+    ok(act(jun, A, { type: 'playCard', cardId: 's1', targetIds: [B] }));
+    expect(jun.log.some((e) => e.message.includes('发动【烈弓】'))).toBe(true);
+    // 国战：2 既不 ≥ 体力4 也不 ≤ 攻击范围1 → 不发动
+    ok(act(guo, A, { type: 'playCard', cardId: 's1', targetIds: [B] }));
+    expect(guo.log.some((e) => e.message.includes('发动【烈弓】'))).toBe(false);
   });
 });

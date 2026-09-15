@@ -28,6 +28,7 @@ import {
   HEROES,
   FACTION_NAME,
   getHero,
+  getHeroForMode,
   heroCanUseAs,
   heroShaLimit,
   ROLE_NAME,
@@ -61,15 +62,21 @@ function removeCard(hand: import('@sgs/protocol').Card[], id: string) {
   return c ?? null;
 }
 
-/** 国战：返回已亮将的武将列表（暗将不返回）；非国战：返回主将（单元素数组） */
+/**
+ * 国战：返回已亮将的武将列表（暗将不返回）；非国战：返回主将（单元素数组）。
+ *
+ * 用 getHeroForMode 而不是 getHero——国战和军争的同名技能不一样。
+ * 这里是引擎所有技能判定的唯一取将入口（canUseAs / shaLimit / hooks /
+ * activeSkills 都从 activeHeroes 拿 Hero），所以按模式取一次就够了。
+ */
 export function activeHeroes(state: GameState, player: Player): Hero[] {
   const heroes: Hero[] = [];
   if (player.heroId) {
-    const h = getHero(player.heroId);
+    const h = getHeroForMode(player.heroId, state.mode);
     if (h && (state.mode !== 'guozhan' || player.heroRevealed)) heroes.push(h);
   }
   if (player.deputyHeroId) {
-    const h = getHero(player.deputyHeroId);
+    const h = getHeroForMode(player.deputyHeroId, state.mode);
     if (h && (state.mode !== 'guozhan' || player.deputyRevealed)) heroes.push(h);
   }
   return heroes;
