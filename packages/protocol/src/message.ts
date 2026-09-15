@@ -11,8 +11,10 @@ export type ClientMessage =
   | { type: 'claimSeat'; seatId: string }
   // 房主在大厅切换模式（实时广播给他人）
   | { type: 'setMode'; mode: GameMode }
-  // 房主开局：指定模式 + 可选每人发将数
-  | { type: 'startGame'; mode: GameMode; heroDealCount?: number }
+  // 房主在大厅切换「选将不限」（测试用）
+  | { type: 'setFreePick'; freePick: boolean }
+  // 房主开局：指定模式 + 可选每人发将数 + 可选选将不限
+  | { type: 'startGame'; mode: GameMode; heroDealCount?: number; freePick?: boolean }
   // 游戏中的行动意图
   | { type: 'intent'; intent: Intent };
 
@@ -26,6 +28,7 @@ export type ServerMessage =
       started: boolean;
       mySeatId: string | null;
       mode: GameMode; // 房主当前选择的模式
+      freePick: boolean; // 房主是否开了「选将不限（测试用）」
     }
   // 游戏中按玩家裁剪的快照
   | { type: 'snapshot'; snapshot: Snapshot }

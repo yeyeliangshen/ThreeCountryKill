@@ -124,6 +124,7 @@ wss.on('connection', (ws: WebSocket) => {
           started: room.started,
           mySeatId: seatId,
           mode: room.pendingMode,
+          freePick: room.freePick,
         });
         room.broadcastLobby();
         break;
@@ -159,12 +160,26 @@ wss.on('connection', (ws: WebSocket) => {
         break;
       }
 
+      case 'setFreePick': {
+        if (!room || !seatId) {
+          send(ws, { type: 'error', message: '请先落座' });
+          break;
+        }
+        const res = room.setFreePick(seatId, msg.freePick);
+        if (!res.ok) {
+          send(ws, { type: 'error', message: res.error });
+          break;
+        }
+        room.broadcastLobby();
+        break;
+      }
+
       case 'startGame': {
         if (!room || !seatId) {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.startGame(seatId, msg.mode, msg.heroDealCount);
+        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;

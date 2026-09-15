@@ -48,6 +48,8 @@ export class Room {
   seats: SeatEntry[];
   hostSeatId: string | null = null;
   pendingMode: GameMode = 'melee';
+  /** 测试用：选将不限（房主可开） */
+  freePick = false;
   game: GameState | null = null;
   started = false;
 
@@ -109,11 +111,20 @@ export class Room {
     return { ok: true };
   }
 
+  /** 房主切换「选将不限（测试用）」 */
+  setFreePick(seatId: string, freePick: boolean): { ok: true } | { ok: false; error: string } {
+    if (this.started) return { ok: false, error: '游戏已开始' };
+    if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能改这个设置' };
+    this.freePick = !!freePick;
+    return { ok: true };
+  }
+
   /** 房主开局：收集已落座者 → createGame（按模式分配身份/队伍） */
   startGame(
     seatId: string,
     mode: GameMode,
     heroDealCount?: number,
+    freePick?: boolean,
   ): { ok: true } | { ok: false; error: string } {
     if (this.started) return { ok: false, error: '游戏已开始' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能开始游戏' };
@@ -129,7 +140,8 @@ export class Room {
       seatId: s.seatId,
       name: s.name!,
     }));
-    this.game = createGame(setups, this.roomCode, { mode, heroDealCount });
+    this.freePick = !!freePick;
+    this.game = createGame(setups, this.roomCode, { mode, heroDealCount, freePick: this.freePick });
     this.started = true;
     return { ok: true };
   }
@@ -170,6 +182,7 @@ export class Room {
           started: this.started,
           mySeatId: s.seatId,
           mode: this.pendingMode,
+          freePick: this.freePick,
         });
       }
     }

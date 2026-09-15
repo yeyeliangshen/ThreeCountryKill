@@ -15,6 +15,7 @@ export function Lobby() {
   const heroDealCount = useStore((s) => s.heroDealCount);
   const setForm = useStore((s) => s.setForm);
   const setMode = useStore((s) => s.setMode);
+  const setFreePick = useStore((s) => s.setFreePick);
   const startGame = useStore((s) => s.startGame);
   const disconnect = useStore((s) => s.disconnect);
 
@@ -106,6 +107,14 @@ export function Lobby() {
                   setForm({ heroDealCount: n });
                 }}
               />
+            </label>
+            <label className="free-pick" title="测试用：勾上后选将阶段所有人都能从全部武将里挑">
+              <input
+                type="checkbox"
+                checked={lobby.freePick}
+                onChange={(e) => setFreePick(e.target.checked)}
+              />
+              选将不限（测试用）
             </label>
             <button className="primary big" disabled={!canStart} onClick={startGame}>
               {canStart

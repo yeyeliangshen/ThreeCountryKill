@@ -10,6 +10,8 @@ export interface LobbyState {
   started: boolean;
   mySeatId: string | null;
   mode: GameMode;
+  /** 房主是否开了「选将不限（测试用）」 */
+  freePick: boolean;
 }
 
 interface Store {
@@ -41,6 +43,7 @@ interface Store {
   pickHeroes: (heroId: string, deputyHeroId: string) => void;
   revealHero: (heroId: string) => void;
   useSkill: (skillId: string, cardIds: string[], targetIds: string[]) => void;
+  setFreePick: (on: boolean) => void;
   chooseOption: (optionId: string) => void;
   dismissError: () => void;
 }
@@ -77,6 +80,7 @@ export const useStore = create<Store>()((set, get) => {
             started: msg.started,
             mySeatId: msg.mySeatId,
             mode: msg.mode,
+            freePick: msg.freePick,
           },
           screen: msg.started ? 'game' : 'lobby',
           error: null,
@@ -188,6 +192,9 @@ export const useStore = create<Store>()((set, get) => {
     },
 
     setMode: (mode) => get().send({ type: 'setMode', mode }),
+
+    // 选将不限（测试用）：立刻广播，开局时服务端也带上这个标记
+    setFreePick: (on) => get().send({ type: 'setFreePick', freePick: on }),
 
     startGame: () =>
       get().send({ type: 'startGame', mode: get().lobby?.mode ?? 'melee', heroDealCount: get().heroDealCount }),

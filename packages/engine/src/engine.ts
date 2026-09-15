@@ -1837,7 +1837,16 @@ const JUNZHENG_ROLES: Record<number, RoleId[]> = {
 export function createGame(
   seats: SeatSetup[],
   roomCode: string,
-  opts?: { mode?: GameMode; heroDealCount?: number },
+  opts?: {
+    mode?: GameMode;
+    heroDealCount?: number;
+    /**
+     * 测试用：选将阶段不限发将，每个人都能看到全部武将。
+     * 实现上就是把 deals 填成整个武将池——发将校验、国战的
+     * 「两名同阵营」等规则都照旧走，所以测出来的行为与真实一致。
+     */
+    freePick?: boolean;
+  },
 ): GameState {
   const mode: GameMode = opts?.mode ?? 'melee';
   const isGuozhan = mode === 'guozhan';
@@ -1886,15 +1895,21 @@ export function createGame(
   // 国战排除中立武将；每人需拿到 ≥2 名同阵营武将才能选将，
   // k=7 时按鸽巢原理在 ≤4 个阵营中必有 ≥2 同阵营，恒可满足。
   const poolHeroes = isGuozhan ? HEROES.filter((h) => h.faction !== 'neutral') : HEROES;
-  const heroIds = shuffle(poolHeroes.map((h) => h.id));
+  const allIds = poolHeroes.map((h) => h.id);
   const deals: Record<string, string[]> = {};
-  let cursor = 0;
-  for (const s of seats) {
-    if (cursor + k > heroIds.length) {
-      cursor = 0; // 池子不足（人太多）→ 从头复用，仅此时才可能出现重复
+  if (opts?.freePick) {
+    // 测试用：每人拿到的「可选项」就是整个池子，想选谁选谁
+    for (const s of seats) deals[s.seatId] = allIds.slice();
+  } else {
+    const heroIds = shuffle(allIds);
+    let cursor = 0;
+    for (const s of seats) {
+      if (cursor + k > heroIds.length) {
+        cursor = 0; // 池子不足（人太多）→ 从头复用，仅此时才可能出现重复
+      }
+      deals[s.seatId] = heroIds.slice(cursor, cursor + k);
+      cursor += k;
     }
-    deals[s.seatId] = heroIds.slice(cursor, cursor + k);
-    cursor += k;
   }
 
   const state: GameState = {

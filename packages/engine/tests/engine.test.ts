@@ -5,6 +5,7 @@ import {
   canTarget,
   createGame,
   distance,
+  HEROES,
   getHero,
   getHeroForMode,
   pushLog,
@@ -2739,5 +2740,50 @@ describe('端到端：国战版反间', () => {
     expect(act(state, B, { type: 'chooseOption', optionId: 'nope' }).ok).toBe(false);
     // 拒绝之后仍然停在等待选择的状态，不会卡死
     expect(state.pending?.kind).toBe('choice');
+  });
+});
+
+// ——————————————————————————————————————————
+// 测试功能：选将不限（freePick）
+// 勾上后选将阶段每个人都能从全部武将里挑，用来定向验证某个技能，
+// 不用反复重开房间等随机发到。国战「两名同阵营」的约束照旧。
+// ——————————————————————————————————————————
+
+describe('选将不限（测试用 freePick）', () => {
+  const seats2: SeatSetup[] = [
+    { seatId: A, name: '甲' },
+    { seatId: B, name: '乙' },
+  ];
+
+  it('开启后每个人的可选项都是整个武将池（混战含中立）', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'melee', freePick: true });
+    const all = state.draft!.deals[A]!;
+    expect(all.length).toBe(HEROES.length);
+    expect(all).toContain('zhouyu'); // 平时随机发将未必发得到
+    expect(all).toEqual(state.draft!.deals[B]!); // 两人都能看到全集
+  });
+
+  it('开启后能直接选中平时发不到的武将', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'melee', freePick: true });
+    ok(act(state, A, { type: 'pickHero', heroId: 'zhouyu' }));
+    ok(act(state, B, { type: 'pickHero', heroId: 'diaochan' }));
+    expect(state.draft).toBeNull(); // 两人都选完 → 开局
+    expect(state.players.find((p) => p.seatId === A)!.heroId).toBe('zhouyu');
+  });
+
+  it('国战开启后仍排除中立武将，且「两名同阵营」的约束照旧', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+    const deal = state.draft!.deals[A]!;
+    expect(deal).not.toContain('vanilla'); // 中立不在国战池里
+    // 主将周瑜（吴）配不同阵营的貂蝉（群）→ 应被拒
+    fail(act(state, A, { type: 'pickHero', heroId: 'zhouyu', deputyHeroId: 'diaochan' }));
+    // 同阵营（周瑜 + 甘宁，都是吴）→ 通过
+    ok(act(state, A, { type: 'pickHero', heroId: 'zhouyu', deputyHeroId: 'ganning' }));
+  });
+
+  it('不开启时仍是随机不重叠发将（不受影响）', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan' });
+    expect(state.draft!.deals[A]!.length).toBe(7);
+    expect(state.draft!.deals[A]!.filter((id) => state.draft!.deals[B]!.includes(id))).toEqual([]);
   });
 });

@@ -933,6 +933,13 @@ button:disabled {
   color: var(--muted);
   font-size: 13px;
 }
+.free-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
 .deal-count input {
   width: 56px;
   padding: 6px 8px;
