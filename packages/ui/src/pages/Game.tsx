@@ -5,6 +5,7 @@ import {
   type Card, type CardType, type Faction, type GameMode, type PlayerView, type Snapshot,
 } from '@sgs/protocol';
 import { getHero, heroCanUseAs, ROLE_NAME, FACTION_NAME, type Hero, type ActiveSkill } from '@sgs/engine';
+import { HeroPanel, type HeroSlot, type SkillRow } from '../components/HeroPanel';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -501,6 +502,63 @@ export function Game() {
     }
   }
 
+  // —— 武将面板：画像占位 + 技能行 ——
+  const canRevealNow = myTurn && prompt?.kind === 'play' && !skillMode && !selected;
+  const heroSlots: HeroSlot[] = isGuozhan
+    ? [
+        {
+          name: myHero?.name ?? '?',
+          faction: myHero?.faction ?? null,
+          hidden: !me.heroRevealed,
+          slotLabel: '主将',
+          onReveal:
+            canRevealNow && !me.heroRevealed && me.heroId
+              ? () => revealHero(me.heroId!)
+              : undefined,
+        },
+        {
+          name: myDeputyHero?.name ?? '?',
+          faction: myDeputyHero?.faction ?? null,
+          hidden: !me.deputyRevealed,
+          slotLabel: '副将',
+          onReveal:
+            canRevealNow && !me.deputyRevealed && me.deputyHeroId
+              ? () => revealHero(me.deputyHeroId!)
+              : undefined,
+        },
+      ]
+    : [
+        {
+          name: myHero?.name ?? '?',
+          faction: myHero?.faction ?? null,
+          hidden: false,
+          slotLabel: null,
+        },
+      ];
+
+  // 列出国战主副将的全部技能，主动技能在可用时可点发动。
+  // 暗将的技能不会出现在 legalSkillIds 里（引擎按亮将状态过滤 activeHeroes），
+  // 所以会显示成不可点——正好提示玩家得先亮将。
+  const skillRows: SkillRow[] = [];
+  for (const hero of isGuozhan ? [myHero, myDeputyHero] : [myHero]) {
+    if (!hero) continue;
+    for (const s of hero.skills) {
+      const act = hero.activeSkills?.find((a) => a.name === s.name);
+      const active = !!act && skillMode?.skillId === act.id;
+      skillRows.push({
+        name: s.name,
+        desc: s.desc,
+        usable: !!act && skillIds.includes(act.id) && !selected && (!skillMode || active),
+        active,
+        onClick: () => {
+          if (!act) return;
+          if (active) setSkillMode(null);
+          else enterSkillMode(act.id);
+        },
+      });
+    }
+  }
+
   return (
     <div className="game">
       {/* 其他玩家 */}
@@ -522,24 +580,31 @@ export function Game() {
               onClick={isTarget ? () => handleTargetClick(p) : undefined}
               disabled={!isTarget}
             >
-              <div className="p-name">
-                {p.name}
-                {isCurrent && <span className="dot">●</span>}
-                {isLord && p.isAlive && <span className="lord-tag">主</span>}
-                {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
-                  <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
-                )}
-                {isGuozhan && p.faction && (
-                  <span className={`faction-badge ${p.faction}`}>{FACTION_NAME[p.faction]}</span>
-                )}
+              <div className="p-top">
+                {/* 画像占位框，和我自己的武将面板同一套视觉 */}
+                <span className={`portrait small ${factionClass}`}>
+                  <span className="portrait-art">{heroDisplay(p, snapshot.mode)}</span>
+                </span>
+                <span className="p-info">
+                  <span className="p-name">
+                    {p.name}
+                    {isCurrent && <span className="dot">●</span>}
+                    {isLord && p.isAlive && <span className="lord-tag">主</span>}
+                    {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
+                      <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
+                    )}
+                    {isGuozhan && p.faction && (
+                      <span className={`faction-badge ${p.faction}`}>{FACTION_NAME[p.faction]}</span>
+                    )}
+                  </span>
+                  <span className="p-hp">
+                    {Array.from({ length: p.maxHp }).map((_, i) => (
+                      <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
+                    ))}
+                  </span>
+                  <span className="p-hand">手 {p.handCount}</span>
+                </span>
               </div>
-              <div className="p-hero">{heroDisplay(p, snapshot.mode)}</div>
-              <div className="p-hp">
-                {Array.from({ length: p.maxHp }).map((_, i) => (
-                  <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
-                ))}
-              </div>
-              <div className="p-hand">手 {p.handCount}</div>
               {/* 装备区 */}
               {p.equipment.length > 0 && (
                 <div className="p-equip">
@@ -592,102 +657,17 @@ export function Game() {
         </div>
       </div>
 
-      {/* 我的玩家条 */}
-      <div className={`me-bar ${myTurn ? 'my-turn' : ''} ${snapshot.mode === '2v2' ? `team-${me.team ?? 0}` : ''} ${isGuozhan && me.faction ? `faction-${me.faction}` : ''}`}>
-        <span className="me-name">{me.name}</span>
-        {me.role && snapshot.mode === 'junzheng' && (
-          <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
-        )}
-        {isGuozhan && me.faction && (
-          <span className={`faction-badge ${me.faction}`}>{FACTION_NAME[me.faction]}</span>
-        )}
-        {isGuozhan ? (
-          <>
-            <span className="me-hero">
-              {myHero?.name ?? '?'}
-              {!me.heroRevealed && '（暗）'}
-            </span>
-            <span className="me-hero-deputy">
-              {myDeputyHero?.name ?? '?'}
-              {!me.deputyRevealed && '（暗）'}
-            </span>
-          </>
-        ) : (
-          <span className="me-hero">{myHero?.name}</span>
-        )}
-        <span className="me-hp">
-          体力 {me.hp}/{me.maxHp}
-        </span>
-        {/* 我的装备区 */}
-        {me.equipment.length > 0 && (
-          <span className="me-equip">
-            {me.equipment.map((c) => (
-              <span
-                key={c.id}
-                className={`equip-icon equip-${c.type}`}
-                title={`${cardShortName(c)}\n${cardDescription(c)}`}
-              >
-                {cardShortName(c)}
-              </span>
-            ))}
-          </span>
-        )}
-        {/* 我的判定区 */}
-        {me.judgment.length > 0 && (
-          <span className="me-judge">
-            {me.judgment.map((c) => (
-              <span
-                key={c.id}
-                className="judge-icon"
-                title={`${cardShortName(c)}\n${cardDescription(c)}`}
-              >
-                {cardShortName(c)}
-              </span>
-            ))}
-          </span>
-        )}
-        {/* 国战：出牌阶段亮将按钮 */}
-        {isGuozhan && myTurn && prompt?.kind === 'play' && !skillMode && (
-          <>
-            {!me.heroRevealed && me.heroId && (
-              <button className="ghost reveal-btn" onClick={() => revealHero(me.heroId!)}>
-                亮主将
-              </button>
-            )}
-            {!me.deputyRevealed && me.deputyHeroId && (
-              <button className="ghost reveal-btn" onClick={() => revealHero(me.deputyHeroId!)}>
-                亮副将
-              </button>
-            )}
-          </>
-        )}
-      </div>
+      {/* 我的武将面板：画像占位 + 体力 + 技能（可点的技能直接在这里发动） */}
+      <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} skills={skillRows} />
 
       {/* 提示/操作区 */}
       {prompt ? (
         <div className={`prompt prompt-${prompt.kind}`}>
           <div className="prompt-msg">{prompt.message}</div>
 
-          {/* 出牌阶段：技能按钮 + 结束出牌 */}
+          {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
           {prompt.kind === 'play' && !skillMode && !selected && (
             <>
-              {skillIds.length > 0 && (
-                <div className="skill-buttons">
-                  {skillIds.map((sid) => {
-                    const skill = findSkill(myHeroes, sid);
-                    if (!skill) return null;
-                    return (
-                      <button
-                        key={sid}
-                        className="skill-btn"
-                        onClick={() => enterSkillMode(sid)}
-                      >
-                        {skill.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
               <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
                 结束出牌
               </button>

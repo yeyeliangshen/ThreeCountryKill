@@ -234,6 +234,206 @@ button:disabled {
   text-align: center;
 }
 
+/* —— 武将画像占位框 ——
+   还没有画像资源，先用带阵营色的方框顶着，里面放武将名。
+   有图之后把 .portrait-art 换成 <img> 即可，外面的框不用动。 */
+.portrait {
+  position: relative;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: linear-gradient(160deg, #2a3444 0%, #1a2130 100%);
+  border: 1px solid var(--panel-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.portrait.big {
+  width: 54px;
+  height: 76px;
+}
+.portrait.small {
+  width: 40px;
+  height: 56px;
+}
+.portrait-art {
+  /* 占位内容：武将名竖排，像一张卡 */
+  writing-mode: vertical-rl;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 1px;
+  text-align: center;
+  max-height: 100%;
+  overflow: hidden;
+  padding: 4px 0;
+}
+.portrait.small .portrait-art {
+  font-size: 10px;
+  letter-spacing: 0;
+  padding: 2px 0;
+}
+/* 阵营色描边 */
+.portrait.faction-shu { border-color: #d9453a; }
+.portrait.faction-wei { border-color: #4a7fb5; }
+.portrait.faction-wu { border-color: #5a9b3a; }
+.portrait.faction-qun { border-color: #8a8270; }
+.portrait.unrevealed .portrait-art {
+  color: var(--muted);
+}
+.portrait-dim {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 9px;
+  color: var(--muted);
+}
+.portrait-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  text-align: center;
+  color: #1a1208;
+  background: var(--gold);
+}
+.portrait-reveal {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2px 0;
+  font-size: 10px;
+  border-radius: 0;
+  background: var(--gold);
+  color: #1a1208;
+  font-weight: 700;
+}
+
+/* —— 我的武将面板 —— */
+.hero-panel {
+  display: flex;
+  gap: 10px;
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 8px;
+  border: 1px solid transparent;
+}
+.hero-panel.team-0 { border-left: 3px solid #4a7fb5; }
+.hero-panel.team-1 { border-left: 3px solid #b56a4a; }
+.hero-panel.faction-shu { border-left: 3px solid #d9453a; }
+.hero-panel.faction-wei { border-left: 3px solid #4a7fb5; }
+.hero-panel.faction-wu { border-left: 3px solid #5a9b3a; }
+.hero-panel.faction-qun { border-left: 3px solid #8a8270; }
+.hero-panel.dead {
+  opacity: 0.5;
+}
+.hero-portraits {
+  display: flex;
+  gap: 6px;
+}
+.hero-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.hero-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.hero-hp {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+.hero-hp-text {
+  font-size: 11px;
+  color: var(--red);
+  margin-left: 2px;
+}
+.hero-zones {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* —— 技能列表 —— */
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-none {
+  font-size: 11px;
+  color: var(--muted);
+}
+.skill-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--panel-2);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+/* 可以用的时候高亮成按钮的样子，点一下就发动 */
+.skill-row.usable {
+  cursor: pointer;
+  border-color: var(--gold);
+  background: rgba(212, 168, 75, 0.12);
+}
+.skill-row.usable:hover {
+  background: rgba(212, 168, 75, 0.22);
+}
+.skill-row.active {
+  border-color: var(--green);
+  background: rgba(90, 155, 58, 0.18);
+}
+.skill-row[aria-disabled='true'] {
+  cursor: default;
+}
+.sk-name {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--gold);
+  font-size: 12px;
+}
+.skill-row.active .sk-name {
+  color: #8fd06a;
+}
+.sk-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+.skill-row.usable .sk-desc {
+  color: #ddd4be;
+}
+.sk-go {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1a1208;
+  background: var(--gold);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.skill-row.active .sk-go {
+  background: var(--green);
+  color: #0f1a08;
+}
+
 /* —— 牌桌 —— */
 .game {
   flex: 1;
@@ -268,26 +468,33 @@ button:disabled {
 .player.dead {
   opacity: 0.45;
 }
+.p-top {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  text-align: left;
+}
+.p-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .p-name {
   font-weight: 600;
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 4px;
+  flex-wrap: wrap;
+  font-size: 12px;
 }
 .p-name .dot {
   color: var(--green);
   font-size: 10px;
 }
-.p-hero {
-  color: var(--gold);
-  font-size: 12px;
-}
 .p-hp {
   display: flex;
-  justify-content: center;
   gap: 2px;
-  margin: 4px 0;
 }
 .hp-cell {
   width: 8px;
