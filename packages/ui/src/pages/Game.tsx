@@ -148,6 +148,7 @@ export function Game() {
   const pickHeroes = useStore((s) => s.pickHeroes);
   const revealHero = useStore((s) => s.revealHero);
   const useSkill = useStore((s) => s.useSkill);
+  const chooseOption = useStore((s) => s.chooseOption);
 
   // 出牌阶段：选中一张需目标的牌后，再选目标
   const [selected, setSelected] = useState<{
@@ -678,6 +679,17 @@ export function Game() {
       {prompt ? (
         <div className={`prompt prompt-${prompt.kind}`}>
           <div className="prompt-msg">{prompt.message}</div>
+
+          {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…） */}
+          {prompt.kind === 'choice' && (
+            <>
+              {prompt.choiceOptions?.map((o) => (
+                <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
+                  {o.label}
+                </button>
+              ))}
+            </>
+          )}
 
           {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
           {prompt.kind === 'play' && !skillMode && !selected && (

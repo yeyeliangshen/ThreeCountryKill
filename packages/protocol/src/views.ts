@@ -47,7 +47,8 @@ export type PromptKind =
   | 'pickHero'
   | 'respondTrick'
   | 'wuxieQueue'
-  | 'activeSkill';
+  | 'activeSkill'
+  | 'choice'; // 通用「选择一项」
 
 // 告诉玩家当前需要做什么 + 合法选项（服务端权威计算后下发）
 export interface PromptView {
@@ -63,6 +64,9 @@ export interface PromptView {
   legalHeroIds?: string[];
   // 出牌阶段：可用的主动技能 id 列表（仅 play 有）
   legalSkillIds?: string[];
+  // 「选择一项」提示（仅 choice 有）
+  choiceTitle?: string;
+  choiceOptions?: { id: string; label: string }[];
 }
 
 export interface LogEntry {

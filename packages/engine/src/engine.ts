@@ -52,6 +52,22 @@ export type ApplyResult = { ok: true } | { ok: false; error: string };
 const err = (message: string): ApplyResult => ({ ok: false, error: message });
 
 /**
+ * 让某个角色在若干选项里选一个（通用「选择一项」）。
+ * 用法：askChoice(state, target, '选择一项', [{id:'a',label:'…'},{id:'b',label:'…'}],
+ *   (st, p, picked) => { …按 picked 继续结算… });
+ * 选完由 chooseOption 意图调用 resolve，然后回到出牌阶段（若轮到出牌者）。
+ */
+export function askChoice(
+  state: GameState,
+  seatId: string,
+  title: string,
+  options: { id: string; label: string }[],
+  resolve: (state: GameState, player: Player, optionId: string) => void,
+): void {
+  state.pending = { kind: 'choice', seatId, title, options, resolve };
+}
+
+/**
  * 手牌上限：默认 = 当前体力；技能可以覆盖（周瑜·英姿 = 体力上限）。
  * 多个武将给出上限时取最宽松的那个。
  */
@@ -646,6 +662,23 @@ export function applyIntent(
   switch (intent.type) {
     case 'playCard':
       return onPlayCard(state, seatId, intent);
+    case 'chooseOption': {
+      const pending = state.pending;
+      if (!pending || pending.kind !== 'choice') return err('当前没有需要选择的选项');
+      if (pending.seatId !== seatId) return err('不是你在选择');
+      const picked = pending.options.find((o) => o.id === intent.optionId);
+      if (!picked) return err('选项无效');
+      const player = getPlayerOrThrow(state, seatId);
+      state.pending = null;
+      state.log.push({
+        id: state.logSeq++,
+        kind: 'skill',
+        message: `${player.name} 选择了「${picked.label}」。`,
+      });
+      pending.resolve(state, player, picked.id);
+      return { ok: true };
+    }
+
     case 'respondCard':
       return onRespondCard(state, seatId, intent);
     case 'pass':
@@ -1730,6 +1763,7 @@ function onUseSkill(
   if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = true;
   // 创建引擎内部 API 注入技能执行（避免 heroes→engine 循环依赖）
   const api: SkillApi = {
+    askChoice,
     dealDamage: (target, damage, sourceId, attribute) => {
       const attack: AttackContext = {
         sourceId,

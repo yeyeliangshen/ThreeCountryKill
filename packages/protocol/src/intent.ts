@@ -22,4 +22,5 @@ export type Intent =
   // 国战：出牌阶段主动亮将（传入要亮的武将 id）
   | { type: 'revealHero'; heroId: string }
   // 主动技能：出牌阶段使用武将主动技能（制衡/苦肉/离间等）
-  | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] };
+  | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] }  // 通用「选择一项」：技能要求某个角色在若干选项里选一个（反间/铁骑/除疠…）
+  | { type: 'chooseOption'; optionId: string };

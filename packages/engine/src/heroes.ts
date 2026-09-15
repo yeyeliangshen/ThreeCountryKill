@@ -25,6 +25,17 @@ export interface SkillApi {
   dealDamage: (target: Player, damage: number, sourceId: string, attribute?: DamageAttribute) => void;
   /** 失去体力（不触发伤害钩子，但触发濒死检查） */
   loseHp: (target: Player, amount: number) => void;
+  /**
+   * 让某个角色在若干选项里选一个（通用「选择一项」）。
+   * 由 engine 注入——heroes 不能反向 import engine，所以走这里。
+   */
+  askChoice: (
+    state: GameState,
+    seatId: string,
+    title: string,
+    options: { id: string; label: string }[],
+    resolve: (state: GameState, player: Player, optionId: string) => void,
+  ) => void;
 }
 
 /** 主动技能「可选几张牌」的判断依据——服务端与客户端都构造得出来 */
@@ -342,7 +353,22 @@ const DIAOCHAN: Hero = {
       },
     },
   ],
-  skills: [{ name: '离间', desc: '出牌阶段限一次，弃一张牌并选两名男性角色，令A对B使用【杀】。A不出则受1伤害。（简化版）' }],
+  // 闭月：结束阶段摸一张
+  hooks: [
+    {
+      timing: 'turnEnd',
+      handler: (ctx) => {
+        const c = drawOne(ctx.state);
+        if (!c) return;
+        ctx.player.hand.push(c);
+        pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【闭月】，摸了 1 张牌。`);
+      },
+    },
+  ],
+  skills: [
+    { name: '离间', desc: '出牌阶段限一次，弃一张牌并选两名男性角色，令A对B使用【杀】。A不出则受1伤害。（简化版）' },
+    { name: '闭月', desc: '结束阶段开始时，你可以摸一张牌。' },
+  ],
 };
 
 const ZHENJI: Hero = {
@@ -353,7 +379,71 @@ const ZHENJI: Hero = {
   gender: 'female',
   // 倾国：黑色牌当【闪】
   canUseAs: (card, type) => type === 'shan' && !isRed(card),
-  skills: [{ name: '倾国', desc: '你可以将一张黑色牌当【闪】使用或打出。' }],
+  // 洛神：准备阶段判定，黑色则获得并可重复
+  hooks: [
+    {
+      timing: 'turnStart',
+      handler: (ctx) => {
+        const got: Card[] = [];
+        for (;;) {
+          const j = drawOne(ctx.state);
+          if (!j) break;
+          pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【洛神】，判定：${cardLabel(j)}。`);
+          if (!isRed(j)) {
+            got.push(j);
+          } else {
+            ctx.state.discard.push(j);
+            break;
+          }
+        }
+        if (got.length > 0) {
+          ctx.player.hand.push(...got);
+          pushLog(ctx.state, 'skill', `【洛神】获得 ${got.length} 张黑色牌。`);
+        }
+      },
+    },
+  ],
+  skills: [
+    { name: '倾国', desc: '你可以将一张黑色牌当【闪】使用或打出。' },
+    { name: '洛神', desc: '准备阶段，你可以进行判定：若为黑色，你获得此牌，然后你可以重复此流程。' },
+  ],
+  // 国战版洛神：判到红色为止，然后**一次性**获得此前所有黑色判定牌
+  guozhan: {
+    hooks: [
+      {
+        timing: 'turnStart',
+        handler: (ctx) => {
+          const pending: Card[] = [];
+          for (;;) {
+            const j = drawOne(ctx.state);
+            if (!j) break;
+            if (isRed(j)) {
+              // 判到红即止，红牌进弃牌堆
+              ctx.state.discard.push(j);
+              pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【洛神】，判定${cardLabel(j)}为红色，结束。`);
+              break;
+            }
+            pending.push(j);
+          }
+          if (pending.length > 0) {
+            ctx.player.hand.push(...pending);
+            pushLog(
+              ctx.state,
+              'skill',
+              `${ctx.player.name} 的【洛神】一次性获得 ${pending.length} 张黑色判定牌。`,
+            );
+          }
+        },
+      },
+    ],
+    skills: [
+      { name: '倾国', desc: '你可以将一张黑色牌当【闪】使用或打出。' },
+      {
+        name: '洛神',
+        desc: '准备阶段，你可以进行判定：若为黑色，你获得此牌并可重复此流程，直到出现红色为止；然后你一次性获得所有黑色判定牌。（国战版）',
+      },
+    ],
+  },
 };
 
 const SIMAYI: Hero = {
@@ -386,8 +476,45 @@ const SIMAYI: Hero = {
         return { replaceCard: goodCard };
       },
     },
+    // 反馈：受到伤害后，获得伤害来源的一张牌
+    // 简化：来源有手牌就随机拿一张手牌，否则随机拿一张装备牌（真实规则是由你选一张）
+    {
+      timing: 'afterDamage',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        if (!payload?.attack || !payload.damage) return;
+        const source = getPlayer(ctx.state, payload.attack.sourceId);
+        if (!source || source.seatId === ctx.player.seatId) return; // 无来源或自伤
+        let taken: Card | undefined;
+        if (source.hand.length > 0) {
+          const i = Math.floor(Math.random() * source.hand.length);
+          [taken] = source.hand.splice(i, 1);
+        } else {
+          const slots = ['weapon', 'armor', 'plusMount', 'minusMount'] as const;
+          const filled = slots.filter((sl) => source.equipment[sl]);
+          const sl = filled[Math.floor(Math.random() * filled.length)];
+          if (sl) {
+            taken = source.equipment[sl] ?? undefined;
+            source.equipment[sl] = null;
+          }
+        }
+        if (!taken) {
+          pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【反馈】，但 ${source.name} 没有牌可取。`);
+          return;
+        }
+        ctx.player.hand.push(taken);
+        pushLog(
+          ctx.state,
+          'skill',
+          `${ctx.player.name} 发动【反馈】，获得 ${source.name} 的一张牌。`,
+        );
+      },
+    },
   ],
-  skills: [{ name: '鬼才', desc: '在判定牌生效前，你可以打出一张手牌替换之。（简化：自动选有利手牌替换）' }],
+  skills: [
+    { name: '反馈', desc: '当你受到伤害后，你可以获得伤害来源的一张牌。（简化：随机取一张手牌，无手牌则取一张装备）' },
+    { name: '鬼才', desc: '在判定牌生效前，你可以打出一张手牌替换之。（简化：自动选有利手牌替换）' },
+  ],
 };
 
 const XIAHOUDUN: Hero = {
@@ -458,7 +585,43 @@ const HUATUO: Hero = {
   gender: 'male',
   // 急救：红色牌当【桃】（用于濒死救援）
   canUseAs: (card, type) => type === 'tao' && isRed(card),
-  skills: [{ name: '急救', desc: '你的回合外，可以将一张红色牌当【桃】使用。' }],
+  // 青囊：出牌阶段限一次，弃一张手牌令一名已受伤角色回复 1 点体力
+  activeSkills: [
+    {
+      id: 'qingnang',
+      name: '青囊',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) =>
+        player.hand.length > 0 && state.players.some((p) => p.alive && p.hp < p.maxHp),
+      execute: (state, player, intent, _api) => {
+        const ids = intent.cardIds ?? [];
+        if (ids.length !== 1) return '请选择一张手牌弃置';
+        const card = removeCard(player.hand, ids[0]!);
+        if (!card) return '找不到手牌';
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名已受伤的角色';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        if (target.hp >= target.maxHp) return '该角色体力已满';
+        state.discard.push(card);
+        target.hp += 1;
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【青囊】，弃置【${cardLabel(card)}】，令 ${target.name} 回复 1 点体力。`,
+          { seat: player.seatId, action: 'tao' },
+        );
+      },
+    },
+  ],
+  skills: [
+    { name: '急救', desc: '你的回合外，可以将一张红色牌当【桃】使用。' },
+    { name: '青囊', desc: '出牌阶段限一次，你可以弃置一张手牌并选择一名已受伤的角色，令其回复 1 点体力。' },
+  ],
 };
 
 const SUNQUAN: Hero = {
@@ -594,6 +757,70 @@ const ZHOUYU: Hero = {
   guozhan: {
     extraDraw: 1,
     handLimit: (_state, player) => player.maxHp,
+    // 反间（2.110 国战版）：展示一张手牌交给目标，目标「选择一项」——
+    // 1. 展示所有手牌，弃置与此牌花色相同的所有牌；2. 失去 1 点体力。
+    // 由通用的 askChoice 机制实现（见 engine.askChoice）。
+    activeSkills: [
+      {
+        id: 'fanjian',
+        name: '反间',
+        oncePerTurn: true,
+        minTargets: 1,
+        maxTargets: 1,
+        needsCards: true,
+        maxCards: () => 1,
+        canUse: (_state, player) => player.hand.length > 0,
+        execute: (state, player, intent, api) => {
+          const ids = intent.cardIds ?? [];
+          if (ids.length !== 1) return '请选择一张手牌展示';
+          const card = removeCard(player.hand, ids[0]!);
+          if (!card) return '找不到手牌';
+          const targetId = intent.targetIds[0];
+          if (!targetId) return '请选择一名其他角色';
+          const target = getPlayer(state, targetId);
+          if (!target || !target.alive) return '目标无效';
+          if (target.seatId === player.seatId) return '不能选择自己';
+          target.hand.push(card);
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 发动【反间】，展示【${cardLabel(card)}】并交给 ${target.name}。`,
+          );
+          api.askChoice(
+            state,
+            target.seatId,
+            `${player.name} 对你发动了【反间】（${cardLabel(card)}）：请选择一项`,
+            [
+              { id: 'discard', label: '展示所有手牌，弃置与此牌花色相同的所有牌' },
+              { id: 'loseHp', label: '失去 1 点体力' },
+            ],
+            (st, p, picked) => {
+              if (picked === 'loseHp') {
+                pushLog(st, 'skill', `${p.name} 选择失去 1 点体力。`);
+                api.loseHp(p, 1);
+                return;
+              }
+              // 展示手牌并弃置同花色
+              pushLog(
+                st,
+                'skill',
+                `${p.name} 展示手牌：${p.hand.map((c) => cardLabel(c)).join('、') || '（无）'}。`,
+              );
+              const same = p.hand.filter((c) => c.suit === card.suit);
+              for (const c of same) {
+                removeCard(p.hand, c.id);
+                st.discard.push(c);
+              }
+              pushLog(
+                st,
+                'skill',
+                `弃置了 ${same.length} 张与【${cardLabel(card)}】花色相同的牌。`,
+              );
+            },
+          );
+        },
+      },
+    ],
     skills: [
       {
         name: '英姿',
@@ -601,7 +828,7 @@ const ZHOUYU: Hero = {
       },
       {
         name: '反间',
-        desc: '出牌阶段限一次，你可以展示一张手牌并将之交给一名其他角色，该角色选择一项：1.展示所有手牌，然后弃置与此牌花色相同的所有牌；2.失去1点体力。（国战版·尚未实现，当前为身份局简化版）',
+        desc: '出牌阶段限一次，你可以展示一张手牌并将之交给一名其他角色，该角色选择一项：1.展示所有手牌，然后弃置与此牌花色相同的所有牌；2.失去1点体力。（国战版）',
       },
     ],
   },

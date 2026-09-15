@@ -2521,3 +2521,145 @@ describe('被动修改器（距离 / 摸牌 / 手牌上限）', () => {
     expect(state.pending?.kind).toBe('discard');
   });
 });
+
+// ——————————————————————————————————————————
+// 第二批：洛神 / 闭月 / 反馈 / 青囊 + 国战版反间（通用「选择一项」）
+// ——————————————————————————————————————————
+
+describe('新增技能（含国战版差异）', () => {
+  it('洛神：判到黑色就收下、判到红为止（非国战逐张获得）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhenji', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 牌堆从末尾抽：先 黑桃2、再 梅花3、再 红桃1 → 收下前两张后停
+    state.deck.push(mk('r1', 'sha', 'heart', 1));
+    state.deck.push(mk('b2', 'sha', 'spade', 2));
+    state.deck.push(mk('b1', 'sha', 'club', 3));
+    ok(act(state, A, { type: 'endPhase' })); // 乙的回合开始 → 准备阶段洛神
+    const ids = b.hand.map((c) => c.id);
+    expect(ids).toContain('b1');
+    expect(ids).toContain('b2');
+    expect(ids).not.toContain('r1'); // 红牌不进手
+    expect(state.discard.some((c) => c.id === 'r1')).toBe(true);
+  });
+
+  it('洛神（国战）：判到红为止，然后一次性获得所有黑色判定牌', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        { seatId: B, name: '乙', heroId: 'zhenji', hand: [] },
+      ],
+      'guozhan',
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.heroRevealed = true;
+    state.deck.push(mk('r1', 'sha', 'heart', 1));
+    state.deck.push(mk('b2', 'sha', 'spade', 2));
+    state.deck.push(mk('b1', 'sha', 'club', 3));
+    ok(act(state, A, { type: 'endPhase' }));
+    const ids = b.hand.map((c) => c.id);
+    expect(ids).toContain('b1');
+    expect(ids).toContain('b2');
+    // 与身份局的关键差别：日志写明“一次性获得”，而不是逐张获得
+    expect(state.log.some((e) => e.message.includes('一次性获得'))).toBe(true);
+  });
+
+  it('闭月：结束阶段摸一张牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'diaochan', hand: [], hp: 3, },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hp = 3;
+    const before = a.hand.length;
+    ok(act(state, A, { type: 'endPhase' })); // 结束出牌 → 弃牌 → 回合结束（闭月摸 1）
+    expect(a.hand.length).toBeGreaterThan(before);
+    expect(state.log.some((e) => e.message.includes('发动【闭月】'))).toBe(true);
+  });
+
+  it('反馈：受到伤害后获得来源一张牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'simayi', hand: [tao('t1'), shan('s1')] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const aHandBefore = a.hand.length;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪，受到 1 点伤害
+    expect(state.log.some((e) => e.message.includes('发动【反馈】'))).toBe(true);
+    // 甲少了一张牌、乙多了一张
+    expect(a.hand.length).toBe(aHandBefore - 1);
+    expect(b.hand.length).toBeGreaterThan(1);
+  });
+
+  it('青囊：弃一张手牌令已受伤角色回复 1 点', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'huatuo', hand: [tao('h1')], hp: 3 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 2 },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hp = 1; // 甲自己受伤（青囊可对自己用）
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'useSkill', skillId: 'qingnang', cardIds: ['h1'], targetIds: [A] }));
+    expect(a.hp).toBe(2);
+    expect(state.log.some((e) => e.message.includes('发动【青囊】'))).toBe(true);
+  });
+
+  it('青囊：对体力已满的角色使用应被拒', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'huatuo', hand: [tao('h1')], hp: 3 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const res = act(state, A, { type: 'useSkill', skillId: 'qingnang', cardIds: ['h1'], targetIds: [B] });
+    expect(res.ok).toBe(false);
+  });
+
+  it('国战版反间：目标「选择一项」，选失去 1 点体力', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhouyu', hand: [tao('f1')], hp: 3 },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('d1')] },
+      ],
+      'guozhan',
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 未亮将时主动技不可用，先亮将
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.heroRevealed = true;
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    // 目标收到「选择一项」提示
+    expect(state.pending?.kind).toBe('choice');
+    const snapB = toSnapshot(state, B);
+    expect(snapB.prompt?.kind).toBe('choice');
+    expect(snapB.prompt?.choiceOptions).toHaveLength(2);
+    // 乙选「失去 1 点体力」
+    const hpBefore = b.hp;
+    ok(act(state, B, { type: 'chooseOption', optionId: 'loseHp' }));
+    expect(b.hp).toBe(hpBefore - 1);
+    expect(state.pending?.kind).not.toBe('choice');
+  });
+
+  it('国战版反间：选「弃同花色牌」会弃掉手牌里同花色的牌', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhouyu', hand: [mk('f1', 'tao', 'heart', 5)], hp: 3 },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('d1', 'shan', 'heart', 1), mk('d2', 'sha', 'spade', 2)] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.heroRevealed = true;
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    // 乙手上原有 2 张，反间又给了 1 张（红桃）→ 共 3 张；弃掉所有红桃
+    expect(b.hand.length).toBe(3);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'discard' }));
+    expect(b.hand.every((c) => c.suit !== 'heart')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('花色相同'))).toBe(true);
+  });
+});

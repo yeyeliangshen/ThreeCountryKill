@@ -47,6 +47,18 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
       if (pending.seatId !== seatId) return null;
       return buildDiscardPrompt(state, seatId, pending.count);
 
+    case 'choice':
+      if (pending.seatId !== seatId) return null;
+      return {
+        kind: 'choice',
+        message: pending.title,
+        legalCardIds: [],
+        legalTargetIds: [],
+        mustSelectTargetCount: 0,
+        choiceTitle: pending.title,
+        choiceOptions: pending.options,
+      };
+
     case 'respondTrick':
       if (pending.responderId !== seatId) return null;
       return buildRespondTrickPrompt(state, seatId, pending.ctx);
