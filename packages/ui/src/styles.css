@@ -17,6 +17,10 @@
      想改成真实扑克的 1.4（63×88mm ≈ √2），把 --card-ratio 改成 1.4 即可。 */
   --card-h: 92px;
   --card-ratio: 1.618;
+  /* 卡面：外描边、内侧白细线、牌名墨色 */
+  --card-edge: #bfa878;
+  --card-inner: inset 0 0 0 1.5px rgba(255, 255, 255, 0.9);
+  --card-ink: #2b2620;
 }
 html,
 body,
@@ -411,31 +415,62 @@ button:disabled {
   flex: 0 0 auto;
   height: var(--card-h);
   aspect-ratio: 1 / var(--card-ratio);
-  border-radius: 8px;
-  background: #f4ecd8;
+  border-radius: 7px;
+  /* 纸面：米色底 + 一点斜向渐变，比纯色有质感 */
+  background: linear-gradient(158deg, #fdf9ef 0%, #f5ecd7 58%, #e9dec1 100%);
+  /* 外描边 + 内侧白细线，模仿真卡的印刷外框 */
+  border: 2px solid var(--card-edge);
+  box-shadow: var(--card-inner), 0 1px 2px rgba(0, 0, 0, 0.4);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  padding: 7px;
+  align-items: center;
+  padding: 4px 4px 7px;
   font-weight: 600;
-  border: 2px solid transparent;
+  color: var(--card-ink);
   position: relative;
   z-index: 1;
+  overflow: hidden;
   transition:
     transform 0.12s ease,
     box-shadow 0.12s ease;
 }
+/* 底部分类色条，一眼区分基本牌 / 锦囊 / 延时锦囊 / 装备 */
+.card::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--card-accent, transparent);
+}
+.card.cat-basic {
+  --card-accent: #9d9078;
+}
+.card.cat-trick {
+  --card-accent: #4e7fb0;
+}
+.card.cat-delayed {
+  --card-accent: #8a4ad4;
+}
+.card.cat-equip {
+  --card-accent: #bd8a2c;
+}
 .card.red {
   color: var(--red);
+  --card-suit: #c0392b;
 }
 .card.black {
   color: var(--black);
+  --card-suit: #2f2a24;
 }
 .card.legal {
   border-color: var(--gold);
 }
 .card.dim {
-  opacity: 0.35;
+  /* 用降饱和 + 压暗代替纯透明，牌名还看得清，但一眼知道现在用不了 */
+  opacity: 0.55;
+  filter: grayscale(0.75) brightness(0.82);
   cursor: default;
 }
 .card.picked {
@@ -448,18 +483,53 @@ button:disabled {
 .hand .card:hover {
   transform: translateY(-14px) scale(1.04);
   z-index: 5;
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--card-inner), 0 6px 14px rgba(0, 0, 0, 0.55);
   opacity: 1;
+  filter: none;
 }
 .hand .card.picked:hover {
   transform: translateY(-18px) scale(1.04);
 }
-.c-suit {
-  font-size: 11px;
+/* 左上角标：点数 + 花色符号 */
+.c-idx {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  gap: 1px;
+  color: var(--card-suit, #2f2a24);
 }
-.c-type {
-  font-size: 16px;
-  text-align: center;
+.c-rank {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+.c-suit {
+  font-size: 12px;
+  line-height: 1;
+}
+/* 牌名竖排，跟真卡一样；名字长会自动折成第二列 */
+.c-name {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.c-name > span {
+  writing-mode: vertical-rl;
+  font-size: 15px;
+  line-height: 1.02;
+  letter-spacing: 0.5px;
+  max-height: 100%;
+  overflow: hidden;
+  color: var(--card-ink);
+}
+/* 五个字的牌（雌雄双股剑、青龙偃月刀）缩小一档，避免折列 */
+.c-name > span.long {
+  font-size: 13px;
 }
 
 /* —— toast / overlay —— */
@@ -740,11 +810,11 @@ button:disabled {
 /* —— 火杀/雷杀 —— */
 .card.fire-attr {
   border-color: #e85a2a;
-  box-shadow: 0 0 4px rgba(232, 90, 42, 0.4);
+  box-shadow: var(--card-inner), 0 0 7px rgba(232, 90, 42, 0.55);
 }
 .card.thunder-attr {
   border-color: #8a4ad4;
-  box-shadow: 0 0 4px rgba(138, 74, 212, 0.4);
+  box-shadow: var(--card-inner), 0 0 7px rgba(138, 74, 212, 0.55);
 }
 
 /* —— 主动技能按钮 —— */

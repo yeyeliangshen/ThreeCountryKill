@@ -110,6 +110,14 @@ export const SUIT_NAME: Record<Suit, string> = {
   diamond: '方块',
 };
 
+/** 花色的符号形式（卡面左上角用） */
+export const SUIT_SYMBOL: Record<Suit, string> = {
+  spade: '♠',
+  heart: '♥',
+  club: '♣',
+  diamond: '♦',
+};
+
 /** 各基本牌/锦囊牌的效果说明（客户端悬停提示用） */
 export const CARD_DESC: Record<CardType, string> = {
   // 基本牌
@@ -225,7 +233,8 @@ export function isRed(card: Card): boolean {
   return SUIT_COLOR[card.suit] === 'red';
 }
 
-function rankLabel(rank: number): string {
+/** 点数的显示形式：1→A、11→J、12→Q、13→K，其余原样 */
+export function rankLabel(rank: number): string {
   if (rank === 1) return 'A';
   if (rank === 11) return 'J';
   if (rank === 12) return 'Q';

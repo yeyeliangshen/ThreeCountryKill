@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  SUIT_NAME, cardShortName, cardDescription,
+  SUIT_NAME, SUIT_SYMBOL, rankLabel, cardLabel, cardShortName, cardDescription,
   isRed, isBasicCard, isEquipCard, isInstantTrick, isDelayedTrick,
   type Card, type CardType, type Faction, type GameMode, type PlayerView, type Snapshot,
 } from '@sgs/protocol';
@@ -767,14 +767,24 @@ export function Game() {
           const isSkillCard = !!skillMode && skillMode.cardIds.includes(card.id);
           const fireClass = card.type === 'sha' && card.attribute === 'fire' ? 'fire-attr' : '';
           const thunderClass = card.type === 'sha' && card.attribute === 'thunder' ? 'thunder-attr' : '';
+          // 牌面底部的分类色条：基本牌 / 锦囊 / 延时锦囊 / 装备
+          const catClass = isEquipCard(card)
+            ? 'cat-equip'
+            : isDelayedTrick(card)
+              ? 'cat-delayed'
+              : isInstantTrick(card)
+                ? 'cat-trick'
+                : 'cat-basic';
+          const name = cardShortName(card);
           // 技能模式下需要选手牌 → 全手牌可点
           const skillCardClickable = !!skillMode && skillMode.skill.needsCards;
           const cardDisabled = skillMode ? !skillCardClickable : !legal;
           return (
             <button
               key={card.id}
-              className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass}`}
+              className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass}`}
               aria-disabled={cardDisabled}
+              aria-label={cardLabel(card)}
               onMouseEnter={(e) => {
                 const r = e.currentTarget.getBoundingClientRect();
                 setTip({ x: r.left + r.width / 2, y: r.top, card });
@@ -793,8 +803,15 @@ export function Game() {
                 else pickRespondCard(card);
               }}
             >
-              <span className="c-suit">{SUIT_NAME[card.suit]}</span>
-              <span className="c-type">{cardShortName(card)}</span>
+              {/* 左上角标：点数 + 花色。闪电/乐不思蜀/兵粮寸断都靠花色点数判定，
+                  所以这两项必须直接看得见 */}
+              <span className="c-idx">
+                <span className="c-rank">{rankLabel(card.rank)}</span>
+                <span className="c-suit">{SUIT_SYMBOL[card.suit]}</span>
+              </span>
+              <span className="c-name">
+                <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
+              </span>
             </button>
           );
         })}
@@ -805,7 +822,7 @@ export function Game() {
         <div className="card-tip" style={{ left: tip.x, top: tip.y }}>
           <div className="card-tip-name">
             {SUIT_NAME[tip.card.suit]}
-            {cardShortName(tip.card)}
+            {rankLabel(tip.card.rank)} · {cardShortName(tip.card)}
           </div>
           <div className="card-tip-desc">{cardDescription(tip.card)}</div>
         </div>

@@ -77,6 +77,8 @@ const TRACKS: Record<BgmScene, Track> = {
 };
 
 const STORE_KEY = 'sgs.audio';
+/** 默认音量：首次进入、以及音量被拖到 0 后重新开启时用 */
+const DEFAULT_VOLUME = 0.5;
 
 function loadPrefs(): { muted: boolean; volume: number } {
   try {
@@ -361,7 +363,15 @@ export const bgm = {
   },
 
   toggleMuted(): void {
-    bgm.setMuted(!state.muted);
+    // 静音有两种来源：muted 标记，或音量被拖到 0。
+    // 只翻 muted 的话，音量还是 0，点了开关依旧没声音——所以这里
+    // 一并把音量恢复到默认值。
+    if (state.muted || state.volume === 0) {
+      if (state.volume === 0) bgm.setVolume(DEFAULT_VOLUME);
+      bgm.setMuted(false);
+    } else {
+      bgm.setMuted(true);
+    }
   },
 
   setMuted(next: boolean): void {
@@ -371,6 +381,8 @@ export const bgm = {
   },
 
   setVolume(v: number): void {
+    // 输入框被清空等情况会传进 NaN，落到 gain 上会让音频彻底没声
+    if (!Number.isFinite(v)) return;
     const clamped = Math.max(0, Math.min(1, v));
     emit({ volume: clamped });
     applyGain();
