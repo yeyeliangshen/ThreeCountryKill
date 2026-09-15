@@ -467,7 +467,10 @@ const HUANGGAI: Hero = {
       maxTargets: 0,
       canUse: (_state, player) => player.hp > 0,
       execute: (state, player, _intent, api) => {
-        pushLog(state, 'skill', `${player.name} 发动【苦肉】，失去 1 点体力。`);
+        pushLog(state, 'skill', `${player.name} 发动【苦肉】，失去 1 点体力。`, {
+      seat: player.seatId,
+      action: 'selfhurt',
+    });
         api.loseHp(player, 1);
         const drawn: Card[] = [];
         for (let i = 0; i < 2; i++) {

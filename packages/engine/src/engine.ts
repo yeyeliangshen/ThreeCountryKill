@@ -389,7 +389,10 @@ function playSha(
     cardRed: isRed(card),
     requiredShan: 1,
   };
-  pushLog(state, 'sha', `${source.name} 对 ${target.name} 使用了【杀】。`);
+  pushLog(state, 'sha', `${source.name} 对 ${target.name} 使用了【杀】。`, {
+    seat: source.seatId,
+    action: card.attribute ? `sha-${card.attribute}` : 'sha',
+  });
   runHooks(state, 'useCard', source, { attack });
   // 国战被动亮将：成为目标前自动亮将
   passiveReveal(state, target);
@@ -403,7 +406,10 @@ function playSha(
   // 防具令此杀无效（仁王盾：黑杀；藤甲：普通杀）
   const nullified = armorNullifiesSha(state, attack);
   if (nullified) {
-    pushLog(state, 'resolve', `${target.name} 的【${nullified}】令此【杀】无效。`);
+    pushLog(state, 'resolve', `${target.name} 的【${nullified}】令此【杀】无效。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
     attack.dodged = true;
     finishAttack(state, attack);
     return { ok: true };
@@ -690,7 +696,10 @@ function playTao(
   removeCard(player.hand, card.id);
   state.discard.push(card);
   player.hp++;
-  pushLog(state, 'tao', `${player.name} 使用了【桃】，回复 1 点体力。`);
+  pushLog(state, 'tao', `${player.name} 使用了【桃】，回复 1 点体力。`, {
+    seat: player.seatId,
+    action: 'tao',
+  });
   runHooks(state, 'useCard', player, { card });
   return { ok: true };
 }
@@ -703,7 +712,10 @@ function playJiu(
   removeCard(player.hand, card.id);
   state.discard.push(card);
   player.flags.jiuActive = true;
-  pushLog(state, 'jiu', `${player.name} 使用了【酒】，下一张杀伤害+1。`);
+  pushLog(state, 'jiu', `${player.name} 使用了【酒】，下一张杀伤害+1。`, {
+    seat: player.seatId,
+    action: 'jiu',
+  });
   runHooks(state, 'useCard', player, { card });
   return { ok: true };
 }
@@ -720,7 +732,10 @@ function playEquip(
   if (old) state.discard.push(old);
   player.equipment[slot] = card;
   const name = card.equipName ? EQUIP_NAME[card.equipName] : CARD_TYPE_NAME[card.type];
-  pushLog(state, 'equip', `${player.name} 装备了【${name}】。`);
+  pushLog(state, 'equip', `${player.name} 装备了【${name}】。`, {
+    seat: player.seatId,
+    action: 'equip',
+  });
   // 七星宝刀：置入装备区时弃置判定区与装备区其他所有牌
   const swept = applyQixingSweep(state, player, card);
   if (swept.length > 0) {
@@ -746,7 +761,10 @@ function playDelayedTrick(
       return err('你的判定区已有【闪电】');
     removeCard(player.hand, card.id);
     player.judgment.push(card);
-    pushLog(state, 'shandian', `${player.name} 将【闪电】置于自己的判定区。`);
+    pushLog(state, 'shandian', `${player.name} 将【闪电】置于自己的判定区。`, {
+      seat: player.seatId,
+      action: 'shandian',
+    });
     runHooks(state, 'useCard', player, { card });
     return { ok: true };
   }
@@ -766,6 +784,7 @@ function playDelayedTrick(
     state,
     type,
     `${player.name} 将【${CARD_TYPE_NAME[type]}】置于 ${target.name} 的判定区。`,
+    { seat: player.seatId, action: type },
   );
   runHooks(state, 'useCard', player, { card });
   return { ok: true };
@@ -817,7 +836,10 @@ function playTrick(
   // 出牌
   removeCard(player.hand, card.id);
   state.discard.push(card);
-  pushLog(state, 'trick', `${player.name} 使用了【${CARD_TYPE_NAME[type]}】。`);
+  pushLog(state, 'trick', `${player.name} 使用了【${CARD_TYPE_NAME[type]}】。`, {
+    seat: player.seatId,
+    action: type,
+  });
   runHooks(state, 'useCard', player, { card });
 
   // 构建 TrickContext
@@ -1061,7 +1083,10 @@ function enterTrickResponse(state: GameState, ctx: TrickContext): void {
     const r = getPlayer(state, seat);
     if (r && r.alive) {
       if (tengjiaNullifiesAoe(state, seat, ctx.card.type)) {
-        pushLog(state, 'resolve', `${r.name} 的【藤甲】令【${CARD_TYPE_NAME[ctx.card.type as import('@sgs/protocol').CardType]}】无效。`);
+        pushLog(state, 'resolve', `${r.name} 的【藤甲】令【${CARD_TYPE_NAME[ctx.card.type as import('@sgs/protocol').CardType]}】无效。`, {
+          seat: r.seatId,
+          action: 'shield',
+        });
         ctx.responderIndex++;
         continue;
       }
@@ -1417,7 +1442,10 @@ function respondWanjianShan(
     return err('万箭齐发需打出【闪】');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
-  pushLog(state, 'trick', `${responder.name} 打出了【闪】。`);
+  pushLog(state, 'trick', `${responder.name} 打出了【闪】。`, {
+    seat: responder.seatId,
+    action: 'shan',
+  });
   advanceTrick(state, ctx);
   return { ok: true };
 }
@@ -1468,6 +1496,7 @@ function onRespondWuxie(
     state,
     'trick',
     `${responder.name} 使用了【无懈可击】，取消了【${CARD_TYPE_NAME[pending.ctx.card.type as import('@sgs/protocol').CardType]}】。`,
+    { seat: responder.seatId, action: 'wuxie' },
   );
   // 锦囊被取消 → 回到来源出牌阶段
   resumePlay(state, pending.ctx.sourceId);
@@ -1523,7 +1552,10 @@ function respondSha(
     return err('只能用【闪】响应');
   removeCard(responder.hand, card.id);
   state.discard.push(card);
-  pushLog(state, 'shan', `${responder.name} 使用了【闪】。`);
+  pushLog(state, 'shan', `${responder.name} 使用了【闪】。`, {
+    seat: responder.seatId,
+    action: 'shan',
+  });
   // 吕布·无双：需出2张闪，出1张后减1，>1则继续等
   const required = pending.attack.requiredShan ?? 1;
   if (required > 1) {

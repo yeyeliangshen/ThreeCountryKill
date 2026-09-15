@@ -180,8 +180,21 @@ export function alivePlayers(state: GameState): Player[] {
   return state.players.filter((p) => p.alive);
 }
 
-export function pushLog(state: GameState, kind: string, message: string): void {
-  state.log.push({ id: state.logSeq++, kind, message });
+/** 日志附加信息：谁做的、做的什么动作（供客户端配语音/音效用） */
+export interface LogExtra {
+  /** 触发者座次 */
+  seat?: string;
+  /** 语义化动作标识，见 protocol 的 LogEntry.action */
+  action?: string;
+}
+
+export function pushLog(
+  state: GameState,
+  kind: string,
+  message: string,
+  extra?: LogExtra,
+): void {
+  state.log.push({ id: state.logSeq++, kind, message, ...extra });
   // 保留最近 200 条，避免无限增长
   if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
 }

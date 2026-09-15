@@ -2195,3 +2195,110 @@ describe('日志序号', () => {
     expect(snap2.log.filter((e) => e.id > cursor).map((e) => e.kind)).toEqual(['damage']);
   });
 });
+
+// ——————————————————————————————————————————
+// 日志的 seat / action：客户端靠它播卡牌音效与语音。
+// 注意 action 是「实际动作」而不是牌面类型——关羽拿【万箭齐发】发动武圣
+// 当【杀】用时，语音要念「杀」。
+// ——————————————————————————————————————————
+
+describe('日志动作标注', () => {
+  const lastAction = (state: GameState) => {
+    for (let i = state.log.length - 1; i >= 0; i--) {
+      const e = state.log[i]!;
+      if (e.action) return e;
+    }
+    return undefined;
+  };
+  const lastLog = (state: GameState) => state.log[state.log.length - 1]!;
+
+  it('普通杀：action=sha，seat 是出杀方', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    const e = lastAction(state)!;
+    expect(e.action).toBe('sha');
+    expect(e.seat).toBe(A);
+  });
+
+  it('火杀 / 雷杀：action 带上属性', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(lastAction(state)!.action).toBe('sha-fire');
+  });
+
+  it('桃 / 酒 / 装备 各自的 action', () => {
+    // 体力不满才能用桃
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [tao('t1'), jiu('j1'), wpn('w1')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [] }));
+    expect(lastLog(state).action).toBe('tao');
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    expect(lastLog(state).action).toBe('jiu');
+    ok(act(state, A, { type: 'playCard', cardId: 'w1', targetIds: [] }));
+    const e = lastAction(state)!;
+    expect(e.action).toBe('equip');
+    expect(e.seat).toBe(A);
+  });
+
+  it('闪：响应杀时 action=shan，seat 是出闪方', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    const e = lastAction(state)!;
+    expect(e.action).toBe('shan');
+    expect(e.seat).toBe(B);
+  });
+
+  it('即时锦囊：action 就是牌型', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('n1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    expect(lastAction(state)!.action).toBe('nanman');
+  });
+
+  it('延时锦囊置于判定区：action 是牌型（乐不思蜀/兵粮寸断）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [lebu('l1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'l1', targetIds: [B] }));
+    const e = lastAction(state)!;
+    expect(e.action).toBe('lebu');
+    expect(e.seat).toBe(A);
+  });
+
+  it('防具令杀无效：action=shield，seat 是持防具的那一方', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.players.find((p) => p.seatId === B)!.equipment.armor = armor('ba', 'renwang');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    const e = lastAction(state)!;
+    expect(e.action).toBe('shield');
+    expect(e.seat).toBe(B);
+  });
+
+  it('摸牌这类的日志不带 action，客户端靠 kind 出音效', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    pushLog(state, 'draw', '甲 摸了 2 张牌。');
+    expect(lastLog(state).action).toBeUndefined();
+    expect(lastLog(state).kind).toBe('draw');
+  });
+});

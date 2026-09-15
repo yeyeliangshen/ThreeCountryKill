@@ -70,6 +70,16 @@ export interface LogEntry {
   id: number;
   message: string;
   kind: string;
+  /** 触发这条日志的座次。客户端据此取该角色的信息（如性别，用于选语音） */
+  seat?: string;
+  /**
+   * 语义化的动作标识，如 'sha' / 'sha-fire' / 'shan' / 'tao' / 'equip' / 'wuxie' /
+   * 'juedou' …。客户端用它找对应的音效与语音。
+   *
+   * 注意是「实际动作」而不是牌面类型：关羽用【万箭齐发】发动武圣当【杀】时，
+   * 这里应该是 'sha' 而不是 'wanjian'——语音要念「杀」。
+   */
+  action?: string;
 }
 
 // 大厅阶段的座位
