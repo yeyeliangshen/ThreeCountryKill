@@ -2,14 +2,14 @@
 //
 // 结构：
 //   ┌─ 面板 ─────────────────────┐
-//   │  群   ┌──────────────┐     │   左列：国家徽章 / 竖排武将名 / 竖排血量 / 装备判定
+//   │  群   ┌──────────────┐     │   左列上部：国家徽章 + 竖排武将名
 //   │  华   │              │     │   右侧：原画（完整显示，不裁切）
 //   │  佗   │     原画      │     │
-//   │  ◆    │              │     │   面板高度 = 原画高度，所以原画下面不会留白
-//   │  ◆    └──────────────┘     │
+//   │       │              │     │   面板高度 = 原画高度，原画下面不留白
+//   │  ◆    └──────────────┘     │   左列下部：装备判定 + 竖排血量（压到底部）
 //   │  ◆                         │
 //   └───────────────────────────┘
-// 技能不在这里——是面板下面独立的一排按钮，见 SkillButtons.tsx。
+// 技能不在这里——是左边独立的一列按钮（面板框外），见 SkillButtons.tsx。
 // 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
@@ -88,41 +88,46 @@ export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
 
   return (
     <div className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'}`}>
-      {/* 左列：国家 / 竖排武将名 / 竖排血量 / 装备判定 */}
+      {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
-        {me.role && mode === 'junzheng' && (
-          <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
-        )}
-        {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
-        <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
-        {/* 血量：绿色勾玉，竖排 */}
-        <span className="hi-hp">
-          {Array.from({ length: me.maxHp }).map((_, i) => (
-            <span key={i} className={`hp-cell ${i < me.hp ? 'on' : ''}`} />
-          ))}
-        </span>
-        {(me.equipment.length > 0 || me.judgment.length > 0) && (
-          <span className="hero-zones">
-            {me.equipment.map((c: Card) => (
-              <span
-                key={c.id}
-                className={`equip-icon equip-${c.type}`}
-                title={`${cardShortName(c)}\n${cardDescription(c)}`}
-              >
-                {cardShortName(c)}
-              </span>
-            ))}
-            {me.judgment.map((c: Card) => (
-              <span
-                key={c.id}
-                className="judge-icon"
-                title={`${cardShortName(c)}\n${cardDescription(c)}`}
-              >
-                {cardShortName(c)}
-              </span>
+        <div className="hero-info-top">
+          {me.role && mode === 'junzheng' && (
+            <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
+          )}
+          {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+          <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
+        </div>
+
+        {/* 底部：装备判定 + 血量（勾玉竖排，压到面板底部） */}
+        <div className="hero-info-foot">
+          {(me.equipment.length > 0 || me.judgment.length > 0) && (
+            <span className="hero-zones">
+              {me.equipment.map((c: Card) => (
+                <span
+                  key={c.id}
+                  className={`equip-icon equip-${c.type}`}
+                  title={`${cardShortName(c)}\n${cardDescription(c)}`}
+                >
+                  {cardShortName(c)}
+                </span>
+              ))}
+              {me.judgment.map((c: Card) => (
+                <span
+                  key={c.id}
+                  className="judge-icon"
+                  title={`${cardShortName(c)}\n${cardDescription(c)}`}
+                >
+                  {cardShortName(c)}
+                </span>
+              ))}
+            </span>
+          )}
+          <span className="hi-hp">
+            {Array.from({ length: me.maxHp }).map((_, i) => (
+              <span key={i} className={`hp-cell ${i < me.hp ? 'on' : ''}`} />
             ))}
           </span>
-        )}
+        </div>
       </div>
 
       {/* 原画：按 1 : 1.415 完整显示，不裁切。高度决定面板高度 */}

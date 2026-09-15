@@ -25,10 +25,10 @@
   --ink: #3c2c18;
   --ink-soft: #6d5736;
   --table-max: 1120px;
-  /* 右侧栏宽度（出牌记录 / 武将面板 / 技能按钮排，三者同宽）。
-     桌面减内边距与栏间距后约 1094；侧栏 340 让原画约 272 宽（高 385，
-     完整不裁切），同时给记录留下约 255 高 */
-  --side-w: 340px;
+  /* 右侧栏宽度 = 技能左轨 + （出牌记录 | 武将面板）。
+     桌面减内边距与栏间距后约 1094；侧栏 400 里主列约 334，
+     原画约 283 宽（高 400，完整不裁切） */
+  --side-w: 400px;
   /* 卡面：外描边、内侧印刷线、牌名墨色。
      桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
   --card-edge: #8a7048;
@@ -402,14 +402,28 @@ button:disabled {
 .hero-panel.dead {
   opacity: 0.5;
 }
-/* 左列：徽章 / 竖排名 / 竖排血量 / 装备判定 */
+/* 左列：上部（徽章 + 竖排名）贴顶，下部（装备判定 + 竖排血量）压到底 */
 .hero-info {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  align-self: flex-start;
+  /* stretch 才有面板的高度，底部组才能被 margin-top: auto 推到底 */
+  align-self: stretch;
+}
+.hero-info-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.hero-info-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
 }
 .hi-name {
   /* 武将名竖排 */
@@ -443,12 +457,14 @@ button:disabled {
   max-width: 100%;
 }
 
-/* —— 技能：面板下面独立的一排按钮（在框外），靠左。只显示名字，悬停看效果 —— */
+/* —— 技能：面板框左侧独立的一列按钮（左轨）。
+   justify-content: flex-end 让按钮落在底部，正好与面板对齐而不是飘到记录的旁边 —— */
 .skill-bar {
+  flex: 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  justify-content: flex-end;
   gap: 6px;
-  width: 100%;
 }
 .skill-chip {
   padding: 5px 10px;
@@ -491,27 +507,33 @@ button:disabled {
   gap: 8px;
   padding: 8px;
 }
-.board,
-.side {
-  display: contents;
-}
-.players-row {
-  order: 1;
-}
-.center {
-  order: 2;
-}
-.hero-panel {
-  order: 3;
-}
-.skill-bar {
-  order: 4;
-}
-.prompt {
-  order: 5;
-}
-.hand {
-  order: 6;
+/* 单列顺序只在窄屏用。放在宽屏外面会把 .side（宽屏时是横向 flex）
+   里的技能轨排到主列右边去——order 在横排里同样生效。 */
+@media (max-width: 879px) {
+  .players-row {
+    order: 1;
+  }
+  .center {
+    order: 2;
+  }
+  .hero-panel {
+    order: 3;
+  }
+  .skill-bar {
+    order: 4;
+  }
+  .prompt {
+    order: 5;
+  }
+  .hand {
+    order: 6;
+  }
+  /* 窄屏下单列：两层容器都“消失”，记录/面板回到 .game 的列里 */
+  .board,
+  .side,
+  .side-main {
+    display: contents;
+  }
 }
 
 @media (min-width: 880px) {
@@ -532,13 +554,21 @@ button:disabled {
   }
   .side {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 8px;
     flex: 0 0 var(--side-w);
     min-width: 0;
   }
+  /* 右侧主列：出牌记录 + 武将面板，两者同宽 */
+  .side-main {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
   /* 出牌记录：回合信息 + 日志合成一块面板，占满右上的剩余高度并自己滚动 */
-  .side .center {
+  .side-main .center {
     flex: 1;
     min-height: 0;
     max-width: none;
@@ -547,7 +577,7 @@ button:disabled {
     border-radius: 10px;
     padding: 8px;
   }
-  .side .log {
+  .side-main .log {
     background: transparent;
     padding: 0;
     min-height: 0;

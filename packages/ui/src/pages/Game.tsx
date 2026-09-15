@@ -799,32 +799,34 @@ export function Game() {
       </div>
       </div>
 
-      {/* 右栏：出牌记录（上）+ 武将面板（下）。
-          窄屏时这层容器消失，按 order 排成单列 */}
+      {/* 右栏：技能列在左边，右边是出牌记录 + 武将面板。
+          这样记录和面板同宽（都在 .side-main 里），技能又在面板框左侧。
+          窄屏时两层容器消失，按 order 排成单列 */}
       <aside className="side">
-        {/* 出牌记录 */}
-        <div className="center">
-          <div className="turn-info">
-            [{MODE_NAME[snapshot.mode]}]{' '}
-            {snapshot.players.find((p) => p.seatId === snapshot.turn.seatId)?.name} 的回合 ·{' '}
-            {PHASE_NAME[snapshot.turn.phase] ?? snapshot.turn.phase}
-          </div>
-          <div className="log" ref={logBoxRef}>
-            {snapshot.log
-              .slice(-40)
-              .map((l) => (
-                <div key={l.id} className={`log-line log-${l.kind}`}>
-                  {l.message}
-                </div>
-              ))}
-          </div>
-        </div>
-
-        {/* 武将面板 */}
-        <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} />
-
-        {/* 技能：面板下面独立的一排按钮（在框外） */}
         <SkillButtons skills={skillRows} />
+
+        <div className="side-main">
+          {/* 出牌记录 */}
+          <div className="center">
+            <div className="turn-info">
+              [{MODE_NAME[snapshot.mode]}]{' '}
+              {snapshot.players.find((p) => p.seatId === snapshot.turn.seatId)?.name} 的回合 ·{' '}
+              {PHASE_NAME[snapshot.turn.phase] ?? snapshot.turn.phase}
+            </div>
+            <div className="log" ref={logBoxRef}>
+              {snapshot.log
+                .slice(-40)
+                .map((l) => (
+                  <div key={l.id} className={`log-line log-${l.kind}`}>
+                    {l.message}
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          {/* 武将面板 */}
+          <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} />
+        </div>
       </aside>
 
       {tipNode}
