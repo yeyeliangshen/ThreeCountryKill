@@ -17,6 +17,11 @@
      想改成真实扑克的 1.4（63×88mm ≈ √2），把 --card-ratio 改成 1.4 即可。 */
   --card-h: 92px;
   --card-ratio: 1.618;
+  /* 桌布：毡面三段色 + 桌子最大宽度 */
+  --felt-1: #1b322e;
+  --felt-2: #122220;
+  --felt-3: #0a1311;
+  --table-max: 1120px;
   /* 卡面：外描边、内侧白细线、牌名墨色 */
   --card-edge: #bfa878;
   --card-inner: inset 0 0 0 1.5px rgba(255, 255, 255, 0.9);
@@ -29,7 +34,8 @@ body,
   margin: 0;
 }
 body {
-  background: var(--bg);
+  /* 房间：比桌面更暗，衬托出桌布 */
+  background: #070a0d;
   color: var(--text);
   font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   font-size: 15px;
@@ -67,13 +73,35 @@ button:disabled {
   font-size: 13px;
 }
 
+/* —— 桌布 ——
+   .app 就是那张桌子：铺满可用宽度，桌面是毡面（中心略亮 + 暗角），
+   四周一圈金色桌沿。桌外的 body 是更暗的房间底色。
+   想换桌布配色，只改这几个变量。 */
 .app {
-  max-width: 720px;
+  max-width: var(--table-max);
   margin: 0 auto;
   min-height: 100%;
   display: flex;
   flex-direction: column;
   position: relative;
+  background: radial-gradient(
+    ellipse 130% 95% at 50% 24%,
+    var(--felt-1) 0%,
+    var(--felt-2) 48%,
+    var(--felt-3) 100%
+  );
+  box-shadow:
+    inset 0 0 0 2px rgba(212, 168, 75, 0.2),
+    inset 0 0 140px rgba(0, 0, 0, 0.5),
+    0 0 90px rgba(0, 0, 0, 0.75);
+  border-radius: 16px;
+  overflow: hidden;
+}
+/* 窄屏时桌子已经铺满整屏，圆角只会在四个角留出小缺口，去掉更干净 */
+@media (max-width: 660px) {
+  .app {
+    border-radius: 0;
+  }
 }
 
 /* —— 进房页 —— */
@@ -319,6 +347,11 @@ button:disabled {
   border-radius: 10px;
   padding: 8px;
   border: 1px solid transparent;
+  /* 和日志/提示区一条竖列（都是 760），别跟着桌面拉满，
+     否则技能行会变成一条中间空一大半的长条 */
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
 }
 .hero-panel.team-0 { border-left: 3px solid #4a7fb5; }
 .hero-panel.team-1 { border-left: 3px solid #b56a4a; }
@@ -445,16 +478,19 @@ button:disabled {
 .players-row {
   display: flex;
   gap: 8px;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  /* safe：内容超宽时退回左对齐，不会把开头裁掉 */
+  justify-content: safe center;
 }
 .player {
-  flex: 1 0 auto;
-  min-width: 96px;
-  text-align: center;
+  /* 之前是 flex: 1 0 auto，桌宽一拉开单个对手就被撑成一整条（实测 704px）。
+     固定基准宽 + 居中换行，人多了自动排到第二行。 */
+  flex: 0 1 190px;
+  min-width: 150px;
   background: var(--panel);
   border: 1px solid var(--panel-2);
   border-radius: 10px;
-  padding: 8px 6px;
+  padding: 8px 10px;
 }
 .player.current {
   border-color: var(--gold);
@@ -530,6 +566,10 @@ button:disabled {
   flex-direction: column;
   gap: 6px;
   min-height: 80px;
+  /* 桌宽了，日志行别跟着拉成一条长线，限制行宽并居中 */
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
 }
 .turn-info {
   text-align: center;
@@ -589,6 +629,10 @@ button:disabled {
   flex-direction: column;
   gap: 8px;
   align-items: center;
+  /* 和日志区同样的行宽上限，居中 */
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
 }
 .prompt-msg {
   font-size: 13px;
@@ -613,6 +657,8 @@ button:disabled {
   display: flex;
   gap: 6px;
   overflow-x: auto;
+  /* safe：牌多到放不下时退回左对齐，不会把开头裁掉 */
+  justify-content: safe center;
   /* 上方留出悬浮时抬升的空间：滚动容器会裁掉溢出的部分，
      不留白的话牌一提起来就被切掉顶部 */
   padding: 20px 0 12px;
