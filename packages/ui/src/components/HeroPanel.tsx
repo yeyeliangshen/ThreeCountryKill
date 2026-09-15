@@ -1,8 +1,9 @@
 // 武将面板。
 //
 // 结构（从左到右）：
-//   技能按钮列 | 国家 / 武将名 / 血量 列 | 原画（完整显示，不裁切）
-// 血量是绿色勾玉，竖排。不显示玩家自己的名字（甲/乙），只显示武将信息。
+//   信息列（国家 / 武将名 / 血量 / 装备判定 / 技能按钮） | 原画（完整显示，不裁切）
+// 技能是信息列底部的额外按钮（按内容大小，不占独立一列）。血量是绿色勾玉，竖排。
+// 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
 import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
@@ -92,31 +93,7 @@ export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
 
   return (
     <div className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'}`}>
-      {/* 技能按钮列 */}
-      <div className="hero-skills">
-        {skills.length === 0 ? (
-          <span className="skill-none">无技能</span>
-        ) : (
-          skills.map((sk) => (
-            <button
-              key={sk.name}
-              className={`skill-chip ${sk.usable ? 'usable' : ''} ${sk.active ? 'active' : ''}`}
-              // 用 aria-disabled 而不是 disabled：禁用元素收不到鼠标事件，
-              // 那样就没法悬停看技能说明了（和手牌同样的处理）
-              aria-disabled={!sk.usable}
-              {...bind(sk.name, sk.desc)}
-              onClick={() => {
-                if (!sk.usable) return;
-                sk.onClick();
-              }}
-            >
-              {sk.name}
-            </button>
-          ))
-        )}
-      </div>
-
-      {/* 国家 / 武将名 / 血量 */}
+      {/* 信息列：国家 / 武将名 / 血量 / 装备判定 / 技能按钮（按钮贴列底） */}
       <div className="hero-info">
         {me.role && mode === 'junzheng' && (
           <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
@@ -151,6 +128,29 @@ export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
             ))}
           </span>
         )}
+        {/* 技能：信息列底部的额外按钮，按内容大小 */}
+        <div className="hero-skills">
+          {skills.length === 0 ? (
+            <span className="skill-none">无技能</span>
+          ) : (
+            skills.map((sk) => (
+              <button
+                key={sk.name}
+                className={`skill-chip ${sk.usable ? 'usable' : ''} ${sk.active ? 'active' : ''}`}
+                // 用 aria-disabled 而不是 disabled：禁用元素收不到鼠标事件，
+                // 那样就没法悬停看技能说明了（和手牌同样的处理）
+                aria-disabled={!sk.usable}
+                {...bind(sk.name, sk.desc)}
+                onClick={() => {
+                  if (!sk.usable) return;
+                  sk.onClick();
+                }}
+              >
+                {sk.name}
+              </button>
+            ))
+          )}
+        </div>
       </div>
 
       {/* 原画：按 1 : 1.415 完整显示，不裁切 */}

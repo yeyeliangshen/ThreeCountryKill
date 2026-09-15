@@ -285,10 +285,9 @@ button:disabled {
   align-items: center;
   justify-content: center;
   /* 比例跟原画一致（1 : 1.415），所以 object-fit 不会裁掉画面。
-     宽度平分剩余空间但封顶，高度由比例推出——原画完整显示。 */
+     宽度吃掉信息列以外的全部空间，高度由比例推出——原画完整显示。 */
   flex: 1 1 0;
   min-width: 0;
-  max-width: 200px;
   aspect-ratio: 1 / 1.415;
 }
 /* 对手卡片上的小头像 */
@@ -379,7 +378,7 @@ button:disabled {
 }
 
 /* —— 我的武将面板 ——
-   从左到右：技能按钮列 | 国家 / 武将名 / 血量列 | 原画 */
+   从左到右：信息列（国家/武将名/血量/装备判定/技能按钮） | 原画 */
 .hero-panel {
   display: flex;
   flex-direction: row;
@@ -402,16 +401,9 @@ button:disabled {
 .hero-panel.dead {
   opacity: 0.5;
 }
-/* 技能按钮列 */
-.hero-skills {
-  flex: 0 0 96px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-/* 国家 / 武将名 / 血量 列（按这个顺序自上而下） */
+/* 信息列：国家 / 武将名 / 血量 自上而下 */
 .hero-info {
-  flex: 0 0 92px;
+  flex: 0 0 90px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -430,7 +422,7 @@ button:disabled {
   align-items: center;
   gap: 2px;
 }
-/* 原画：完整显示，按剩余宽度排 */
+/* 原画：完整显示，吃掉信息列以外的全部宽度 */
 .hero-portraits {
   flex: 1 1 auto;
   min-width: 0;
@@ -443,17 +435,26 @@ button:disabled {
   gap: 4px;
   flex-wrap: wrap;
   justify-content: center;
-  margin-top: auto;
 }
 
-/* —— 技能：只显示名字，悬停看效果。竖排在原画左边的按钮列里 —— */
+/* —— 技能：信息列底部的额外按钮，只显示名字、悬停看效果 ——
+   margin-top: auto 把按钮压到列底（左下方）；宽度按内容，不撑满列 */
+.hero-skills {
+  margin-top: auto;
+  /* align-self: flex-start 让它贴住信息列左边（父级是 align-items: center） */
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding-top: 6px;
+}
 .skill-none {
   font-size: 11px;
   color: var(--muted);
 }
 .skill-chip {
-  width: 100%;
-  padding: 5px 6px;
+  padding: 4px 10px;
   border-radius: 8px;
   background: transparent;
   border: 1px solid var(--panel-2);
@@ -1266,5 +1267,15 @@ button:disabled {
 .lobby-foot .hint,
 .lobby .hint {
   color: var(--ink-soft);
+}
+
+/* —— 窄屏武将面板限宽 ——
+   原画现在会吃掉信息列以外的全部宽度，单列时面板有 600+ 宽，
+   原画会涨到 555×785 把整页撑到需要滚动，所以窄屏把面板限宽居中。
+   同样必须放在文件最后：.hero-panel 的 max-width 在前面，靠顺序取胜。 */
+@media (max-width: 879px) {
+  .hero-panel {
+    max-width: 320px;
+  }
 }
 
