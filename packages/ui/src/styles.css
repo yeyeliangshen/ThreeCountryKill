@@ -13,6 +13,10 @@
   --text: #e6e1cf;
   --muted: #8a8270;
   --green: #5a9b3a;
+  /* 卡牌尺寸：高度固定，宽度由高宽比推出（黄金比 1.618）。
+     想改成真实扑克的 1.4（63×88mm ≈ √2），把 --card-ratio 改成 1.4 即可。 */
+  --card-h: 92px;
+  --card-ratio: 1.618;
 }
 html,
 body,
@@ -398,21 +402,28 @@ button:disabled {
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  padding: 4px 0 8px;
+  /* 上方留出悬浮时抬升的空间：滚动容器会裁掉溢出的部分，
+     不留白的话牌一提起来就被切掉顶部 */
+  padding: 20px 0 12px;
 }
 .card {
-  flex: 1 0 auto;
-  width: 56px;
-  min-width: 56px;
-  height: 76px;
+  /* 不能让 flex 把牌拉宽，否则宽高比失真变成扁的 */
+  flex: 0 0 auto;
+  height: var(--card-h);
+  aspect-ratio: 1 / var(--card-ratio);
   border-radius: 8px;
   background: #f4ecd8;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 6px;
+  padding: 7px;
   font-weight: 600;
   border: 2px solid transparent;
+  position: relative;
+  z-index: 1;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
 }
 .card.red {
   color: var(--red);
@@ -430,6 +441,18 @@ button:disabled {
 .card.picked {
   border-color: var(--green);
   transform: translateY(-6px);
+}
+/* 悬浮把牌提出来：抬升 + 轻微放大 + 阴影，并压住相邻的牌。
+   变暗（dim）的牌也要能提起来——那正是想看它效果的时候。
+   选择器带上 .hand 是为了压过下面 .card.fire-attr / .thunder-attr 的 box-shadow。 */
+.hand .card:hover {
+  transform: translateY(-14px) scale(1.04);
+  z-index: 5;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.55);
+  opacity: 1;
+}
+.hand .card.picked:hover {
+  transform: translateY(-18px) scale(1.04);
 }
 .c-suit {
   font-size: 11px;
@@ -797,7 +820,8 @@ button:disabled {
 /* 卡牌效果悬停提示（fixed 定位，避免被滚动容器裁切） */
 .card-tip {
   position: fixed;
-  transform: translate(-50%, calc(-100% - 8px));
+  /* 多留一点距离：牌悬浮时会抬起 14px，贴太近会被压住 */
+  transform: translate(-50%, calc(-100% - 22px));
   width: 230px;
   padding: 8px 10px;
   border-radius: 8px;
