@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   SUIT_NAME, SUIT_SYMBOL, rankLabel, cardLabel, cardShortName, cardDescription,
   isRed, isBasicCard, isEquipCard, isInstantTrick, isDelayedTrick,
@@ -175,7 +175,17 @@ export function Game() {
   // 武将技能用的是同一套，见 components/HoverTip.tsx
   const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
 
-  // 提示一变就清空本地选择
+  // 提示内容一变就清空本地选择。
+  //
+  // 依赖不能直接用 snapshot.prompt —— 每次快照都是新对象，而服务端会因为
+  // 别人的动作反复下发快照。用对象引用当依赖会导致「我正在选将，对手一动，
+  // 我的选择就被清空」。所以这里把提示的**内容**压成一个字符串当 key：
+  // 提问没变就不清空，真正换了问题才清空。
+  const promptKey = useMemo(() => {
+    const p = snapshot?.prompt;
+    if (!p) return 'none';
+    return `${p.kind}|${p.message}|${p.legalCardIds.join(',')}|${p.legalTargetIds.join(',')}`;
+  }, [snapshot?.prompt]);
   useEffect(() => {
     setSelected(null);
     setPicks([]);
@@ -183,7 +193,7 @@ export function Game() {
     setMainPick(null);
     setDeputyPick(null);
     setSkillMode(null);
-  }, [snapshot?.prompt]);
+  }, [promptKey]);
 
   // 出牌记录：新事件滚到底，否则最新一条可能在可视区外
   const logBoxRef = useRef<HTMLDivElement | null>(null);
