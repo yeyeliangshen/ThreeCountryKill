@@ -17,14 +17,21 @@
      想改成真实扑克的 1.4（63×88mm ≈ √2），把 --card-ratio 改成 1.4 即可。 */
   --card-h: 92px;
   --card-ratio: 1.618;
-  /* 桌布：毡面三段色 + 桌子最大宽度 */
-  --felt-1: #1b322e;
-  --felt-2: #122220;
-  --felt-3: #0a1311;
+  /* 桌布：羊皮纸（泛旧的暖米色，中心略亮 + 四周压暗）
+     直接落在桌布上的文字必须用 --ink，浅色字在浅底上看不清 */
+  --parch-1: #eee0c0;
+  --parch-2: #ddca9f;
+  --parch-3: #bda478;
+  --ink: #3c2c18;
+  --ink-soft: #6d5736;
   --table-max: 1120px;
-  /* 卡面：外描边、内侧白细线、牌名墨色 */
-  --card-edge: #bfa878;
-  --card-inner: inset 0 0 0 1.5px rgba(255, 255, 255, 0.9);
+  /* 右侧栏宽度（出牌记录 + 武将面板）。
+     桌面减去内边距与栏间距后约为 1072，左右比约 2.2 : 1 */
+  --side-w: 340px;
+  /* 卡面：外描边、内侧印刷线、牌名墨色。
+     桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
+  --card-edge: #8a7048;
+  --card-inner: inset 0 0 0 1px rgba(140, 108, 64, 0.4);
   --card-ink: #2b2620;
 }
 html,
@@ -73,10 +80,10 @@ button:disabled {
   font-size: 13px;
 }
 
-/* —— 桌布 ——
-   .app 就是那张桌子：铺满可用宽度，桌面是毡面（中心略亮 + 暗角），
-   四周一圈金色桌沿。桌外的 body 是更暗的房间底色。
-   想换桌布配色，只改这几个变量。 */
+/* —— 桌布（羊皮纸）——
+   .app 就是那张桌子：铺满可用宽度，桌面是泛旧的羊皮纸色，
+   四周一圈金色桌沿 + 压暗的暗角。桌外的 body 是更暗的房间底色。
+   想换桌布配色，只改 --parch-1/2/3。 */
 .app {
   max-width: var(--table-max);
   margin: 0 auto;
@@ -86,19 +93,21 @@ button:disabled {
   position: relative;
   background: radial-gradient(
     ellipse 130% 95% at 50% 24%,
-    var(--felt-1) 0%,
-    var(--felt-2) 48%,
-    var(--felt-3) 100%
+    var(--parch-1) 0%,
+    var(--parch-2) 52%,
+    var(--parch-3) 100%
   );
   box-shadow:
-    inset 0 0 0 2px rgba(212, 168, 75, 0.2),
-    inset 0 0 140px rgba(0, 0, 0, 0.5),
-    0 0 90px rgba(0, 0, 0, 0.75);
+    inset 0 0 0 2px rgba(120, 88, 40, 0.45),
+    inset 0 0 140px rgba(90, 62, 22, 0.28),
+    0 0 90px rgba(0, 0, 0, 0.8);
   border-radius: 16px;
   overflow: hidden;
 }
-/* 窄屏时桌子已经铺满整屏，圆角只会在四个角留出小缺口，去掉更干净 */
-@media (max-width: 660px) {
+/* 视口窄于桌宽时桌子已铺满整屏，圆角只会在四个角留出小缺口，去掉更干净。
+   临界值取 --table-max 略加一点，这样只有当两侧真的露出房间底色时才用圆角。
+   （媒体查询里不能用变量，所以这里手写 1180） */
+@media (max-width: 1180px) {
   .app {
     border-radius: 0;
   }
@@ -475,6 +484,55 @@ button:disabled {
   gap: 8px;
   padding: 8px;
 }
+/* 宽屏：左右两栏。左栏是牌桌（对手在上、操作与手牌在下），
+   右栏上方是出牌记录、下方是武将面板。
+   这里用 grid 定位而不调整 DOM 顺序，窄屏单列时仍然保持
+   对手→记录→武将→操作→手牌 的合理顺序。 */
+@media (min-width: 880px) {
+  .game {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--side-w);
+    grid-template-rows: auto 1fr auto auto;
+    grid-template-areas:
+      'players log'
+      '.       log'
+      'prompt  log'
+      'hand    hero';
+    gap: 8px 10px;
+    align-items: stretch;
+  }
+  .players-row {
+    grid-area: players;
+  }
+  .prompt {
+    grid-area: prompt;
+    max-width: none;
+    margin: 0;
+  }
+  .hand {
+    grid-area: hand;
+  }
+  /* 出牌记录：回合信息 + 日志合成一块面板，占满右上并自己滚动 */
+  .center {
+    grid-area: log;
+    max-width: none;
+    margin: 0;
+    min-height: 0;
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .center .log {
+    background: transparent;
+    padding: 0;
+    min-height: 0;
+  }
+  .hero-panel {
+    grid-area: hero;
+    max-width: none;
+    margin: 0;
+  }
+}
 .players-row {
   display: flex;
   gap: 8px;
@@ -532,14 +590,22 @@ button:disabled {
   display: flex;
   gap: 2px;
 }
+/* 体力标记：勾玉。
+   用「三圆角 + 一角直角」的方块转 45° 得到泪滴/逗号形，尾巴朝下。
+   想要更精细的形状可以换成内联 SVG path。 */
 .hp-cell {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  background: #4a3328;
+  width: 11px;
+  height: 11px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: #5a4632;
+  box-shadow: inset 0 0 0 1px rgba(255, 253, 245, 0.18);
 }
 .hp-cell.on {
-  background: var(--red);
+  background: radial-gradient(circle at 34% 30%, #ff9a76 0%, #d9453a 55%, #8e2119 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 220, 200, 0.35),
+    0 0 5px rgba(217, 69, 58, 0.6);
 }
 .p-hand {
   font-size: 11px;
@@ -669,11 +735,11 @@ button:disabled {
   height: var(--card-h);
   aspect-ratio: 1 / var(--card-ratio);
   border-radius: 7px;
-  /* 纸面：米色底 + 一点斜向渐变，比纯色有质感 */
-  background: linear-gradient(158deg, #fdf9ef 0%, #f5ecd7 58%, #e9dec1 100%);
-  /* 外描边 + 内侧白细线，模仿真卡的印刷外框 */
+  /* 纸面：比桌面更白的米色底 + 一点斜向渐变，压在羊皮纸上才看得清 */
+  background: linear-gradient(158deg, #fffdf6 0%, #fbf5e5 58%, #f3ead5 100%);
+  /* 外描边 + 内侧印刷线，模仿真卡的印刷外框 */
   border: 2px solid var(--card-edge);
-  box-shadow: var(--card-inner), 0 1px 2px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--card-inner), 0 2px 5px rgba(50, 32, 12, 0.45);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1200,4 +1266,23 @@ button:disabled {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+/* —— 直接落在桌布上的文字 ——
+   桌布是浅色羊皮纸，原来给深色底配的浅色字（金色 / 灰）在桌面上看不清。
+   这些位置统一改用墨色。
+
+   必须放在文件最后：这几条要和上面的 .turn-info / .lobby header /
+   .draft-title 等规则同优先级竞争，靠顺序取胜；放在前面会被它们覆盖。
+   面板里的文字不用动，那些是深色底。 */
+.lobby header,
+.turn-info,
+.draft-title {
+  color: var(--ink);
+}
+.lobby-foot,
+.deal-count,
+.lobby-foot .hint,
+.lobby .hint {
+  color: var(--ink-soft);
 }

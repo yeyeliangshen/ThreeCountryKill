@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   SUIT_NAME, SUIT_SYMBOL, rankLabel, cardLabel, cardShortName, cardDescription,
   isRed, isBasicCard, isEquipCard, isInstantTrick, isDelayedTrick,
@@ -168,6 +168,13 @@ export function Game() {
     setDeputyPick(null);
     setSkillMode(null);
   }, [snapshot?.prompt]);
+
+  // 出牌记录：新事件滚到底，否则最新一条可能在可视区外
+  const logBoxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const box = logBoxRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [snapshot?.log]);
 
   if (!snapshot) return <div className="game loading">加载中…</div>;
 
@@ -646,11 +653,12 @@ export function Game() {
           {snapshot.players.find((p) => p.seatId === snapshot.turn.seatId)?.name} 的回合 ·{' '}
           {PHASE_NAME[snapshot.turn.phase] ?? snapshot.turn.phase}
         </div>
-        <div className="log">
+        {/* 出牌记录：宽屏时占满右上方，所以多留几条并自己滚动 */}
+        <div className="log" ref={logBoxRef}>
           {snapshot.log
-            .slice(-6)
-            .map((l, i) => (
-              <div key={i} className={`log-line log-${l.kind}`}>
+            .slice(-40)
+            .map((l) => (
+              <div key={l.id} className={`log-line log-${l.kind}`}>
                 {l.message}
               </div>
             ))}
