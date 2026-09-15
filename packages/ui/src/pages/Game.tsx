@@ -820,11 +820,11 @@ export function Game() {
           </div>
         </div>
 
-        {/* 武将面板 + 左边的技能按钮（技能在面板框外面、框的左侧） */}
-        <div className="hero-row">
-          <SkillButtons skills={skillRows} />
-          <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} />
-        </div>
+        {/* 武将面板 */}
+        <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} />
+
+        {/* 技能：面板下面独立的一排按钮（在框外） */}
+        <SkillButtons skills={skillRows} />
       </aside>
 
       {tipNode}

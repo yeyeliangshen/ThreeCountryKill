@@ -2,13 +2,14 @@
 //
 // 结构：
 //   ┌─ 面板 ─────────────────────┐
-//   │  群   ┌──────────────┐     │   左上：国家徽章 + 竖排武将名
+//   │  群   ┌──────────────┐     │   左列：国家徽章 / 竖排武将名 / 竖排血量 / 装备判定
 //   │  华   │              │     │   右侧：原画（完整显示，不裁切）
 //   │  佗   │     原画      │     │
-//   │       └──────────────┘     │
-//   │  ◆◆◆◆   装备 / 判定        │   底排：血量勾玉 + 装备判定
+//   │  ◆    │              │     │   面板高度 = 原画高度，所以原画下面不会留白
+//   │  ◆    └──────────────┘     │
+//   │  ◆                         │
 //   └───────────────────────────┘
-// 技能不在这里——是面板左边独立的一排按钮，见 SkillButtons.tsx。
+// 技能不在这里——是面板下面独立的一排按钮，见 SkillButtons.tsx。
 // 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
@@ -87,26 +88,14 @@ export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
 
   return (
     <div className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'}`}>
-      <div className="hero-main">
-        {/* 左上：国家徽章 + 武将名（竖排） */}
-        <div className="hero-info">
-          {me.role && mode === 'junzheng' && (
-            <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
-          )}
-          {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
-          <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
-        </div>
-
-        {/* 原画：按 1 : 1.415 完整显示，不裁切 */}
-        <div className="hero-portraits">
-          {slots.map((s, i) => (
-            <Portrait key={i} slot={s} hp={me.hp} maxHp={me.maxHp} bind={bind} />
-          ))}
-        </div>
-      </div>
-
-      {/* 底排：血量勾玉 + 装备 / 判定 */}
-      <div className="hero-foot">
+      {/* 左列：国家 / 竖排武将名 / 竖排血量 / 装备判定 */}
+      <div className="hero-info">
+        {me.role && mode === 'junzheng' && (
+          <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
+        )}
+        {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+        <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
+        {/* 血量：绿色勾玉，竖排 */}
         <span className="hi-hp">
           {Array.from({ length: me.maxHp }).map((_, i) => (
             <span key={i} className={`hp-cell ${i < me.hp ? 'on' : ''}`} />
@@ -134,6 +123,13 @@ export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
             ))}
           </span>
         )}
+      </div>
+
+      {/* 原画：按 1 : 1.415 完整显示，不裁切。高度决定面板高度 */}
+      <div className="hero-portraits">
+        {slots.map((s, i) => (
+          <Portrait key={i} slot={s} hp={me.hp} maxHp={me.maxHp} bind={bind} />
+        ))}
       </div>
 
       {tipNode}

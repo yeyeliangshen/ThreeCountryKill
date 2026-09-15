@@ -25,10 +25,10 @@
   --ink: #3c2c18;
   --ink-soft: #6d5736;
   --table-max: 1120px;
-  /* 右侧栏宽度（出牌记录 + 技能列 + 武将面板）。
-     桌面减内边距与栏间距后约 1094；侧栏 400 = 技能列 + 武将面板，
-     面板里的原画有 230 上下宽（完整不裁切），记录还能留下 300+ 高 */
-  --side-w: 400px;
+  /* 右侧栏宽度（出牌记录 / 武将面板 / 技能按钮排，三者同宽）。
+     桌面减内边距与栏间距后约 1094；侧栏 340 让原画约 272 宽（高 385，
+     完整不裁切），同时给记录留下约 255 高 */
+  --side-w: 340px;
   /* 卡面：外描边、内侧印刷线、牌名墨色。
      桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
   --card-edge: #8a7048;
@@ -377,30 +377,19 @@ button:disabled {
   font-weight: 700;
 }
 
-/* —— 技能 + 武将面板 ——
-   技能按钮在面板框的外面、框的左侧；面板占剩余宽度 */
-.hero-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  width: 100%;
-}
-
 /* —— 我的武将面板 ——
-   上排：国家徽章 + 竖排武将名 | 原画
-   底排：血量勾玉 + 装备判定 */
+   左列：国家徽章 / 竖排武将名 / 竖排血量 / 装备判定
+   右侧：原画（面板高度由原画决定，所以原画下面不留白） */
 .hero-panel {
-  /* flex-basis 用 0 而不是 auto：用 auto 时面板宽度会按内容（原画）撑开，
-     把面板挤出侧栏。basis 0 = 宽度完全由 flex 分配决定 */
-  flex: 1 1 0;
-  min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
   background: var(--panel);
   border-radius: 10px;
   padding: 8px;
   border: 1px solid transparent;
+  width: 100%;
   max-width: 760px;
   margin: 0 auto;
 }
@@ -413,18 +402,14 @@ button:disabled {
 .hero-panel.dead {
   opacity: 0.5;
 }
-.hero-main {
-  display: flex;
-  align-items: stretch;
-  gap: 8px;
-}
-/* 左上：国家徽章 + 竖排武将名 */
+/* 左列：徽章 / 竖排名 / 竖排血量 / 装备判定 */
 .hero-info {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  align-self: flex-start;
 }
 .hi-name {
   /* 武将名竖排 */
@@ -435,21 +420,15 @@ button:disabled {
   letter-spacing: 2px;
   text-align: center;
 }
-/* 底排：血量 + 装备判定 */
-.hero-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 14px;
-}
+/* 血量：竖排勾玉 */
 .hi-hp {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
 }
-/* 原画：完整显示，吃掉信息列以外的全部宽度 */
+/* 原画：完整显示，吃掉左列以外的全部宽度；高度由比例推出 */
 .hero-portraits {
-  /* 同样用 basis 0，否则容器会被原画的固有宽度撑开 */
   flex: 1 1 0;
   min-width: 0;
   display: flex;
@@ -460,15 +439,16 @@ button:disabled {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-  margin-left: auto;
+  justify-content: center;
+  max-width: 100%;
 }
 
-/* —— 技能：面板框外面、框左侧的一列按钮。只显示名字，悬停看效果 —— */
+/* —— 技能：面板下面独立的一排按钮（在框外），靠左。只显示名字，悬停看效果 —— */
 .skill-bar {
-  flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 6px;
+  width: 100%;
 }
 .skill-chip {
   padding: 5px 10px;
@@ -521,14 +501,17 @@ button:disabled {
 .center {
   order: 2;
 }
-.hero-row {
+.hero-panel {
   order: 3;
 }
-.prompt {
+.skill-bar {
   order: 4;
 }
-.hand {
+.prompt {
   order: 5;
+}
+.hand {
+  order: 6;
 }
 
 @media (min-width: 880px) {
@@ -569,13 +552,10 @@ button:disabled {
     padding: 0;
     min-height: 0;
   }
-  /* 武将面板 + 技能列这一排按自身高度排在下半部分；
-     面板自身撑满这一排（技能列在它左边） */
-  .hero-row {
+  /* 武将面板和技能栏按自身高度排在下半部分（面板高度=原画高度） */
+  .hero-panel,
+  .skill-bar {
     flex: 0 0 auto;
-  }
-  .hero-panel {
-    flex: 1 1 0;
     max-width: none;
     margin: 0;
   }
@@ -1296,11 +1276,8 @@ button:disabled {
    原画会涨到 555×785 把整页撑到需要滚动，所以窄屏把面板限宽居中。
    同样必须放在文件最后：.hero-panel 的 max-width 在前面，靠顺序取胜。 */
 @media (max-width: 879px) {
-  .hero-row {
-    justify-content: center;
-  }
   .hero-panel {
-    max-width: 280px;
+    max-width: 260px;
   }
 }
 
