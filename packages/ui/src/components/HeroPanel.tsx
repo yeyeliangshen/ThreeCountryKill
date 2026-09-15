@@ -1,9 +1,15 @@
 // 武将面板。
 //
-// 结构（从左到右）：
-//   信息列（国家 / 武将名 / 血量 / 装备判定） | 原画（完整显示，不裁切）
-// 血量是绿色勾玉，竖排。不显示玩家自己的名字（甲/乙），只显示武将信息。
-// 技能不在这里——是面板外面独立的一排按钮，见 SkillButtons.tsx。
+// 结构：
+//   ┌─ 面板 ─────────────────────┐
+//   │  群   ┌──────────────┐     │   左上：国家徽章 + 竖排武将名
+//   │  华   │              │     │   右侧：原画（完整显示，不裁切）
+//   │  佗   │     原画      │     │
+//   │       └──────────────┘     │
+//   │  ◆◆◆◆   装备 / 判定        │   底排：血量勾玉 + 装备判定
+//   └───────────────────────────┘
+// 技能不在这里——是面板左边独立的一排按钮，见 SkillButtons.tsx。
+// 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
 import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
@@ -81,14 +87,26 @@ export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
 
   return (
     <div className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'}`}>
-      {/* 信息列：国家 / 武将名 / 血量 / 装备判定 / 技能按钮（按钮贴列底） */}
-      <div className="hero-info">
-        {me.role && mode === 'junzheng' && (
-          <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
-        )}
-        {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
-        <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
-        {/* 血量：绿色勾玉，竖排 */}
+      <div className="hero-main">
+        {/* 左上：国家徽章 + 武将名（竖排） */}
+        <div className="hero-info">
+          {me.role && mode === 'junzheng' && (
+            <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
+          )}
+          {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+          <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
+        </div>
+
+        {/* 原画：按 1 : 1.415 完整显示，不裁切 */}
+        <div className="hero-portraits">
+          {slots.map((s, i) => (
+            <Portrait key={i} slot={s} hp={me.hp} maxHp={me.maxHp} bind={bind} />
+          ))}
+        </div>
+      </div>
+
+      {/* 底排：血量勾玉 + 装备 / 判定 */}
+      <div className="hero-foot">
         <span className="hi-hp">
           {Array.from({ length: me.maxHp }).map((_, i) => (
             <span key={i} className={`hp-cell ${i < me.hp ? 'on' : ''}`} />
@@ -116,14 +134,6 @@ export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
             ))}
           </span>
         )}
-        {/* 技能不在这里：面板外面独立的一排按钮，见 SkillButtons.tsx */}
-      </div>
-
-      {/* 原画：按 1 : 1.415 完整显示，不裁切 */}
-      <div className="hero-portraits">
-        {slots.map((s, i) => (
-          <Portrait key={i} slot={s} hp={me.hp} maxHp={me.maxHp} bind={bind} />
-        ))}
       </div>
 
       {tipNode}
