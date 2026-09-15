@@ -5,7 +5,8 @@ import {
   type Card, type CardType, type Faction, type GameMode, type PlayerView, type Snapshot,
 } from '@sgs/protocol';
 import { getHero, heroCanUseAs, ROLE_NAME, FACTION_NAME, type Hero, type ActiveSkill } from '@sgs/engine';
-import { HeroPanel, type HeroSlot, type SkillRow } from '../components/HeroPanel';
+import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
+import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { useHoverTip } from '../components/HoverTip';
 import { useStore } from '../store';
@@ -820,7 +821,10 @@ export function Game() {
         </div>
 
         {/* 我的武将面板 */}
-        <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} skills={skillRows} />
+        <HeroPanel me={me} mode={snapshot.mode} slots={heroSlots} />
+
+        {/* 技能：独立的按钮，不放在武将面板的框里，排在面板下方靠左 */}
+        <SkillButtons skills={skillRows} />
       </aside>
 
       {tipNode}

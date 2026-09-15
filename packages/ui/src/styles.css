@@ -25,10 +25,10 @@
   --ink: #3c2c18;
   --ink-soft: #6d5736;
   --table-max: 1120px;
-  /* 右侧栏宽度（出牌记录 + 武将面板）。
-     桌面减内边距与栏间距后约 1094；侧栏 420 是给「技能列 + 信息列 + 原画」
-     三栏留的位置，原画能到 200 宽（高 283，完整不裁切） */
-  --side-w: 420px;
+  /* 右侧栏宽度（出牌记录 + 武将面板 + 技能按钮排）。
+     桌面减内边距与栏间距后约 1094；侧栏 380 让原画到 266 宽（高 376，
+     完整不裁切），同时给记录留下约 260 高 */
+  --side-w: 380px;
   /* 卡面：外描边、内侧印刷线、牌名墨色。
      桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
   --card-edge: #8a7048;
@@ -437,21 +437,14 @@ button:disabled {
   justify-content: center;
 }
 
-/* —— 技能：信息列底部的额外按钮，只显示名字、悬停看效果 ——
-   margin-top: auto 把按钮压到列底（左下方）；宽度按内容，不撑满列 */
-.hero-skills {
-  margin-top: auto;
-  /* align-self: flex-start 让它贴住信息列左边（父级是 align-items: center） */
-  align-self: flex-start;
+/* —— 技能：面板外面独立的一排按钮，排在面板下方靠左 ——
+   只显示名字，悬停看效果 */
+.skill-bar {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding-top: 6px;
-}
-.skill-none {
-  font-size: 11px;
-  color: var(--muted);
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: flex-start;
+  width: 100%;
 }
 .skill-chip {
   padding: 4px 10px;
@@ -506,11 +499,14 @@ button:disabled {
 .hero-panel {
   order: 3;
 }
-.prompt {
+.skill-bar {
   order: 4;
 }
-.hand {
+.prompt {
   order: 5;
+}
+.hand {
+  order: 6;
 }
 
 @media (min-width: 880px) {

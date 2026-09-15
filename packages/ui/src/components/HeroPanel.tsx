@@ -1,9 +1,9 @@
 // 武将面板。
 //
 // 结构（从左到右）：
-//   信息列（国家 / 武将名 / 血量 / 装备判定 / 技能按钮） | 原画（完整显示，不裁切）
-// 技能是信息列底部的额外按钮（按内容大小，不占独立一列）。血量是绿色勾玉，竖排。
-// 不显示玩家自己的名字（甲/乙），只显示武将信息。
+//   信息列（国家 / 武将名 / 血量 / 装备判定） | 原画（完整显示，不裁切）
+// 血量是绿色勾玉，竖排。不显示玩家自己的名字（甲/乙），只显示武将信息。
+// 技能不在这里——是面板外面独立的一排按钮，见 SkillButtons.tsx。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
 import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
@@ -32,22 +32,10 @@ export interface HeroSlot {
   onReveal?: () => void;
 }
 
-/** 技能列表里的一项 */
-export interface SkillRow {
-  name: string;
-  desc: string;
-  /** 现在能不能点（引擎的 legalSkillIds 说了算） */
-  usable: boolean;
-  /** 正在配置这个技能 */
-  active: boolean;
-  onClick: () => void;
-}
-
 export interface HeroPanelProps {
   me: PlayerView;
   mode: GameMode;
   slots: HeroSlot[];
-  skills: SkillRow[];
 }
 
 function Portrait({
@@ -84,7 +72,7 @@ function Portrait({
   );
 }
 
-export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
+export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
@@ -128,29 +116,7 @@ export function HeroPanel({ me, mode, slots, skills }: HeroPanelProps) {
             ))}
           </span>
         )}
-        {/* 技能：信息列底部的额外按钮，按内容大小 */}
-        <div className="hero-skills">
-          {skills.length === 0 ? (
-            <span className="skill-none">无技能</span>
-          ) : (
-            skills.map((sk) => (
-              <button
-                key={sk.name}
-                className={`skill-chip ${sk.usable ? 'usable' : ''} ${sk.active ? 'active' : ''}`}
-                // 用 aria-disabled 而不是 disabled：禁用元素收不到鼠标事件，
-                // 那样就没法悬停看技能说明了（和手牌同样的处理）
-                aria-disabled={!sk.usable}
-                {...bind(sk.name, sk.desc)}
-                onClick={() => {
-                  if (!sk.usable) return;
-                  sk.onClick();
-                }}
-              >
-                {sk.name}
-              </button>
-            ))
-          )}
-        </div>
+        {/* 技能不在这里：面板外面独立的一排按钮，见 SkillButtons.tsx */}
       </div>
 
       {/* 原画：按 1 : 1.415 完整显示，不裁切 */}
