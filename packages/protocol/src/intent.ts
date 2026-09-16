@@ -1,4 +1,4 @@
-import type { CardType } from './card';
+import type { CardType, DamageAttribute } from './card';
 
 // 回合阶段
 export type Phase = 'judgment' | 'draw' | 'play' | 'discard' | 'turnEnd' | 'gameOver' | 'draft';
@@ -8,9 +8,31 @@ export type Phase = 'judgment' | 'draw' | 'play' | 'discard' | 'turnEnd' | 'game
 export type Intent =
   // 主动出牌：出牌阶段打杀(指定目标)/桃(自回)/酒(自buff)/装备/锦囊
   // targetCardId: 过河拆桥/顺手牵羊时指定目标明牌区(装备/判定)的具体牌
-  | { type: 'playCard'; cardId: string; as?: CardType; targetIds: string[]; targetCardId?: string }
+  | {
+      type: 'playCard';
+      cardId: string;
+      as?: CardType;
+      /**
+       * 转化后的**伤害属性**（朱雀羽扇：普通【杀】当火【杀】）。
+       * 与 `as` 的区别：这是同一张【杀】换属性，不是换牌型。
+       */
+      asAttribute?: DamageAttribute;
+      targetIds: string[];
+      targetCardId?: string;
+      /**
+       * 【丈八蛇矛】：与 `cardId` **一起**当【杀】使用的第二张手牌（两张牌合计）。
+       * 只有它装备着丈八蛇矛时才合法；两张牌会被同时置入弃牌堆。
+       */
+      extraCardIds?: string[];
+    }
   // 响应提示：被杀时出闪、濒死时出桃、锦囊响应(出杀/出闪/展示牌/弃牌)
-  | { type: 'respondCard'; cardId: string; as?: CardType }
+  | {
+      type: 'respondCard';
+      cardId: string;
+      as?: CardType;
+      /** 【丈八蛇矛】响应时打出的第二张手牌，语义同 playCard.extraCardIds */
+      extraCardIds?: string[];
+    }
   // 不响应（弃权）
   | { type: 'pass' }
   // 结束当前阶段（出牌阶段结束等）
@@ -31,4 +53,15 @@ export type Intent =
   // 重铸：出牌阶段把一张可重铸的牌置入弃牌堆，然后摸一张牌（不是「使用」）
   | { type: 'recast'; cardId: string }
   // 看完私密信息（知己知彼）后确认
-  | { type: 'ack' };
+  | { type: 'ack' }
+  /**
+   * 国战「预亮」：暗置时声明某个技能的发动意图（skillName 是技能中文名）。
+   * 同一个技能再发一次就是取消预亮。见 Player.prelitSkills 的规则说明。
+   */
+  | { type: 'prelightSkill'; skillName: string }
+  /**
+   * 势备篇「连横」：出牌阶段把一张带连横标记的**手牌**交给
+   * 一名势力不同或未确定势力的角色（交给势力不同的角色时摸一张牌）。
+   * 它**不是「使用牌」**，所以不触发任何 useCard 钩子。
+   */
+  | { type: 'lianheng'; cardId: string; targetSeatId: string };

@@ -3,23 +3,28 @@ import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
+import { prelitableSkills } from './engine';
+
+/**
+ * 扣置牌（【木牛流马】下的「辎」）对**非持有者**只暴露张数。
+ *
+ * 返回的是一份浅拷贝，不会动引擎里的真牌。
+ */
+function hideCargo(card: Card, isOwner: boolean): Card {
+  if (isOwner || !card.cargo || card.cargo.length === 0) return card;
+  const { cargo, ...rest } = card;
+  return { ...rest, cargoCount: cargo.length } as Card;
+}
 
 function toPlayerView(p: Player, viewerSeatId: string, state: GameState): PlayerView {
   const isMe = p.seatId === viewerSeatId;
   const isLord = p.role === 'lord';
   // 国战：暗将时他人看不到武将名和阵营；阵亡/游戏结束后全亮
   const isGuozhan = state.mode === 'guozhan';
-  const showMain =
-    isMe || !isGuozhan || p.heroRevealed || !p.alive || state.gameOver;
-  const showDeputy =
-    isMe || !isGuozhan || p.deputyRevealed || !p.alive || state.gameOver;
+  const showMain = isMe || !isGuozhan || p.heroRevealed || !p.alive || state.gameOver;
+  const showDeputy = isMe || !isGuozhan || p.deputyRevealed || !p.alive || state.gameOver;
   const showFaction =
-    isMe ||
-    !isGuozhan ||
-    p.heroRevealed ||
-    p.deputyRevealed ||
-    !p.alive ||
-    state.gameOver;
+    isMe || !isGuozhan || p.heroRevealed || p.deputyRevealed || !p.alive || state.gameOver;
   return {
     seatId: p.seatId,
     name: p.name,
@@ -37,16 +42,28 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     })),
     flipped: p.flipped,
     chained: p.chained,
+    // 预亮是对手看不到的信息，只放进本人的那一份快照
+    ...(isMe
+      ? {
+          prelitSkills: p.prelitSkills.slice(),
+          prelitableSkills: prelitableSkills(state, p).map((x) => x.name),
+        }
+      : {}),
     hp: Math.max(0, p.hp),
     maxHp: p.maxHp,
     handCount: p.hand.length,
     isAlive: p.alive,
+    // 【木牛流马】下面扣置的牌是**暗信息**：只有持有者看得到内容，
+    // 别人只看到张数（`cargoCount`）。扣置牌被使用/打出离开扣置区后才公开。
     equipment: [
       p.equipment.weapon,
       p.equipment.armor,
       p.equipment.plusMount,
       p.equipment.minusMount,
-    ].filter(Boolean) as Card[],
+      p.equipment.treasure,
+    ]
+      .filter(Boolean)
+      .map((c) => hideCargo(c as Card, isMe)) as Card[],
     judgment: p.judgment.slice(),
     // 身份：主公公开；阵亡后亮身份；游戏结束全员亮身份；其余仅本人可见
     role: isMe || isLord || !p.alive || state.gameOver ? p.role : null,

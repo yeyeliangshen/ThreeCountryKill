@@ -2,12 +2,13 @@ import type { GameMode } from '@sgs/protocol';
 import { useStore } from '../store';
 
 // 各模式中文名 + 人数要求（与服务端 modeMinPlayers/modeMaxPlayers 保持一致）
-const MODE_INFO: { mode: GameMode; label: string; min: number; max: number; disabled?: boolean }[] = [
-  { mode: 'melee', label: '混战', min: 2, max: 8 },
-  { mode: '2v2', label: '2v2', min: 4, max: 4 },
-  { mode: 'junzheng', label: '军争（身份）', min: 5, max: 8 },
-  { mode: 'guozhan', label: '国战', min: 2, max: 8 },
-];
+const MODE_INFO: { mode: GameMode; label: string; min: number; max: number; disabled?: boolean }[] =
+  [
+    { mode: 'melee', label: '混战', min: 2, max: 8 },
+    { mode: '2v2', label: '2v2', min: 4, max: 4 },
+    { mode: 'junzheng', label: '军争（身份）', min: 5, max: 8 },
+    { mode: 'guozhan', label: '国战', min: 2, max: 8 },
+  ];
 
 export function Lobby() {
   const lobby = useStore((s) => s.lobby);
@@ -16,6 +17,7 @@ export function Lobby() {
   const setForm = useStore((s) => s.setForm);
   const setMode = useStore((s) => s.setMode);
   const setFreePick = useStore((s) => s.setFreePick);
+  const setShibei = useStore((s) => s.setShibei);
   const startGame = useStore((s) => s.startGame);
   const disconnect = useStore((s) => s.disconnect);
 
@@ -27,8 +29,7 @@ export function Lobby() {
   const currentMode = lobby.mode;
   const modeInfo = MODE_INFO.find((m) => m.mode === currentMode);
   const playerCount = occupied.length;
-  const canStart =
-    amHost && modeInfo && playerCount >= modeInfo.min && playerCount <= modeInfo.max;
+  const canStart = amHost && modeInfo && playerCount >= modeInfo.min && playerCount <= modeInfo.max;
 
   return (
     <div className="lobby">
@@ -55,20 +56,13 @@ export function Lobby() {
                 {m.label}
                 {m.disabled && <small> 敬请期待</small>}
                 {!m.disabled && (
-                  <small>
-                    {' '}
-                    {m.min === m.max ? `${m.min}人` : `${m.min}-${m.max}人`}
-                  </small>
+                  <small> {m.min === m.max ? `${m.min}人` : `${m.min}-${m.max}人`}</small>
                 )}
               </button>
             );
           })}
         </div>
-        {!amHost && (
-          <div className="hint">
-            房主选择：{modeInfo?.label ?? currentMode}
-          </div>
-        )}
+        {!amHost && <div className="hint">房主选择：{modeInfo?.label ?? currentMode}</div>}
       </section>
 
       <section className="seats-grid">
@@ -116,10 +110,19 @@ export function Lobby() {
               />
               选将不限（测试用）
             </label>
+            <label
+              className="shibei"
+              title="国战的游戏牌扩展：开启后国战牌堆追加 52 张（只对国战生效）"
+            >
+              <input
+                type="checkbox"
+                checked={lobby.shibei}
+                onChange={(e) => setShibei(e.target.checked)}
+              />
+              势备篇（+52 张）
+            </label>
             <button className="primary big" disabled={!canStart} onClick={startGame}>
-              {canStart
-                ? '开始游戏'
-                : `等待玩家入座（${playerCount}/${modeInfo?.min ?? 2} 人）`}
+              {canStart ? '开始游戏' : `等待玩家入座（${playerCount}/${modeInfo?.min ?? 2} 人）`}
             </button>
           </div>
         ) : (

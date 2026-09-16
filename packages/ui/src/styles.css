@@ -526,6 +526,20 @@ button:disabled {
 .skill-chip[aria-disabled='true'] {
   cursor: default;
 }
+/* —— 国战暗置的技能 ——
+   暗置：虚线边 + 压暗，表示「技能还没生效，点一下预亮」。
+   预亮：实线金边，表示「时机到了引擎会问你发不发动」。
+   这两种都还得能点（预亮开关），所以不靠 aria-disabled 表达。 */
+.skill-chip.dark {
+  border-style: dashed;
+  opacity: 0.75;
+}
+.skill-chip.prelit {
+  border-style: solid;
+  border-color: var(--gold);
+  background: rgba(212, 168, 75, 0.22);
+  color: var(--gold);
+}
 
 /* —— 牌桌 ——
    窄屏：两层容器用 display: contents "消失"，子元素直接排成单列，
@@ -922,6 +936,27 @@ button:disabled {
   font-size: 13px;
 }
 
+/* 【木牛流马】下扣置的牌：在牌上盖一个「辎」角标，和手牌区分开 */
+.card.cargo {
+  box-shadow:
+    var(--card-inner),
+    0 0 0 2px rgba(120, 90, 20, 0.55),
+    0 2px 5px rgba(50, 32, 12, 0.45);
+}
+.c-cargo {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: #7a5a14;
+  color: #fdf6e0;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 15px;
+  z-index: 2;
+}
+
 /* —— toast / overlay —— */
 .error-toast {
   position: fixed;
@@ -1253,6 +1288,11 @@ button:disabled {
 .equip-minusMount {
   background: #3a1e20;
   color: #d47a6a;
+}
+/* 宝物（势备篇的第 5 个装备槽）：紫色，和另外四槽区分开 */
+.equip-treasure {
+  background: #2e1e3a;
+  color: #b98fd4;
 }
 
 /* —— 判定区 —— */

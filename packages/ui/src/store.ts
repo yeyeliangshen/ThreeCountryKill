@@ -1,6 +1,13 @@
 // 全局状态：连接、大厅、快照；ws 收发；断线自动重连按 seatId 恢复
 import { create } from 'zustand';
-import type { ClientMessage, GameMode, Intent, SeatView, ServerMessage, Snapshot } from '@sgs/protocol';
+import type {
+  ClientMessage,
+  GameMode,
+  Intent,
+  SeatView,
+  ServerMessage,
+  Snapshot,
+} from '@sgs/protocol';
 
 export type Screen = 'join' | 'lobby' | 'game';
 
@@ -12,6 +19,8 @@ export interface LobbyState {
   mode: GameMode;
   /** 房主是否开了「选将不限（测试用）」 */
   freePick: boolean;
+  /** 房主是否开了「势备篇（+52 张）」（只对国战生效） */
+  shibei: boolean;
 }
 
 interface Store {
@@ -30,7 +39,9 @@ interface Store {
   // 内部
   _seatId: string | null;
   // setters
-  setForm: (patch: Partial<Pick<Store, 'serverAddr' | 'roomCode' | 'name' | 'heroDealCount'>>) => void;
+  setForm: (
+    patch: Partial<Pick<Store, 'serverAddr' | 'roomCode' | 'name' | 'heroDealCount'>>,
+  ) => void;
   // 动作
   connect: () => void;
   disconnect: () => void;
@@ -44,6 +55,7 @@ interface Store {
   revealHero: (heroId: string) => void;
   useSkill: (skillId: string, cardIds: string[], targetIds: string[]) => void;
   setFreePick: (on: boolean) => void;
+  setShibei: (on: boolean) => void;
   chooseOption: (optionId: string) => void;
   pickCards: (cardIds: string[]) => void;
   factionCall: (skillId: string) => void;
@@ -83,6 +95,7 @@ export const useStore = create<Store>()((set, get) => {
             mySeatId: msg.mySeatId,
             mode: msg.mode,
             freePick: msg.freePick,
+            shibei: msg.shibei,
           },
           screen: msg.started ? 'game' : 'lobby',
           error: null,
@@ -109,7 +122,11 @@ export const useStore = create<Store>()((set, get) => {
     ws.onopen = () => {
       set({ connected: true, error: null, reconnecting: false });
       // 进房
-      get().send({ type: 'join', roomCode: roomCode.trim() || 'default', name: name.trim() || '无名' });
+      get().send({
+        type: 'join',
+        roomCode: roomCode.trim() || 'default',
+        name: name.trim() || '无名',
+      });
       // 若是重连且之前已落座，重新占回该座位（服务端保留座位）
       if (_seatId) get().send({ type: 'claimSeat', seatId: _seatId });
     };
@@ -198,8 +215,17 @@ export const useStore = create<Store>()((set, get) => {
     // 选将不限（测试用）：立刻广播，开局时服务端也带上这个标记
     setFreePick: (on) => get().send({ type: 'setFreePick', freePick: on }),
 
+    setShibei: (on) => get().send({ type: 'setShibei', shibei: on }),
+
     startGame: () =>
-      get().send({ type: 'startGame', mode: get().lobby?.mode ?? 'melee', heroDealCount: get().heroDealCount }),
+      get().send({
+        type: 'startGame',
+        mode: get().lobby?.mode ?? 'melee',
+        heroDealCount: get().heroDealCount,
+        // 开局消息把 freePick 一起带上：不带的话服务端会把它当成没设过
+        freePick: get().lobby?.freePick ?? false,
+        shibei: get().lobby?.shibei ?? false,
+      }),
 
     sendIntent: (intent) => get().send({ type: 'intent', intent }),
 

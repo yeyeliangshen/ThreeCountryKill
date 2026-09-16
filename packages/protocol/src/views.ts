@@ -58,6 +58,19 @@ export interface PlayerView {
   flipped?: boolean;
   /** 是否处于横置状态（铁索连环，公开信息） */
   chained?: boolean;
+  /**
+   * 国战「预亮」的技能名。**只给自己的那一份快照**——预亮是对手看不到的信息
+   * （线上只知道「某人有技能想发动」，不知道是哪个技能）。
+   */
+  prelitSkills?: string[];
+  /**
+   * 国战：现在**可以**预亮的技能名（暗置武将上的触发技与转化技）。
+   *
+   * 同样只给自己。放在快照而不是出牌提示里，是因为预亮必须**随时**能做——
+   * 别人的回合里你也要能把【反馈】预亮上，否则等你自己的回合才允许预亮就没意义了。
+   * 具体哪些技能可预亮只有引擎说了算（锁定技/主动技/常驻字段技都不在里面）。
+   */
+  prelitableSkills?: string[];
 }
 
 export type PromptKind =
@@ -87,6 +100,16 @@ export interface PromptView {
   // 选将阶段：发给我的武将 id 列表（仅 pickHero 有）
   legalHeroIds?: string[];
   // 出牌阶段：可用的主动技能 id 列表（仅 play 有）
+  /** 出牌阶段：可以「连横」交给哪些角色（势备篇，非空即说明手上有带标记的牌） */
+  lianhengTargets?: string[];
+  /**
+   * 此刻能不能用【丈八蛇矛】把**两张手牌**当【杀】使用或打出。
+   *
+   * 出牌阶段与「需打出【杀】」的响应（南蛮/决斗/借刀/离间的杀、势力技代打杀）都可能为真。
+   * 为真时 `legalCardIds` 里是**整手牌**——因为任意两张凑一起都能成【杀】，
+   * 界面据此给出「两张手牌当【杀】」那条用法。
+   */
+  zhangbaOk?: boolean;
   legalSkillIds?: string[];
   /**
    * 出牌阶段：可用主动技能的完整信息（仅 play 有）。
@@ -95,6 +118,7 @@ export interface PromptView {
    * 那样改名就会失效，而且标记带来的技能不属于任何武将，根本配不上。
    */
   legalSkills?: { id: string; name: string; desc: string }[];
+
   // 「选择一项」提示（仅 choice 有）
   choiceTitle?: string;
   choiceOptions?: { id: string; label: string }[];

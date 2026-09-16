@@ -12,16 +12,24 @@ import type {
 } from '@sgs/protocol';
 
 // —— 装备区 ——
-/** 4 个槽位：武器 / 防具 / +1马(防御马) / −1马(进攻马) */
+/**
+ * 装备区槽位：武器 / 防具 / +1马(防御马) / −1马(进攻马) / **宝物**（势备篇新增的第 5 槽）。
+ *
+ * ⚠️ 加槽位时不要只改这里——槽位名同时是牌的 `type`（见 protocol 的 EquipSlot），
+ * 而引擎里还有一批按槽位写死的字面量数组。统一的槽位清单是 heroes.ts 的 `EQUIP_SLOTS`，
+ * 新代码一律用它，别自己写 `['weapon','armor',...]`。
+ */
 export interface Equipment {
   weapon: Card | null;
   armor: Card | null;
   plusMount: Card | null;
   minusMount: Card | null;
+  /** 宝物（玉玺 / 木牛流马）。势备篇的牌；与其它槽位一样只能有一张。 */
+  treasure: Card | null;
 }
 
 export function emptyEquipment(): Equipment {
-  return { weapon: null, armor: null, plusMount: null, minusMount: null };
+  return { weapon: null, armor: null, plusMount: null, minusMount: null, treasure: null };
 }
 
 // —— 国战标记 ——
@@ -92,6 +100,26 @@ export interface PlayerFlags {
   cannotHealThisTurn: boolean;
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
+  /**
+   * 势备篇【挟天子以令诸侯】：「本回合结束后我要进行一个额外回合」的待办。
+   * 还要配合 discardedInDiscardPhase 一起判——规则是「若你于弃牌阶段弃置一张牌」。
+   */
+  xietianziPending: boolean;
+  /** 本回合的弃牌阶段是否真弃过牌（挟天子判这个；也顺便能查其他「弃牌阶段弃过牌」的技能） */
+  discardedInDiscardPhase: boolean;
+  /**
+   * 势备篇【调虎离山】：本回合「不计入距离与座次的计算」。
+   *
+   * 生效点只有三个收口——nextAliveSeat / aliveSeatsFrom / baseDistance——
+   * 所以回合推进、AOE 响应队列、无懈队列、濒死队列、五谷/以逸待劳全部自动跟随。
+   * 由 afterTurnEnd 统一清掉（「直到回合结束」）。
+   */
+  removedFromSeating: boolean;
+  /**
+   * 势备篇【调虎离山】：本回合不能成为任何牌的目标。
+   * 由 heroBlocksBeingTarget 统一读取（那 12 个调用点自动生效）。
+   */
+  cannotBeTargetThisTurn: boolean;
 }
 
 export function emptyFlags(): PlayerFlags {
@@ -113,6 +141,10 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayCardsThisTurn: false,
     cannotHealThisTurn: false,
     revealRewarded: false,
+    xietianziPending: false,
+    discardedInDiscardPhase: false,
+    removedFromSeating: false,
+    cannotBeTargetThisTurn: false,
   };
 }
 
@@ -150,6 +182,22 @@ export interface Player {
    */
   usedOncePerGame: Record<string, boolean>;
   /**
+   * 国战「预亮」的技能名（暗置时声明的发动意图）。
+   *
+   * 国战规则：暗置的武将牌**没有任何技能**。要发动技能必须明置该武将牌。
+   * 线上做法是「预亮」——暗置时先把某个技能标成想发动，等它的时机到来时
+   * 引擎才会询问是否发动（确认则明置武将牌并执行）。所以：
+   * - 暗置 + 未预亮 → 时机到了**不询问**，技能不生效；
+   * - 暗置 + 已预亮 → 时机到了询问，确认后明置并发动；
+   * - 已明置 → 照常（不再需要预亮，预亮集合里留下的项无副作用）。
+   *
+   * 键是**技能中文名**：钩子用 HookRegistration.skillId（也就是技能名），
+   * 主动技的 name 与 hero.skills[].name 同一套命名。
+   * 不随回合清空（是「我想用这个技能」的持续声明），也不公开给对手。
+   */
+  prelitSkills: string[];
+
+  /**
    * 通过觉醒技/化身等途径「获得」的技能：从别的武将身上借来的。
    * 只记来源武将 id 与技能名，具体怎么摘见 heroes.grantedHeroes。
    */
@@ -167,8 +215,12 @@ export interface AttackContext {
   dodged: boolean;
   /** 伤害属性（火/雷） */
   attribute?: DamageAttribute;
-  /** 作为【杀】使用的牌是否为红色（仁王盾判定用） */
-  cardRed?: boolean;
+  /**
+   * 作为【杀】使用的牌的**颜色**：'red' / 'black' / null（无色）。
+   * 仁王盾只挡**黑色**杀，所以无色杀对仁王盾有效——丈八蛇矛一红一黑那两张
+   * 凑出来的就是无色杀（见 protocol 的 cardColor / zhangbaShaColor）。
+   */
+  cardColor?: 'red' | 'black' | null;
   /** 需要的闪数（默认1，吕布·无双=2，马超·铁骑/黄忠·烈弓=Infinity 不可闪避） */
   requiredShan?: number;
   /**
@@ -176,6 +228,14 @@ export interface AttackContext {
    * 只允许改一次，否则两个都会改目标的技能能让它来回弹、死循环。
    */
   redirected?: boolean;
+  /**
+   * 【方天画戟】（势备篇·国战版）的**剩余目标**队列。
+   *
+   * 国战版方天画戟允许一张【杀】指定任意名势力各不相同的角色（未确定势力的不限），
+   * 而且「当此【杀】被一名目标使用【闪】抵消时，此【杀】对其他目标无效」——
+   * 所以逐个结算：一人闪了，队列立刻被清空，其余目标什么也不受。
+   */
+  fangtianQueue?: string[];
 }
 
 // 即时锦囊结算上下文（贯穿：打出→无懈可击询问→结算→响应）
@@ -206,6 +266,19 @@ export interface TrickContext {
   shaTargetId?: string;
   // 主动技能创建的虚拟锦囊标识（离间=lilian）
   skillId?: string;
+  /**
+   * 【无懈可击】的**抵消链**。
+   *
+   * 官方规则里无懈可击有两种用法：抵消一张锦囊对**一名角色**的效果，或者抵消
+   * **另一张无懈可击**。所以它们串成一条链——第一张决定「抵消谁」（`scope`），
+   * 之后每再打出一张都是在抵消上一张；抵消是**翻转**，于是
+   * **奇数张 = 已抵消，偶数张 = 效果恢复**（见 `engine.negatedSeats`）。
+   *
+   * 【无懈可击·国】与普通无懈**走的是同一套机制**，只差 scope 的大小：
+   * 普通无懈是一名角色，无懈·国是「一名角色 + 与其势力相同的所有尚未结算完毕的角色」。
+   * 规则里的那条 FAQ 也自然成立——无懈·国被抵消时，它那整片范围一起恢复。
+   */
+  wuxieChain?: { scope: string[]; count: number };
 }
 
 // 引擎"暂停等待玩家输入"的几种状态
@@ -395,7 +468,8 @@ export function nextAliveSeat(state: GameState, fromIndex: number): number {
   for (let i = 1; i <= n; i++) {
     const idx = (fromIndex + i) % n;
     const p = getPlayer(state, state.seatOrder[idx]!);
-    if (p?.alive) return idx;
+    // 调虎离山：不计入座次的角色直接从环里跳过
+    if (p?.alive && !p.flags.removedFromSeating) return idx;
   }
   return fromIndex;
 }
@@ -410,7 +484,7 @@ export function aliveSeatsFrom(state: GameState, startSeatId: string): string[] 
     const idx = (startIdx + i) % n;
     const seat = state.seatOrder[idx]!;
     const p = getPlayer(state, seat);
-    if (p?.alive) out.push(seat);
+    if (p?.alive && !p.flags.removedFromSeating) out.push(seat);
   }
   return out;
 }
@@ -422,9 +496,19 @@ export function alivePlayers(state: GameState): Player[] {
 /**
  * 把牌放进弃牌堆。**这是唯一的入口**——直接 `state.discard.push` 会绕过本回合账本，
  * 让「本回合进入弃牌堆的牌」这类技能算错。
+ *
+ * 【木牛流马】被弃置时，它下面扣置的牌要**一同进弃牌堆**——所以卸载也放在这里：
+ * 这是「进弃牌堆」的唯一入口，放在这里就不会漏掉任何一条弃置路径（被拆/被替换/主动弃）。
  */
 export function toDiscard(state: GameState, ...cards: Card[]): void {
   for (const c of cards) {
+    // 先递归卸载辎，再收这张装备牌自己（顺序不影响结果，但日志读起来更顺）
+    if (c.cargo && c.cargo.length > 0) {
+      const cargo = c.cargo;
+      c.cargo = [];
+      pushLog(state, 'discard', `【木牛流马】下扣置的 ${cargo.length} 张牌一同进入弃牌堆。`);
+      toDiscard(state, ...cargo);
+    }
     state.discard.push(c);
     state.discardThisTurn.push(c);
   }

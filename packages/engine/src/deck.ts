@@ -4,9 +4,8 @@ import type { GameState } from './model';
 /**
  * 构建牌堆。**国战与其它模式的牌堆不一样**。
  *
- * 国战牌堆（官方 108 张）里只剩【无懈可击·国】2 张没收录——它要「抵消对某一**势力**
- * 全部角色的效果」，是无懈可击目标模型上的一个新维度，还没做。
- * 除此之外国战独有的【铁索连环】【知己知彼】【以逸待劳】【远交近攻】都已实现。
+ * 国战牌堆官方 108 张，本版本**已全部收录**（含【无懈可击·国】2 张）。
+ * 国战独有的【铁索连环】【知己知彼】【以逸待劳】【远交近攻】【五谷丰登】都实现了。
  * 国战独有的装备（麒麟弓/吴六剑/三尖两刃刀/白银狮子/寒冰剑）也都在堆里，
  * 但**特效未做**，悬停提示里会如实标注（同军争那几件）。
  *
@@ -14,12 +13,16 @@ import type { GameState } from './model';
  *    具体哪张牌落在哪个花色点数上可能与实体牌不同，个别位置还会与别的牌重复
  *    （引擎不依赖花色点数的唯一性，判定/火攻只读牌自己的花色点数）。
  */
-export function buildDeck(mode: GameMode = 'melee'): Card[] {
-  return mode === 'guozhan' ? buildGuozhanDeck() : buildJunzhengDeck();
+export function buildDeck(mode: GameMode = 'melee', packs?: { shibei?: boolean }): Card[] {
+  if (mode !== 'guozhan') return buildJunzhengDeck();
+  const cards = buildGuozhanDeck();
+  // 势备篇是**追加**到国战堆上的扩展（官方定位：直接加入原本的国战游戏牌即可游戏）
+  if (packs?.shibei) cards.push(...buildShibeiCards());
+  return cards;
 }
 
 /**
- * 国战牌堆（官方 108 张，本版本 106 张）。
+ * 国战牌堆（官方 108 张，本版本 108 张）。
  * 基本牌比例、装备种类与军争不同（黑杀更多、属性杀更多、没有方天画戟/古锭刀/青龙偃月刀）。
  */
 function buildGuozhanDeck(): Card[] {
@@ -245,6 +248,97 @@ function buildJunzhengDeck(): Card[] {
   cards.push(mk('bingliang', 'club', 4));
   cards.push(mk('bingliang', 'club', 10));
 
+  return cards;
+}
+
+/**
+ * 势备篇的 52 张牌（国战的游戏牌扩展）。
+ *
+ * ⚠️ **两张注意事项**：
+ * 1. 同名卡在势备篇可能是**另一个效果**（最典型的是【方天画戟】：国战版是「可以指定任意名
+ *    势力各不相同的角色，一人闪则对其余无效」，不是身份局的「最后一张手牌可多指定两个目标」）。
+ *    所以牌面数据与效果都要按国战文本走，不要复用手册里印象最深的那版。
+ * 2. 它是**追加**到国战标准堆上的（官方定位：直接加入原本的国战游戏牌即可游戏）。
+ *
+ * 还没实现效果的牌**先不生成**（连占位牌都不造——占位牌一旦漏进牌堆就会打出另一个锦囊的效果，
+ * 比缺牌糟得多）。每补完一张就加进来一张。
+ */
+export function buildShibeiCards(): Card[] {
+  const cards: Card[] = [];
+  let n = 0;
+  const mk = (type: CardType, suit: Suit, rank: number, extra?: Partial<Card>): Card => ({
+    id: `s${n++}`,
+    type,
+    suit,
+    rank,
+    ...extra,
+  });
+  // —— 基本牌 28 ——
+  // 普通杀 9（7 黑 2 红；带连横的两张见下面的标记）
+  for (const [suit, rank] of [
+    ['spade', 4],
+    ['spade', 7],
+    ['spade', 8],
+    ['club', 4],
+    ['club', 6],
+    ['club', 7],
+    ['club', 8],
+    ['heart', 10],
+    ['heart', 11],
+  ] as const)
+    cards.push(mk('sha', suit, rank));
+  // 火杀 2 / 雷杀 4（雷杀 ♣5、♠J 带连横）
+  cards.push(mk('sha', 'diamond', 8, { attribute: 'fire' }));
+  cards.push(mk('sha', 'diamond', 9, { attribute: 'fire' }));
+  cards.push(mk('sha', 'spade', 9, { attribute: 'thunder' }));
+  cards.push(mk('sha', 'spade', 10, { attribute: 'thunder' }));
+  cards.push(mk('sha', 'spade', 11, { attribute: 'thunder', lianheng: true }));
+  cards.push(mk('sha', 'club', 5, { attribute: 'thunder', lianheng: true }));
+  // 闪 7（♡6 带连横）
+  for (const rank of [4, 5, 6, 7])
+    cards.push(mk('shan', 'heart', rank, rank === 6 ? { lianheng: true } : undefined));
+  for (const [suit, rank] of [
+    ['diamond', 6],
+    ['diamond', 7],
+    ['diamond', 13],
+  ] as const)
+    cards.push(mk('shan', suit, rank));
+  // 桃 4（♦3 带连横）
+  cards.push(mk('tao', 'heart', 8));
+  cards.push(mk('tao', 'heart', 9));
+  cards.push(mk('tao', 'diamond', 2));
+  cards.push(mk('tao', 'diamond', 3, { lianheng: true }));
+  // 酒 2（♠6 带连横）
+  cards.push(mk('jiu', 'spade', 6, { lianheng: true }));
+  cards.push(mk('jiu', 'club', 9));
+
+  // —— 装备 7：全部已实现（方天画戟是按**国战版**文本实现的多目标杀）——
+  cards.push(mk('weapon', 'spade', 5, { equipName: 'qinglong', range: 3 })); // 青龙偃月刀（同军争）
+  cards.push(mk('weapon', 'diamond', 12, { equipName: 'fangtian', range: 4 })); // 方天画戟（国战版效果）
+  cards.push(mk('armor', 'spade', 2, { equipName: 'mingguang' })); // 明光铠（火攻/火杀取消 + 小势力不被横置）
+  cards.push(mk('armor', 'club', 2, { equipName: 'huxinjing', lianheng: true })); // 护心镜
+  cards.push(mk('minusMount', 'heart', 3, { equipName: 'jingfan', lianheng: true })); // 惊帆
+  cards.push(mk('treasure', 'club', 1, { equipName: 'yuxi' })); // 玉玺
+  cards.push(mk('treasure', 'diamond', 5, { equipName: 'muniu' })); // 木牛流马
+
+  // —— 锦囊 17：全部已实现 ——
+  cards.push(mk('wuxie', 'spade', 13)); // 无懈可击（同基础堆，直接可用）
+  cards.push(mk('wuxieguo', 'diamond', 11)); // 无懈可击·国
+  cards.push(mk('wuxieguo', 'club', 13)); // 无懈可击·国
+  cards.push(mk('tiaohu', 'heart', 2)); // 调虎离山
+  cards.push(mk('tiaohu', 'diamond', 10, { lianheng: true })); // 调虎离山（带连横）
+  cards.push(mk('shuiyan', 'club', 12)); // 水淹七军
+  cards.push(mk('shuiyan', 'heart', 13)); // 水淹七军
+  cards.push(mk('lutong', 'club', 10)); // 勠力同心
+  cards.push(mk('lutong', 'spade', 12)); // 勠力同心
+  cards.push(mk('xietianzi', 'spade', 1, { lianheng: true })); // 挟天子以令诸侯
+  cards.push(mk('xietianzi', 'diamond', 1, { lianheng: true })); // 挟天子以令诸侯
+  cards.push(mk('xietianzi', 'diamond', 4, { lianheng: true })); // 挟天子以令诸侯
+  cards.push(mk('huoshao', 'spade', 3, { lianheng: true })); // 火烧连营
+  cards.push(mk('huoshao', 'club', 11, { lianheng: true })); // 火烧连营
+  cards.push(mk('huoshao', 'heart', 12, { lianheng: true })); // 火烧连营
+  cards.push(mk('chiling', 'club', 3)); // 敕令
+  cards.push(mk('lianjun', 'heart', 1)); // 联军盛宴
   return cards;
 }
 

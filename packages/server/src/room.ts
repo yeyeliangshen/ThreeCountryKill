@@ -50,6 +50,8 @@ export class Room {
   pendingMode: GameMode = 'melee';
   /** 测试用：选将不限（房主可开） */
   freePick = false;
+  /** 房主是否开了势备篇（开局前可改，和 freePick 同一套） */
+  shibei = false;
   game: GameState | null = null;
   started = false;
 
@@ -119,12 +121,21 @@ export class Room {
     return { ok: true };
   }
 
+  /** 房主切换「势备篇（+52 张）」 */
+  setShibei(seatId: string, shibei: boolean): { ok: true } | { ok: false; error: string } {
+    if (this.started) return { ok: false, error: '游戏已开始' };
+    if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能改这个设置' };
+    this.shibei = !!shibei;
+    return { ok: true };
+  }
+
   /** 房主开局：收集已落座者 → createGame（按模式分配身份/队伍） */
   startGame(
     seatId: string,
     mode: GameMode,
     heroDealCount?: number,
     freePick?: boolean,
+    shibei?: boolean,
   ): { ok: true } | { ok: false; error: string } {
     if (this.started) return { ok: false, error: '游戏已开始' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能开始游戏' };
@@ -140,8 +151,17 @@ export class Room {
       seatId: s.seatId,
       name: s.name!,
     }));
-    this.freePick = !!freePick;
-    this.game = createGame(setups, this.roomCode, { mode, heroDealCount, freePick: this.freePick });
+    // freePick 是房主在开局前用 setFreePick 设过的状态，开局消息里可以不带。
+    // 带 `!!freePick` 会把「设过但没带」冲成 false，开关就白点了。
+    if (freePick !== undefined) this.freePick = !!freePick;
+    // 同理：不带 shibei 就别动已设好的状态（写成 !!shibei 会把开关冲掉）
+    if (shibei !== undefined) this.shibei = !!shibei;
+    this.game = createGame(setups, this.roomCode, {
+      mode,
+      heroDealCount,
+      freePick: this.freePick,
+      shibei: this.shibei,
+    });
     this.started = true;
     return { ok: true };
   }
@@ -183,6 +203,7 @@ export class Room {
           mySeatId: s.seatId,
           mode: this.pendingMode,
           freePick: this.freePick,
+          shibei: this.shibei,
         });
       }
     }

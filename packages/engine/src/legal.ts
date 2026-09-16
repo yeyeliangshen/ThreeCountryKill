@@ -1,16 +1,37 @@
 import type { CardType, MarkerId, PromptView } from '@sgs/protocol';
-import { CARD_TYPE_NAME, isDelayedTrick, isEquipCard, isInstantTrick } from '@sgs/protocol';
+import {
+  CARD_TYPE_NAME,
+  isDelayedTrick,
+  isEquipCard,
+  isInstantTrick,
+  isWuxieLike,
+} from '@sgs/protocol';
 import type { AttackContext, GameState, Pending, Player, TrickContext } from './model';
 import { getPlayerOrThrow } from './model';
 import {
+  bigFactions,
+  effectiveFaction,
+  EQUIP_SLOTS,
+  isBigFaction,
   heroShaLimit,
   heroBlocksBeingTarget,
   heroIgnoresTrickDistance,
+  unrevealedHeroes,
   type ActiveSkill,
   type Hero,
 } from './heroes';
 import { MARKER_DESC, MARKER_SKILL_PREFIX, markerActiveSkills } from './markers';
-import { activeHeroes, canUseAsCard, duelShaRequired, factionHelpers } from './engine';
+import { equipActiveSkills } from './equip';
+import {
+  activeHeroes,
+  canUseAsCard,
+  chilingTargets,
+  duelShaRequired,
+  factionHelpers,
+  lianhengTargets,
+  lianjunFactionOk,
+  usableCardsOf,
+} from './engine';
 import { distance } from './distance';
 
 // 根据 pending 状态，给"被询问的玩家"构建提示（含合法选项）。
@@ -117,6 +138,10 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
 
 function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
+  // 「本回合不能使用或打出手牌」：手牌一张都不可用（技能与结束阶段照常）
+  const noCards = player.flags.cannotPlayCardsThisTurn;
+  // 【木牛流马】扣置的牌可以「如手牌般使用」，所以可用牌是 usableCardsOf 而不是 hand
+  const usable = usableCardsOf(player);
   const heroes = activeHeroes(state, player);
   // 诸葛连弩：本回合可出无限杀
   const hasZhuge = player.equipment.weapon?.equipName === 'zhuge';
@@ -124,7 +149,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const canSha = player.flags.shaCountThisTurn < maxSha;
   const legalCardIds: string[] = [];
   const seen = new Set<string>();
-  for (const card of player.hand) {
+  for (const card of noCards ? [] : usable) {
     if (seen.has(card.id)) continue;
     // 装备牌：总是可使用
     if (isEquipCard(card)) {
@@ -164,6 +189,13 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       seen.add(card.id);
       continue;
     }
+    // 【丈八蛇矛】：只要手里还有**另一张**牌凑够两张，任何一张都能当【杀】用，
+    // 所以这时候整手牌都是可点的（界面会多给一条「两张手牌当【杀】」的用法）
+    if (canSha && canZhangba(player, usable.length)) {
+      legalCardIds.push(card.id);
+      seen.add(card.id);
+      continue;
+    }
     // 桃：体力未满时可回血
     if (card.type === 'tao' && player.hp < player.maxHp) {
       legalCardIds.push(card.id);
@@ -176,7 +208,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       seen.add(card.id);
     }
     // 即时锦囊（无懈可击不能主动使用）
-    if (isInstantTrick(card) && card.type !== 'wuxie') {
+    if (isInstantTrick(card) && !isWuxieLike(card)) {
       const trickType = card.type;
       let legal = false;
       if (trickType === 'wuzhong' || trickType === 'taoyuan') {
@@ -193,6 +225,41 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         // 需要一个有武器的其他玩家
         legal = state.players.some(
           (p) => p.alive && p.seatId !== seatId && p.equipment.weapon !== null,
+        );
+      } else if (trickType === 'huoshao') {
+        // 下家（可能再加同队列的人）——只要场上还有别人就打得出来
+        legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+      } else if (trickType === 'xietianzi') {
+        // 只有大势力角色能对自己使用
+        legal = isBigFaction(state, effectiveFaction(state, player));
+      } else if (trickType === 'lutong') {
+        // 要有大势力才谈得上「所有大势力/小势力角色」
+        legal = bigFactions(state).length > 0;
+      } else if (trickType === 'chiling') {
+        // 【敕令】：对所有**没有势力**的角色使用（可能包括你自己）
+        legal = chilingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));
+      } else if (trickType === 'lianjun') {
+        // 【联军盛宴】：要有一个「与你不同、且已有人明置」的其他势力
+        legal = state.players.some(
+          (p) =>
+            p.alive &&
+            p.seatId !== seatId &&
+            !heroBlocksBeingTarget(state, p, card, player) &&
+            lianjunFactionOk(state, player, p),
+        );
+      } else if (trickType === 'tiaohu') {
+        // 一至两名其他角色（可以只选一个）
+        legal = state.players.some(
+          (p) => p.alive && p.seatId !== seatId && !heroBlocksBeingTarget(state, p, card, player),
+        );
+      } else if (trickType === 'shuiyan') {
+        // 需要一名「装备区里有牌」的其他角色
+        legal = state.players.some(
+          (p) =>
+            p.alive &&
+            p.seatId !== seatId &&
+            EQUIP_SLOTS.some((s) => p.equipment[s]) &&
+            !heroBlocksBeingTarget(state, p, card, player),
         );
       } else if (trickType === 'tiesuo' || trickType === 'yiyi' || trickType === 'wugu') {
         // 铁索连环可以只选自己；以逸待劳含自己；五谷丰登是全体
@@ -211,8 +278,12 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
               !heroBlocksBeingTarget(state, p, card, player),
           );
       } else {
-        // 决斗 / 火攻 / 南蛮 / 万箭 / 过河拆桥 / 知己知彼：有其他存活玩家即可
-        legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+        // 决斗 / 火攻 / 过河拆桥 / 知己知彼：需要一个**能成为目标**的其他存活玩家。
+        // 这里以前只数「有没有别人」，于是帷幕（贾诩）或明光铠（火焰锦囊）的持有者
+        // 明明一个都点不了，界面却把牌列成可用。
+        legal = state.players.some(
+          (p) => p.alive && p.seatId !== seatId && !heroBlocksBeingTarget(state, p, card, player),
+        );
       }
       if (legal) {
         legalCardIds.push(card.id);
@@ -256,16 +327,29 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       legalCardIds.push(card.id);
       seen.add(card.id);
     }
+    // 连横标记（势备篇）：有合法目标时，这张牌即使本身不能「使用」（例如【闪】）
+    // 也点得动——「连横」是它的另一种用法。
+    if (!seen.has(card.id) && card.lianheng && lianhengTargets(state, player).length > 0) {
+      legalCardIds.push(card.id);
+      seen.add(card.id);
+    }
   }
+  // 不能成为目标的角色（调虎离山）也不该出现在可点目标里
   const legalTargetIds = state.players
-    .filter((p) => p.alive && p.seatId !== seatId)
+    .filter((p) => p.alive && p.seatId !== seatId && !p.flags.cannotBeTargetThisTurn)
     .map((p) => p.seatId);
   // 可用主动技能：武将主动技 + 标记技能
   const legalSkillIds: string[] = [];
   const legalSkills: { id: string; name: string; desc: string }[] = [];
+  // 国战：暗置武将的主动技也列出来——点了就等于「明置该武将 + 发动」
+  // （规则：发动技能时必须明置该武将）。技能说明要连暗置的武将一起找。
+  const darkHeroes = state.mode === 'guozhan' ? unrevealedHeroes(state.mode, player) : [];
+  const descPool = [...heroes, ...darkHeroes];
   const skills: ActiveSkill[] = [
     ...heroes.flatMap((h) => h.activeSkills ?? []),
+    ...darkHeroes.flatMap((h) => h.activeSkills ?? []),
     ...markerActiveSkills(state, player),
+    ...equipActiveSkills(state, player),
   ];
   for (const skill of skills) {
     if (
@@ -274,7 +358,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       !(skill.oncePerGame && player.usedOncePerGame[skill.id])
     ) {
       legalSkillIds.push(skill.id);
-      legalSkills.push({ id: skill.id, name: skill.name, desc: skillDescFor(heroes, skill) });
+      legalSkills.push({ id: skill.id, name: skill.name, desc: skillDescFor(descPool, skill) });
     }
   }
   return {
@@ -286,7 +370,38 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     mustSelectTargetCount: 0,
     legalSkillIds,
     legalSkills,
+    // 连横的合法目标（与具体哪张牌无关，整个出牌阶段只算一次）
+    lianhengTargets: lianhengTargets(state, player),
+    // 【丈八蛇矛】此刻能不能把两张手牌当【杀】用（能的话界面会多给一条用法）
+    zhangbaOk: canSha && canZhangba(player, usable.length),
   };
+}
+
+/**
+ * 【丈八蛇矛】：装备着它、且手里（含木牛流马的辎）至少有 2 张牌时，
+ * 任意两张都能当【杀】使用或打出。
+ */
+function canZhangba(player: Player, usableCount: number): boolean {
+  return player.equipment.weapon?.equipName === 'zhangba' && usableCount >= 2;
+}
+
+/** 手里有【丈八蛇矛】时，在「需打出【杀】」的提示后面补一句怎么用 */
+function zhangbaHint(player: Player): string {
+  return canZhangba(player, usableCardsOf(player).length)
+    ? '（可用【丈八蛇矛】把两张手牌当【杀】）'
+    : '';
+}
+
+/**
+ * 响应「需打出某种牌」时的合法牌。
+ * `need === 'sha'` 且装备着【丈八蛇矛】时，**任何两张**牌都能凑成【杀】，所以整手牌都可点。
+ */
+function respondCandidates(state: GameState, player: Player, need: CardType): string[] {
+  const cards = usableCardsOf(player);
+  if (need === 'sha' && canZhangba(player, cards.length)) return cards.map((c) => c.id);
+  return cards
+    .filter((c) => c.type === need || canUseAsCard(state, player, c, need))
+    .map((c) => c.id);
 }
 
 /**
@@ -315,7 +430,7 @@ function buildRespondShaPrompt(
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
-  const legalCardIds = player.hand
+  const legalCardIds = usableCardsOf(player)
     .filter((c) => c.type === 'shan' || canUseAsCard(state, player, c, 'shan'))
     .map((c) => c.id);
   const required = attack.requiredShan ?? 1;
@@ -372,13 +487,12 @@ function buildFactionCallPrompt(
   return {
     kind: 'factionCall',
     message: `${pending.title}（轮到你了）`,
-    legalCardIds: player.hand
-      .filter(
-        (c) => c.type === pending.needType || canUseAsCard(state, player, c, pending.needType),
-      )
-      .map((c) => c.id),
+    legalCardIds: respondCandidates(state, player, pending.needType),
     legalTargetIds: [],
     mustSelectTargetCount: 0,
+    ...(pending.needType === 'sha' && canZhangba(player, usableCardsOf(player).length)
+      ? { zhangbaOk: true }
+      : {}),
   };
 }
 
@@ -386,7 +500,7 @@ function buildRespondDeathPrompt(state: GameState, seatId: string, dyingId: stri
   const player = getPlayerOrThrow(state, seatId);
   const dying = getPlayerOrThrow(state, dyingId);
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
-  const legalCardIds = player.hand
+  const legalCardIds = usableCardsOf(player)
     .filter((c) => c.type === 'tao' || c.type === 'jiu' || canUseAsCard(state, player, c, 'tao'))
     .map((c) => c.id);
   return {
@@ -420,11 +534,10 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
     return {
       kind: 'respondTrick',
       message: '【离间】：打出【杀】或弃权（受 1 点伤害）',
-      legalCardIds: player.hand
-        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
-        .map((c) => c.id),
+      legalCardIds: respondCandidates(state, player, 'sha'),
       legalTargetIds: [],
       mustSelectTargetCount: 0,
+      zhangbaOk: canZhangba(player, usableCardsOf(player).length),
       ...factionCallInfo(state, player, 'sha'),
     };
   }
@@ -437,10 +550,8 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
       message =
         need > 1
           ? `【决斗】（无双）：需连出 ${need} 张【杀】，已出 ${played} 张，还差 ${need - played} 张`
-          : `【决斗】：打出【杀】或弃权（受 1 点伤害）`;
-      legalCardIds = player.hand
-        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
-        .map((c) => c.id);
+          : `【决斗】：打出【杀】或弃权（受 1 点伤害）${zhangbaHint(player)}`;
+      legalCardIds = respondCandidates(state, player, 'sha');
       break;
     }
     case 'huogong':
@@ -453,20 +564,16 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
       }
       break;
     case 'jiedao':
-      message = `【借刀杀人】：打出【杀】或弃权（交出武器）`;
-      legalCardIds = player.hand
-        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
-        .map((c) => c.id);
+      message = `【借刀杀人】：打出【杀】或弃权（交出武器）${zhangbaHint(player)}`;
+      legalCardIds = respondCandidates(state, player, 'sha');
       break;
     case 'nanman':
-      message = `【南蛮入侵】：打出【杀】或弃权（受 1 点伤害）`;
-      legalCardIds = player.hand
-        .filter((c) => c.type === 'sha' || canUseAsCard(state, player, c, 'sha'))
-        .map((c) => c.id);
+      message = `【南蛮入侵】：打出【杀】或弃权（受 1 点伤害）${zhangbaHint(player)}`;
+      legalCardIds = respondCandidates(state, player, 'sha');
       break;
     case 'wanjian':
       message = `【万箭齐发】：打出【闪】或弃权（受 1 点伤害）`;
-      legalCardIds = player.hand
+      legalCardIds = usableCardsOf(player)
         .filter((c) => c.type === 'shan' || canUseAsCard(state, player, c, 'shan'))
         .map((c) => c.id);
       break;
@@ -481,6 +588,10 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
     legalCardIds,
     legalTargetIds: [],
     mustSelectTargetCount: 0,
+    // 这一轮要打出的是【杀】时，装备着丈八蛇矛的人可以拿两张手牌顶一张
+    ...(respondNeedType(ctx) === 'sha' && canZhangba(player, usableCardsOf(player).length)
+      ? { zhangbaOk: true }
+      : {}),
     ...factionCallInfo(state, player, respondNeedType(ctx)),
   };
 }
@@ -506,12 +617,17 @@ function respondNeedType(ctx: TrickContext): CardType | null {
 function buildWuxiePrompt(state: GameState, seatId: string, ctx: TrickContext): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   const trickName = CARD_TYPE_NAME[ctx.card.type];
+  // 链上已经有前一环时，这张无懈是**抵消上一张无懈**（效果恢复），提示要说清
+  const countering = !!ctx.wuxieChain && ctx.wuxieChain.count > 0;
+  const message = countering
+    ? `是否使用【无懈可击】抵消上一张【无懈可击】？（【${trickName}】的效果将恢复）`
+    : `是否使用【无懈可击】抵消【${trickName}】对某名角色的效果？（之后别人还能再抵消这一张）`;
   return {
     kind: 'wuxieQueue',
-    message: `是否使用【无懈可击】取消【${trickName}】？`,
+    message,
     // 卧龙诸葛亮·看破：黑色手牌当【无懈可击】
-    legalCardIds: player.hand
-      .filter((c) => c.type === 'wuxie' || canUseAsCard(state, player, c, 'wuxie'))
+    legalCardIds: usableCardsOf(player)
+      .filter((c) => isWuxieLike(c) || canUseAsCard(state, player, c, 'wuxie'))
       .map((c) => c.id),
     legalTargetIds: [],
     mustSelectTargetCount: 0,

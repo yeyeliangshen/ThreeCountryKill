@@ -1,5 +1,6 @@
 import {
   cardLabel,
+  FIRE_TRICKS,
   isBasicCard,
   isDelayedTrick,
   isEquipCard,
@@ -19,6 +20,7 @@ import type { HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player } from './model';
 import { drawOne } from './deck';
 import { attackRange, canTarget, distance } from './distance';
+
 import {
   alivePlayers,
   emptyEquipment,
@@ -292,6 +294,7 @@ const GUANYU: Hero = {
   gender: 'male',
   canUseAs: (card, type) => type === 'sha' && isRed(card),
   combos: ['zhangfei'],
+  skillFields: { 武圣: ['canUseAs'] },
   skills: [{ name: '武圣', desc: '你可以将一张红色牌当【杀】使用或打出。' }],
 };
 
@@ -342,6 +345,7 @@ const ZHAOYUN: Hero = {
   // 龙胆：杀↔闪互转
   canUseAs: (card, type) =>
     (type === 'sha' && card.type === 'shan') || (type === 'shan' && card.type === 'sha'),
+  skillFields: { 龙胆: ['canUseAs'] },
   skills: [{ name: '龙胆', desc: '你可以将【杀】当【闪】、【闪】当【杀】使用或打出。' }],
 };
 
@@ -355,6 +359,7 @@ const MACHAO: Hero = {
   hooks: [
     {
       timing: 'useCard',
+      skillId: '铁骑',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext } | undefined;
         if (payload?.attack?.asType !== 'sha') return;
@@ -396,6 +401,7 @@ const HUANGZHONG: Hero = {
   hooks: [
     {
       timing: 'useCard',
+      skillId: '烈弓',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext } | undefined;
         if (payload?.attack?.asType !== 'sha') return;
@@ -427,7 +433,7 @@ const HUANGZHONG: Hero = {
           const target = getPlayer(ctx.state, payload.attack.targetId);
           if (!target) return;
           const hand = target.hand.length;
-          if (hand >= ctx.player.hp || hand <= attackRange(ctx.player)) {
+          if (hand >= ctx.player.hp || hand <= attackRange(ctx.state, ctx.player)) {
             payload.attack.requiredShan = Infinity;
             pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避！`);
           }
@@ -457,6 +463,7 @@ const LVBU: Hero = {
   hooks: [
     {
       timing: 'useCard',
+      skillId: '无双',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext } | undefined;
         if (payload?.attack?.asType !== 'sha') return;
@@ -530,6 +537,7 @@ const DIAOCHAN: Hero = {
   hooks: [
     {
       timing: 'turnEnd',
+      skillId: '闭月',
       handler: (ctx) => {
         ctx.api.askChoice(
           ctx.state,
@@ -628,9 +636,11 @@ const ZHENJI: Hero = {
   hooks: [
     {
       timing: 'turnStart',
+      skillId: '洛神',
       handler: (ctx) => askLuoshen(ctx, false),
     },
   ],
+  skillFields: { 倾国: ['canUseAs'] },
   skills: [
     { name: '倾国', desc: '你可以将一张黑色牌当【闪】使用或打出。' },
     {
@@ -669,6 +679,7 @@ const SIMAYI: Hero = {
   hooks: [
     {
       timing: 'beforeJudge',
+      skillId: '鬼才',
       handler: (ctx) => {
         const payload = ctx.payload as { judgeCard?: Card } | undefined;
         if (!payload?.judgeCard) return;
@@ -711,6 +722,7 @@ const SIMAYI: Hero = {
     // 反馈：受到伤害后，获得伤害来源的一张牌（由自己挑）
     {
       timing: 'afterDamage',
+      skillId: '反馈',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
@@ -773,6 +785,7 @@ const XIAHOUDUN: Hero = {
   hooks: [
     {
       timing: 'afterDamage',
+      skillId: '刚烈',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
@@ -858,6 +871,7 @@ const XUCHU: Hero = {
   hooks: [
     {
       timing: 'drawPhase',
+      skillId: '裸衣',
       handler: (ctx) => {
         ctx.api.askChoice(
           ctx.state,
@@ -971,6 +985,7 @@ const HUATUO: Hero = {
       },
     },
   ],
+  skillFields: { 急救: ['canUseAs'] },
   skills: [
     { name: '急救', desc: '你的回合外，可以将一张红色牌当【桃】使用。' },
     {
@@ -1218,6 +1233,7 @@ const GANNING: Hero = {
   gender: 'male',
   // 奇袭：黑色牌当【过河拆桥】
   canUseAs: (card, type) => type === 'guohe' && !isRed(card),
+  skillFields: { 奇袭: ['canUseAs'] },
   skills: [{ name: '奇袭', desc: '你可以将一张黑色牌当【过河拆桥】使用。' }],
 };
 
@@ -1325,6 +1341,7 @@ const CAOCAO: Hero = {
   hooks: [
     {
       timing: 'afterDamage',
+      skillId: '奸雄',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const cardId = payload?.attack?.cardId;
@@ -1365,6 +1382,7 @@ const HUANGYUEYING: Hero = {
   hooks: [
     {
       timing: 'useCard',
+      skillId: '集智',
       handler: (ctx) => {
         const payload = ctx.payload as { card?: Card } | undefined;
         const card = payload?.card;
@@ -1571,6 +1589,7 @@ const WEIYAN: Hero = {
     {
       // 注意是 afterDamageDealt（派给伤害来源），不是 afterDamage（那是派给受伤者的）
       timing: 'afterDamageDealt',
+      skillId: '狂骨',
       locked: true, // 狂骨是锁定技
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
@@ -1608,6 +1627,7 @@ const DAQIAO: Hero = {
   hooks: [
     {
       timing: 'becomeTarget',
+      skillId: '流离',
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext } | undefined;
         const attack = payload?.attack;
@@ -1673,6 +1693,7 @@ const DAQIAO: Hero = {
       },
     },
   ],
+  skillFields: { 国色: ['canUseAs'] },
   skills: [
     { name: '国色', desc: '你可以将一张方块牌当【乐不思蜀】使用。' },
     {
@@ -1949,6 +1970,7 @@ const LUXUN: Hero = {
   hooks: [
     {
       timing: 'handEmptied',
+      skillId: '连营',
       handler: (ctx) => {
         ctx.api.askChoice(
           ctx.state,
@@ -2036,6 +2058,7 @@ const SUNSHANGXIANG: Hero = {
   hooks: [
     {
       timing: 'equipLost',
+      skillId: '枭姬',
       handler: (ctx) => {
         ctx.api.askChoice(
           ctx.state,
@@ -2093,6 +2116,7 @@ const ZHANGLIAO: Hero = {
   hooks: [
     {
       timing: 'drawPhase',
+      skillId: '突袭',
       handler: (ctx) => askTuxi(ctx),
     },
   ],
@@ -2241,6 +2265,7 @@ const CAOREN: Hero = {
   hooks: [
     {
       timing: 'turnEnd',
+      skillId: '据守',
       handler: (ctx) => {
         ctx.api.askChoice(
           ctx.state,
@@ -2484,7 +2509,7 @@ const CAOPI: Hero = {
               got++;
             }
             const eq = victim.equipment;
-            for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount'] as const) {
+            for (const slot of EQUIP_SLOTS) {
               const c = eq[slot];
               if (c) {
                 eq[slot] = null;
@@ -2638,8 +2663,8 @@ const XIAHOUYUAN: Hero = {
   ],
 };
 
-/** 四个装备槽，多处要用 */
-export const EQUIP_SLOTS = ['weapon', 'armor', 'plusMount', 'minusMount'] as const;
+/** 装备槽清单（顺序即界面上的顺序）。新增槽位只改这里，别在各处再写字面量数组。 */
+export const EQUIP_SLOTS = ['weapon', 'armor', 'plusMount', 'minusMount', 'treasure'] as const;
 
 /**
  * 「移动场上的一张牌」（吕蒙·谋断 / 张郃·巧变）。
@@ -2805,6 +2830,7 @@ const XUHUANG: Hero = {
   // 所以目前只有黑色【闪】【桃】这类会走断粮。要完整支持得给界面加「选择用法」。
   canUseAs: (card, type) =>
     type === 'bingliang' && !isRed(card) && (isBasicCard(card) || isEquipCard(card)),
+  skillFields: { 断粮: ['canUseAs'] },
   skills: [
     {
       name: '断粮',
@@ -2828,6 +2854,7 @@ const WOLONG: Hero = {
   // 火计：红色手牌当【火攻】；看破：黑色手牌当【无懈可击】
   canUseAs: (card, type) =>
     (type === 'huogong' && isRed(card)) || (type === 'wuxie' && !isRed(card)),
+  skillFields: { 火计: ['canUseAs'], 看破: ['canUseAs'] },
   skills: [
     { name: '八阵', desc: '锁定技，若你的装备区没有防具牌，视为你装备着【八卦阵】。' },
     { name: '火计', desc: '你可以将一张红色手牌当【火攻】使用。' },
@@ -2924,6 +2951,7 @@ const GUOJIA: Hero = {
     // 官方是「可以」，这里自动收取——白拿一张牌严格优于不拿，所以自动等于最优出牌。
     {
       timing: 'beforeJudge',
+      skillId: '天妒',
       handler: (ctx) => {
         const payload = ctx.payload as { judgeCard?: Card; judgedId?: string } | undefined;
         if (!payload?.judgeCard) return;
@@ -2935,6 +2963,7 @@ const GUOJIA: Hero = {
     // 引擎没有「受到 1 点伤害」的细分，所以按「每次伤害事件触发一次」（简化）。
     {
       timing: 'afterDamage',
+      skillId: '遗计',
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         if (!payload?.damage) return;
@@ -3143,6 +3172,7 @@ const LIUSHAN: Hero = {
   hooks: [
     {
       timing: 'turnEnd',
+      skillId: '放权',
       handler: (ctx) => {
         const self = ctx.player;
         if (self.hand.length === 0) return;
@@ -3221,6 +3251,7 @@ const PANGTONG: Hero = {
   hooks: [
     {
       timing: 'nearDeath',
+      skillId: '涅槃',
       handler: (ctx) => {
         if (ctx.player.usedOncePerGame.niepan) return;
         ctx.api.askChoice(
@@ -3237,7 +3268,7 @@ const PANGTONG: Hero = {
             // 弃置区域里的所有牌
             const all: Card[] = [...p.hand];
             const eq = p.equipment;
-            for (const c of [eq.weapon, eq.armor, eq.plusMount, eq.minusMount]) {
+            for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
               if (c) all.push(c);
             }
             all.push(...p.judgment);
@@ -3266,6 +3297,7 @@ const PANGTONG: Hero = {
       },
     },
   ],
+  skillFields: { 连环: ['canUseAs'] },
   skills: [
     {
       name: '涅槃',
@@ -3565,6 +3597,88 @@ export function poolForMode(mode: GameMode): Hero[] {
 }
 
 /**
+ * 生效势力：国战里**暗置的武将牌没有势力**（暗将之间也互视为不同势力）。
+ * 所以只有「至少明置了一张武将牌」的国战角色才有势力，其余返回 null。
+ *
+ * ⚠️ 它只用于「谁和谁算同势力」这类**互相认同**的判断
+ * （护驾/激将、救援、以逸待劳、远交近攻、吴六剑的攻击范围加成）。这两类**不要**用它：
+ * - 胜负判定 / 野心家判定：势力选将时就定下了，暗置只是别人不知道；
+ * - 鏖战那种客观残局条件：同样是数真实势力（见 isAoyu）。
+ */
+export function effectiveFaction(state: GameState, player: Player): Faction | null {
+  if (state.mode !== 'guozhan') return player.faction;
+  return player.heroRevealed || player.deputyRevealed ? player.faction : null;
+}
+
+/**
+ * 某势力当前的存活人数（按**真实**势力数）。
+ *
+ * 和 `effectiveFaction` 一样、和胜负/鏖战同口径：暗置只是别人不知道，牌上的势力仍然在。
+ * 「势力存活统计」以前在 isAoyu / checkWin / finishDraft 里各写了一份，
+ * 现在统一走这里，避免出现第四种口径。
+ */
+export function factionAliveCount(state: GameState, faction: Faction | null): number {
+  if (!faction) return 0;
+  return state.players.filter((p) => p.alive && p.faction === faction).length;
+}
+
+/**
+ * 场上的**大势力**（势备篇）：某势力存活 ≥2 且为全场最多（并列最多也算）。
+ *
+ * 野心家不计入（它不是「势力」，是单独的阵营）。都没有 ≥2 时返回空数组
+ * ——那也意味着没有小势力。
+ */
+export function bigFactions(state: GameState): Faction[] {
+  const counts = new Map<Faction, number>();
+  for (const p of state.players) {
+    if (!p.alive || !p.faction || p.faction === 'ambitionist') continue;
+    counts.set(p.faction, (counts.get(p.faction) ?? 0) + 1);
+  }
+  const max = Math.max(0, ...counts.values());
+  if (max < 2) return [];
+  return [...counts.entries()].filter(([, n]) => n === max).map(([f]) => f);
+}
+
+/** 该势力是不是大势力 */
+export function isBigFaction(state: GameState, faction: Faction | null): boolean {
+  return !!faction && bigFactions(state).includes(faction);
+}
+
+/**
+ * 该势力是不是小势力：**存在大势力时**，不是大势力的那些势力都是小势力。
+ * 没有大势力（谁都没到 2 人）时不算小势力——所以小势力与大势力互斥且成对出现。
+ */
+export function isSmallFaction(state: GameState, faction: Faction | null): boolean {
+  if (!faction) return false;
+  const bigs = bigFactions(state);
+  return bigs.length > 0 && !bigs.includes(faction);
+}
+
+/**
+ * 取某个玩家**还暗着**的武将（国战「预亮」要用）。
+ *
+ * 与 `revealedHeroes` 相对：那边是「已经生效的技能」，这边是「可以预亮、
+ * 但技能还没生效」的那几张牌。非国战没有暗置概念，恒返回空数组。
+ */
+export function unrevealedHeroes(
+  mode: GameMode,
+  p: {
+    heroId: string | null;
+    deputyHeroId: string | null;
+    heroRevealed: boolean;
+    deputyRevealed: boolean;
+  },
+): Hero[] {
+  if (mode !== 'guozhan') return [];
+  const out: Hero[] = [];
+  const main = getHeroForMode(p.heroId, mode);
+  if (main && !p.heroRevealed) out.push(main);
+  const deputy = getHeroForMode(p.deputyHeroId, mode);
+  if (deputy && !p.deputyRevealed) out.push(deputy);
+  return out;
+}
+
+/**
  * 取某个玩家**当前生效**的武将（国战暗将不算，暗将技能一律不生效）。
  *
  * 放在 heroes.ts 而不是 engine.ts，是为了让 distance.ts 也能用：
@@ -3687,12 +3801,39 @@ export function hasCombo(a: Hero, b: Hero): boolean {
  * 目标角色是否被其**生效武将**的锁定技挡掉，不能成为 card 的目标。
  * 空城/谦逊/帷幕都走这里（暗将的锁定技同样不生效，因为走的是 revealedHeroes）。
  */
+/**
+ * 明光铠（锁定技）：当你成为火焰类锦囊（【火攻】【火烧连营】）的目标时，取消之。
+ *
+ * 做成「目标合法性」判断而不是事后取消——效果与【帷幕】那类一致，
+ * 所以挂在 heroBlocksBeingTarget 里，那十来个调用点（出牌校验 + 提示的合法目标）全部生效。
+ * 火【杀】不走这里：它由 armorNullifiesSha 在「目标已定」之后作废（能正确豁免青釭剑）。
+ */
+export function armorCancelsFireTrick(state: GameState, target: Player, card: Card): boolean {
+  if (card.equipName) return false; // 装备牌不是锦囊
+  if (!FIRE_TRICKS.has(card.type)) return false;
+  return target.equipment.armor?.equipName === 'mingguang';
+}
+
+/**
+ * 会不会被横置（明光铠：小势力角色不会被横置）。
+ * 大势力 / 未确定势力的人照常可被横置——只有「小势力」这一条豁免。
+ */
+export function immuneToChaining(state: GameState, player: Player): boolean {
+  if (player.equipment.armor?.equipName !== 'mingguang') return false;
+  return isSmallFaction(state, effectiveFaction(state, player));
+}
+
 export function heroBlocksBeingTarget(
   state: GameState,
   target: Player,
   card: Card,
   source: Player,
 ): boolean {
+  // 非「技能」造成的不可被指定（调虎离山：本回合不能成为任何牌的目标）也统一走这里，
+  // 这样那十来个调用点（出牌校验 + legal 的合法目标计算）自动全部生效。
+  if (target.flags.cannotBeTargetThisTurn) return true;
+  // 装备带来的「取消目标」（明光铠 vs 火焰类锦囊）也在这里统一判
+  if (armorCancelsFireTrick(state, target, card)) return true;
   return revealedHeroes(state.mode, target).some(
     (h) => h.cannotBeTargetOf?.(state, target, card, source) ?? false,
   );
@@ -3714,10 +3855,7 @@ function removeCard(hand: Card[], id: string): Card | null {
 /** 某人身上可以被「拿走」的牌：手牌 + 装备区 */
 function handAndEquipOf(p: Player): Card[] {
   const eq = p.equipment;
-  return [
-    ...p.hand,
-    ...[eq.weapon, eq.armor, eq.plusMount, eq.minusMount].filter((c): c is Card => c !== null),
-  ];
+  return [...p.hand, ...EQUIP_SLOTS.map((s) => eq[s]).filter((c): c is Card => c !== null)];
 }
 
 /**
@@ -3736,11 +3874,17 @@ export function skillNameForField(heroes: Hero[], field: FieldSkill): string | n
   return null;
 }
 
-/** 判断玩家是否为男性（主将或副将为男性即可） */
+/**
+ * 判断玩家是否为男性。
+ *
+ * 取的是**明置**的武将：国战里暗置的武将牌**没有性别**，所以暗将既不是男性
+ * 也不是女性（雌雄双股剑、结姻这些「异性 / 男性」判定都不认它）。
+ * 两张都明置时按官方规则**取主将的性别**。
+ */
 export function isMalePlayer(state: GameState, player: Player): boolean {
-  const main = getHero(player.heroId);
-  const deputy = getHero(player.deputyHeroId);
-  return main?.gender === 'male' || deputy?.gender === 'male';
+  const heroes = revealedHeroes(state.mode, player);
+  if (heroes.length === 0) return false; // 全暗置：没有性别
+  return heroes[0]!.gender === 'male';
 }
 
 // —— 身份显示名（军争模式） ——

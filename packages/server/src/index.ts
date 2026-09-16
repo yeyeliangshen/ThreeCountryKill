@@ -125,6 +125,7 @@ wss.on('connection', (ws: WebSocket) => {
           mySeatId: seatId,
           mode: room.pendingMode,
           freePick: room.freePick,
+          shibei: room.shibei,
         });
         room.broadcastLobby();
         break;
@@ -174,12 +175,26 @@ wss.on('connection', (ws: WebSocket) => {
         break;
       }
 
+      case 'setShibei': {
+        if (!room || !seatId) {
+          send(ws, { type: 'error', message: '请先落座' });
+          break;
+        }
+        const res = room.setShibei(seatId, msg.shibei);
+        if (!res.ok) {
+          send(ws, { type: 'error', message: res.error });
+          break;
+        }
+        room.broadcastLobby();
+        break;
+      }
+
       case 'startGame': {
         if (!room || !seatId) {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick);
+        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick, msg.shibei);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;

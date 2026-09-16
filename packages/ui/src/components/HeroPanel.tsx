@@ -151,7 +151,7 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
                 <span
                   key={c.id}
                   className={`equip-icon equip-${c.type}`}
-                  title={`${cardShortName(c)}\n${cardDescription(c)}`}
+                  title={`${cardShortName(c)}\n${cardDescription(c, mode)}`}
                 >
                   {cardShortName(c)}
                 </span>
@@ -160,7 +160,7 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
                 <span
                   key={c.id}
                   className="judge-icon"
-                  title={`${cardShortName(c)}\n${cardDescription(c)}`}
+                  title={`${cardShortName(c)}\n${cardDescription(c, mode)}`}
                 >
                   {cardShortName(c)}
                 </span>
