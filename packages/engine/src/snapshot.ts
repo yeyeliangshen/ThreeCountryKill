@@ -1,4 +1,5 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
+import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -27,6 +28,15 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     faction: showFaction ? p.faction : null,
     heroRevealed: p.heroRevealed,
     deputyRevealed: p.deputyRevealed,
+    // 国战标记是公开信息；只下发持有数量 > 0 的，免得界面渲染一堆 0。
+    // 按 MARKER_ORDER 排序，保证同一份状态每次下发的顺序一致。
+    markers: MARKER_ORDER.filter((id) => (p.markers[id] ?? 0) > 0).map((id) => ({
+      id,
+      label: MARKER_NAME[id],
+      count: p.markers[id]!,
+    })),
+    flipped: p.flipped,
+    chained: p.chained,
     hp: Math.max(0, p.hp),
     maxHp: p.maxHp,
     handCount: p.hand.length,

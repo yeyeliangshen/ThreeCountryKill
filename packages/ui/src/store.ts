@@ -45,6 +45,8 @@ interface Store {
   useSkill: (skillId: string, cardIds: string[], targetIds: string[]) => void;
   setFreePick: (on: boolean) => void;
   chooseOption: (optionId: string) => void;
+  pickCards: (cardIds: string[]) => void;
+  factionCall: (skillId: string) => void;
   dismissError: () => void;
 }
 
@@ -212,6 +214,10 @@ export const useStore = create<Store>()((set, get) => {
       get().sendIntent({ type: 'useSkill', skillId, cardIds, targetIds }),
 
     chooseOption: (optionId) => get().sendIntent({ type: 'chooseOption', optionId }),
+
+    pickCards: (cardIds) => get().sendIntent({ type: 'pickCards', cardIds }),
+
+    factionCall: (skillId) => get().sendIntent({ type: 'factionCall', skillId }),
 
     dismissError: () => set({ error: null }),
   };

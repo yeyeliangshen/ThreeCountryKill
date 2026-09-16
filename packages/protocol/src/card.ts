@@ -15,11 +15,28 @@ export type TrickType =
   | 'wuzhong' // 无中生有
   | 'wuxie' // 无懈可击
   | 'huogong' // 火攻
-  | 'taoyuan'; // 桃园结义
+  | 'taoyuan' // 桃园结义
+  | 'tiesuo' // 铁索连环
+  | 'yuanjiao' // 远交近攻
+  | 'yiyi' // 以逸待劳
+  | 'wugu' // 五谷丰登
+  | 'zhibi'; // 知己知彼
 // —— 延时锦囊 ——
 export type DelayedTrickType = 'lebu' | 'shandian' | 'bingliang';
 
 export type CardType = BasicCardType | EquipSlot | TrickType | DelayedTrickType;
+
+/**
+ * 可以**重铸**的牌：出牌阶段把这张牌置入弃牌堆，然后摸一张牌。
+ *
+ * 「重铸」不是使用——黄月英把【铁索连环】重铸时不会发动【集智】，
+ * 也不会进任何「使用牌」的钩子。见 docs/guozhan-card-notes.md。
+ */
+export const RECASTABLE_CARD_TYPES: ReadonlySet<CardType> = new Set<CardType>(['tiesuo', 'zhibi']);
+
+export function isRecastable(card: Card): boolean {
+  return RECASTABLE_CARD_TYPES.has(card.type);
+}
 
 export type Suit = 'spade' | 'heart' | 'club' | 'diamond';
 
@@ -69,6 +86,11 @@ export const CARD_TYPE_NAME: Record<CardType, string> = {
   wuxie: '无懈可击',
   huogong: '火攻',
   taoyuan: '桃园结义',
+  tiesuo: '铁索连环',
+  yuanjiao: '远交近攻',
+  yiyi: '以逸待劳',
+  wugu: '五谷丰登',
+  zhibi: '知己知彼',
   // 延时锦囊
   lebu: '乐不思蜀',
   shandian: '闪电',
@@ -89,10 +111,14 @@ export const EQUIP_NAME: Record<string, string> = {
   zhuque: '朱雀羽扇',
   guding: '古锭刀',
   hanbing: '寒冰剑',
+  qilin: '麒麟弓',
+  wuliu: '吴六剑',
+  sanjian: '三尖两刃刀',
   // 防具
   bagua: '八卦阵',
   renwang: '仁王盾',
   tengjia: '藤甲',
+  bailong: '白银狮子',
   // +1马（防御马）
   dilu: '的卢',
   jueying: '绝影',
@@ -139,11 +165,19 @@ export const CARD_DESC: Record<CardType, string> = {
   shunshou: '获得距离 1 以内的一名其他角色区域内的一张牌（手牌/装备/判定牌）。',
   wuzhong: '摸两张牌。',
   wuxie: '在锦囊牌生效前打出，抵消其对一名角色的效果。可被另一张【无懈可击】抵消。',
-  huogong: '指定一名有手牌的角色，其展示一张手牌。你弃置一张与之花色相同的手牌，则对其造成 1 点火焰伤害。',
+  huogong:
+    '指定一名有手牌的角色，其展示一张手牌。你弃置一张与之花色相同的手牌，则对其造成 1 点火焰伤害。',
   taoyuan: '所有角色各回复 1 点体力（满体力的角色不回复）。',
+  tiesuo:
+    '对一至两名角色使用：横置或重置其武将牌（已横置的重置，未横置的横置）。处于连环状态的角色受到属性伤害时，其余连环角色依次受到同来源、同程度、同属性的伤害，然后全部重置。可重铸。',
+  yuanjiao: '指定一名与你势力不同、且已明置武将牌的角色：该角色摸一张牌，然后你摸三张牌。',
+  yiyi: '你与所有与你势力相同的其他角色依次各摸两张牌，然后弃置两张牌。',
+  wugu: '对所有角色使用：亮出牌堆顶的等量牌，然后每名角色依次获得其中一张。',
+  zhibi: '指定一名其他角色，观看其手牌，或观看其一张暗置的武将牌。可重铸。',
   // 延时锦囊
   lebu: '置于一名其他角色（距离≤1）的判定区。其判定阶段判定：若不为红桃，跳过其出牌阶段。',
-  shandian: '置于自己的判定区。判定阶段判定：若为黑桃2-9，受到 3 点雷电伤害；否则移动到下家的判定区。',
+  shandian:
+    '置于自己的判定区。判定阶段判定：若为黑桃2-9，受到 3 点雷电伤害；否则移动到下家的判定区。',
   bingliang: '置于一名其他角色（距离≤1）的判定区。其判定阶段判定：若不为梅花，跳过其摸牌阶段。',
 };
 
@@ -153,23 +187,28 @@ export const EQUIP_DESC: Record<string, string> = {
   zhuge: '攻击范围 1。出牌阶段，你可以使用任意数量的【杀】。',
   qinggang: '攻击范围 2。锁定技，当你使用【杀】指定一名角色为目标后，无视其防具。',
   guding: '攻击范围 2。锁定技，当你使用【杀】对目标角色造成伤害时，若其没有手牌，此伤害 +1。',
-  qixing:
-    '攻击范围 2。锁定技，当此牌进入你的装备区时，你弃置你判定区和装备区里所有的其他牌。',
+  hanbing:
+    '攻击范围 2。当你使用【杀】对目标角色造成伤害时，你可以防止此伤害，改为依次弃置其两张牌。',
+  qixing: '攻击范围 2。锁定技，当此牌进入你的装备区时，你弃置你判定区和装备区里所有的其他牌。',
   cixiong:
     '攻击范围 2。当你使用【杀】指定一名异性角色为目标后，你可以令其选择一项：1.弃置一张手牌；2.令你摸一张牌。',
-  qinglong:
-    '攻击范围 3。当你使用的【杀】被【闪】抵消时，你可以对相同的目标再使用一张【杀】。',
+  qinglong: '攻击范围 3。当你使用的【杀】被【闪】抵消时，你可以对相同的目标再使用一张【杀】。',
   zhangba: '攻击范围 3。你可以将两张手牌当【杀】使用或打出。',
   guanshi:
     '攻击范围 3。当你使用的【杀】被【闪】抵消时，你可以弃置两张牌，令此【杀】依然对其造成伤害。',
-  fangtian:
-    '攻击范围 4。你使用的【杀】若是你最后的手牌，你可以额外选择至多两个目标。',
+  fangtian: '攻击范围 4。你使用的【杀】若是你最后的手牌，你可以额外选择至多两个目标。',
   zhuque: '攻击范围 4。你可以将你的一张普通【杀】当作具火焰伤害的【杀】来使用。',
+  // ——— 武器（国战牌堆独有）———
+  qilin: '攻击范围 5。当你使用【杀】对目标角色造成伤害时，你可以弃置其装备区里的一张坐骑牌。',
+  wuliu: '攻击范围 2。锁定技，与你势力相同的其他角色攻击范围 +1。',
+  sanjian:
+    '攻击范围 3。当你使用【杀】对目标角色造成伤害后，你可以弃置一张手牌，然后对该角色距离为 1 的一名其他角色造成 1 点伤害。',
   // ——— 防具 ———
   bagua: '当你需要使用或打出【闪】时，你可以进行判定：若结果为红色，视为你使用或打出了一张【闪】。',
   renwang: '锁定技，黑色的【杀】对你无效。',
-  tengjia:
-    '锁定技，南蛮入侵、万箭齐发和普通【杀】对你无效；你受到火焰伤害时，此伤害 +1。',
+  tengjia: '锁定技，南蛮入侵、万箭齐发和普通【杀】对你无效；你受到火焰伤害时，此伤害 +1。',
+  bailong:
+    '锁定技，当你受到伤害时，若此伤害大于 1 点，防止多余的伤害。当你失去装备区里的【白银狮子】后，你回复 1 点体力。',
   // ——— 坐骑 ———
   dilu: '其他角色与你的距离 +1。',
   jueying: '其他角色与你的距离 +1。',
@@ -179,14 +218,22 @@ export const EQUIP_DESC: Record<string, string> = {
   dawanma: '你与其他角色的距离 −1。',
 };
 
-/** 尚未实现特效的装备（提示中如实标注，避免误导） */
+/**
+ * 尚未实现特效的装备（提示中如实标注，避免误导）。
+ *
+ * 已实现：诸葛连弩、青釭剑、七星宝刀、古锭刀、八卦阵、仁王盾、藤甲、
+ * 贯石斧、青龙偃月刀、雌雄双股剑，以及两个马术类的距离修正。
+ * 带 ★ 的是国战牌堆独有的装备，特效都还没做。
+ */
 const EQUIP_NOT_IMPLEMENTED: ReadonlySet<string> = new Set([
-  'cixiong',
-  'qinglong',
   'zhangba',
-  'guanshi',
   'fangtian',
   'zhuque',
+  'qilin', // ★ 麒麟弓
+  'wuliu', // ★ 吴六剑
+  'sanjian', // ★ 三尖两刃刀
+  'bailong', // ★ 白银狮子
+  'hanbing', // 寒冰剑（国战牌堆也用它）
 ]);
 
 /** 取一张牌的效果说明（装备牌按具体牌名取，其余按类型取） */
@@ -195,7 +242,9 @@ export function cardDescription(card: Card): string {
     const desc = EQUIP_DESC[card.equipName];
     if (desc) {
       const note = EQUIP_NOT_IMPLEMENTED.has(card.equipName)
-        ? '\n（本版本尚未实现该特效，目前仅攻击范围生效）'
+        ? card.range === undefined
+          ? '\n（本版本尚未实现该特效，目前是一张无效果的装备牌）'
+          : '\n（本版本尚未实现该特效，目前仅攻击范围生效）'
         : '';
       return desc + note;
     }
@@ -207,8 +256,21 @@ export function cardDescription(card: Card): string {
 const BASIC_SET: ReadonlySet<BasicCardType> = new Set(['sha', 'shan', 'tao', 'jiu']);
 const EQUIP_SET: ReadonlySet<EquipSlot> = new Set(['weapon', 'armor', 'plusMount', 'minusMount']);
 const TRICK_SET: ReadonlySet<TrickType> = new Set([
-  'juedou', 'nanman', 'wanjian', 'jiedao', 'guohe',
-  'shunshou', 'wuzhong', 'wuxie', 'huogong', 'taoyuan',
+  'juedou',
+  'nanman',
+  'wanjian',
+  'jiedao',
+  'guohe',
+  'shunshou',
+  'wuzhong',
+  'wuxie',
+  'huogong',
+  'taoyuan',
+  'tiesuo',
+  'yuanjiao',
+  'yiyi',
+  'wugu',
+  'zhibi',
 ]);
 const DELAYED_SET: ReadonlySet<DelayedTrickType> = new Set(['lebu', 'shandian', 'bingliang']);
 

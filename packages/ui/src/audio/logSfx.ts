@@ -11,6 +11,7 @@ export const LOG_SFX: Record<string, SfxName> = {
   equip: 'card',
   skill: 'card',
   jiu: 'card',
+  recast: 'card',
   // 判定与结算
   judge: 'judge',
   damage: 'damage',

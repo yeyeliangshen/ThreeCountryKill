@@ -13,7 +13,7 @@
 // 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
-import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
+import { ROLE_NAME, FACTION_NAME, MARKER_DESC } from '@sgs/engine';
 import {
   cardDescription,
   cardShortName,
@@ -43,6 +43,10 @@ export interface HeroPanelProps {
   me: PlayerView;
   mode: GameMode;
   slots: HeroSlot[];
+  /** 可以把「自己」选成目标时（铁索连环），面板整体可点 */
+  onSelect?: () => void;
+  targetable?: boolean;
+  picked?: boolean;
 }
 
 function Portrait({
@@ -60,7 +64,10 @@ function Portrait({
   return (
     <div
       className={`portrait ${slot.faction ? `faction-${slot.faction}` : ''} ${slot.hidden ? 'unrevealed' : ''}`}
-      {...bind(`${slot.name}　体力 ${hp}/${maxHp}`, slot.hidden ? '国战暗将：亮将后才能使用技能。' : '')}
+      {...bind(
+        `${slot.name}　体力 ${hp}/${maxHp}`,
+        slot.hidden ? '国战暗将：亮将后才能使用技能。' : '',
+      )}
     >
       {art ? (
         <img className="portrait-photo" src={art} alt={slot.name} />
@@ -79,15 +86,18 @@ function Portrait({
   );
 }
 
-export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
+export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
-  const faction = mode === 'guozhan' ? me.faction : slots[0]?.faction ?? null;
+  const faction = mode === 'guozhan' ? me.faction : (slots[0]?.faction ?? null);
   const factionClass = mode === 'guozhan' && me.faction ? `faction-${me.faction}` : '';
 
   return (
-    <div className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'}`}>
+    <div
+      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''}`}
+      onClick={onSelect}
+    >
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
         <div className="hero-info-top">
@@ -95,6 +105,41 @@ export function HeroPanel({ me, mode, slots }: HeroPanelProps) {
             <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
           )}
           {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+          {/* 国战标记（公开信息）：先驱 / 阴阳鱼 / 珠联璧合 */}
+          {me.markers?.map((m) => (
+            <span
+              key={m.id}
+              className={`marker-chip mark-${m.id}`}
+              {...bind(
+                `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
+                MARKER_DESC[m.id] ?? '',
+              )}
+            >
+              {m.label}
+              {m.count > 1 && <span className="marker-count">{m.count}</span>}
+            </span>
+          ))}
+          {/* 武将牌翻面朝上（公开信息）：会跳过下一个回合 */}
+          {me.flipped && (
+            <span
+              className="marker-chip mark-flip"
+              {...bind('翻面', '武将牌翻面朝上：跳过你的下一个回合，然后翻回正面。')}
+            >
+              翻
+            </span>
+          )}
+          {/* 横置状态（铁索连环）：属性伤害会沿横置的角色蔓延 */}
+          {me.chained && (
+            <span
+              className="marker-chip mark-chained"
+              {...bind(
+                '横置',
+                '处于铁索连环状态：受到属性伤害时会重置，并让其他横置的角色受到同样的伤害。',
+              )}
+            >
+              横
+            </span>
+          )}
           <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
         </div>
 

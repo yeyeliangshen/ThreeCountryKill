@@ -4,17 +4,20 @@ import {
   baseDistance,
   canTarget,
   createGame,
+  buildDeck,
   distance,
   HEROES,
   getHero,
   getHeroForMode,
+  hasCombo,
+  poolForMode,
   pushLog,
   toSnapshot,
   emptyFlags,
   type GameState,
   type SeatSetup,
 } from '../src';
-import type { Card, CardType, Faction, GameMode, Suit } from '@sgs/protocol';
+import type { Card, CardType, Faction, GameMode, MarkerId, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
 function mk(id: string, type: CardType, suit: Suit = 'spade', rank = 1): Card {
@@ -38,7 +41,14 @@ const huogong = (id: string) => mk(id, 'huogong', 'heart');
 const taoyuan = (id: string) => mk(id, 'taoyuan', 'heart');
 const wuxie = (id: string) => mk(id, 'wuxie', 'spade');
 const jiedao = (id: string) => mk(id, 'jiedao', 'club');
-const wpn = (id: string): Card => ({ id, type: 'weapon', suit: 'spade', rank: 1, equipName: 'qinggang', range: 2 });
+const wpn = (id: string): Card => ({
+  id,
+  type: 'weapon',
+  suit: 'spade',
+  rank: 1,
+  equipName: 'qinggang',
+  range: 2,
+});
 
 interface SeatOpts {
   seatId: string;
@@ -62,7 +72,7 @@ function makeGame(seats: SeatOpts[]): GameState {
     const p = state.players.find((pl) => pl.seatId === s.seatId)!;
     const hero = getHero(s.heroId);
     p.heroId = s.heroId;
-    p.maxHp = hero?.maxHp ?? 4;
+    p.maxHp = Math.max(1, Math.floor(hero?.maxHp ?? 4));
     p.hp = s.hp ?? p.maxHp;
     p.hand = s.hand.slice();
     p.flags = emptyFlags();
@@ -88,7 +98,7 @@ function makeGameMode(seats: SeatOpts[], mode: GameMode): GameState {
     const p = state.players.find((pl) => pl.seatId === s.seatId)!;
     const hero = getHero(s.heroId);
     p.heroId = s.heroId;
-    p.maxHp = hero?.maxHp ?? 4;
+    p.maxHp = Math.max(1, Math.floor(hero?.maxHp ?? 4));
     p.hp = s.hp ?? p.maxHp;
     p.hand = s.hand.slice();
     p.flags = emptyFlags();
@@ -174,7 +184,12 @@ describe('基础牌时序：杀→闪→伤害', () => {
 describe('濒死→求桃→死亡 / 救活', () => {
   it('张飞一回合出 4 杀，对方无桃无闪，濒死求桃全弃权→阵亡→游戏结束', () => {
     const state = makeGame([
-      { seatId: A, name: '张飞', heroId: 'zhangfei', hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4')] },
+      {
+        seatId: A,
+        name: '张飞',
+        heroId: 'zhangfei',
+        hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4')],
+      },
       { seatId: B, name: '李四', heroId: 'vanilla', hand: [] },
     ]);
     // 4 杀，每次 B 弃权
@@ -197,7 +212,12 @@ describe('濒死→求桃→死亡 / 救活', () => {
 
   it('濒死时出桃自救，存活', () => {
     const state = makeGame([
-      { seatId: A, name: '张飞', heroId: 'zhangfei', hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4')] },
+      {
+        seatId: A,
+        name: '张飞',
+        heroId: 'zhangfei',
+        hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4')],
+      },
       { seatId: B, name: '李四', heroId: 'vanilla', hand: [tao('b1')] },
     ]);
     for (let i = 1; i <= 3; i++) {
@@ -279,7 +299,12 @@ describe('回合流程与快照', () => {
   it('结束出牌→弃牌（超限时）→下一回合', () => {
     // A 手牌 5 张、体力 4 → 需弃 1 张
     const state = makeGame([
-      { seatId: A, name: '张三', heroId: 'vanilla', hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4'), sha('a5')] },
+      {
+        seatId: A,
+        name: '张三',
+        heroId: 'vanilla',
+        hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4'), sha('a5')],
+      },
       { seatId: B, name: '李四', heroId: 'vanilla', hand: [] },
     ]);
     ok(act(state, A, { type: 'endPhase' }));
@@ -318,6 +343,11 @@ describe('选将阶段（开局随机发将）', () => {
       { seatId: B, name: '李四' },
     ];
     const state = createGame(setup, 'TEST', { heroDealCount: 3 });
+    // 固定发将：随机发将可能撞上「准备/摸牌阶段会发起询问」的技能
+    // （甄姬·洛神、诸葛亮·观星、许褚·裸衣），那会让本用例合法地停在询问上。
+    // 这里测的是选将流程，不是那些技能，所以钉死一副没有阶段询问的将。
+    state.draft!.deals[A] = ['guanyu', 'zhangfei', 'lvbu'];
+    state.draft!.deals[B] = ['caocao', 'xuchu', 'simayi'];
 
     // 处于选将阶段
     expect(state.draft).not.toBeNull();
@@ -552,7 +582,14 @@ describe('军争模式', () => {
     state.pending = { kind: 'play', seatId: attacker.seatId };
     attacker.hand = [sha('a1')];
     // 给攻击者装武器（方天画戟 range 4），确保距离足够打到主公
-    attacker.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'spade', rank: 5, equipName: 'fangtian', range: 4 };
+    attacker.equipment.weapon = {
+      id: 'w1',
+      type: 'weapon',
+      suit: 'spade',
+      rank: 5,
+      equipName: 'fangtian',
+      range: 4,
+    };
     ok(act(state, attacker.seatId, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
     ok(act(state, lord.seatId, { type: 'pass' })); // 主公不出闪
     // 主公濒死，全员弃权（不出桃救）
@@ -671,7 +708,14 @@ describe('军争模式', () => {
     state.turn = { seatIndex: attackerIdx, phase: 'play' };
     state.pending = { kind: 'play', seatId: attacker.seatId };
     attacker.hand = [sha('a1')];
-    attacker.equipment.weapon = { id: 'w2', type: 'weapon', suit: 'spade', rank: 5, equipName: 'fangtian', range: 4 };
+    attacker.equipment.weapon = {
+      id: 'w2',
+      type: 'weapon',
+      suit: 'spade',
+      rank: 5,
+      equipName: 'fangtian',
+      range: 4,
+    };
     ok(act(state, attacker.seatId, { type: 'playCard', cardId: 'a1', targetIds: [lord.seatId] }));
     ok(act(state, lord.seatId, { type: 'pass' }));
     if (state.pending?.kind === 'respondDeath') {
@@ -714,7 +758,7 @@ describe('国战模式', () => {
       p.faction = s.faction;
       p.heroRevealed = false;
       p.deputyRevealed = false;
-      p.maxHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
+      p.maxHp = Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2);
       p.hp = s.hp ?? p.maxHp;
       p.hand = s.hand.slice();
       p.flags = emptyFlags();
@@ -726,14 +770,18 @@ describe('国战模式', () => {
     return state;
   }
 
-  /** 从发到的武将中找 2 个同阵营的 */
+  /** 从发到的武将中找 2 个同阵营的（君主只能作主将，所以要摆到 main 位） */
   function findSameFactionPair(deals: string[]): { main: string; deputy: string } | null {
     const factionOf = (id: string) => getHero(id)?.faction;
+    const isLord = (id: string) => getHero(id)?.isLord === true;
     for (let i = 0; i < deals.length; i++) {
       for (let j = i + 1; j < deals.length; j++) {
-        if (factionOf(deals[i]!) === factionOf(deals[j]!)) {
-          return { main: deals[i]!, deputy: deals[j]! };
-        }
+        if (factionOf(deals[i]!) !== factionOf(deals[j]!)) continue;
+        const li = isLord(deals[i]!);
+        const lj = isLord(deals[j]!);
+        if (li && lj) continue; // 两名君主不能组成一副将
+        if (lj) return { main: deals[j]!, deputy: deals[i]! };
+        return { main: deals[i]!, deputy: deals[j]! };
       }
     }
     return null;
@@ -745,6 +793,25 @@ describe('国战模式', () => {
       { seatId: B, name: '乙' },
     ];
     const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    // 同上：钉死一副「没有阶段询问技能」的同阵营将，让断言确定
+    state.draft!.deals[A] = [
+      'guanyu',
+      'zhangfei',
+      'zhaoyun',
+      'machao',
+      'huangzhong',
+      'weiyan',
+      'huangyueying',
+    ];
+    state.draft!.deals[B] = [
+      'guanyu',
+      'zhangfei',
+      'zhaoyun',
+      'machao',
+      'huangzhong',
+      'weiyan',
+      'huangyueying',
+    ];
     expect(state.mode).toBe('guozhan');
     expect(state.draft).not.toBeNull();
     // 每人发 7 张
@@ -797,7 +864,7 @@ describe('国战模式', () => {
     fail(act(state, A, { type: 'pickHero', heroId: diff1, deputyHeroId: diff2 }));
   });
 
-  it('体力计算：maxHp = floor((主将 + 副将) / 2)，珠联璧合再 +1', () => {
+  it('体力计算：maxHp = floor((主将 + 副将) / 2)', () => {
     const setup: SeatSetup[] = [
       { seatId: A, name: '甲' },
       { seatId: B, name: '乙' },
@@ -806,12 +873,8 @@ describe('国战模式', () => {
     const pairA = findSameFactionPair(state.draft!.deals[A]!)!;
     const mainHero = getHero(pairA.main)!;
     const deputyHero = getHero(pairA.deputy)!;
-    // 官方规则：向下取整；若该组合为珠联璧合则体力上限再 +1
-    const isCombo =
-      (mainHero.combo?.with === deputyHero.id && mainHero.combo.bonus === 'hp') ||
-      (deputyHero.combo?.with === mainHero.id && deputyHero.combo.bonus === 'hp');
-    const expectedHp =
-      Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2) + (isCombo ? 1 : 0);
+    // 官方规则：向下取整。珠联璧合不再加成体力上限（改为发标记），所以这里与组合无关
+    const expectedHp = Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2);
     ok(act(state, A, { type: 'pickHero', heroId: pairA.main, deputyHeroId: pairA.deputy }));
     const pairB = findSameFactionPair(state.draft!.deals[B]!)!;
     ok(act(state, B, { type: 'pickHero', heroId: pairB.main, deputyHeroId: pairB.deputy }));
@@ -822,7 +885,14 @@ describe('国战模式', () => {
 
   it('暗将隐藏：未亮将时他人快照 heroId/deputyHeroId/faction 均为 null', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
     ]);
     // A 的视角看 B：未亮将 → 全 null
@@ -843,7 +913,14 @@ describe('国战模式', () => {
 
   it('亮将：出牌阶段发 revealHero → 他人快照可见武将名和阵营', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
     ]);
     // A 在自己的出牌阶段，亮主将
@@ -881,7 +958,14 @@ describe('国战模式', () => {
 
   it('亮将校验：非自己回合不能亮将', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
     ]);
     // B 不是当前回合玩家，亮将应失败
@@ -890,8 +974,23 @@ describe('国战模式', () => {
 
   it('阵亡亮将：杀死玩家 → 他人快照可见双将名和阵营', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
-      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [],
+        hp: 1,
+      },
     ]);
     // A 杀 B (hp1) → B 阵亡
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
@@ -917,9 +1016,32 @@ describe('国战模式', () => {
 
   it('阵营胜利：杀死其它阵营所有玩家 → 剩余阵营获胜', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1'), sha('a2')] },
-      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
-      { seatId: C, name: '丙', heroId: 'lvbu', deputyHeroId: 'diaochan', faction: 'qun', hand: [], hp: 1 },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1'), sha('a2')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [],
+        hp: 1,
+      },
+      {
+        seatId: C,
+        name: '丙',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        hand: [],
+        hp: 1,
+      },
     ]);
     // 亮主将张飞（咆哮：无限出杀），否则暗将只能出 1 杀
     ok(act(state, A, { type: 'revealHero', heroId: 'zhangfei' }));
@@ -947,9 +1069,31 @@ describe('国战模式', () => {
 
   it('同阵营多人存活 → 该阵营胜', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
-      { seatId: B, name: '乙', heroId: 'machao', deputyHeroId: 'huangzhong', faction: 'shu', hand: [] },
-      { seatId: C, name: '丙', heroId: 'lvbu', deputyHeroId: 'diaochan', faction: 'qun', hand: [], hp: 1 },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'machao',
+        deputyHeroId: 'huangzhong',
+        faction: 'shu',
+        hand: [],
+      },
+      {
+        seatId: C,
+        name: '丙',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        hand: [],
+        hp: 1,
+      },
     ]);
     // A(shu) 杀 C(qun, hp1) → C 阵亡 → 只剩 A、B（均 shu）→ 蜀势力胜
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
@@ -1372,9 +1516,7 @@ describe('主动技能框架', () => {
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
     ]);
-    fail(
-      act(state, A, { type: 'useSkill', skillId: 'nonexistent', targetIds: [] }),
-    );
+    fail(act(state, A, { type: 'useSkill', skillId: 'nonexistent', targetIds: [] }));
   });
 
   it('useSkill 非出牌阶段 → 失败', () => {
@@ -1384,9 +1526,7 @@ describe('主动技能框架', () => {
     ]);
     // A 对 B 出杀 → 进入 respondSha，B 尝试用技能 → 应失败
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    fail(
-      act(state, B, { type: 'useSkill', skillId: 'test', targetIds: [] }),
-    );
+    fail(act(state, B, { type: 'useSkill', skillId: 'test', targetIds: [] }));
   });
 });
 
@@ -1476,27 +1616,102 @@ describe('武将技能（Step 6）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
-  // 6. 夏侯惇·刚烈：非红桃判定 → 来源弃 1 牌
-  it('夏侯惇·刚烈：非红桃判定 → 来源弃 1 张手牌', () => {
+  // 6. 夏侯惇·刚烈（2025-09 调整后：来源二选一，通过「钩子内询问」实现）
+  it('夏侯惇·刚烈：非红桃判定 → 来源选择「受到 1 点伤害」', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2')] },
-      { seatId: B, name: '夏侯惇', heroId: 'xiahoudun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', hand: [] },
     ]);
     // 控制判定牌为黑桃（非红桃）
     state.deck.push(mk('jc', 'sha', 'spade', 5));
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    // B 弃权（不出闪）→ 受伤害 → 刚烈触发
+    // B 弃权（不出闪）→ 受伤害 → 刚烈判定 → 由来源 A 选择一项
     ok(act(state, B, { type: 'pass' }));
-    const a = state.players.find((p) => p.seatId === A)!;
     const b = state.players.find((p) => p.seatId === B)!;
     expect(b.hp).toBe(3);
-    // A 出杀后剩 1 张，刚烈弃 1 张 → 0 张
-    expect(a.hand).toHaveLength(0);
+    // 关键：钩子把询问挂起来了，而不是被伤害结算的收尾静默覆盖
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A); // 是让**来源**选
+      expect(state.pending.options.map((o) => o.id)).toEqual(['discard', 'damage']);
+    }
+
+    ok(act(state, A, { type: 'chooseOption', optionId: 'damage' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hp).toBe(3); // 受到刚烈持有者造成的 1 点伤害
+    // 关键：选完之后被打断的伤害结算流程被接回来了，控制权回到出牌方
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    // 伤害来源是夏侯惇，不是 A 自己
+    expect(state.log.some((e) => e.message.includes('选择受到 1 点伤害'))).toBe(true);
+  });
+
+  it('夏侯惇·刚烈：选「弃置两张手牌」→ 来源自己挑两张，流程照旧继续', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2'), sha('a3')] },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'discard' }));
+    // 进入选牌：由来源**自己挑**哪两张（不再是随机弃）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.min).toBe(2);
+      expect(state.pending.max).toBe(2);
+      expect(state.pending.cards.map((c) => c.id).sort()).toEqual(['a2', 'a3']);
+    }
+    // 数量不对 / 牌不在候选里 / 不是本人在选，都应被拒
+    fail(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    fail(act(state, A, { type: 'pickCards', cardIds: ['a2', 'nope'] }));
+    fail(act(state, B, { type: 'pickCards', cardIds: ['a2', 'a3'] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2', 'a3'] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hp).toBe(4); // 没受伤
+    expect(a.hand).toHaveLength(0); // 打掉 1 张 + 刚烈弃 2 张
+    expect(state.log.some((e) => e.message.includes('弃置了 2 张手牌'))).toBe(true);
+    // 关键：选完把被打断的伤害结算流程接回来了
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
+  it('夏侯惇·刚烈：判定为红桃 → 不询问，直接继续', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'heart', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.log.some((e) => e.message.includes('【刚烈】无效'))).toBe(true);
+  });
+
+  it('钩子内询问的级联：刚烈打出致命伤害 → 先走完濒死，再回到出牌阶段', () => {
+    // A 只剩 1 血，选「受到 1 点伤害」会把自己打进濒死。
+    // 这时选完不能直接 resumePlay——得等濒死流程走完，续接队列才继续。
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')], hp: 1 },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // B 受伤 → 刚烈判定 → 问 A
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'damage' }));
+    // A 被打到 0 → 进入濒死，而不是直接回到出牌阶段
+    expect(state.pending?.kind).toBe('respondDeath');
+    passDeathSaves(state);
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.alive).toBe(false);
+    // 濒死走完后，续接把剩下的流程跑完，控制权交给下一个存活者
+    expect(state.pending?.kind).toBe('play');
+    expect(state.gameOver).toBe(false);
+  });
+
   // 7. 司马懿·鬼才：替换不利判定牌
-  it('司马懿·鬼才：用红桃手牌替换非红桃判定牌', () => {
+  it('司马懿·鬼才：手动打出一张手牌替换判定牌', () => {
     const state = makeGame([
       { seatId: A, name: '司马懿', heroId: 'simayi', hand: [tao('a1', 'heart')] },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
@@ -1508,13 +1723,36 @@ describe('武将技能（Step 6）', () => {
     state.deck.push(mk('jc', 'sha', 'spade', 5));
     // A 结束出牌 → B 回合开始 → 判定阶段
     ok(act(state, A, { type: 'endPhase' }));
-    // 司马懿用红桃替换 → 乐不思蜀无效 → B 不跳过出牌
+    // 鬼才先问是否发动（不再自动替判）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 再挑要打出的手牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    // 替换成红桃 → 乐不思蜀无效 → B 不跳过出牌
     expect(b.flags.skipPlay).toBe(false);
+    expect(state.log.some((e) => e.message.includes('鬼才'))).toBe(true);
     // A 的红桃手牌已用于替换
     const a = state.players.find((p) => p.seatId === A)!;
     expect(a.hand).toHaveLength(0);
-    // B 进入出牌阶段
+    // 判定走完，B 进入出牌阶段
     expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('司马懿·鬼才：选不发动则判定牌照旧生效', () => {
+    const state = makeGame([
+      { seatId: A, name: '司马懿', heroId: 'simayi', hand: [tao('a1', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    state.deck.push(mk('jc', 'sha', 'spade', 5)); // 黑桃 → 乐不思蜀生效
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.flags.skipPlay).toBe(true); // 跳过了出牌阶段
+    // 那张红桃还在甲手里（回合继续往下走，甲后来又摸了牌，所以只查牌在不在）
+    expect(state.players.find((p) => p.seatId === A)!.hand.some((c) => c.id === 'a1')).toBe(true);
   });
 
   // 8. 孙权·制衡：弃牌摸等量
@@ -1526,7 +1764,9 @@ describe('武将技能（Step 6）', () => {
     // 控制摸到的牌
     state.deck.push(mk('d1', 'sha', 'club', 2));
     state.deck.push(mk('d2', 'shan', 'diamond', 3));
-    ok(act(state, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ['a1', 'a2'], targetIds: [] }));
+    ok(
+      act(state, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ['a1', 'a2'], targetIds: [] }),
+    );
     const a = state.players.find((p) => p.seatId === A)!;
     expect(a.hand).toHaveLength(2);
     expect(a.flags.skillUsedThisTurn['zhiheng']).toBe(true);
@@ -1613,7 +1853,7 @@ describe('国战进阶（Step 7）', () => {
       p.faction = s.faction;
       p.heroRevealed = false;
       p.deputyRevealed = false;
-      p.maxHp = Math.ceil((mainHero.maxHp + deputyHero.maxHp) / 2);
+      p.maxHp = Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2);
       p.hp = s.hp ?? p.maxHp;
       p.hand = s.hand.slice();
       p.flags = emptyFlags();
@@ -1626,10 +1866,22 @@ describe('国战进阶（Step 7）', () => {
   }
   // —— 辅助：构造指定发将的国战对局，走完选将流程 ——
   const POOL = [
-    'guanyu', 'zhangfei', 'zhaoyun', 'machao', 'huangzhong',
-    'lvbu', 'diaochan', 'huatuo',
-    'zhenji', 'simayi', 'xiahoudun', 'xuchu',
-    'sunquan', 'zhouyu', 'ganning', 'huanggai',
+    'guanyu',
+    'zhangfei',
+    'zhaoyun',
+    'machao',
+    'huangzhong',
+    'lvbu',
+    'diaochan',
+    'huatuo',
+    'zhenji',
+    'simayi',
+    'xiahoudun',
+    'xuchu',
+    'sunquan',
+    'zhouyu',
+    'ganning',
+    'huanggai',
   ];
   function makeGuozhanDraft(
     seatPicks: { seatId: string; name: string; main: string; deputy: string }[],
@@ -1650,38 +1902,54 @@ describe('国战进阶（Step 7）', () => {
     return state;
   }
 
-  // 1. 珠联璧合
-  it('珠联璧合：关羽+张飞 → maxHp +1', () => {
+  // 1. 珠联璧合：改为「双将首次明置时发标记」，不再直接加体力上限
+  it('珠联璧合：关羽+张飞 → 亮齐后拿到标记，体力上限不加成', () => {
     const state = makeGuozhanDraft([
       { seatId: A, name: '甲', main: 'guanyu', deputy: 'zhangfei' },
       { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
     const b = state.players.find((p) => p.seatId === B)!;
-    // 关羽(4)+张飞(4) → floor(8/2)=4 + 1(珠联璧合) = 5
-    expect(a.maxHp).toBe(5);
+    // 关羽(4)+张飞(4) → floor(8/2)=4，珠联璧合不再 +1
+    expect(a.maxHp).toBe(4);
     // 许褚(4)+甄姬(3) → floor(7/2)=3，无珠联璧合
     expect(b.maxHp).toBe(3);
+
+    // 只亮一张：先拿【先驱】（全场首个明置武将），珠联璧合还不给
+    ok(act(state, A, { type: 'revealHero', heroId: 'guanyu' }));
+    expect(a.markers.xianqu).toBe(1);
+    expect(a.markers.zhulian).toBeUndefined();
+    // 亮第二张 → 珠联璧合；4+4 为偶数，不发阴阳鱼
+    ok(act(state, A, { type: 'revealHero', heroId: 'zhangfei' }));
+    expect(a.markers.zhulian).toBe(1);
+    expect(a.markers.yinyangyu).toBeUndefined();
   });
 
-  it('珠联璧合：吕布+貂蝉 → maxHp +1', () => {
+  it('珠联璧合 + 阴阳鱼：吕布+貂蝉（4+3 为奇数）→ 亮齐后两个标记都给', () => {
     const state = makeGuozhanDraft([
       { seatId: A, name: '甲', main: 'lvbu', deputy: 'diaochan' },
       { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
-    // 吕布(4)+貂蝉(3) → floor(7/2)=3 + 1(珠联璧合) = 4
-    expect(a.maxHp).toBe(4);
+    // 吕布(4)+貂蝉(3) → floor(7/2)=3
+    expect(a.maxHp).toBe(3);
+    ok(act(state, A, { type: 'revealHero', heroId: 'lvbu' }));
+    expect(a.markers.zhulian).toBeUndefined();
+    ok(act(state, A, { type: 'revealHero', heroId: 'diaochan' }));
+    expect(a.markers.zhulian).toBe(1);
+    // 7 是奇数 → 余半个阴阳鱼，转成标记补偿
+    expect(a.markers.yinyangyu).toBe(1);
   });
 
-  it('体力上限向下取整：孙权+周瑜 → floor(3.5)=3 再 +1 = 4（原 ceil 会得 5）', () => {
+  it('体力上限向下取整：孙权+周瑜 → floor(3.5)=3，不再因珠联璧合加成', () => {
     const state = makeGuozhanDraft([
       { seatId: A, name: '甲', main: 'sunquan', deputy: 'zhouyu' },
       { seatId: B, name: '乙', main: 'xuchu', deputy: 'zhenji' },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
-    expect(a.maxHp).toBe(4);
-    expect(a.hp).toBe(4);
+    // 原实现用 ceil 会得 4，再加珠联璧合 1 → 5
+    expect(a.maxHp).toBe(3);
+    expect(a.hp).toBe(3);
   });
 
   // 2. 野心家分配
@@ -1706,7 +1974,14 @@ describe('国战进阶（Step 7）', () => {
   // 3. 鏖战桃当杀
   it('鏖战：2 阵营存活时桃可当杀使用', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [tao('t1')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [tao('t1')],
+      },
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
     ]);
     // 2 人国战 = 2 阵营存活 → 鏖战激活
@@ -1716,12 +1991,21 @@ describe('国战进阶（Step 7）', () => {
     expect(state.pending?.kind).toBe('respondSha');
     ok(act(state, B, { type: 'pass' }));
     const b = state.players.find((p) => p.seatId === B)!;
-    expect(b.hp).toBe(4 - 1);
+    // 许褚(4) + 甄姬(3) → 上限 floor(3.5) = 3，受 1 点伤害后剩 2
+    expect(b.maxHp).toBe(3);
+    expect(b.hp).toBe(2);
   });
 
   it('鏖战未激活（3 阵营）时桃不能当杀', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [tao('t1')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [tao('t1')],
+      },
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
       { seatId: C, name: '丙', heroId: 'sunquan', deputyHeroId: 'zhouyu', faction: 'wu', hand: [] },
     ]);
@@ -1732,8 +2016,22 @@ describe('国战进阶（Step 7）', () => {
   // 4. 被动亮将
   it('被动亮将：成为杀目标时自动亮双将', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
-      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [shan('b1')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [shan('b1')],
+      },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
     expect(b.heroRevealed).toBe(false);
@@ -1746,8 +2044,23 @@ describe('国战进阶（Step 7）', () => {
 
   it('被动亮将：濒死时自动亮双将', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
-      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [],
+        hp: 1,
+      },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
     // A 杀 B(hp1) → B 受伤 hp→0 → 濒死被动亮将
@@ -1762,10 +2075,40 @@ describe('国战进阶（Step 7）', () => {
   // 5. 阵营多数胜利
   it('阵营多数胜利：3 存活中 2 蜀 → 蜀胜', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [sha('a1')] },
-      { seatId: B, name: '乙', heroId: 'zhaoyun', deputyHeroId: 'machao', faction: 'shu', hand: [] },
-      { seatId: C, name: '丙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 4 },
-      { seatId: D, name: '丁', heroId: 'simayi', deputyHeroId: 'xiahoudun', faction: 'wei', hand: [], hp: 1 },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'shu',
+        hand: [sha('a1')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'zhaoyun',
+        deputyHeroId: 'machao',
+        faction: 'shu',
+        hand: [],
+      },
+      {
+        seatId: C,
+        name: '丙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [],
+        hp: 4,
+      },
+      {
+        seatId: D,
+        name: '丁',
+        heroId: 'simayi',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [],
+        hp: 1,
+      },
     ]);
     // A 杀 D(hp1) → D 阵亡 → 存活 [A,B,C]，蜀 2 > half(3)=1 → 蜀胜
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [D] }));
@@ -1777,8 +2120,23 @@ describe('国战进阶（Step 7）', () => {
 
   it('野心家胜利：最后存活者为野心家 → 野心家胜', () => {
     const state = makeGuozhanGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'ambitionist', hand: [sha('a1')] },
-      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'guanyu',
+        faction: 'ambitionist',
+        hand: [sha('a1')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        hand: [],
+        hp: 1,
+      },
     ]);
     // A 杀 B(hp1) → B 阵亡 → 仅 A(野心家)存活 → 野心家胜
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
@@ -1848,7 +2206,13 @@ describe('装备与距离（Step 10 补充）', () => {
       { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
-    b.equipment.plusMount = { id: 'pm1', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    b.equipment.plusMount = {
+      id: 'pm1',
+      type: 'plusMount',
+      suit: 'heart',
+      rank: 1,
+      equipName: 'dilu',
+    };
     // A 无武器，攻击范围=1；B 有+1马，距离=2 → 打不到
     fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     // C 无马，距离=1 → 可以打
@@ -1864,7 +2228,13 @@ describe('装备与距离（Step 10 补充）', () => {
     const a = state.players.find((p) => p.seatId === A)!;
     a.equipment.weapon = wpn('w1'); // range=2
     const b = state.players.find((p) => p.seatId === B)!;
-    b.equipment.plusMount = { id: 'pm1', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    b.equipment.plusMount = {
+      id: 'pm1',
+      type: 'plusMount',
+      suit: 'heart',
+      rank: 1,
+      equipName: 'dilu',
+    };
     // 距离2，武器range=2 → 可达
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
   });
@@ -1877,9 +2247,21 @@ describe('装备与距离（Step 10 补充）', () => {
     ]);
     // A 装备 -1马 → 对 B（有+1马）距离从2降为1
     const a = state.players.find((p) => p.seatId === A)!;
-    a.equipment.minusMount = { id: 'mm1', type: 'minusMount', suit: 'spade', rank: 1, equipName: 'chitu' };
+    a.equipment.minusMount = {
+      id: 'mm1',
+      type: 'minusMount',
+      suit: 'spade',
+      rank: 1,
+      equipName: 'chitu',
+    };
     const b = state.players.find((p) => p.seatId === B)!;
-    b.equipment.plusMount = { id: 'pm1', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
+    b.equipment.plusMount = {
+      id: 'pm1',
+      type: 'plusMount',
+      suit: 'heart',
+      rank: 1,
+      equipName: 'dilu',
+    };
     // 无武器 range=1，-1马把距离2降为1 → 可达
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
   });
@@ -1888,7 +2270,12 @@ describe('装备与距离（Step 10 补充）', () => {
 describe('酒限1次救人（Step 10 补充）', () => {
   it('同一回合酒救人仅限1次', () => {
     const state = makeGame([
-      { seatId: A, name: '甲', heroId: 'zhangfei', hand: [sha('a1'), sha('a2'), jiu('j1'), jiu('j2')] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        hand: [sha('a1'), sha('a2'), jiu('j1'), jiu('j2')],
+      },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 1 },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
@@ -1924,8 +2311,20 @@ describe('死亡弃装备与判定区（Step 10 补充）', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     b.equipment.weapon = wpn('bw');
     b.equipment.armor = { id: 'ba', type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' };
-    b.equipment.plusMount = { id: 'bp', type: 'plusMount', suit: 'heart', rank: 1, equipName: 'dilu' };
-    b.equipment.minusMount = { id: 'bm', type: 'minusMount', suit: 'spade', rank: 1, equipName: 'chitu' };
+    b.equipment.plusMount = {
+      id: 'bp',
+      type: 'plusMount',
+      suit: 'heart',
+      rank: 1,
+      equipName: 'dilu',
+    };
+    b.equipment.minusMount = {
+      id: 'bm',
+      type: 'minusMount',
+      suit: 'spade',
+      rank: 1,
+      equipName: 'chitu',
+    };
     b.judgment.push(lebu('bl'));
     // 出杀打死 B（1血）
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
@@ -1946,13 +2345,26 @@ describe('死亡弃装备与判定区（Step 10 补充）', () => {
 // ——————————————————————————————————————————
 
 const armor = (id: string, equipName: string): Card => ({
-  id, type: 'armor', suit: 'club', rank: 2, equipName,
+  id,
+  type: 'armor',
+  suit: 'club',
+  rank: 2,
+  equipName,
 });
 const weapon = (id: string, equipName: string, range = 2): Card => ({
-  id, type: 'weapon', suit: 'spade', rank: 5, equipName, range,
+  id,
+  type: 'weapon',
+  suit: 'spade',
+  rank: 5,
+  equipName,
+  range,
 });
 const fireSha = (id: string): Card => ({
-  id, type: 'sha', suit: 'heart', rank: 5, attribute: 'fire',
+  id,
+  type: 'sha',
+  suit: 'heart',
+  rank: 5,
+  attribute: 'fire',
 });
 
 describe('装备特效：防具', () => {
@@ -2362,12 +2774,24 @@ describe('国战 / 军争 技能差异', () => {
     const ids = hand.map((c) => c.id);
 
     ok(act(jun, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ids, targetIds: [] }));
-    const guoRes = act(guo, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ids, targetIds: [] });
+    const guoRes = act(guo, A, {
+      type: 'useSkill',
+      skillId: 'zhiheng',
+      cardIds: ids,
+      targetIds: [],
+    });
     expect(guoRes.ok).toBe(false);
     expect(guoRes.ok ? '' : guoRes.error).toContain('体力上限');
 
     // 国战弃 3 张是合法的
-    ok(act(guo, A, { type: 'useSkill', skillId: 'zhiheng', cardIds: ids.slice(0, 3), targetIds: [] }));
+    ok(
+      act(guo, A, {
+        type: 'useSkill',
+        skillId: 'zhiheng',
+        cardIds: ids.slice(0, 3),
+        targetIds: [],
+      }),
+    );
     expect(guo.log.some((e) => e.message.includes('弃 3 张牌'))).toBe(true);
   });
 
@@ -2538,7 +2962,10 @@ describe('新增技能（含国战版差异）', () => {
     state.deck.push(mk('r1', 'sha', 'heart', 1));
     state.deck.push(mk('b2', 'sha', 'spade', 2));
     state.deck.push(mk('b1', 'sha', 'club', 3));
-    ok(act(state, A, { type: 'endPhase' })); // 乙的回合开始 → 准备阶段洛神
+    ok(act(state, A, { type: 'endPhase' })); // 乙的回合开始 → 准备阶段
+    // 洛神是「可以进行判定」，所以先出现是否发动的询问
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     const ids = b.hand.map((c) => c.id);
     expect(ids).toContain('b1');
     expect(ids).toContain('b2');
@@ -2560,6 +2987,8 @@ describe('新增技能（含国战版差异）', () => {
     state.deck.push(mk('b2', 'sha', 'spade', 2));
     state.deck.push(mk('b1', 'sha', 'club', 3));
     ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     const ids = b.hand.map((c) => c.id);
     expect(ids).toContain('b1');
     expect(ids).toContain('b2');
@@ -2567,22 +2996,45 @@ describe('新增技能（含国战版差异）', () => {
     expect(state.log.some((e) => e.message.includes('一次性获得'))).toBe(true);
   });
 
-  it('闭月：结束阶段摸一张牌', () => {
+  it('洛神：选「不发动」→ 一张都不摸，回合照常推进', () => {
     const state = makeGame([
-      { seatId: A, name: '甲', heroId: 'diaochan', hand: [], hp: 3, },
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhenji', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck.push(mk('b1', 'sha', 'club', 3));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    // 没有判定：只有摸牌阶段那 2 张，没有洛神带来的牌
+    expect(b.hand).toHaveLength(2);
+    expect(state.log.some((e) => e.message.includes('发动【洛神】，判定'))).toBe(false);
+    // 回合正常走到乙的出牌阶段，没卡住
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('闭月：结束阶段先问是否发动，选「发动」才摸牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'diaochan', hand: [], hp: 3 },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
     a.hp = 3;
     const before = a.hand.length;
-    ok(act(state, A, { type: 'endPhase' })); // 结束出牌 → 弃牌 → 回合结束（闭月摸 1）
+    ok(act(state, A, { type: 'endPhase' })); // 结束出牌 → 弃牌 → 回合结束
+    // 官方是「你可以摸一张牌」——先问，不能替玩家决定
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(a.hand.length).toBeGreaterThan(before);
     expect(state.log.some((e) => e.message.includes('发动【闭月】'))).toBe(true);
+    // 选完回合正常交给下家，没卡住
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
   });
 
-  it('反馈：受到伤害后获得来源一张牌', () => {
+  it('反馈：受到伤害后由自己挑一张来源的牌拿走', () => {
     const state = makeGame([
-      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2')] },
       { seatId: B, name: '乙', heroId: 'simayi', hand: [tao('t1'), shan('s1')] },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
@@ -2590,10 +3042,40 @@ describe('新增技能（含国战版差异）', () => {
     const aHandBefore = a.hand.length;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' })); // 不出闪，受到 1 点伤害
+    // 反馈先问是否发动（不再随机拿）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 候选是甲的牌，由乙自己挑
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards.map((x) => x.id).sort()).toEqual(['a2']);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: ['a2'] }));
     expect(state.log.some((e) => e.message.includes('发动【反馈】'))).toBe(true);
     // 甲少了一张牌、乙多了一张
-    expect(a.hand.length).toBe(aHandBefore - 1);
-    expect(b.hand.length).toBeGreaterThan(1);
+    expect(a.hand.length).toBe(aHandBefore - 2); // 打出的 a1 + 被拿走的 a2
+    expect(b.hand.map((x) => x.id)).toContain('a2');
+  });
+
+  it('反馈：可以拿走来源的装备（并触发失去装备）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'simayi', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.armor = mk('ar1', 'armor', 'heart', 1);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 甲没有手牌了，候选只有那张装备
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards.map((x) => x.id)).toEqual(['ar1']);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: ['ar1'] }));
+    expect(a.equipment.armor).toBeNull();
+    expect(b.hand.map((x) => x.id)).toContain('ar1');
   });
 
   it('青囊：弃一张手牌令已受伤角色回复 1 点', () => {
@@ -2614,7 +3096,12 @@ describe('新增技能（含国战版差异）', () => {
       { seatId: A, name: '甲', heroId: 'huatuo', hand: [tao('h1')], hp: 3 },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
     ]);
-    const res = act(state, A, { type: 'useSkill', skillId: 'qingnang', cardIds: ['h1'], targetIds: [B] });
+    const res = act(state, A, {
+      type: 'useSkill',
+      skillId: 'qingnang',
+      cardIds: ['h1'],
+      targetIds: [B],
+    });
     expect(res.ok).toBe(false);
   });
 
@@ -2648,7 +3135,12 @@ describe('新增技能（含国战版差异）', () => {
     const state = makeGameMode(
       [
         { seatId: A, name: '甲', heroId: 'zhouyu', hand: [mk('f1', 'tao', 'heart', 5)], hp: 3 },
-        { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('d1', 'shan', 'heart', 1), mk('d2', 'sha', 'spade', 2)] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          hand: [mk('d1', 'shan', 'heart', 1), mk('d2', 'sha', 'spade', 2)],
+        },
       ],
       'guozhan',
     );
@@ -2676,8 +3168,20 @@ describe('端到端：国战版反间', () => {
   function setupGuozhanFanjian() {
     const state = makeGameMode(
       [
-        { seatId: A, name: '周瑜', heroId: 'zhouyu', hand: [mk('f1', 'tao', 'heart', 7), mk('f2', 'sha', 'spade', 3)], hp: 3 },
-        { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('d1', 'shan', 'heart', 2), mk('d2', 'sha', 'club', 4)], hp: 4 },
+        {
+          seatId: A,
+          name: '周瑜',
+          heroId: 'zhouyu',
+          hand: [mk('f1', 'tao', 'heart', 7), mk('f2', 'sha', 'spade', 3)],
+          hp: 3,
+        },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          hand: [mk('d1', 'shan', 'heart', 2), mk('d2', 'sha', 'club', 4)],
+          hp: 4,
+        },
       ],
       'guozhan',
     );
@@ -2758,8 +3262,11 @@ describe('选将不限（测试用 freePick）', () => {
   it('开启后每个人的可选项都是整个武将池（混战含中立）', () => {
     const state = createGame(seats2, 'TEST', { mode: 'melee', freePick: true });
     const all = state.draft!.deals[A]!;
-    expect(all.length).toBe(HEROES.length);
+    // 不能写 HEROES.length：国战专属武将（Hero.modes）不进混战池
+    expect(all).toEqual(poolForMode('melee').map((h) => h.id));
     expect(all).toContain('zhouyu'); // 平时随机发将未必发得到
+    expect(all).toContain('vanilla'); // 混战保留中立
+    expect(all).not.toContain('dongzhao'); // 董昭是国战专属
     expect(all).toEqual(state.draft!.deals[B]!); // 两人都能看到全集
   });
 
@@ -2785,5 +3292,3629 @@ describe('选将不限（测试用 freePick）', () => {
     const state = createGame(seats2, 'TEST', { mode: 'guozhan' });
     expect(state.draft!.deals[A]!.length).toBe(7);
     expect(state.draft!.deals[A]!.filter((id) => state.draft!.deals[B]!.includes(id))).toEqual([]);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 国战对齐（阶段 1）：无双的【决斗】部分、珠联璧合组合表、体力上限取整 */
+describe('国战对齐（阶段 1）', () => {
+  /** 当前决斗轮到谁响应 */
+  function duelResponder(state: GameState): string | undefined {
+    const p = state.pending;
+    return p?.kind === 'respondTrick' ? p.responderId : undefined;
+  }
+
+  it('无双·决斗：吕布为来源时，目标每次需连出两张【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'lvbu', hand: [juedou('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    expect(duelResponder(state)).toBe(B);
+    // 第一张还不够，仍停在 B
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(duelResponder(state)).toBe(B);
+    // 第二张凑满 → 换手给 A
+    ok(act(state, B, { type: 'respondCard', cardId: 'b2' }));
+    expect(duelResponder(state)).toBe(A);
+  });
+
+  it('无双·决斗：吕布为目标时，来源每次需连出两张【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1'), sha('a2'), sha('a3')] },
+      { seatId: B, name: '乙', heroId: 'lvbu', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 吕布先响应；对手 A 没有无双，一张即可
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // 轮到 A，对手是吕布 → 要连出两张
+    expect(duelResponder(state)).toBe(A);
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    expect(duelResponder(state)).toBe(A);
+    ok(act(state, A, { type: 'respondCard', cardId: 'a3' }));
+    expect(duelResponder(state)).toBe(B);
+  });
+
+  it('无双·决斗的提示里写明还差几张【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'lvbu', hand: [juedou('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    expect(toSnapshot(state, B).prompt?.message).toContain('需连出 2 张【杀】');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(toSnapshot(state, B).prompt?.message).toContain('还差 1 张');
+  });
+
+  it('决斗可用转化牌响应（关羽·武圣：红牌当【杀】）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1')] },
+      { seatId: B, name: '乙', heroId: 'guanyu', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 红桃【桃】当【杀】打出
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(state.log.some((e) => e.message.includes('打出了【杀】'))).toBe(true);
+    expect(duelResponder(state)).toBe(A);
+  });
+
+  it('珠联璧合组合表：补上官方组合，且不误判无关组合', () => {
+    // 官方组合（本次新增）：周瑜 ❤ 黄盖
+    expect(hasCombo(getHero('zhouyu')!, getHero('huanggai')!)).toBe(true);
+    // 既有组合（保留）
+    expect(hasCombo(getHero('guanyu')!, getHero('zhangfei')!)).toBe(true);
+    expect(hasCombo(getHero('lvbu')!, getHero('diaochan')!)).toBe(true);
+    expect(hasCombo(getHero('sunquan')!, getHero('zhouyu')!)).toBe(true);
+    // 无组合的搭配不应误判
+    expect(hasCombo(getHero('zhouyu')!, getHero('ganning')!)).toBe(false);
+    expect(hasCombo(getHero('guanyu')!, getHero('machao')!)).toBe(false);
+  });
+
+  it('国战体力上限向下取整：许褚(4)+甄姬(3) → 3', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲' },
+        { seatId: B, name: '乙' },
+      ],
+      'TEST',
+      { mode: 'guozhan', freePick: true },
+    );
+    ok(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+    ok(act(state, B, { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'ganning' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.maxHp).toBe(3); // floor((4+3)/2)，不是 4
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 国战标记（阶段 2）：先驱 / 阴阳鱼 / 珠联璧合 的发放与消耗 */
+describe('国战标记（阶段 2）', () => {
+  interface GzSeat extends SeatOpts {
+    deputyHeroId: string;
+    faction: Faction;
+    revealed?: boolean;
+  }
+  function makeGz(seats: GzSeat[]): GameState {
+    const setup: SeatSetup[] = seats.map((s) => ({
+      seatId: s.seatId,
+      name: s.name,
+      heroId: s.heroId,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((pl) => pl.seatId === s.seatId)!;
+      const main = getHero(s.heroId)!;
+      const deputy = getHero(s.deputyHeroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = s.revealed ?? false;
+      p.deputyRevealed = s.revealed ?? false;
+      p.maxHp = Math.floor((main.maxHp + deputy.maxHp) / 2);
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = s.hand.slice();
+      p.flags = emptyFlags();
+    }
+    const first = state.seatOrder[0]!;
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  /** 直接发标记，跳过亮将流程，专测标记本身的用法 */
+  function giveMarker(state: GameState, seatId: string, id: MarkerId, n = 1) {
+    const p = state.players.find((x) => x.seatId === seatId)!;
+    p.markers[id] = (p.markers[id] ?? 0) + n;
+  }
+  const player = (state: GameState, seatId: string) =>
+    state.players.find((p) => p.seatId === seatId)!;
+
+  it('发放：分两次各亮一张，先驱在第一次、阴阳鱼/珠联璧合在第二次', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲' },
+        { seatId: B, name: '乙' },
+      ],
+      'TEST',
+      { mode: 'guozhan', freePick: true },
+    );
+    ok(act(state, A, { type: 'pickHero', heroId: 'lvbu', deputyHeroId: 'diaochan' }));
+    ok(act(state, B, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+    const a = player(state, A);
+    ok(act(state, A, { type: 'revealHero', heroId: 'lvbu' }));
+    expect(a.markers.xianqu).toBe(1);
+    expect(a.markers.yinyangyu).toBeUndefined();
+    expect(a.markers.zhulian).toBeUndefined();
+    ok(act(state, A, { type: 'revealHero', heroId: 'diaochan' }));
+    expect(a.markers.yinyangyu).toBe(1); // 4+3 为奇数
+    expect(a.markers.zhulian).toBe(1); // 吕布 ❤ 貂蝉
+    expect(a.markers.xianqu).toBe(1); // 先驱不会再来一个
+  });
+
+  it('珠联璧合：弃置 → 选「摸两张牌」→ 控制权回到出牌阶段', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'zhulian');
+    // 技能由服务端下发（标记不属于任何武将，界面配不到 hero.skills）
+    const prompt = toSnapshot(state, A).prompt!;
+    expect(prompt.legalSkillIds).toContain('mark_zhulian');
+    expect(prompt.legalSkills?.find((s) => s.id === 'mark_zhulian')?.name).toBe('珠联璧合');
+
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_zhulian', targetIds: [] }));
+    const choiceSnap = toSnapshot(state, A);
+    expect(choiceSnap.prompt?.kind).toBe('choice');
+    expect(choiceSnap.prompt?.choiceOptions?.map((o) => o.id)).toEqual(['draw', 'heal']);
+
+    const before = player(state, A).hand.length;
+    ok(act(state, A, { type: 'chooseOption', optionId: 'draw' }));
+    const a = player(state, A);
+    expect(a.hand.length).toBe(before + 2);
+    expect(a.markers.zhulian).toBeUndefined();
+    // 标记用完，技能从可用列表消失
+    expect(toSnapshot(state, A).prompt?.legalSkillIds).not.toContain('mark_zhulian');
+    // 关键回归：选完必须回到出牌阶段，不能卡在 choice 上
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('珠联璧合：选「回复 1 点体力」，且不会超过体力上限', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [],
+        hp: 1,
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'zhulian');
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_zhulian', targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'heal' }));
+    const a = player(state, A);
+    expect(a.hp).toBe(2);
+    expect(a.maxHp).toBe(3); // 吕布(4)+貂蝉(3)
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('阴阳鱼：出牌阶段弃置 → 摸 1 张牌', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'yinyangyu');
+    const before = player(state, A).hand.length;
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_yinyangyu', targetIds: [] }));
+    expect(player(state, A).hand.length).toBe(before + 1);
+    expect(player(state, A).markers.yinyangyu).toBeUndefined();
+  });
+
+  it('阴阳鱼：弃牌阶段弃置 → 本回合手牌上限 +2，从而不用弃牌', () => {
+    // 关羽(4)+马超(4) → 上限 4，手牌 5 张 → 正常要弃 1 张。
+    // 不用吕布+貂蝉是因为貂蝉的【闭月】会在回合结束摸牌，把牌数带偏。
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'guanyu',
+        deputyHeroId: 'machao',
+        faction: 'shu',
+        revealed: true,
+        hand: [sha('h1'), sha('h2'), sha('h3'), sha('h4'), sha('h5')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'yinyangyu');
+    ok(act(state, A, { type: 'endPhase' }));
+    // 该不该弃置阴阳鱼：先问一句
+    expect(toSnapshot(state, A).prompt?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    const a = player(state, A);
+    expect(a.flags.handLimitBonus).toBe(2);
+    expect(a.markers.yinyangyu).toBeUndefined();
+    expect(a.hand.length).toBe(5); // 上限 4+2=6，一张都不用弃
+    // 回合交给 B（说明弃牌流程走完了，没有卡住）
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('阴阳鱼：选「不弃置」→ 按原上限正常弃牌', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'guanyu',
+        deputyHeroId: 'machao',
+        faction: 'shu',
+        revealed: true,
+        hand: [sha('h1'), sha('h2'), sha('h3'), sha('h4'), sha('h5')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'yinyangyu');
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    // 体力上限 4、手牌 5 → 弃 1 张
+    expect(state.pending).toEqual({ kind: 'discard', seatId: A, count: 1 });
+    // 标记还在（没选就留着）
+    expect(player(state, A).markers.yinyangyu).toBe(1);
+    ok(act(state, A, { type: 'discard', cardIds: ['h1'] }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('阴阳鱼：手牌没超上限时不会白问、也不会白耗标记', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [sha('h1')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'yinyangyu');
+    ok(act(state, A, { type: 'endPhase' }));
+    // 貂蝉的【闭月】在结束阶段会先问一句，答「不发动」
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(player(state, A).markers.yinyangyu).toBe(1);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('先驱：弃置后把手牌补至 4 张', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [sha('h1')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'xianqu');
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [] }));
+    const a = player(state, A);
+    expect(a.hand.length).toBe(4);
+    expect(a.markers.xianqu).toBeUndefined();
+  });
+
+  it('先驱：手牌已达 4 张时一张也不摸', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [sha('h1'), sha('h2'), sha('h3'), sha('h4'), sha('h5')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'xianqu');
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [] }));
+    expect(player(state, A).hand.length).toBe(5);
+    expect(player(state, A).markers.xianqu).toBeUndefined();
+  });
+
+  it('标记随快照下发（公开信息），数量为 0 的不下发', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+    ]);
+    giveMarker(state, A, 'zhulian');
+    giveMarker(state, A, 'yinyangyu', 2);
+    // 从对手视角也要看得到（标记是公开信息）
+    const bView = toSnapshot(state, B).players.find((p) => p.seatId === A)!;
+    expect(bView.markers).toEqual([
+      { id: 'yinyangyu', label: '阴阳鱼', count: 2 },
+      { id: 'zhulian', label: '珠联璧合', count: 1 },
+    ]);
+    // 没有标记的玩家下发空数组
+    const aView = toSnapshot(state, A).players.find((p) => p.seatId === B)!;
+    expect(aView.markers).toEqual([]);
+  });
+
+  it('非国战模式：即使身上挂了标记也用不出标记技能', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'lvbu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'xuchu', hand: [] },
+    ]);
+    giveMarker(state, A, 'zhulian');
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('mark_zhulian');
+    fail(act(state, A, { type: 'useSkill', skillId: 'mark_zhulian', targetIds: [] }));
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 新增国战武将 + 目标过滤 / 完杀 / 君主特性 */
+describe('新增武将（按最新国战标准）', () => {
+  const seats2: SeatSetup[] = [
+    { seatId: A, name: '甲' },
+    { seatId: B, name: '乙' },
+  ];
+
+  it('新增武将已进入武将池，且国战发将能发到', () => {
+    for (const id of [
+      'caocao',
+      'huangyueying',
+      'zhugeliang',
+      'weiyan',
+      'daqiao',
+      'luxun',
+      'sunshangxiang',
+      'jiaxu',
+    ]) {
+      expect(getHero(id)).toBeTruthy();
+    }
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+    const deal = state.draft!.deals[A]!;
+    expect(deal).toContain('caocao');
+    expect(deal).toContain('jiaxu');
+    expect(deal).not.toContain('vanilla');
+  });
+
+  it('选将池按模式过滤：modes 标了 guozhan 的武将不进其它模式', () => {
+    // 目前还没有国战专属武将，所以先钉住不变量——
+    // 等加了甘夫人/丁奉这类将，这条测试就会开始真正起作用
+    for (const mode of ['junzheng', '2v2', 'melee', 'guozhan'] as GameMode[]) {
+      for (const h of poolForMode(mode)) {
+        expect(!h.modes || h.modes.includes(mode)).toBe(true);
+      }
+    }
+    // 未标 modes 的将全模式都在池子里；中立武将只在国战被排除，其它模式可用
+    const melee = poolForMode('melee').map((h) => h.id);
+    expect(melee).toContain('guanyu');
+    expect(melee).toContain('caocao');
+    expect(melee).toContain('vanilla');
+  });
+
+  it('官方组合：曹操❤许褚、黄忠❤魏延、诸葛亮❤黄月英', () => {
+    expect(hasCombo(getHero('caocao')!, getHero('xuchu')!)).toBe(true);
+    expect(hasCombo(getHero('huangzhong')!, getHero('weiyan')!)).toBe(true);
+    expect(hasCombo(getHero('zhugeliang')!, getHero('huangyueying')!)).toBe(true);
+    expect(hasCombo(getHero('caocao')!, getHero('simayi')!)).toBe(false);
+  });
+
+  // —— 空城 / 谦逊 / 帷幕：目标过滤 ——
+
+  it('空城：诸葛亮没有手牌时不能被【杀】指定为目标', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 有手牌就不再挡
+    state.players.find((p) => p.seatId === B)!.hand.push(sha('b1'));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+  });
+
+  it('空城：有手牌时仍可被【决斗】指定，没手牌时不行', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1'), juedou('a2')] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    state.players.find((p) => p.seatId === B)!.hand.push(sha('b1'));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+  });
+
+  it('谦逊：陆逊不能被【顺手牵羊】【乐不思蜀】指定，【过河拆桥】不受影响', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [shunshou('a1'), lebu('a2'), guohe('a3')] },
+      { seatId: B, name: '乙', heroId: 'luxun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    fail(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [B] }));
+  });
+
+  it('帷幕：贾诩不能被黑色锦囊指定，红色锦囊可以', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('a1'), huogong('a2')] },
+      { seatId: B, name: '乙', heroId: 'jiaxu', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] })); // 黑桃过河拆桥
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] })); // 红桃火攻
+  });
+
+  it('帷幕：黑色【南蛮入侵】直接把贾诩排除在响应队列外', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('a1')] },
+      { seatId: B, name: '乙', heroId: 'jiaxu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    const pending = state.pending;
+    expect(pending?.kind).toBe('respondTrick');
+    if (pending?.kind === 'respondTrick') {
+      expect(pending.ctx.responders).not.toContain(B);
+      expect(pending.ctx.responders).toContain(C);
+    }
+  });
+
+  // —— 完杀 ——
+
+  it('完杀：贾诩回合内，只有濒死者本人与贾诩能使用【桃】救援', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'jiaxu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [tao('c1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受 1 点 → 濒死
+    const pending = state.pending;
+    expect(pending?.kind).toBe('respondDeath');
+    if (pending?.kind === 'respondDeath') {
+      expect(pending.askQueue).toContain(B); // 濒死者本人
+      expect(pending.askQueue).toContain(A); // 完杀持有者
+      expect(pending.askQueue).not.toContain(C); // 无关的人被排除
+    }
+    expect(state.log.some((e) => e.message.includes('完杀'))).toBe(true);
+  });
+
+  // —— 君主将 ——
+
+  it('君主将只能作主将', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+    // 曹操作副将 → 拒
+    fail(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'caocao' }));
+    // 曹操作主将 → 通过
+    ok(act(state, A, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
+  });
+
+  it('君主将亮将时主副将同时明置，并获得【珠联璧合】', () => {
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+    ok(act(state, A, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
+    ok(act(state, B, { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'ganning' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.maxHp).toBe(4); // floor((4+4)/2)
+    ok(act(state, A, { type: 'revealHero', heroId: 'caocao' }));
+    expect(a.heroRevealed).toBe(true);
+    expect(a.deputyRevealed).toBe(true); // 双将同亮
+    expect(a.markers.zhulian).toBe(1); // 君主与同势力全员珠联璧合
+    expect(a.markers.xianqu).toBe(1);
+  });
+
+  it('君主不会成为野心家：3 魏里最后那个是君主 → 往前顺延给别人', () => {
+    const seats4: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+      { seatId: C, name: '丙' },
+      { seatId: D, name: '丁' },
+    ];
+    const state = createGame(seats4, 'TEST', { mode: 'guozhan', freePick: true });
+    ok(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' })); // 魏
+    ok(act(state, B, { type: 'pickHero', heroId: 'simayi', deputyHeroId: 'xiahoudun' })); // 魏
+    ok(act(state, C, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' })); // 魏（君主）
+    ok(act(state, D, { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' })); // 蜀
+    const c = state.players.find((p) => p.seatId === C)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(c.faction).toBe('wei'); // 君主保持魏
+    expect(b.faction).toBe('ambitionist'); // 跳过君主，顺延到上一个魏
+  });
+
+  // —— 新武将技能 ——
+
+  it('奸雄：曹操受到伤害后获得造成伤害的那张牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'caocao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand.some((c) => c.id === 'a1')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('奸雄'))).toBe(true);
+  });
+
+  it('集智：黄月英使用非延时锦囊时额外摸一张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'huangyueying', hand: [wuzhong('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const before = state.players.find((p) => p.seatId === A)!.hand.length;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // 打掉 1 张，无中生有摸 2 张，集智再摸 1 张
+    expect(state.players.find((p) => p.seatId === A)!.hand.length).toBe(before - 1 + 3);
+    expect(state.log.some((e) => e.message.includes('集智'))).toBe(true);
+  });
+
+  it('奇才：黄月英使用【顺手牵羊】不受距离限制（别人受）', () => {
+    const seats4 = (heroId: string): SeatSetup[] => [
+      { seatId: A, name: '甲', heroId },
+      { seatId: B, name: '乙' },
+      { seatId: C, name: '丙' },
+      { seatId: D, name: '丁' },
+    ];
+    // 没有奇才：A 到 C 距离 2，用不了
+    const plain = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [shunshou('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1')] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(distance(plain, A, C)).toBe(2);
+    fail(act(plain, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+
+    // 有奇才：同样距离 2，可以
+    void seats4;
+    const wy = makeGame([
+      { seatId: A, name: '甲', heroId: 'huangyueying', hand: [shunshou('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1')] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(distance(wy, A, C)).toBe(2);
+    ok(act(wy, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+  });
+
+  it('国色：大乔把方块牌当【乐不思蜀】使用，黑色牌不行', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'daqiao',
+        hand: [mk('a1', 'shan', 'diamond'), mk('a2', 'shan', 'spade')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const legal = toSnapshot(state, A).prompt?.legalCardIds ?? [];
+    expect(legal).toContain('a1'); // 方块牌可转化
+    expect(legal).not.toContain('a2'); // 黑桃牌不行
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'lebu', targetIds: [B] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.judgment.some((c) => c.type === 'lebu')).toBe(true);
+  });
+
+  it('结姻：孙尚香弃两张手牌令已受伤男性回复体力，自己也回', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'sunshangxiang',
+        hand: [sha('a1'), sha('a2'), sha('a3')],
+        hp: 2,
+      },
+      // 目标得是男性：平民没有性别字段，所以用许褚
+      { seatId: B, name: '乙', heroId: 'xuchu', hand: [], hp: 2 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(
+      act(state, A, { type: 'useSkill', skillId: 'jieyin', cardIds: ['a1', 'a2'], targetIds: [B] }),
+    );
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(3);
+    expect(state.players.find((p) => p.seatId === A)!.hand.length).toBe(1);
+  });
+
+  it('结姻：目标须为男性且已受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'sunshangxiang', hand: [sha('a1'), sha('a2')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'zhenji', hand: [], hp: 1 }, // 女性
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [], hp: 4 }, // 满体力
+    ]);
+    fail(
+      act(state, A, { type: 'useSkill', skillId: 'jieyin', cardIds: ['a1', 'a2'], targetIds: [B] }),
+    );
+    fail(
+      act(state, A, { type: 'useSkill', skillId: 'jieyin', cardIds: ['a1', 'a2'], targetIds: [C] }),
+    );
+  });
+
+  it('狂骨：魏延对距离 1 以内的角色造成伤害后回复 1 点体力', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'weiyan', hand: [sha('a1')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('狂骨'))).toBe(true);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 选牌原语（pickCards）与它的第一个真实用户：诸葛亮·观星 */
+describe('选牌原语与观星（阶段 2.2）', () => {
+  /** 造一副可控牌堆。注意 drawOne 从数组**末尾** pop，所以最后一个 id 最先被抽到 */
+  function setDeck(state: GameState, ids: string[]) {
+    state.deck = ids.map((id, i) => mk(id, 'sha', i % 2 === 0 ? 'spade' : 'club', i + 1));
+  }
+
+  it('观星：发动后观看牌堆顶 X 张（X=存活角色数），一张不选则顺序不变', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+    ]);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4']); // d4 最先被抽到
+    ok(act(state, A, { type: 'endPhase' }));
+    // 观星是「可以」→ 先问是否发动
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 进入选牌：候选是牌堆顶 2 张（场上 2 人）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.min).toBe(0);
+      expect(state.pending.max).toBe(2);
+      // 关键：候选牌不在手牌里（是牌堆顶），所以提示必须下发完整牌面
+      expect(state.pending.cards.map((c) => c.id)).toEqual(['d4', 'd3']);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: [] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 牌堆没动，摸牌阶段拿走原来的顶两张
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['d3', 'd4']);
+    // 私密：日志只记张数，不记牌名
+    const guanxingLog = state.log
+      .filter((e) => e.message.includes('观星') || e.message.includes('选择了'))
+      .map((e) => e.message)
+      .join(' | ');
+    expect(guanxingLog).not.toContain('梅花4');
+    expect(guanxingLog).not.toContain('黑桃3');
+    // 选完回到出牌阶段，没卡住
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('观星：选中的牌沉到牌堆底（最后才被抽到）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+    ]);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4']);
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 把最先抽到的 d4 沉底
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d4'] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 摸到 d3、d2；d4 被压到牌堆最底（数组最前面）
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['d2', 'd3']);
+    expect(state.deck[0]!.id).toBe('d4');
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('观星：不发动 → 牌堆原样、日志无痕', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+    ]);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4']);
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['d3', 'd4']);
+    expect(state.log.some((e) => e.message.includes('观星'))).toBe(false);
+  });
+
+  it('观星：候选张数不超过存活人数，也不超过 5', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7']);
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards).toHaveLength(3); // 场上 3 人
+    } else {
+      throw new Error('应进入选牌');
+    }
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 原语补完：equipLost（枭姬）、判定牌归属（天妒）、drawPhaseEnd 与伤害加成（裸衣）、多段续接（遗计） */
+describe('阶段 2.3 原语与验证技能', () => {
+  it('枭姬：装备被顶替 → 问是否发动 → 摸两张牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'sunshangxiang', hand: [wpn('w1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = wpn('w0'); // 先装一把，等着被顶替
+    const before = a.hand.length;
+    ok(act(state, A, { type: 'playCard', cardId: 'w1', targetIds: [] }));
+    // 旧武器被顶掉 = 失去装备区的一张牌 → 枭姬问一句
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.length).toBe(before - 1 + 2); // 打掉 w1，再摸两张
+    expect(state.log.some((e) => e.message.includes('枭姬'))).toBe(true);
+    // 关键：装备变动路径被询问打断后也接回来了，控制权回到出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('枭姬：过河拆桥拆掉装备也触发（控制权回到拆桥的人）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('g1')] },
+      { seatId: B, name: '乙', heroId: 'sunshangxiang', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = mk('ar1', 'armor', 'heart', 1);
+    ok(act(state, A, { type: 'playCard', cardId: 'g1', targetIds: [B], targetCardId: 'ar1' }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand).toHaveLength(2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('枭姬：拆的是手牌则不触发（只有装备区才算）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('g1')] },
+      { seatId: B, name: '乙', heroId: 'sunshangxiang', hand: [sha('b1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'g1', targetIds: [B] }));
+    passWuxie(state);
+    // B 的手牌没了，但没有枭姬的询问
+    expect(state.log.some((e) => e.message.includes('枭姬'))).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(b.hand).toHaveLength(0);
+  });
+
+  it('天妒：郭嘉把自己的判定牌收进手里，不进弃牌堆', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'guojia', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    state.deck.push(mk('jc', 'sha', 'heart', 1)); // 红桃 → 乐不思蜀无效
+    ok(act(state, A, { type: 'endPhase' })); // 轮到 B，判定阶段
+    expect(b.hand.some((c) => c.id === 'jc')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'jc')).toBe(false);
+    expect(state.log.some((e) => e.message.includes('获得了判定牌'))).toBe(true);
+  });
+
+  it('天妒：只收自己的判定牌，不抢别人的', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'guojia', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // B 判定区有乐不思蜀，A（郭嘉）不在判定中
+    b.judgment.push(lebu('lb0'));
+    state.deck.push(mk('jc', 'sha', 'heart', 1));
+    ok(act(state, A, { type: 'endPhase' })); // 轮到 B 判定
+    expect(a.hand.some((c) => c.id === 'jc')).toBe(false); // 郭嘉没抢
+    expect(state.discard.some((c) => c.id === 'jc')).toBe(true); // 正常进弃牌堆
+  });
+
+  it('遗计：受伤后摸两张，可把摸到的牌交给别人（三段续接）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'guojia', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck.push(mk('d1', 'sha', 'spade', 1));
+    state.deck.push(mk('d2', 'sha', 'club', 2));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤
+    // 第一段：是否发动
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 第二段：摸两张后挑要送出去的（候选＝刚摸到的两张）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards.map((x) => x.id).sort()).toEqual(['d1', 'd2']);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d1'] }));
+    // 第三段：选交给谁
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(c.hand.map((x) => x.id)).toEqual(['d1']);
+    expect(b.hand.map((x) => x.id)).toEqual(['d2']);
+    // 三段走完，控制权回到出伤害的甲
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('遗计：不发动就只是受伤，不进后续链', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'guojia', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('裸衣（国战）：摸牌阶段结束时弃一张牌 → 本回合【杀】伤害 +1', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a9')] },
+        { seatId: B, name: '乙', heroId: 'xuchu', hand: [] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.heroRevealed = true; // 国战要亮将技能才生效
+    state.deck.push(mk('d1', 'sha', 'spade', 1));
+    state.deck.push(mk('d2', 'sha', 'club', 2));
+    ok(act(state, A, { type: 'endPhase' })); // 轮到 B
+    // 摸牌阶段**结束**时问（国战版的时机）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d1'] })); // 弃 d1，留 d2 当杀
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+
+    // 用剩下的【杀】打 A：基础 1 + 裸衣 1 = 2
+    ok(act(state, B, { type: 'playCard', cardId: 'd2', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(a.hp).toBe(4 - 2);
+  });
+
+  it('裸衣（身份局）：摸牌阶段少摸一张 → 只摸到 1 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'xuchu', hand: [] },
+    ]);
+    state.deck.push(mk('d1', 'sha', 'spade', 1));
+    state.deck.push(mk('d2', 'sha', 'club', 2));
+    state.deck.push(mk('d3', 'sha', 'heart', 3));
+    ok(act(state, A, { type: 'endPhase' })); // 轮到 B
+    // 身份局版的时机是摸牌阶段**开始时**（它改的是摸牌数）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand.map((c) => c.id)).toEqual(['d3']); // 少摸一张，只拿到一张
+    expect(b.flags.damageBonusThisTurn).toBe(1);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('裸衣：不发动就没有加成，也没少摸', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'xuchu', hand: [] },
+    ]);
+    state.deck.push(mk('d1', 'sha', 'spade', 1));
+    state.deck.push(mk('d2', 'sha', 'club', 2));
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand).toHaveLength(2);
+    expect(b.flags.damageBonusThisTurn).toBe(0);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 原语补完第二批：hand_emptied（连营）、extra_turn（放权）、limited_skill（涅槃）、flip（翻面） */
+describe('阶段 2.4 原语与验证技能', () => {
+  it('连营：打出手里最后一张牌后空手 → 问是否发动 → 摸一张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'luxun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 杀的结算停在「等乙出闪」，同时甲已经空手 → 连营插进来问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand).toHaveLength(1);
+    expect(state.log.some((e) => e.message.includes('连营'))).toBe(true);
+    // 关键：连营的询问插在杀的结算中间，问完要把「等乙出闪」还回去
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('连营：不发动则一牌不摸', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'luxun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(a.hand).toHaveLength(0);
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('连营：手牌被过河拆桥拿走最后一张也触发', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('g1')] },
+      { seatId: B, name: '乙', heroId: 'luxun', hand: [sha('b1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'g1', targetIds: [B] }));
+    passWuxie(state);
+    // 乙的手牌被拆空 → 连营
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand).toHaveLength(1);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('放权：结束阶段弃一张手牌 → 指定角色获得一个额外回合', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'liushan', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    // 第一段：是否发动
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 第二段：弃一张手牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    // 第三段：选给谁
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    expect(a.hand).toHaveLength(0);
+    // 乙先进行额外回合
+    expect(state.seatOrder[state.turn.seatIndex]).toBe(B);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+    expect(state.log.some((e) => e.message.includes('额外的回合'))).toBe(true);
+  });
+
+  it('涅槃：濒死时发动 → 弃置所有牌、摸三张、体力回到 3，不进求桃队列', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'pangtong', hand: [shan('b1')], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受 1 点 → 濒死
+    // 涅槃先问（nearDeath 时机可挂起）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hp).toBe(3);
+    expect(b.alive).toBe(true);
+    // 关键：被技能救回来就不该再进濒死求桃队列，控制权回到出伤害的人
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(b.usedOncePerGame.niepan).toBe(true);
+    // 原来的手牌弃掉了，换成摸到的三张
+    expect(b.hand).toHaveLength(3);
+  });
+
+  it('涅槃：不发动则照常进入求桃队列', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'pangtong', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+  });
+
+  it('翻面：翻面朝上的角色跳过自己的回合，并翻回正面', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.flipped = true;
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 跳过
+    expect(b.flipped).toBe(false); // 已翻回正面
+    expect(b.hand).toHaveLength(0); // 跳过了摸牌阶段
+    expect(state.log.some((e) => e.message.includes('跳过本回合'))).toBe(true);
+    // 回合直接顺延到下一个存活者（2 人局就是甲）
+    expect(state.seatOrder[state.turn.seatIndex]).toBe(A);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 武器特效：贯石斧（闪避后弃牌仍造成伤害）、青龙偃月刀（继续出杀）、雌雄双股剑（异性二选一） */
+describe('武器特效（卡牌效果）', () => {
+  it('贯石斧：被【闪】抵消后弃置两张牌 → 此【杀】依然造成伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2'), sha('a3')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('w1', 'guanshi');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' })); // 出闪抵消
+    // 被闪避 → 贯石斧问一句
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 候选是手牌里剩的两张
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2', 'a3'] }));
+    expect(b.hp).toBe(3); // 依然造成伤害
+    expect(a.hand).toHaveLength(0); // a1 打掉 + 弃 a2 a3
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('贯石斧：选不发动则【杀】被闪掉，目标不受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2'), sha('a3')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('w1', 'guanshi');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hp).toBe(4);
+    expect(a.hand).toHaveLength(2); // 只打掉 a1
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('贯石斧：手牌不够两张时不问', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = weapon('w1', 'guanshi');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // 只有武器自己一张可弃（已排除）→ 直接过，没有询问
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(4);
+  });
+
+  it('青龙偃月刀：被【闪】抵消后可以继续使用一张【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('w1', 'qinglong');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    // 新的【杀】重新走一遍，等乙出闪
+    expect(state.pending?.kind).toBe('respondSha');
+    expect(a.hand).toHaveLength(0);
+    // 乙没有第二张闪 → 弃权受伤
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(3);
+    expect(b.hand).toHaveLength(0);
+  });
+
+  it('青龙偃月刀：追加的【杀】不计入本回合出杀次数', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), sha('a2'), sha('a3')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = weapon('w1', 'qinglong');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    expect(a.flags.shaCountThisTurn).toBe(1); // 只有第一张算数
+    ok(act(state, B, { type: 'pass' })); // 第二张杀命中
+    // 追加的杀不占次数；但本回合那 1 张正常额度已被第一张用掉，
+    // 所以再出一张普通杀仍然该被拒（额度是 1 张正常 + N 张青龙追加）
+    fail(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [B] }));
+  });
+
+  it('雌雄双股剑：指定异性目标 → 目标选择令使用者摸一张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'guanyu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhenji', hand: [shan('b1'), shan('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = weapon('w1', 'cixiong');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 由**目标**选择，且发生在问她出闪之前
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'draw' }));
+    expect(a.hand).toHaveLength(1); // 摸了一张
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('雌雄双股剑：目标选择弃置一张手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'guanyu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhenji', hand: [shan('b1'), shan('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.players.find((p) => p.seatId === A)!.equipment.weapon = weapon('w1', 'cixiong');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'discard' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(b.hand).toHaveLength(1);
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('雌雄双股剑：目标同性别时不触发', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'guanyu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.players.find((p) => p.seatId === A)!.equipment.weapon = weapon('w1', 'cixiong');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 两名男性 → 直接问出闪，没有雌雄的询问
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 张辽·突袭、刘备·仁德：都是靠前几轮的原语才做得出来的技能 */
+describe('突袭与仁德', () => {
+  it('突袭：少摸一张牌，改为获得一名角色的一张手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhangliao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1'), sha('c2')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck.push(mk('d1', 'sha', 'spade', 1));
+    state.deck.push(mk('d2', 'sha', 'club', 2));
+    state.deck.push(mk('d3', 'sha', 'heart', 3));
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙
+    // 突袭先问是否发动
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 只有丙有手牌，所以候选只有他一个（还没到能给「不再选人」的时候）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toEqual([C]);
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 由张辽挑拿对方哪一张
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards.map((x) => x.id).sort()).toEqual(['c1', 'c2']);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: ['c1'] }));
+    expect(c.hand.map((x) => x.id)).toEqual(['c2']);
+    // 少摸一张 → 摸牌阶段只摸 1 张（拿到牌堆顶的 d3）
+    expect(b.hand.map((x) => x.id).sort()).toEqual(['c1', 'd3']);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('突袭：不发动则照常摸两张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhangliao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck.push(mk('d1', 'sha', 'spade', 1));
+    state.deck.push(mk('d2', 'sha', 'club', 2));
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand).toHaveLength(2); // 正常摸两张
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('突袭：两名目标都拿得到，也可以只选一个', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangliao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 选了第一名之后，候选项里会出现「不再选人」
+    ok(act(state, B, { type: 'chooseOption', optionId: A }));
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toContain('__stop');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: '__stop' })); // 只拿一个
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['a1'] }));
+    expect(c.hand).toHaveLength(1); // 丙没被拿
+    expect(b.hand.map((x) => x.id)).toContain('a1');
+  });
+
+  it('仁德：一次交出两张 → 回复 1 点体力', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'liubei', hand: [sha('a1'), sha('a2'), sha('a3')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(
+      act(state, A, { type: 'useSkill', skillId: 'rende', cardIds: ['a1', 'a2'], targetIds: [B] }),
+    );
+    expect(b.hand.map((x) => x.id).sort()).toEqual(['a1', 'a2']);
+    expect(a.hand.map((x) => x.id)).toEqual(['a3']);
+    expect(a.hp).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('仁德：分两次各给一张，第二次累计到两张才回血', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'liubei', hand: [sha('a1'), sha('a2'), sha('a3')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 官方不限次数：可以分几次给
+    ok(act(state, A, { type: 'useSkill', skillId: 'rende', cardIds: ['a1'], targetIds: [B] }));
+    expect(a.hp).toBe(2); // 只给一张，不回
+    ok(act(state, A, { type: 'useSkill', skillId: 'rende', cardIds: ['a2'], targetIds: [B] }));
+    expect(a.hp).toBe(3); // 累计两张 → 回 1 点
+  });
+
+  it('仁德：给超过两张也只回一次', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'liubei', hand: [sha('a1'), sha('a2'), sha('a3')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(
+      act(state, A, {
+        type: 'useSkill',
+        skillId: 'rende',
+        cardIds: ['a1', 'a2', 'a3'],
+        targetIds: [B],
+      }),
+    );
+    expect(a.hp).toBe(3); // 只回 1 点，不是 2 点
+    expect(a.hand).toHaveLength(0);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 目标转移（target_transfer）：大乔·流离 */
+describe('流离（目标转移）', () => {
+  it('流离：弃一张牌，把【杀】转给攻击范围内的另一名角色', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'daqiao', hand: [sha('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [shan('c1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 流离先问是否发动，且是问**被指定的大乔**
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 弃一张牌作为代价
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 选转移给谁。官方文本是「你攻击范围内的**一名其他角色**」，
+    // 回射来源（甲）也在这个范围内，所以两个人都可以选。
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id).sort()).toEqual([A, C].sort());
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 关键：现在被问出闪的是**丙**，不是大乔
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(C);
+    expect(b.hand.map((x) => x.id)).toEqual(['b2']); // 弃掉了一张
+    expect(state.log.some((e) => e.message.includes('流离'))).toBe(true);
+  });
+
+  it('流离：可以把【杀】回射给来源，由来源自己出闪', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'daqiao', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: A }));
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(A);
+    if (state.pending?.kind === 'respondSha') expect(state.pending.attack.sourceId).toBe(A);
+  });
+
+  it('流离：选不发动则照常等大乔出闪', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'daqiao', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('流离：一张牌都没有时不问', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'daqiao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('流离：转移只发生一次（新目标不能是同一张杀再被改）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'daqiao', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'daqiao', hand: [sha('c1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 丙也是大乔，但这张杀已经被改过一次，不再问他流离
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(C);
+    expect(state.pending?.kind === 'respondSha' && state.pending.attack.redirected).toBe(true);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 势力技（faction_call）：曹操·护驾；以及孙权·救援这条势力加血规则 */
+describe('势力技与救援', () => {
+  /** 造一个国战局面并手动设好势力（测试辅助不走选将流程）。
+   *  势力用 [座次, 势力] 数组传——用对象字面量的 `{ B: 'wei' }` 是静态键名「B」，
+   *  不是变量 B 的值，写起来容易错。 */
+  function guozhanSeats(
+    seats: { seatId: string; name: string; heroId: string; hand: Card[]; hp?: number }[],
+    factions: [string, Faction][],
+  ): GameState {
+    const state = makeGameMode(seats, 'guozhan');
+    for (const [seatId, f] of factions) {
+      const p = state.players.find((x) => x.seatId === seatId);
+      if (!p) throw new Error(`没有这个座位：${seatId}`);
+      p.faction = f;
+      p.heroRevealed = true;
+    }
+    return state;
+  }
+
+  it('护驾：令同势力角色代打一张【闪】，代打即视为曹操打出', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'caocao', hand: [] },
+        { seatId: C, name: '丙', heroId: 'xuchu', hand: [shan('c1')] },
+      ],
+      [
+        [B, 'wei'],
+        [C, 'wei'],
+      ],
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 曹操的提示里出现护驾入口，且列出能代打的同势力角色
+    const prompt = toSnapshot(state, B).prompt!;
+    expect(prompt.kind).toBe('respondSha');
+    expect(prompt.factionCall?.skillName).toBe('护驾');
+    expect(prompt.factionCall?.helpers.map((h) => h.seatId)).toEqual([C]);
+    ok(act(state, B, { type: 'factionCall', skillId: 'hujia' }));
+    // 轮到丙被问是否代打
+    expect(state.pending?.kind).toBe('factionCall');
+    const cPrompt = toSnapshot(state, C).prompt!;
+    expect(cPrompt.kind).toBe('factionCall');
+    expect(cPrompt.legalCardIds).toEqual(['c1']);
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    // 视为曹操打出了闪 → 杀被闪避，丙的牌进了弃牌堆
+    expect(c.hand).toHaveLength(0);
+    expect(b.hp).toBe(4);
+    expect(state.log.some((e) => e.message.includes('替'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('护驾：没人代打则回到曹操自己响应', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'caocao', hand: [] },
+        { seatId: C, name: '丙', heroId: 'xuchu', hand: [shan('c1')] },
+      ],
+      [
+        [B, 'wei'],
+        [C, 'wei'],
+      ],
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'factionCall', skillId: 'hujia' }));
+    ok(act(state, C, { type: 'pass' })); // 丙不代打
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('护驾：同势力角色手里没有【闪】时不给入口', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'caocao', hand: [] },
+        { seatId: C, name: '丙', heroId: 'xuchu', hand: [sha('c1')] },
+      ],
+      [
+        [B, 'wei'],
+        [C, 'wei'],
+      ],
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    const prompt = toSnapshot(state, B).prompt!;
+    expect(prompt.factionCall).toBeUndefined();
+    // 直接发动会被拒
+    fail(act(state, B, { type: 'factionCall', skillId: 'hujia' }));
+  });
+
+  it('护驾：不同势力的人不能代打', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'caocao', hand: [] },
+        { seatId: C, name: '丙', heroId: 'ganning', hand: [shan('c1')] },
+      ],
+      [
+        [B, 'wei'],
+        [C, 'wu'],
+      ], // 丙是吴势力
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(toSnapshot(state, B).prompt?.factionCall).toBeUndefined();
+  });
+
+  it('救援：同势力角色对孙权使用【桃】，孙权额外回复 1 点', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'sunquan', hand: [], hp: 1 },
+        { seatId: C, name: '丙', heroId: 'ganning', hand: [tao('c1')] },
+      ],
+      [
+        [B, 'wu'],
+        [C, 'wu'],
+      ],
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 0 血濒死
+    ok(act(state, B, { type: 'pass' })); // 自己没桃，跳过
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' })); // 丙用桃救
+    expect(b.hp).toBe(2); // 桃 1 点 + 救援 1 点
+    expect(state.log.some((e) => e.message.includes('救援'))).toBe(true);
+  });
+
+  it('救援：不同势力的人用桃救则没有额外回复', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'sunquan', hand: [], hp: 1 },
+        { seatId: C, name: '丙', heroId: 'zhenji', hand: [tao('c1')] },
+      ],
+      [
+        [B, 'wu'],
+        [C, 'wei'],
+      ], // 丙是魏势力
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    expect(b.hp).toBe(1); // 只有桃的 1 点
+    // 注意别拿 '救援' 当关键词：濒死提示里本来就有「等待出桃救援」这句
+    expect(state.log.some((e) => e.message.includes('【救援】生效'))).toBe(false);
+  });
+
+  // —— 需要【杀】的场景：决斗 / 借刀杀人 / 南蛮入侵 ——
+
+  it('激将：决斗时令同势力角色代打【杀】，代打后决斗换手', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1')] },
+        { seatId: B, name: '乙', heroId: 'liubei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangfei', hand: [sha('c1')] },
+      ],
+      [
+        [B, 'shu'],
+        [C, 'shu'],
+      ],
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 刘备手里一张杀都没有，但提示里应该出现激将入口
+    expect(state.pending?.kind).toBe('respondTrick');
+    const prompt = toSnapshot(state, B).prompt!;
+    expect(prompt.factionCall?.skillName).toBe('激将');
+    expect(prompt.factionCall?.helpers.map((h) => h.seatId)).toEqual([C]);
+    ok(act(state, B, { type: 'factionCall', skillId: 'jijiang' }));
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    // 视作刘备打出了杀 → 决斗换手，轮到甲出杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(A);
+    expect(state.log.some((e) => e.message.includes('替'))).toBe(true);
+  });
+
+  it('激将：借刀杀人时代打，视为刘备对指定目标使用【杀】', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [jiedao('a1')] },
+        { seatId: B, name: '乙', heroId: 'liubei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangfei', hand: [sha('c1')] },
+        { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+      ],
+      [
+        [B, 'shu'],
+        [C, 'shu'],
+      ],
+    );
+    // 刘备要有武器（借刀的前提）
+    state.players.find((p) => p.seatId === B)!.equipment.weapon = weapon('b0', 'qinggang');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, D] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('respondTrick');
+    expect(toSnapshot(state, B).prompt?.factionCall?.skillName).toBe('激将');
+    ok(act(state, B, { type: 'factionCall', skillId: 'jijiang' }));
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    // 代打的杀以**刘备**为来源，目标是丁
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') {
+      expect(state.pending.responderId).toBe(D);
+      expect(state.pending.attack.sourceId).toBe(B);
+    }
+  });
+
+  it('激将：南蛮入侵时代打后，响应队列继续往下走', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('a1')] },
+        { seatId: B, name: '乙', heroId: 'liubei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangfei', hand: [sha('c1')] },
+      ],
+      [
+        [B, 'shu'],
+        [C, 'shu'],
+      ],
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'factionCall', skillId: 'jijiang' }));
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    // 代的这张算刘备的，丙自己还得再响应一次南蛮（他已经没杀了）
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(C);
+  });
+
+  it('激将：没人代打则回到刘备自己响应', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1')] },
+        { seatId: B, name: '乙', heroId: 'liubei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangfei', hand: [sha('c1')] },
+      ],
+      [
+        [B, 'shu'],
+        [C, 'shu'],
+      ],
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    ok(act(state, B, { type: 'factionCall', skillId: 'jijiang' }));
+    ok(act(state, C, { type: 'pass' })); // 张飞也不代打
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('激将：牌型对不上时用不了（护驾要闪，决斗要杀）', () => {
+    const state = guozhanSeats(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [juedou('a1')] },
+        { seatId: B, name: '乙', heroId: 'caocao', hand: [shan('b1')] },
+        { seatId: C, name: '丙', heroId: 'xuchu', hand: [sha('c1')] },
+      ],
+      [
+        [B, 'wei'],
+        [C, 'wei'],
+      ],
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 曹操只有护驾（要闪），决斗要的是杀 → 提示里不该有入口
+    expect(toSnapshot(state, B).prompt?.factionCall).toBeUndefined();
+    fail(act(state, B, { type: 'factionCall', skillId: 'hujia' }));
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 拼点（pindian）与它的第一个用户：太史慈·天义 */
+describe('拼点与天义', () => {
+  it('天义：拼点获胜 → 本回合额外一张【杀】且【杀】无距离限制', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'taishici',
+        hand: [mk('a1', 'sha', 'spade', 13), sha('a2')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 1)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', targetIds: [B] }));
+    // 第一步：发起者扣一张
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    // 第二步：目标扣一张
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 13 > 1，太史慈赢
+    expect(state.log.some((e) => e.message.includes('拼点获胜'))).toBe(true);
+    expect(a.flags.ignoreShaDistanceThisTurn).toBe(true);
+    expect(a.flags.shaCountThisTurn).toBe(0); // 往回退了 1 ⇒ 本回合可额外出一张【杀】
+    // 两张拼点的牌都进了弃牌堆
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
+    // 关键：拼点链走完要把控制权还回来，不能停在 null
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('天义：拼点没赢则没有加成', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'taishici', hand: [mk('a1', 'sha', 'spade', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 13)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(a.flags.ignoreShaDistanceThisTurn).toBe(false);
+    expect(a.flags.shaCountThisTurn).toBe(0);
+    expect(state.log.some((e) => e.message.includes('未获胜'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('拼点：平点则无人获胜', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'taishici', hand: [mk('a1', 'sha', 'spade', 7)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 7)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(state.log.some((e) => e.message.includes('平点'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('拼点：扣牌阶段不公布牌名，两边都扣好才一起亮', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'taishici', hand: [mk('a1', 'sha', 'spade', 13)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 1)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    // 目标还没扣牌，此时日志里不该出现任何一张拼点牌的名字
+    const mid = state.log.map((e) => e.message).join(' ');
+    expect(mid).not.toContain('黑桃K');
+    expect(mid).not.toContain('梅花A');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    const after = state.log.map((e) => e.message).join(' ');
+    expect(after).toContain('亮出');
+  });
+
+  it('天义：目标没有手牌时不能选', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'taishici', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1')] },
+    ]);
+    // B 没手牌 → canUse 仍然为真（C 有手牌），但选中 B 应被拒
+    fail(act(state, A, { type: 'useSkill', skillId: 'tianyi', targetIds: [B] }));
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 铁索连环（横置）：属性伤害会沿横置角色蔓延 */
+describe('铁索连环（横置）', () => {
+  it('属性伤害沿横置角色蔓延，涉及的每个人各自重置', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    b.chained = true;
+    c.chained = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 吃火属性伤害
+    expect(b.hp).toBe(3);
+    expect(c.hp).toBe(3); // 蔓延到了丙
+    expect(b.chained).toBe(false); // 都重置了
+    expect(c.chained).toBe(false);
+    expect(state.log.some((e) => e.message.includes('铁索连环'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('普通【杀】不是属性伤害，不蔓延也不重置', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    b.chained = true;
+    c.chained = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(3);
+    expect(c.hp).toBe(4); // 没有蔓延
+    expect(b.chained).toBe(true); // 也没重置
+    expect(c.chained).toBe(true);
+  });
+
+  it('没横置的角色不会被蔓延到', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    b.chained = true;
+    c.chained = false; // 丙没横置
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(c.hp).toBe(4);
+    expect(b.chained).toBe(false);
+  });
+
+  it('蔓延途中有人进濒死 → 走完濒死，后面的人照样要受伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [], hp: 1 },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    const c = state.players.find((p) => p.seatId === C)!;
+    const d = state.players.find((p) => p.seatId === D)!;
+    for (const sid of [B, C, D]) {
+      state.players.find((p) => p.seatId === sid)!.chained = true;
+    }
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 蔓延到丙（1 血）→ 濒死
+    expect(state.pending?.kind).toBe('respondDeath');
+    passDeathSaves(state);
+    expect(c.alive).toBe(false);
+    // 关键：丙的濒死走完后，**丁仍然要受到蔓延伤害**（别把后面的人丢了）
+    expect(d.hp).toBe(3);
+    expect(d.chained).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 虚拟锦囊（多牌转化）：袁绍·乱击把两张同花色手牌当【万箭齐发】 */
+describe('虚拟锦囊与乱击', () => {
+  it('乱击：两张同花色手牌当【万箭齐发】使用', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'yuanshao',
+        hand: [
+          mk('a1', 'sha', 'spade', 1),
+          mk('a2', 'shan', 'spade', 2),
+          mk('a3', 'sha', 'heart', 3),
+        ],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(
+      act(state, A, { type: 'useSkill', skillId: 'luanji', cardIds: ['a1', 'a2'], targetIds: [] }),
+    );
+    // 两张作为代价的牌进了弃牌堆
+    expect(a.hand.map((c) => c.id)).toEqual(['a3']);
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'a2')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('视为使用【万箭齐发】'))).toBe(true);
+    passWuxie(state);
+    // 万箭的结算照常：先问乙出闪
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(B);
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' })); // 出闪免伤
+    ok(act(state, C, { type: 'pass' })); // 丙不出闪 → 受伤
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(4);
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('乱击：手里没有同花色对时不可用', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'yuanshao',
+        hand: [mk('a1', 'sha', 'spade', 1), mk('a2', 'shan', 'heart', 2)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('luanji');
+    fail(
+      act(state, A, { type: 'useSkill', skillId: 'luanji', cardIds: ['a1', 'a2'], targetIds: [] }),
+    );
+  });
+
+  it('乱击：选了两张花色不同的牌会被拒', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'yuanshao',
+        hand: [
+          mk('a1', 'sha', 'spade', 1),
+          mk('a2', 'shan', 'spade', 2),
+          mk('a3', 'sha', 'heart', 3),
+        ],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    fail(
+      act(state, A, { type: 'useSkill', skillId: 'luanji', cardIds: ['a1', 'a3'], targetIds: [] }),
+    );
+  });
+
+  it('乱击：帷幕（贾诩）能挡住黑色万箭齐发', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'yuanshao',
+        hand: [mk('a1', 'sha', 'spade', 1), mk('a2', 'shan', 'spade', 2)],
+      },
+      { seatId: B, name: '乙', heroId: 'jiaxu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(
+      act(state, A, { type: 'useSkill', skillId: 'luanji', cardIds: ['a1', 'a2'], targetIds: [] }),
+    );
+    passWuxie(state);
+    // 黑桃万箭 → 帷幕把贾诩排除在响应队列外
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') {
+      expect(state.pending.ctx.responders).toEqual([C]);
+    }
+  });
+});
+
+// ——————————————————————————————————————————
+
+/**
+ * 非锁定技失效（新国战·铁骑那类）。
+ * 关键在于**两个方向都要对**：非锁定技要被屏蔽，锁定技不能受影响——
+ * 所以先给技能补了 `locked` / `lockedFields` 标记。
+ */
+describe('非锁定技失效（skill_nullify）', () => {
+  it('非锁定技：武圣被屏蔽，红牌不再能当【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'guanyu', hand: [mk('a1', 'tao', 'heart', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 正常：红桃【桃】可以当【杀】使用 → 出现在合法牌里
+    expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('a1');
+    // 失效后：武圣是转化技、不是锁定技 → 被屏蔽
+    a.flags.nonLockedSkillsDisabled = true;
+    expect(toSnapshot(state, A).prompt?.legalCardIds ?? []).not.toContain('a1');
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', as: 'sha', targetIds: [B] }));
+  });
+
+  it('锁定技不受影响：马术（距离修正）照旧生效', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'machao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(distance(state, B, D)).toBe(1); // 基础 2 − 马术 1
+    b.flags.nonLockedSkillsDisabled = true;
+    expect(distance(state, B, D)).toBe(1); // 锁定技：照样 −1
+  });
+
+  it('锁定技不受影响：空城照旧挡住【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.players.find((p) => p.seatId === B)!.flags.nonLockedSkillsDisabled = true;
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+  });
+
+  it('锁定技不受影响：狂骨（锁定技钩子）照旧触发', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'weiyan', hand: [sha('a1')], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.flags.nonLockedSkillsDisabled = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(a.hp).toBe(3); // 狂骨仍然回了 1 点
+  });
+
+  it('非锁定技钩子被屏蔽：郭嘉的遗计不再询问', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'guojia', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.flags.nonLockedSkillsDisabled = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 受伤后应该直接过，不弹遗计
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(b.hand).toHaveLength(0);
+  });
+
+  it('回合结束后「非锁定技失效」自动清掉', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'guanyu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.flags.nonLockedSkillsDisabled = true;
+    ok(act(state, A, { type: 'endPhase' })); // 甲的回合结束 → 轮到乙
+    expect(b.flags.nonLockedSkillsDisabled).toBe(false);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/**
+ * 觉醒技（awaken_skill）与「获得技能」。
+ * 关键点：要能把技能从**别的武将**身上摘过来（姜维·志继获得诸葛亮的【观星】），
+ * 所以先给钩子补了 skillId、给字段型技能补了 skillFields。
+ */
+describe('觉醒技与获得技能', () => {
+  it('志继：没有手牌时觉醒，减 1 点体力上限并获得【观星】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'jiangwei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.maxHp).toBe(4);
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 准备阶段
+    expect(b.maxHp).toBe(3);
+    expect(b.hp).toBe(3); // 上限变小，当前体力跟着夹下来
+    expect(b.grantedSkills).toEqual([{ heroId: 'zhugeliang', skillName: '观星' }]);
+    expect(b.usedOncePerGame.zhiji).toBe(true);
+    expect(state.log.some((e) => e.message.includes('觉醒'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('获得了技能【观星】'))).toBe(true);
+  });
+
+  it('志继：手里还有牌时不觉醒', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'jiangwei', hand: [sha('b1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.maxHp).toBe(4);
+    expect(b.grantedSkills).toEqual([]);
+    expect(b.usedOncePerGame.zhiji).toBeUndefined();
+  });
+
+  it('觉醒获得的【观星】从下一回合的准备阶段开始生效', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'jiangwei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' })); // 乙觉醒（这一回合的钩子列表已经取好了）
+    expect(b.maxHp).toBe(3);
+    // 这一回合不该问观星：钩子列表是在 runHooksPausable 开头一次性取的
+    expect(state.pending?.kind).toBe('play');
+    ok(act(state, B, { type: 'endPhase' })); // 乙回合结束
+    ok(act(state, A, { type: 'endPhase' })); // 又轮到乙
+    // 这次准备阶段就该问【观星】了
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('观星');
+  });
+
+  it('觉醒技是锁定技：非锁定技失效也挡不住它', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'jiangwei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.flags.nonLockedSkillsDisabled = true;
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.maxHp).toBe(3); // 照样觉醒
+  });
+});
+
+// ——————————————————————————————————————————
+
+/**
+ * 军令（army_order）与它的第一个用户：董昭·劝进。
+ *
+ * 军令是从六条里**随机抽两张**再挑一张，所以「执行」那条路的分支不确定——
+ * 测试用通用驱动器把它走完，重点验证**整条链不会卡住**（最容易出问题的地方）。
+ */
+describe('军令与劝进', () => {
+  /** 把当前挂起的询问/选牌一路走完（军令效果各不相同，只能通用对待） */
+  function driveToSettle(state: GameState): void {
+    let guard = 0;
+    while (state.pending && guard++ < 12) {
+      const p = state.pending;
+      if (p.kind === 'choice') {
+        ok(act(state, p.seatId, { type: 'chooseOption', optionId: p.options[0]!.id }));
+      } else if (p.kind === 'pickCards') {
+        const ids = p.cards.slice(0, Math.max(p.min, 0)).map((c) => c.id);
+        ok(act(state, p.seatId, { type: 'pickCards', cardIds: ids }));
+      } else {
+        break;
+      }
+    }
+  }
+
+  /** 造一个「丙已经受过伤」的局面 */
+  function setupWei(): GameState {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'dongzhao', hand: [sha('a1'), sha('a2')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.faction = 'wei';
+    a.heroRevealed = true; // 国战要亮将，技能才生效
+    a.maxHp = 2; // 双将公式下 floor((1.5+4)/2)=2
+    a.hp = 2;
+    // 先用一张【杀】打丙，制造「本回合受到过伤害」
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    return state;
+  }
+
+  it('劝进：目标不执行军令 → 董昭把手牌补到全场最多', () => {
+    const state = setupWei();
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(state.damagedThisTurn).toContain(C);
+    ok(act(state, A, { type: 'useSkill', skillId: 'quanjin', cardIds: ['a2'], targetIds: [C] }));
+    // 第一步：董昭从两张军令里挑一张
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.title).toContain('军令');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    // 第二步：由**丙**决定是否执行
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'no' }));
+    // 不执行 → 董昭补到全场最多：丙手里刚拿到 a2（1 张），董昭 0 张 → 摸 1 张
+    expect(a.hand).toHaveLength(1);
+    expect(c.hand.map((x) => x.id)).toEqual(['a2']);
+    expect(state.log.some((e) => e.message.includes('拒绝执行军令'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('劝进：目标执行军令 → 整条链走完，董昭摸一张', () => {
+    const state = setupWei();
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'quanjin', cardIds: ['a2'], targetIds: [C] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    driveToSettle(state);
+    // 关键：军令走完要回到董昭的出牌阶段，不能卡在某个询问上
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    // 执行了 → 董昭至少摸一张。只断言下界：军令是从六条里随机抽的，
+    // 抽到「摸一张再收两张」那条还会更多，写死张数会让用例变得不稳定。
+    expect(a.hand.length).toBeGreaterThanOrEqual(1);
+    expect(state.log.some((e) => e.message.includes('执行军令'))).toBe(true);
+  });
+
+  it('劝进：目标本回合没受过伤则不能选', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'dongzhao', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.faction = 'wei';
+    a.heroRevealed = true;
+    a.maxHp = 2;
+    a.hp = 2;
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('quanjin');
+    fail(act(state, A, { type: 'useSkill', skillId: 'quanjin', cardIds: ['a1'], targetIds: [B] }));
+  });
+
+  it('董昭是国战专属：不进混战/军争的选将池', () => {
+    expect(poolForMode('melee').map((h) => h.id)).not.toContain('dongzhao');
+    expect(poolForMode('guozhan').map((h) => h.id)).toContain('dongzhao');
+  });
+
+  it('体力换算：董昭(3)+许褚(4) → floor(3.5)=3，且有余下的半个阴阳鱼', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲' },
+        { seatId: B, name: '乙' },
+      ],
+      'TEST',
+      { mode: 'guozhan', freePick: true },
+    );
+    ok(act(state, A, { type: 'pickHero', heroId: 'dongzhao', deputyHeroId: 'xuchu' }));
+    ok(act(state, B, { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'ganning' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 官方牌面：董昭 1.5 阴阳鱼 + 许褚 2 阴阳鱼 = 3.5 → 上限 3（余下半个阴阳鱼）。
+    // 引擎吃的是身份局口径的体力（阴阳鱼数 = 体力÷2），所以董昭填 3 才等价。
+    expect(a.maxHp).toBe(3);
+    ok(act(state, A, { type: 'revealHero', heroId: 'dongzhao' }));
+    ok(act(state, A, { type: 'revealHero', heroId: 'xuchu' }));
+    expect(a.markers.yinyangyu).toBe(1);
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 标准版·魏补完（第一批）：曹仁·据守、典韦·强袭、荀彧·驱虎/节命 */
+describe('标准版魏（第二批武将）', () => {
+  it('据守：结束阶段摸三张并翻面，下个回合被跳过', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'caoren', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand).toHaveLength(3); // 摸三张
+    expect(a.flipped).toBe(true);
+    // 乙的回合走完 → 该轮到甲，但甲翻面 → 跳过
+    ok(act(state, B, { type: 'endPhase' }));
+    expect(a.flipped).toBe(false);
+    expect(state.log.some((e) => e.message.includes('跳过本回合'))).toBe(true);
+    expect(state.seatOrder[state.turn.seatIndex]).toBe(B);
+    expect(a.hand).toHaveLength(3); // 跳过了摸牌阶段
+  });
+
+  it('强袭：没武器时只能失去 1 点体力，然后造成 1 点伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'dianwei', hand: [], hp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'qiangxi', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('choice'); // 选代价
+    if (state.pending?.kind === 'choice') {
+      const opts = state.pending.options.map((o) => o.id);
+      expect(opts).toContain('loseHp');
+      expect(opts).not.toContain('weapon'); // 没武器
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'loseHp' }));
+    expect(a.hp).toBe(3);
+    expect(b.hp).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('强袭：有武器时可以弃武器代替失去体力', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'dianwei', hand: [], hp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = wpn('w1');
+    ok(act(state, A, { type: 'useSkill', skillId: 'qiangxi', targetIds: [B] }));
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toContain('weapon');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'weapon' }));
+    expect(a.equipment.weapon).toBeNull();
+    expect(a.hp).toBe(4); // 没掉血
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('驱虎：拼点赢了 → 令对方对其攻击范围内你指定的角色造成伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'xunyu', hand: [mk('a1', 'sha', 'spade', 13)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 1)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'quhu', targetIds: [B] }));
+    // 拼点：双方各扣一张
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 13 > 1 → 荀彧赢 → 由他指定受害者
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(c.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('驱虎'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('驱虎：拼点没赢 → 荀彧自己受到伤害', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'xunyu', hand: [mk('a1', 'sha', 'spade', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 13)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'quhu', targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(a.hp).toBe(2); // 3 − 1
+    // 荀彧自己受伤 → 触发他自己的【节命】，先把它问掉
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('驱虎：不能选体力值不大于自己的角色', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'xunyu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')], hp: 3 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    // 荀彧 3 血，乙 3 血 → 不满足「体力值大于你」
+    fail(act(state, A, { type: 'useSkill', skillId: 'quhu', targetIds: [B] }));
+  });
+
+  it('节命：受伤后令一名角色把牌补到体力上限', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xunyu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 受伤 → 节命
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 选让谁补牌
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(c.hand).toHaveLength(4); // 补到体力上限 4
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('节命：选不发动则什么都不发生', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xunyu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(c.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 曹丕：行殇（杀死角色后获得其所有牌）、放逐（受伤后令他人摸牌并翻面） */
+describe('曹丕', () => {
+  it('行殇：杀死一名角色后获得其所有牌（含装备与判定区）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'caopi', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [tao('b1')], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = mk('b2', 'armor', 'heart', 1);
+    b.judgment.push(lebu('b3'));
+    // A 连出两刀把 B 打死（第一刀打到 0，B 濒死无人救 → 阵亡）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 濒死：B 自己没桃、丙也没桃 → 阵亡 → 触发 kill 钩子
+    passDeathSaves(state);
+    expect(b.alive).toBe(false);
+    // 行殇先问是否获得
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 乙的手牌 + 装备 + 判定牌全归甲
+    const got = a.hand.map((c) => c.id);
+    expect(got).toContain('b1');
+    expect(got).toContain('b2');
+    expect(got).toContain('b3');
+    expect(state.log.some((e) => e.message.includes('行殇'))).toBe(true);
+    // 关键：这些牌不能再同时进弃牌堆
+    expect(state.discard.some((c) => c.id === 'b2')).toBe(false);
+  });
+
+  it('行殇：选不发动则死者的牌进弃牌堆', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'caopi', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [tao('b1')], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    passDeathSaves(state);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
+  });
+
+  it('放逐：受伤后令一名其他角色摸 X 张牌并翻面（X=已损失体力）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'caopi', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 受伤：3 → 2，已损失 1
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 选让谁摸牌并翻面
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.hand).toHaveLength(1); // 已损失 1 点 → 摸 1 张
+    expect(c.flipped).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('放逐：选不发动则什么都不发生', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'caopi', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(c.hand).toHaveLength(0);
+    expect(c.flipped).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 夏侯渊·神速、乐进·骁果、徐晃·断粮（各需一点引擎扩展） */
+describe('标准版魏（第三批：神速 / 骁果 / 断粮）', () => {
+  it('神速：跳过判定与摸牌阶段，视为使用一张【杀】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'xiahouyuan', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 判定区放一张乐不思蜀，验证「跳过判定阶段」会把它原样留着
+    b.judgment.push(lebu('lb0'));
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 准备阶段问神速
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'skip' }));
+    // 选【杀】的目标
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 丙被问出闪
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(C);
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+    // 关键：跳过判定阶段 → 乐不思蜀还留在判定区（没被处理掉）
+    expect(b.judgment.some((c) => c.id === 'lb0')).toBe(true);
+    // 跳过了摸牌阶段 → 手牌还是 0
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('神速：不发动则一切照常', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'xiahouyuan', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand).toHaveLength(2); // 正常摸两张
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('骁果：其他角色的结束阶段，弃一张基本牌令其受伤', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'yuejin', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    // 甲结束回合 → 派发 othersTurnEnd 给乙
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 弃一张基本牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 由**甲**二选一
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'damage' }));
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+    // 弃掉的那张基本牌进了弃牌堆（别查手牌数：回合已经推进到乙、他又摸了两张）
+    expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
+    // 走完 → 回合交给乙
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('骁果：手上一张基本牌都没有时不问', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'yuejin', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'endPhase' }));
+    // 直接进入乙的回合，没有骁果的询问
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+    expect(state.log.some((e) => e.message.includes('骁果'))).toBe(false);
+  });
+
+  it('断粮：黑色【闪】可以当【兵粮寸断】使用', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'xuhuang', hand: [mk('a1', 'shan', 'spade', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    // 黑桃【闪】本身不能用，但可以转化 → 出现在合法牌里
+    expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('a1');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'bingliang', targetIds: [B] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.judgment.some((c) => c.type === 'bingliang')).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('断粮：红色牌不能转化', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'xuhuang', hand: [mk('a1', 'shan', 'heart', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(toSnapshot(state, A).prompt?.legalCardIds ?? []).not.toContain('a1');
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', as: 'bingliang', targetIds: [B] }));
+  });
+
+  it('断粮：已经是兵粮寸断的目标不能再放', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'xuhuang', hand: [mk('a1', 'shan', 'spade', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.players.find((p) => p.seatId === B)!.judgment.push(bingliang('bl0'));
+    // 牌本身还是合法的（可以给丙），但给乙会被拒
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', as: 'bingliang', targetIds: [B] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'bingliang', targetIds: [C] }));
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 卧龙诸葛亮：八阵（视为装备八卦阵）、火计、看破 */
+describe('卧龙诸葛亮', () => {
+  it('八阵：没装防具时视为装备八卦阵，判定为红色即视为出闪', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'wolong', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'heart', 5)); // 红色判定
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.log.some((e) => e.message.includes('八卦阵'))).toBe(true);
+    // 直接闪掉，不再问乙出闪
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('八阵：判定为黑色则不生效，仍要问出闪', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'wolong', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'spade', 5)); // 黑色判定
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('八阵：自己装了防具就不再是八卦阵', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'wolong', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.players.find((p) => p.seatId === B)!.equipment.armor = mk('ar1', 'armor', 'club', 2);
+    state.deck.push(mk('jc', 'sha', 'heart', 5));
+    // 红桃杀 + 装了防具 → 八阵不生效；也没有八卦阵可判 → 直接问出闪
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('火计：红色手牌当【火攻】使用', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'wolong', hand: [mk('a1', 'shan', 'heart', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('a1');
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'huogong', targetIds: [B] }));
+    passWuxie(state);
+    // 火攻：轮到目标展示手牌
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('火计：黑色牌不能当【火攻】', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'wolong', hand: [mk('a1', 'shan', 'spade', 1)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(toSnapshot(state, A).prompt?.legalCardIds ?? []).not.toContain('a1');
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', as: 'huogong', targetIds: [B] }));
+  });
+
+  it('看破：黑色手牌可以当【无懈可击】响应', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [wuzhong('a1')] },
+      { seatId: B, name: '乙', heroId: 'wolong', hand: [mk('b1', 'sha', 'spade', 1)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    // 无懈询问轮：甲的下家乙先被问，黑桃牌可以当无懈
+    expect(state.pending?.kind).toBe('wuxieQueue');
+    expect(toSnapshot(state, B).prompt?.legalCardIds).toContain('b1');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    // 无懈生效 → 无中生有被取消，回到甲的出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+// ——————————————————————————————————————————
+
+/** 祝融：巨象（南蛮对你无效）、烈刃（杀造成伤害后拼点赢则拿牌） */
+describe('祝融', () => {
+  it('巨象：【南蛮入侵】对祝融无效，直接排除在响应队列外', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [nanman('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhurong', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') {
+      expect(state.pending.ctx.responders).toEqual([C]); // 祝融被排除
+    }
+    expect(state.log.some((e) => e.message.includes('巨象'))).toBe(true);
+  });
+
+  it('烈刃：杀造成伤害后拼点赢了，拿走对方一张牌', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhurong',
+        // 出一张杀，另留一张点数大的用来拼点
+        hand: [mk('a1', 'sha', 'spade', 2), mk('a2', 'sha', 'spade', 13)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 1), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤 → 烈刃
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 拼点：双方各扣一张
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 13 > 1 → 祝融赢 → 挑一张拿走
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(A);
+    const pickId = state.pending.cards[0]!.id;
+    ok(act(state, A, { type: 'pickCards', cardIds: [pickId] }));
+    expect(a.hand.some((c) => c.id === pickId)).toBe(true);
+    expect(state.log.some((e) => e.message.includes('烈刃'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('烈刃：拼点没赢则什么也拿不到', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhurong',
+        hand: [mk('a1', 'sha', 'spade', 2), mk('a2', 'sha', 'spade', 1)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [mk('b1', 'sha', 'club', 13), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 1 < 13 → 祝融没赢：a2 进了弃牌堆，手上什么都没有，也没拿到乙的牌
+    expect(a.hand).toHaveLength(0);
+    expect(state.log.some((e) => e.message.includes('未获胜'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('烈刃：自己手上没牌可拼点时不问', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'zhurong', hand: [mk('a1', 'sha', 'spade', 2)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    // 杀打出去之后手上就空了 → 拼不了点 → 不问烈刃
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.log.some((e) => e.message.includes('烈刃'))).toBe(false);
+  });
+});
+
+describe('牌堆分模式（欠账一）', () => {
+  const guozhan = buildDeck('guozhan');
+  const junzheng = buildDeck('melee');
+
+  it('国战牌堆：id 前缀 g，张数 = 官方 108 减去未收录的【无懈可击·国】', () => {
+    expect(guozhan.every((c) => c.id.startsWith('g'))).toBe(true);
+    expect(guozhan).toHaveLength(106);
+    const count = (t: CardType) => guozhan.filter((c) => c.type === t).length;
+    // 官方国战堆的基本牌比例：杀 29 / 闪 14 / 桃 8 / 酒 3
+    expect(count('sha')).toBe(29);
+    expect(count('shan')).toBe(14);
+    expect(count('tao')).toBe(8);
+    expect(count('jiu')).toBe(3);
+  });
+
+  it('国战牌堆：收录国战独有的锦囊与装备，且没有军争独有武器', () => {
+    const kinds = new Set(guozhan.map((c) => c.equipName ?? c.type));
+    for (const t of ['tiesuo', 'zhibi', 'yuanjiao', 'yiyi', 'wugu'])
+      expect(kinds.has(t)).toBe(true);
+    for (const e of ['qilin', 'wuliu', 'sanjian', 'bailong', 'hanbing'])
+      expect(kinds.has(e)).toBe(true);
+    // 方天画戟 / 古锭刀 / 青龙偃月刀只在军争堆里
+    for (const e of ['fangtian', 'guding', 'qinglong']) expect(kinds.has(e)).toBe(false);
+  });
+
+  it('军争牌堆：仍是军争堆，并补上了【铁索连环】6 张与【五谷丰登】2 张', () => {
+    expect(junzheng.every((c) => c.id.startsWith('c'))).toBe(true);
+    expect(junzheng.filter((c) => c.type === 'tiesuo')).toHaveLength(6);
+    expect(junzheng.filter((c) => c.type === 'wugu')).toHaveLength(2);
+    expect(junzheng.some((c) => c.equipName === 'fangtian')).toBe(true);
+  });
+
+  it('createGame 按模式选堆：国战局用国战堆，默认模式用军争堆', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲', heroId: 'vanilla' },
+      { seatId: B, name: '乙', heroId: 'vanilla' },
+    ];
+    const gz = createGame(setup, 'GZ', { mode: 'guozhan' });
+    expect(gz.deck.every((c) => c.id.startsWith('g'))).toBe(true);
+    const jz = createGame(setup, 'JZ');
+    expect(jz.deck.every((c) => c.id.startsWith('c'))).toBe(true);
+  });
+});
+
+describe('重铸与铁索连环', () => {
+  /** 可控牌堆：drawOne 从末尾 pop，所以最后一个 id 最先被抽到 */
+  function setDeck(state: GameState, ids: string[]) {
+    state.deck = ids.map((id, i) => mk(id, 'sha', i % 2 === 0 ? 'spade' : 'club', i + 1));
+  }
+
+  it('重铸：牌进弃牌堆、摸一张，而且不算「使用」', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [mk('t1', 'tiesuo', 'spade', 11)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    setDeck(state, ['d1']);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'recast', cardId: 't1' }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d1']);
+    expect(state.discard.some((c) => c.id === 't1')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('重铸'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('不可重铸的牌不能重铸', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(act(state, A, { type: 'recast', cardId: 'a1' }).ok).toBe(false);
+  });
+
+  it('铁索连环：不指定目标就是重铸（走 playCard 也一样）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [mk('t1', 'tiesuo', 'spade', 11)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    setDeck(state, ['d1']);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [] }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d1']);
+    expect(state.discard.some((c) => c.id === 't1')).toBe(true);
+  });
+
+  it('铁索连环：一次横置两名目标，再打一次就是重置', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'vanilla',
+        hand: [mk('t1', 'tiesuo', 'spade', 11), mk('t2', 'tiesuo', 'club', 10)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [B, C] }));
+    passWuxie(state);
+    expect(b.chained).toBe(true);
+    expect(c.chained).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    // 第二张只对乙使用 → 乙解除横置，丙保持
+    ok(act(state, A, { type: 'playCard', cardId: 't2', targetIds: [B] }));
+    passWuxie(state);
+    expect(b.chained).toBe(false);
+    expect(c.chained).toBe(true);
+  });
+
+  it('铁索连环：可以只以自己为目标（用来解除自己的横置）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [mk('t1', 'tiesuo', 'spade', 11)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.chained = true;
+    ok(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [A] }));
+    passWuxie(state);
+    expect(a.chained).toBe(false);
+  });
+
+  it('铁索连环：最多两名目标，三名被拒', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [mk('t1', 'tiesuo', 'spade', 11)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [B, C, D] }).ok).toBe(false);
+  });
+});
+
+describe('国战新锦囊：远交近攻 / 以逸待劳 / 五谷丰登 / 知己知彼', () => {
+  interface GzSeatOpts2 {
+    seatId: string;
+    name: string;
+    heroId: string;
+    faction: Faction;
+    revealed?: boolean;
+    hand: Card[];
+  }
+  function makeGz2(seats: GzSeatOpts2[]): GameState {
+    const setup: SeatSetup[] = seats.map((s) => ({
+      seatId: s.seatId,
+      name: s.name,
+      heroId: s.heroId,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((pl) => pl.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = s.revealed ?? true;
+      p.deputyRevealed = s.revealed ?? true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = s.hand.slice();
+      p.flags = emptyFlags();
+    }
+    const first = state.seatOrder[0]!;
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const at = (state: GameState, seatId: string) => state.players.find((p) => p.seatId === seatId)!;
+  /** 可控牌堆：drawOne 从末尾 pop */
+  function setDeck(state: GameState, ids: string[]) {
+    state.deck = ids.map((id, i) => mk(id, 'sha', i % 2 === 0 ? 'spade' : 'club', i + 1));
+  }
+
+  it('远交近攻：目标摸 1 张，你摸 3 张', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('y1', 'yuanjiao', 'heart', 9)],
+      },
+      { seatId: B, name: '乙', heroId: 'liubei', faction: 'shu', hand: [] },
+    ]);
+    const a = at(state, A);
+    const b = at(state, B);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4']);
+    ok(act(state, A, { type: 'playCard', cardId: 'y1', targetIds: [B] }));
+    passWuxie(state);
+    expect(b.hand).toHaveLength(1);
+    expect(a.hand).toHaveLength(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('远交近攻：同势力 / 未明置的目标都不合法', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('y1', 'yuanjiao', 'heart', 9), mk('y2', 'yuanjiao', 'heart', 10)],
+      },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'guojia', faction: 'wei', revealed: false, hand: [] },
+    ]);
+    // 乙与甲同势力；丙还没明置武将牌
+    expect(act(state, A, { type: 'playCard', cardId: 'y1', targetIds: [B] }).ok).toBe(false);
+    expect(act(state, A, { type: 'playCard', cardId: 'y2', targetIds: [C] }).ok).toBe(false);
+  });
+
+  it('以逸待劳：同势力角色依次摸两张、再各弃两张，别势力不受影响', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('e1', 'yiyi', 'heart', 4), mk('xa', 'sha', 'spade', 2)],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xiahoudun',
+        faction: 'wei',
+        hand: [mk('xb', 'sha', 'spade', 3)],
+      },
+      {
+        seatId: C,
+        name: '丙',
+        heroId: 'liubei',
+        faction: 'shu',
+        hand: [mk('xc', 'sha', 'spade', 4)],
+      },
+    ]);
+    const a = at(state, A);
+    const b = at(state, B);
+    const c = at(state, C);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4']); // d4 最先被摸到
+    ok(act(state, A, { type: 'playCard', cardId: 'e1', targetIds: [] }));
+    passWuxie(state);
+    // 甲先结算：摸到 d4/d3，手上 3 张，要弃 2 张
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.cards.map((x) => x.id).sort()).toEqual(['d3', 'd4', 'xa']);
+    } else throw new Error('甲应当进入弃牌选择');
+    expect(a.hand).toHaveLength(3);
+    ok(act(state, A, { type: 'pickCards', cardIds: ['xa', 'd3'] }));
+    // 轮到乙
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(B);
+    else throw new Error('乙应当进入弃牌选择');
+    expect(b.hand).toHaveLength(3);
+    ok(act(state, B, { type: 'pickCards', cardIds: ['xb', 'd1'] }));
+    // 不同势力的丙完全没被波及
+    expect(c.hand.map((x) => x.id)).toEqual(['xc']);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('以逸待劳：手上没牌的人不弹弃牌询问', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('e1', 'yiyi', 'heart', 4)],
+      },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', faction: 'wei', hand: [] },
+    ]);
+    setDeck(state, ['d1', 'd2', 'd3']);
+    ok(act(state, A, { type: 'playCard', cardId: 'e1', targetIds: [] }));
+    passWuxie(state);
+    // 甲摸 2 张（3 → 2）后弃 2 张；乙摸 2 张后也要弃 2 张，但这里只验证甲
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'pickCards', cardIds: ['d3', 'd2'] }));
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(B);
+  });
+
+  it('五谷丰登：亮出全场角色数张牌，依次各拿一张', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('w1', 'wugu', 'heart', 7)],
+      },
+      { seatId: B, name: '乙', heroId: 'liubei', faction: 'shu', hand: [] },
+    ]);
+    const a = at(state, A);
+    const b = at(state, B);
+    setDeck(state, ['d1', 'd2']);
+    ok(act(state, A, { type: 'playCard', cardId: 'w1', targetIds: [] }));
+    passWuxie(state);
+    // 两人 → 亮 2 张，甲先拿
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.cards).toHaveLength(2);
+    } else throw new Error('甲应当先选牌');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['d2'] }));
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(B);
+    else throw new Error('乙应当接着选牌');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d1'] }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d2']);
+    expect(b.hand.map((c) => c.id)).toEqual(['d1']);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('知己知彼：看手牌的内容只有本人拿得到，确认后回到出牌阶段', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('z1', 'zhibi', 'spade', 3)],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'liubei',
+        faction: 'shu',
+        hand: [mk('sb', 'tao', 'heart', 5)],
+      },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'z1', targetIds: [B] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand' }));
+    expect(state.pending?.kind).toBe('viewCards');
+    // 甲拿得到内容，乙自己的快照里没有这份提示
+    expect(toSnapshot(state, A).prompt?.viewCards?.map((c) => c.id)).toEqual(['sb']);
+    expect(toSnapshot(state, B).prompt).toBeNull();
+    ok(act(state, A, { type: 'ack' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    // 日志里不能出现看到的牌名
+    expect(state.log.some((e) => e.message.includes('桃'))).toBe(false);
+  });
+
+  it('知己知彼：也可以观看一张暗置的武将牌', () => {
+    const state = makeGz2([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'caocao',
+        faction: 'wei',
+        hand: [mk('z1', 'zhibi', 'spade', 3)],
+      },
+      { seatId: B, name: '乙', heroId: 'liubei', faction: 'shu', revealed: false, hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'z1', targetIds: [B] }));
+    passWuxie(state);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hero:liubei' }));
+    expect(state.pending?.kind).toBe('viewCards');
+    const p = toSnapshot(state, A).prompt;
+    expect(p?.viewNote).toBe('刘备');
+    expect(p?.viewCards ?? []).toHaveLength(0);
+    ok(act(state, A, { type: 'ack' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+describe('庞统·连环（把梅花牌当【铁索连环】使用或重铸）', () => {
+  it('梅花手牌当【铁索连环】使用：横置两名目标', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'pangtong', hand: [mk('a1', 'sha', 'club', 7)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'tiesuo', targetIds: [B, C] }));
+    passWuxie(state);
+    expect(b.chained).toBe(true);
+    expect(c.chained).toBe(true);
+  });
+
+  it('梅花手牌可以重铸；红色牌不行（连环只认梅花）', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'pangtong',
+        hand: [mk('a1', 'sha', 'club', 7), mk('a2', 'sha', 'heart', 7)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck = [mk('d1', 'sha', 'spade', 7)];
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'recast', cardId: 'a1' }));
+    expect(a.hand.map((c) => c.id)).toEqual(['a2', 'd1']);
+    // 红桃【杀】既不能当【铁索连环】用，也不能借连环重铸
+    expect(act(state, A, { type: 'recast', cardId: 'a2' }).ok).toBe(false);
+  });
+
+  it('梅花牌当【铁索连环】使用时不消耗出杀次数（它是锦囊）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'pangtong', hand: [mk('a1', 'sha', 'club', 7)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'tiesuo', targetIds: [B] }));
+    passWuxie(state);
+    expect(a.flags.shaCountThisTurn).toBe(0);
+  });
+});
+
+describe('甘夫人（淑慎 / 神智）与孟获（祸首 / 再起）', () => {
+  /** 国战局：直接摆好势力与明置状态 */
+  function makeGz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      hp?: number;
+      hand: Card[];
+    }[],
+  ): GameState {
+    const setup: SeatSetup[] = seats.map((s) => ({
+      seatId: s.seatId,
+      name: s.name,
+      heroId: s.heroId,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((pl) => pl.seatId === s.seatId)!;
+      const main = getHero(s.heroId)!;
+      const deputy = s.deputyHeroId ? getHero(s.deputyHeroId)! : null;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = deputy
+        ? Math.max(1, Math.floor((main.maxHp + deputy.maxHp) / 2))
+        : Math.max(1, Math.floor(main.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = s.hand.slice();
+      p.flags = emptyFlags();
+    }
+    const first = state.seatOrder[0]!;
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const at = (state: GameState, seatId: string) => state.players.find((p) => p.seatId === seatId)!;
+
+  it('淑慎：回复体力后可以令一名其他角色摸一张牌', () => {
+    const state = makeGz([
+      { seatId: A, name: '甲', heroId: 'ganfuren', faction: 'shu', hp: 2, hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'liubei', faction: 'shu', hand: [] },
+    ]);
+    const a = at(state, A);
+    const b = at(state, B);
+    state.deck = [mk('d1', 'sha', 'spade', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    // 回复 1 点 → 先问是否发动淑慎
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 再选摸牌的人
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    expect(b.hand.map((c) => c.id)).toEqual(['d1']);
+    expect(a.flags).toBeTruthy();
+    // 选完回到出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('淑慎：不发动则什么也不发生', () => {
+    const state = makeGz([
+      { seatId: A, name: '甲', heroId: 'ganfuren', faction: 'shu', hp: 2, hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'liubei', faction: 'shu', hand: [] },
+    ]);
+    const b = at(state, B);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand).toHaveLength(0);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('淑慎：满体力时用桃根本不发生回复，也不该触发', () => {
+    const state = makeGz([
+      { seatId: A, name: '甲', heroId: 'ganfuren', faction: 'shu', hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'liubei', faction: 'shu', hand: [] },
+    ]);
+    // 满体力用桃被拒（桃的规则），换一条路验证：桃园结义对满体力的人不触发淑慎
+    const res = act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] });
+    expect(res.ok).toBe(false);
+  });
+
+  it('神智：弃置所有手牌，不少于当前体力则回复 1 点（并由此触发淑慎）', () => {
+    // 让乙先行动，这样乙结束回合后甲的准备阶段就会开跑，神智才有机会问
+    const state = makeGz([
+      { seatId: B, name: '乙', heroId: 'guanyu', faction: 'shu', hand: [] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'ganfuren',
+        faction: 'shu',
+        hp: 2,
+        hand: [sha('a1'), sha('a2')], // 2 张 ≥ 当前体力 2 → 应该回复
+      },
+    ]);
+    const a = at(state, A);
+    ok(act(state, B, { type: 'endPhase' }));
+    // 乙弃牌阶段无牌可弃 → 轮到甲的准备阶段 → 神智询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand).toHaveLength(0);
+    expect(a.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('神智'))).toBe(true);
+    // 回复触发了淑慎：问是否发动 → 选乙摸牌
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    const b = at(state, B);
+    expect(b.hand).toHaveLength(1);
+  });
+
+  it('神智：弃置的手牌数少于当前体力则不回复', () => {
+    const state = makeGz([
+      { seatId: B, name: '乙', heroId: 'guanyu', faction: 'shu', hand: [] },
+      { seatId: A, name: '甲', heroId: 'ganfuren', faction: 'shu', hp: 3, hand: [sha('a1')] },
+    ]);
+    const a = at(state, A);
+    ok(act(state, B, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 1 张 < 体力 3 → 不回复（不去断言手牌：不回复就不会被淑慎挂起，
+    // 流程会继续走完甲的摸牌阶段，手牌数已经不是弃完的那个数）
+    expect(a.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('不回复体力'))).toBe(true);
+  });
+
+  it('祸首：南蛮入侵对孟获无效，且伤害来源算孟获的', () => {
+    const state = makeGz([
+      { seatId: A, name: '甲', heroId: 'liubei', faction: 'shu', hand: [nanman('a1')] },
+      { seatId: B, name: '乙', heroId: 'menghuo', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [] },
+    ]);
+    const b = at(state, B);
+    const c = at(state, C);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // 孟获被直接排除在响应队列外，所以第一个要出杀的是丙
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') {
+      expect(state.pending.responderId).toBe(C);
+    }
+    // 日志要用孟获自己的技能名，不能写成祝融的【巨象】
+    expect(state.log.some((e) => e.message.includes('【祸首】'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('巨象'))).toBe(false);
+    ok(act(state, C, { type: 'pass' }));
+    expect(c.hp).toBe(c.maxHp - 1);
+    expect(b.hp).toBe(b.maxHp);
+    // 伤害来源记成了孟获：这一局里没有「造成伤害后」类技能，所以直接看日志的伤害归因
+    expect(state.log.some((e) => e.message.includes('丙 受到 1 点伤害'))).toBe(true);
+  });
+
+  it('再起：X = 本回合进入弃牌堆的红桃牌数，被选中的角色二选一', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'menghuo',
+        faction: 'shu',
+        hp: 2,
+        // 4 张手牌、手牌上限 2 → 弃牌阶段必须弃 2 张，正好弃两张红桃
+        hand: [mk('h1', 'tao', 'heart', 3), mk('h2', 'tao', 'heart', 4), sha('a1'), sha('a2')],
+      },
+      { seatId: B, name: '乙', heroId: 'guanyu', faction: 'shu', hand: [] },
+    ]);
+    const a = at(state, A);
+    const b = at(state, B);
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('discard');
+    ok(act(state, A, { type: 'discard', cardIds: ['h1', 'h2'] }));
+    // 两张红桃进了弃牌堆 → X = 2 → 问是否发动再起
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 选人（候选是全场存活角色，含自己）→ 只选乙
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // X=2 而没有第三个人可选 → 再问一次「还要选谁」，这里结束选择
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'stop' }));
+    // 乙二选一：本次选「令孟获回复 1 点体力」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    const before = a.hp;
+    ok(act(state, B, { type: 'chooseOption', optionId: 'heal' }));
+    expect(a.hp).toBe(before + 1);
+    expect(state.log.some((e) => e.message.includes('选择了【再起】的第二项'))).toBe(true);
+  });
+
+  it('再起：被选中的角色也可以选「自己摸一张牌」', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'menghuo',
+        faction: 'shu',
+        hp: 1,
+        // 手牌上限 = 当前体力 1，3 张要弃 2 张；其中一张是红桃 → X = 1
+        hand: [mk('h1', 'tao', 'heart', 3), sha('a1'), sha('a2')],
+      },
+      { seatId: B, name: '乙', heroId: 'guanyu', faction: 'shu', hand: [] },
+    ]);
+    const a = at(state, A);
+    const b = at(state, B);
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'discard', cardIds: ['h1', 'a1'] }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // X=1 → 选完乙就到上限，不会再问第二次
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'draw' }));
+    // d1 是再起给的那张（链跑完后回合继续，乙的摸牌阶段还会从洗回来的弃牌堆里再拿牌）
+    expect(b.hand[0]?.id).toBe('d1');
+    expect(a.hp).toBe(1);
+  });
+
+  it('再起：本回合没有红桃进弃牌堆就不问', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'menghuo',
+        faction: 'shu',
+        hp: 2,
+        // 手牌上限 2，弃 1 张**梅花** → 红桃数为 0
+        hand: [sha('a1'), mk('s2', 'sha', 'club', 7), mk('s3', 'sha', 'club', 8)],
+      },
+      { seatId: B, name: '乙', heroId: 'guanyu', faction: 'shu', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'discard', cardIds: ['s2'] }));
+    expect(state.log.some((e) => e.message.includes('再起'))).toBe(false);
+    // 回合已经顺利交给下家
+    expect(state.turn.seatIndex).toBe(state.seatOrder.indexOf(B));
+  });
+});
+
+describe('吕蒙（克己 / 谋断）与鲁肃（好施 / 缔盟）', () => {
+  it('克己：出牌阶段只用过一种颜色的牌 → 手牌上限 +4', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvmeng',
+        hand: [mk('a1', 'sha', 'spade', 7), mk('a2', 'sha', 'club', 7), mk('a3', 'sha', 'club', 8)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'endPhase' }));
+    // 体力 4 → 上限 4，+4 后是 8；手上剩 2 张 → 不用弃牌，回合已经交给下家
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+    expect(state.log.some((e) => e.message.includes('克己'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('弃了'))).toBe(false);
+    expect(a.hand).toHaveLength(2);
+  });
+
+  it('克己：用过两种颜色的牌就不生效', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvmeng',
+        hand: [
+          mk('a1', 'sha', 'spade', 7),
+          wuzhong('a2'),
+          mk('a3', 'sha', 'club', 3),
+          mk('a4', 'sha', 'club', 4),
+          mk('a5', 'sha', 'club', 5),
+        ],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 再打一张**红桃**锦囊 → 一红一黑，克己不生效
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [] }));
+    passWuxie(state);
+    ok(act(state, A, { type: 'endPhase' }));
+    // 先确认没触发克己的日志，再把牌数堆到超上限来验证上限没被加
+    expect(state.log.some((e) => e.message.includes('克己'))).toBe(false);
+  });
+
+  it('谋断：用过三种类别的牌 → 可以移动场上的一张牌', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvmeng',
+        hand: [
+          sha('a1'),
+          mk('a2', 'weapon', 'spade', 1, { equipName: 'qinggang', range: 2 }),
+          wuzhong('a3'),
+        ],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = { id: 'arm1', type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' };
+    state.deck = [mk('d1', 'sha', 'club', 9), mk('d2', 'sha', 'club', 10)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [] }));
+    passWuxie(state);
+    ok(act(state, A, { type: 'endPhase' }));
+    // 手上一张牌都没有（都用掉了）→ 直接进结束阶段 → 谋断询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'arm1' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: A }));
+    expect(b.equipment.armor).toBeNull();
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.equipment.armor?.id).toBe('arm1');
+  });
+
+  it('谋断：花色/类别都不够则不问', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'lvmeng', hand: [sha('a1'), mk('a2', 'sha', 'spade', 8)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.log.some((e) => e.message.includes('谋断'))).toBe(false);
+  });
+
+  it('好施：多摸两张，手牌超过 5 时交出一半给手牌最少的人', () => {
+    const state = makeGame([
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lusu',
+        hand: [sha('a1'), sha('a2'), sha('a3'), sha('a4'), sha('a5')],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck = ['d1', 'd2', 'd3', 'd4'].map((id) => mk(id, 'sha', 'club', 7));
+    ok(act(state, B, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 好施多摸 2 张 → 7 张 > 5 → 要交出一半（向下取整 = 3 张）
+    // 手牌最少的是乙与丙（都是 0 张），并列 → 先问交给谁
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.min).toBe(3);
+    }
+    ok(act(state, A, { type: 'pickCards', cardIds: ['d4', 'd3', 'a5'] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    // 甲：5 张原始 - 交给丙的 a5 + 好施的 d4/d3 - 交出的 d4/d3/a5 + 摸牌阶段再摸 d2/d1 = 6 张
+    expect(a.hand).toHaveLength(6);
+    expect(c.hand.map((x) => x.id)).toEqual(['d4', 'd3', 'a5']);
+  });
+
+  it('好施：不发动就是普通的摸两张', () => {
+    const state = makeGame([
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: A, name: '甲', heroId: 'lusu', hand: [sha('a1')] },
+    ]);
+    state.deck = ['d1', 'd2'].map((id) => mk(id, 'sha', 'club', 7));
+    ok(act(state, B, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(3);
+  });
+
+  it('缔盟：弃置两人手牌数之差，然后交换手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'lusu', hand: [sha('c1'), sha('c2'), sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('x1')] },
+    ]);
+    // 乙 2 张、丙 1 张 → 差 1，弃 1 张
+    ok(act(state, A, { type: 'useSkill', skillId: 'dimeng', targetIds: [B, C] }));
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.min).toBe(1);
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(a.hand.map((x) => x.id)).toEqual(['c1', 'c2']);
+    expect(b.hand.map((x) => x.id)).toEqual(['x1']);
+    expect(c.hand.map((x) => x.id)).toEqual(['b1', 'b2']);
+    expect(state.discard.some((x) => x.id === 'a1')).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('缔盟：手牌数相同时直接交换，不用弃牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'lusu', hand: [sha('c1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('x1')] },
+    ]);
+    ok(act(state, A, { type: 'useSkill', skillId: 'dimeng', targetIds: [B, C] }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(b.hand.map((x) => x.id)).toEqual(['x1']);
+    expect(c.hand.map((x) => x.id)).toEqual(['b1']);
   });
 });

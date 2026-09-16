@@ -22,5 +22,13 @@ export type Intent =
   // 国战：出牌阶段主动亮将（传入要亮的武将 id）
   | { type: 'revealHero'; heroId: string }
   // 主动技能：出牌阶段使用武将主动技能（制衡/苦肉/离间等）
-  | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] }  // 通用「选择一项」：技能要求某个角色在若干选项里选一个（反间/铁骑/除疠…）
-  | { type: 'chooseOption'; optionId: string };
+  | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] } // 通用「选择一项」：技能要求某个角色在若干选项里选一个（反间/铁骑/除疠…）
+  | { type: 'chooseOption'; optionId: string }
+  // 从一组牌里选若干张（选牌原语：观星看牌堆顶、刚烈弃两张、仁德送牌…）
+  | { type: 'pickCards'; cardIds: string[] }
+  // 势力技：需要打出一张牌时，令同势力角色代打（曹操·护驾 / 刘备·激将）
+  | { type: 'factionCall'; skillId: string }
+  // 重铸：出牌阶段把一张可重铸的牌置入弃牌堆，然后摸一张牌（不是「使用」）
+  | { type: 'recast'; cardId: string }
+  // 看完私密信息（知己知彼）后确认
+  | { type: 'ack' };

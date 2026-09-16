@@ -1,6 +1,7 @@
 // 装备牌特效 —— 与 engine 分离的纯查询/判定辅助，便于单测
 import { isRed, type Card } from '@sgs/protocol';
 import { getPlayer, type AttackContext, type GameState, type Player } from './model';
+import { effectiveHeroes } from './heroes';
 
 /** 攻击方武器是否无视目标防具（青釭剑） */
 export function ignoresArmor(source: Player | undefined): boolean {
@@ -40,7 +41,13 @@ export function tryBaguaDodge(
 ): boolean {
   const source = getPlayer(state, attack.sourceId);
   const target = getPlayer(state, attack.targetId);
-  if (target?.equipment.armor?.equipName !== 'bagua') return false;
+  if (!target) return false;
+  // 八卦阵：要么真装了，要么是卧龙诸葛亮的【八阵】（装备区没防具时视为装备八卦阵）
+  const hasBagua =
+    target.equipment.armor?.equipName === 'bagua' ||
+    (!target.equipment.armor &&
+      effectiveHeroes(state, target).some((h) => h.hasBaguaAlways === true));
+  if (!hasBagua) return false;
   if (ignoresArmor(source)) return false;
   const judge = state.deck.pop();
   if (!judge) return false;

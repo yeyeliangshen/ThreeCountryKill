@@ -1,7 +1,7 @@
 import type { Player } from './model';
 import type { GameState } from './model';
 import { getPlayer, getPlayerOrThrow } from './model';
-import { revealedHeroes } from './heroes';
+import { effectiveHeroes } from './heroes';
 
 /**
  * 基础距离：圆桌上从 fromId 到 toId 的最短座次距。
@@ -29,7 +29,7 @@ export function distance(state: GameState, fromId: string, toId: string): number
   if (from?.equipment.minusMount) d -= 1;
   if (to?.equipment.plusMount) d += 1;
   if (from) {
-    for (const hero of revealedHeroes(state.mode, from)) {
+    for (const hero of effectiveHeroes(state, from)) {
       d -= hero.distanceFrom ?? 0;
     }
   }

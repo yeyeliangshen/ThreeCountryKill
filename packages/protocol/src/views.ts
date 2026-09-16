@@ -1,4 +1,4 @@
-import type { Card } from './card';
+import type { Card, CardType } from './card';
 import type { Phase } from './intent';
 
 // —— 游戏模式 ——
@@ -9,6 +9,21 @@ export type RoleId = 'lord' | 'loyal' | 'rebel' | 'renegade';
 
 // —— 阵营（国战模式） ——
 export type Faction = 'shu' | 'wei' | 'wu' | 'qun' | 'neutral' | 'ambitionist';
+
+// —— 国战标记 ——
+// 获得与用法见 docs/guozhan-reference.md §2。
+export type MarkerId = 'xianqu' | 'yinyangyu' | 'zhulian' | 'ambitionist';
+
+export const MARKER_NAME: Record<MarkerId, string> = {
+  xianqu: '先驱',
+  yinyangyu: '阴阳鱼',
+  zhulian: '珠联璧合',
+  // 野心家标记仅钟会、司马昭可获得，这两名武将未收录，所以引擎目前不会发放它。
+  ambitionist: '野心家',
+};
+
+/** 标记的固定显示顺序（界面与快照都按它排，免得顺序随对象插入序乱跳） */
+export const MARKER_ORDER: MarkerId[] = ['xianqu', 'yinyangyu', 'zhulian', 'ambitionist'];
 
 // —— 服务端按玩家裁剪后下发的"视图"，不泄露他人手牌 ——
 
@@ -37,6 +52,12 @@ export interface PlayerView {
   heroRevealed?: boolean;
   // 副将是否已亮将（国战公开信息）
   deputyRevealed?: boolean;
+  // 国战标记（公开信息）：持有数量 > 0 的标记
+  markers?: { id: MarkerId; label: string; count: number }[];
+  // 武将牌是否翻面朝上（公开信息）：为 true 时该角色跳过下一个回合
+  flipped?: boolean;
+  /** 是否处于横置状态（铁索连环，公开信息） */
+  chained?: boolean;
 }
 
 export type PromptKind =
@@ -48,7 +69,10 @@ export type PromptKind =
   | 'respondTrick'
   | 'wuxieQueue'
   | 'activeSkill'
-  | 'choice'; // 通用「选择一项」
+  | 'choice' // 通用「选择一项」
+  | 'pickCards' // 从一组牌里选若干张
+  | 'viewCards' // 私密查看（知己知彼）：只有本人看得到内容
+  | 'factionCall'; // 势力技：依次问同势力角色是否代打一张牌
 
 // 告诉玩家当前需要做什么 + 合法选项（服务端权威计算后下发）
 export interface PromptView {
@@ -64,9 +88,44 @@ export interface PromptView {
   legalHeroIds?: string[];
   // 出牌阶段：可用的主动技能 id 列表（仅 play 有）
   legalSkillIds?: string[];
+  /**
+   * 出牌阶段：可用主动技能的完整信息（仅 play 有）。
+   *
+   * 界面直接用这份渲染按钮，不要再拿技能名去 hero.skills 里配对——
+   * 那样改名就会失效，而且标记带来的技能不属于任何武将，根本配不上。
+   */
+  legalSkills?: { id: string; name: string; desc: string }[];
   // 「选择一项」提示（仅 choice 有）
   choiceTitle?: string;
   choiceOptions?: { id: string; label: string }[];
+  /**
+   * 从一组牌里选（仅 pickCards 有）。
+   *
+   * 给的是**完整牌面**而不是 id：这组牌不一定在手牌里——观星看的是牌堆顶，
+   * 界面拿 id 去 myHand 查是查不到的。
+   */
+  pickTitle?: string;
+  pickCards?: Card[];
+  pickMin?: number;
+  pickMax?: number;
+  /**
+   * 私密查看（知己知彼）的标题 / 内容。
+   * 内容只有发起者本人的快照里有——其他座位即使是同一个 pending 也拿不到。
+   */
+  viewTitle?: string;
+  viewCards?: Card[];
+  /** 不是牌的信息（暗置武将牌的名字） */
+  viewNote?: string;
+  /**
+   * 势力技（护驾/激将）：你现在需要打出 needType，可以令这些同势力角色代打。
+   * 有值就该在界面上给一个「发动【护驾】」的入口（仅 respondSha / respondTrick 可能有）。
+   */
+  factionCall?: {
+    skillId: string;
+    skillName: string;
+    needType: CardType;
+    helpers: { seatId: string; name: string }[];
+  };
 }
 
 export interface LogEntry {
