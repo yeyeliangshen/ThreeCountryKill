@@ -14943,3 +14943,91 @@ describe('国战 · 吕范（调度 / 典财）', () => {
     expect(state.log.some((e) => e.message.includes('典财'))).toBe(true);
   });
 });
+
+/** 左慈·役鬼/汲魂（2019 典藏版）：魂牌堆 + 移去一张视为用牌（目标受势力限制） */
+describe('国战 · 左慈（役鬼 / 汲魂）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    pool: string[] = [],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.heroPool = pool;
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('役鬼：首次明置时拿两张「魂」', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ], ['zhangliao', 'zhouyu']);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.heroRevealed = false; // 先暗置，再明置
+    state.turn.phase = 'judgment';
+    ok(act(state, A, { type: 'revealHero', heroId: 'zuoci' }));
+    expect(a.hun).toEqual(['zhangliao', 'zhouyu']);
+    expect(state.heroPool).toHaveLength(0);
+    expect(state.log.some((e) => e.message.includes('役鬼'))).toBe(true);
+  });
+
+  it('役鬼：移去一张魂视为使用【杀】（只能打符合势力限制的目标）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 魂里放一张**群**势力的武将（张角）→ 只能打群势力或未确定势力的角色（丙）
+    a.hun = ['zhangjiao'];
+    ok(act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('役鬼');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'sha' }));
+    // 候选只有丙（群）；乙是蜀，不能用「魂」打
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id)).toEqual([C]);
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(a.hun).toHaveLength(0);
+    expect(state.pending?.kind).toBe('respondSha'); // 丙要出闪
+    expect(state.log.some((e) => e.message.includes('张角'))).toBe(true); // 魂牌亮出来了
+  });
+
+  it('汲魂：受到伤害后补一张「魂」；同势力的濒死结束不给', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      ['zhangliao', 'zhouyu', 'xuchu'],
+      B,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' })); // 甲不闪 → 受伤 → 汲魂
+    expect(a.hun).toHaveLength(1);
+    expect(state.log.some((e) => e.message.includes('汲魂'))).toBe(true);
+  });
+});

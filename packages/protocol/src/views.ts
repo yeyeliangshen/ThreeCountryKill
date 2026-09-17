@@ -66,6 +66,8 @@ export interface PlayerView {
   tianCount?: number;
   /** 武将牌上的「千幻」张数（于吉·千幻） */
   qianhuanCount?: number;
+  /** 武将牌上的「魂」张数（左慈·役鬼） */
+  hunCount?: number;
   /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
   wounds?: Card[];
   /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */

@@ -80,6 +80,10 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 左慈·役鬼：「本回合内已以此法使用过哪些牌名」（按牌名限一次，回合开始清零）。
+   */
+  hunUsedNames: string[];
+  /**
    * 吕范·典财：本**出牌阶段**你失去了几张牌（cardsLost 那个公共事件上累加，
    * 出牌阶段结束时清零）。「其他角色的出牌阶段结束时」按它跟体力值比。
    */
@@ -175,6 +179,7 @@ export function emptyFlags(): PlayerFlags {
     dealtDamageThisTurn: false,
     hengjiangTarget: null,
     lostCardsThisPhase: 0,
+    hunUsedNames: [],
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,
@@ -257,6 +262,11 @@ export interface Player {
    * 「千幻」：于吉·千幻放在**武将牌上**的牌（旧国战 1.x 的「千幻」标记牌）。
    */
   qianhuan: Card[];
+  /**
+   * 「魂」：左慈·役鬼扣在武将牌上的**武将牌**（存的是武将 id）。
+   * 暗置 → 用的时候随机移去一张，并把那张武将牌亮出来（势力决定目标限制）。
+   */
+  hun: string[];
   /**
    * 「田」：邓艾·屯田放在**武将牌上**的牌（第 5 个区域的味道，与周泰的「创」同类）。
    * 屯田判定出非红桃牌就收进来；急袭把「田」当【顺手牵羊】用；资粮把「田」交给同势力。

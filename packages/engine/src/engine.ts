@@ -7159,6 +7159,7 @@ export function createGame(
     removedHeroIds: [],
     tian: [],
     qianhuan: [],
+    hun: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],

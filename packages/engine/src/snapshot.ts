@@ -48,6 +48,7 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     // 「田」「千幻」都是扣在武将牌上的牌，公开信息
     tianCount: p.tian.length,
     qianhuanCount: p.qianhuan.length,
+    hunCount: p.hun.length,
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
     wounds: p.wounds.slice(),
     // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」

@@ -122,6 +122,12 @@ export type Timing =
    * 糜夫人·闺秀挂这里（「当你明置此武将牌后，你可以摸两张牌」）。
    */
   | 'heroRevealed'
+  /**
+   * **一名角色的濒死结算结束后**（派给所有存活角色，
+   * payload: { dyingSeatId, alive }——alive 是结算完还活着没有）。
+   * 左慈·汲魂挂这里（`otherNearDeath` 是「刚进濒死」，拿不到结果）。
+   */
+  | 'nearDeathResolved'
   | 'kill' // 你**杀死**了一名角色（派发给凶手，payload.victimId）——曹丕·行殇
   | 'afterHeal' // 回复体力后（派发给回复者，payload.amount 是**实际**回复量）——甘夫人·淑慎
   | 'death'; // 死亡

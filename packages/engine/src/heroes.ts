@@ -3564,6 +3564,299 @@ const MADAI: Hero = {
  * othersPlayPhase 对称），以及「你这一个出牌阶段内失去了几张牌」的计数
  * （flags.lostCardsThisPhase，在 cardsLost 那个公共事件上累加、阶段结束再清零）。
  */
+/**
+ * 左慈 —— 役鬼 / 汲魂（**2019 典藏版 / OL2021** 国战文本，已核）。
+ *
+ * ⚠️ 版本差异很大：2017《君临天下·变》印刷版是「化身 + 新生」（看剩余武将牌堆的 5 张、
+ *    扣至多 2 张当「化身」牌、届时明置并发动其中一张武将牌的技能），2019 典藏版改成
+ *    「役鬼 + 汲魂」（把剩余武将牌堆的武将牌当「魂」，移去一张就视为使用一张牌）。
+ *    两者是**完全不同的两套技能**，这里按项目口径取**新国战（2019 典藏版）**的役鬼/汲魂。
+ *
+ * - 役鬼：当你首次明置武将牌后，你将剩余武将牌堆中的两张武将牌扣置于武将牌上，称为「魂」牌；
+ *   你可以移去一张「魂」牌，视为使用一张你于当前回合内未以此法使用过的基本牌或普通锦囊牌，
+ *   且目标必须为与此「魂」牌势力相同或未确定势力的角色。
+ * - 汲魂：当你受到伤害后，你可以从剩余武将牌堆中扣置一张牌加入「魂」牌；
+ *   当一名角色的濒死结算结束后，若其与你势力不同且存活，你可以从剩余武将牌堆中扣置一张牌
+ *   加入「魂」牌。
+ *
+ * 实现口径（都写在注释里）：
+ * - 「魂」牌在武将牌上是**暗置**的，所以用的时候是**随机**移去一张（左慈自己也不知道是哪张），
+ *   移去时把那张武将牌亮出来（牌面与势力公开），目标限制就按它的势力算。
+ * - 基本牌里只列【杀】【酒】【桃】（【闪】不能在出牌阶段主动使用）；锦囊用与奇策同一张表，
+ *   但**排除【无懈可击】**（它只能在响应时机用），且群体锦囊只有当"场上所有目标都符合势力
+ *   限制"时才列出来（否则用了也会违反限制）。
+ * - 「每回合内未以此法使用过」按**牌名**记（flags.hunUsedNames ✓ 回合开始清零）。
+ */
+const ZUOCI: Hero = {
+  id: 'zuoci',
+  name: '左慈',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'heroRevealed',
+      skillId: '役鬼',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.usedOncePerGame.zugui) return;
+        me.usedOncePerGame.zugui = true;
+        let got = 0;
+        for (let i = 0; i < 2; i++) {
+          const id = ctx.state.heroPool.shift();
+          if (!id) break;
+          me.hun.push(id);
+          got++;
+        }
+        pushLog(
+          ctx.state,
+          'skill',
+          `${me.name} 发动【役鬼】：扣置 ${got} 张武将牌作为「魂」。`,
+          { seat: me.seatId, action: 'skill' },
+        );
+      },
+    },
+    {
+      timing: 'afterDamage',
+      skillId: '汲魂',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.usedOncePerGame.jihunDamage) return; // 「受伤害后」每回合一次（flag 随回合清）
+        me.usedOncePerGame.jihunDamage = true;
+        const id = ctx.state.heroPool.shift();
+        if (!id) return;
+        me.hun.push(id);
+        pushLog(ctx.state, 'skill', `${me.name} 发动【汲魂】，扣置一张武将牌作为「魂」。`, {
+          seat: me.seatId,
+          action: 'gain',
+        });
+      },
+    },
+    {
+      timing: 'nearDeathResolved',
+      skillId: '汲魂',
+      handler: (ctx) => {
+        const payload = ctx.payload as { dyingSeatId?: string; alive?: boolean } | undefined;
+        const dying = payload?.dyingSeatId ? getPlayer(ctx.state, payload.dyingSeatId) : undefined;
+        if (!dying || !payload?.alive) return; // 「存活」才给
+        if (dying.seatId === ctx.player.seatId) return;
+        if (sameKnownFaction(ctx.state, ctx.player, dying)) return; // 「与你势力不同」
+        const id = ctx.state.heroPool.shift();
+        if (!id) return;
+        ctx.player.hun.push(id);
+        pushLog(
+          ctx.state,
+          'skill',
+          `${ctx.player.name} 因【汲魂】扣置一张武将牌作为「魂」。`,
+          { seat: ctx.player.seatId, action: 'gain' },
+        );
+      },
+    },
+  ],
+  activeSkills: [
+    {
+      id: 'yigui_use',
+      name: '役鬼',
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state, player) =>
+        player.hun.length > 0 && hunOptions(state, player).length > 0,
+      execute: (state, player, _intent, api) => {
+        const options = hunOptions(state, player);
+        if (options.length === 0) return '当前没有可以这样使用的牌';
+        api.askChoice(
+          state,
+          player.seatId,
+          '【役鬼】：移去一张「魂」，视为使用哪张牌？',
+          options,
+          (st, p, picked) => {
+            // 移去一张「魂」（暗置 → 随机），并把那张武将牌亮出来（牌面与势力公开）
+            const idx = Math.floor(Math.random() * p.hun.length);
+            const heroId = p.hun.splice(idx, 1)[0]!;
+            const hero = getHeroForMode(heroId, st.mode);
+            p.flags.hunUsedNames.push(picked);
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【役鬼】，移去一张「魂」（${hero?.name ?? heroId}，势力 ${hero?.faction ?? '未确定'}）。`,
+              { seat: p.seatId, action: 'skill' },
+            );
+            const faction = hero?.faction ?? null;
+            if (picked === 'sha' || picked === 'jiu' || picked === 'tao') {
+              if (picked === 'jiu') {
+                p.flags.jiuActive = true;
+                pushLog(st, 'skill', `${p.name} 视为使用了一张【酒】。`);
+                return;
+              }
+              if (picked === 'tao') {
+                const healed = api.heal(p, 1);
+                pushLog(st, 'skill', `${p.name} 视为使用了一张【桃】，回复 ${healed} 点体力。`);
+                return;
+              }
+              // 【杀】：选一个符合势力限制的目标
+              const targets = hunTargets(st, p, faction, true);
+              if (targets.length === 0) {
+                pushLog(st, 'skill', '没有符合势力限制的目标，【役鬼】未生效。');
+                return;
+              }
+              api.askChoice(
+                st,
+                p.seatId,
+                '【役鬼】：【杀】的目标',
+                targets.map((t) => ({ id: t.seatId, label: t.name })),
+                (st2, p2, tid) => api.castVirtualSha(p2.seatId, tid, { logKind: 'skill' }),
+                p.seatId,
+              );
+              return;
+            }
+            // 锦囊
+            const spec = QICE_TRICKS.find((t) => t.type === picked);
+            if (!spec) return;
+            const need = spec.min;
+            const cands = hunTargets(st, p, faction, false, spec.type);
+            const step = (chosen: string[]): void => {
+              if (chosen.length >= Math.max(1, need) && need > 0) {
+                fireHun(st, p, spec.type, chosen, api);
+                return;
+              }
+              if (need === 0) {
+                fireHun(st, p, spec.type, [], api);
+                return;
+              }
+              const rest = cands.filter((c) => !chosen.includes(c.seatId));
+              if (rest.length === 0) {
+                pushLog(st, 'skill', '没有符合势力限制的目标，【役鬼】未生效。');
+                return;
+              }
+              api.askChoice(
+                st,
+                p.seatId,
+                `【役鬼】：为【${CARD_TYPE_NAME[spec.type]}】选择目标`,
+                rest.map((c) => ({ id: c.seatId, label: c.name })),
+                (st2, p2, tid) => step2Hun(st2, p2, tid, chosen, spec.type, faction, api),
+                p.seatId,
+              );
+            };
+            step([]);
+          },
+        );
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '役鬼',
+      desc: '当你首次明置武将牌后，你将剩余武将牌堆中的两张武将牌扣置于武将牌上，称为「魂」牌；你可以移去一张「魂」牌，视为使用一张你于当前回合内未以此法使用过的基本牌或普通锦囊牌，且目标必须为与此「魂」牌势力相同或未确定势力的角色。',
+    },
+    {
+      name: '汲魂',
+      desc: '当你受到伤害后，你可以从剩余武将牌堆中扣置一张牌加入「魂」牌；当一名角色的濒死结算结束后，若其与你势力不同且存活，你可以从剩余武将牌堆中扣置一张牌加入「魂」牌。',
+    },
+  ],
+};
+
+/** 役鬼能视为使用的牌名（基本牌只列能在出牌阶段主动用的；锦囊排除无懈可击） */
+function hunOptions(state: GameState, player: Player): { id: string; label: string }[] {
+  const used = new Set(player.flags.hunUsedNames);
+  const out: { id: string; label: string }[] = [];
+  for (const [id, name] of [
+    ['sha', '杀'],
+    ['jiu', '酒'],
+    ['tao', '桃'],
+  ] as const) {
+    if (used.has(id)) continue;
+    out.push({ id, label: name });
+  }
+  for (const spec of QICE_TRICKS) {
+    if (spec.type === 'wuxie') continue;
+    if (used.has(spec.type)) continue;
+    // 群体锦囊：如果场上有人不符合势力限制，就不能用（它会自动指定所有人）
+    if (spec.min === 0 && spec.max === 0) {
+      const all = state.players.filter((p) => p.alive && p.seatId !== player.seatId);
+      const bad = all.some((p) => !hunFactionOk(state, p, player, null));
+      if (bad) continue;
+    }
+    out.push({ id: spec.type, label: CARD_TYPE_NAME[spec.type] });
+  }
+  return out;
+}
+
+/** 势力限制：目标的势力与「魂」牌相同，或者**未确定势力** */
+function hunFactionOk(state: GameState, target: Player, _player: Player, faction: Faction | null): boolean {
+  const tf = effectiveFaction(state, target);
+  if (!tf) return true; // 未确定势力 → 可以
+  if (!faction) return true;
+  return tf === faction;
+}
+
+/** 役鬼的候选目标（势力限制 + 距离等既有合法性） */
+function hunTargets(
+  state: GameState,
+  player: Player,
+  faction: Faction | null,
+  isSha: boolean,
+  trickType?: TrickType,
+): Player[] {
+  const alive = state.players.filter((p) => p.alive);
+  const base = isSha
+    ? alive.filter(
+        (p) =>
+          p.seatId !== player.seatId &&
+          !heroBlocksBeingTarget(state, p, cardOfType('juedou'), player) &&
+          distance(state, player.seatId, p.seatId) <= attackRange(state, player),
+      )
+    : qiceTargets(state, player, trickType ?? 'guohe');
+  return base.filter((p) => hunFactionOk(state, p, player, faction));
+}
+
+/** 役鬼用锦囊：直接把虚拟锦囊打出去 */
+function fireHun(
+  state: GameState,
+  player: Player,
+  type: TrickType,
+  targets: string[],
+  api: SkillApi,
+): void {
+  pushLog(state, 'skill', `${player.name} 视为使用了一张【${CARD_TYPE_NAME[type]}】。`);
+  api.castVirtualTrick(player.seatId, { type, suit: 'spade' }, targets);
+}
+
+/** 役鬼选第二个目标（只有需要 2 个目标的锦囊会走到） */
+function step2Hun(
+  state: GameState,
+  player: Player,
+  targetId: string,
+  chosen: string[],
+  type: TrickType,
+  faction: Faction | null,
+  api: SkillApi,
+): void {
+  const spec = QICE_TRICKS.find((t) => t.type === type);
+  if (!spec) return;
+  const next = [...chosen, targetId];
+  if (next.length < spec.min) {
+    const rest = hunTargets(state, player, faction, false, type).filter(
+      (c) => !next.includes(c.seatId),
+    );
+    if (rest.length > 0) {
+      api.askChoice(
+        state,
+        player.seatId,
+        `【役鬼】：为【${CARD_TYPE_NAME[type]}】选择目标`,
+        rest.map((c) => ({ id: c.seatId, label: c.name })),
+        (st2, p2, tid) => step2Hun(st2, p2, tid, next, type, faction, api),
+        player.seatId,
+      );
+      return;
+    }
+  }
+  fireHun(state, player, type, next, api);
+}
+
 const LVFAN: Hero = {
   id: 'lvfan',
   name: '吕范',
@@ -8430,6 +8723,7 @@ export const HEROES: Hero[] = [
   XUNYOU,
   SUNCE,
   LVFAN,
+  ZUOCI,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
