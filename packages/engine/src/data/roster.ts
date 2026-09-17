@@ -517,7 +517,15 @@ const ZHEN: RosterEntry[] = [
     status: 'todo',
     primitives: ['awaken_skill', 'pick_cards'],
   },
-  { id: 'caohong', name: '曹洪', faction: 'wei', pack: 'zhen', status: 'todo' },
+  {
+    id: 'caohong',
+    name: '曹洪',
+    faction: 'wei',
+    pack: 'zhen',
+    status: 'done',
+    primitives: ['hook_interaction'],
+    note: '护援已实现（装备牌置入他人装备区 → 可弃其距离 1 的一名角色的一张牌）。鹤翼＝阵法技，需要队列系统，尚未实现。',
+  },
   {
     id: 'jiangwei',
     name: '姜维',
@@ -550,8 +558,9 @@ const ZHEN: RosterEntry[] = [
     name: '蒋钦',
     faction: 'wu',
     pack: 'zhen',
-    status: 'todo',
-    primitives: ['pick_cards'],
+    status: 'done',
+    primitives: ['pick_cards', 'hook_interaction'],
+    note: '尚义已实现（新原语 api.privateView：私密查看手牌 / 暗置武将牌）。鸟翔＝阵法技（围攻关系），需要队列系统，尚未实现。',
   },
   {
     id: 'yuji',
@@ -566,8 +575,9 @@ const ZHEN: RosterEntry[] = [
     name: '何太后',
     faction: 'qun',
     pack: 'zhen',
-    status: 'todo',
+    status: 'done',
     primitives: ['hook_interaction'],
+    note: '鸩毒（新时机 othersPlayPhase：「其他角色的出牌阶段开始时」）+ 戚乱（用 state.killedThisTurn，按回合清）。取君临天下·阵 2013 印刷版口径：鸩毒只对其他角色、戚乱固定摸三张（OL 2020 后的动态版未采用）。',
   },
 ];
 

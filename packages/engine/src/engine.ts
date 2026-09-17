@@ -418,6 +418,11 @@ function markDamaged(state: GameState, timing: Timing, player: Player, payload?:
     player.flags.dealtDamageThisTurn = true;
     return;
   }
+  // 「你于本回合内杀死过角色吗」（何太后·戚乱）
+  if (timing === 'kill') {
+    if (!state.killedThisTurn.includes(player.seatId)) state.killedThisTurn.push(player.seatId);
+    return;
+  }
   if (timing !== 'afterDamage') return;
   const dmg = (payload as { damage?: number } | undefined)?.damage ?? 0;
   if (dmg > 0 && !state.damagedThisTurn.includes(player.seatId)) {
@@ -723,6 +728,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   player.flags = emptyFlags();
   // 「本回合受到过伤害的角色」也随回合清空
   state.damagedThisTurn = [];
+  // 「本回合杀死过角色的人」同理（戚乱是在每个回合结束时检查的）
+  state.killedThisTurn = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
   state.discardThisTurn = [];
   // 武将牌翻面朝上：跳过这一个回合，翻回正面（据守/放逐的代价）
@@ -876,11 +883,21 @@ function enterPlayPhase(state: GameState, player: Player): void {
         goToDiscardPhase(state, player);
         return;
       }
-      // 玉玺（锁定技）：出牌阶段开始时，视为使用一张【知己知彼】。
-      // 放在**设置出牌 pending 之前**——它是这个阶段的开场动作，结算完才轮到玩家正常出牌。
-      askYuxiZhibi(state, player, () => {
-        state.pending = { kind: 'play', seatId: player.seatId };
-      });
+      // 「**其他角色**的出牌阶段开始时」（何太后·鸩毒）：派给除他以外的所有人。
+      // 放在玉玺与出牌 pending 之前——那是这个阶段的开场动作。
+      runAllPlayersHooks(
+        state,
+        'othersPlayPhase',
+        { turnSeatId: player.seatId },
+        () => {
+          // 玉玺（锁定技）：出牌阶段开始时，视为使用一张【知己知彼】。
+          // 放在**设置出牌 pending 之前**——它是这个阶段的开场动作，结算完才轮到玩家正常出牌。
+          askYuxiZhibi(state, player, () => {
+            state.pending = { kind: 'play', seatId: player.seatId };
+          });
+        },
+        player.seatId,
+      );
     });
   } else {
     pushLog(state, 'lebu', `${player.name} 被【乐不思蜀】影响，跳过出牌阶段。`);
@@ -2948,6 +2965,12 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       if (!p || p.kind !== 'viewCards') return err('当前没有需要确认的信息');
       if (p.seatId !== seatId) return err('不是你在看这张牌');
       state.pending = null;
+      // 技能发起的查看：接着跑技能的下一步
+      if (p.after) {
+        const after = p.after;
+        after();
+        return { ok: true };
+      }
       if (p.returnTo) resumePlay(state, p.returnTo);
       return { ok: true };
     }
@@ -6322,6 +6345,23 @@ function makeSkillApi(
       if (old) fireEquipLost(state, target, old, done);
       else done();
     },
+    privateView: (viewerSeatId, title, content, opts) => {
+      const viewer = getPlayer(state, viewerSeatId);
+      if (!viewer) {
+        opts?.after?.();
+        return;
+      }
+      // 内容按座位裁剪（snapshot 只把 viewCards 发给这个座位），日志里不出现内容
+      state.pending = {
+        kind: 'viewCards',
+        seatId: viewerSeatId,
+        title,
+        cards: content.cards ? content.cards.slice() : [],
+        note: content.note,
+        after: opts?.after,
+        returnTo: opts?.after ? undefined : opts?.returnTo,
+      };
+    },
     useShaOn: (sourceSeatId, targetId, card, opts) => {
       const src = getPlayer(state, sourceSeatId);
       const tgt = getPlayer(state, targetId);
@@ -6350,7 +6390,20 @@ function makeSkillApi(
         done();
         return;
       }
-      // pickTargetCard：指定 id 的明牌（装备/判定）优先，否则随机一张手牌
+      // 指定了**手牌**里的某一张就精确弃那张（蒋钦·尚义已经看过对方手牌，
+      // 说弃哪张就弃哪张）；否则交给 pickTargetCard：明牌按 id、手牌随机。
+      if (cardId && target.hand.some((c) => c.id === cardId)) {
+        const c = removeCard(target.hand, cardId);
+        if (c) {
+          toDiscard(state, c);
+          pushLog(state, 'skill', `弃置了 ${target.name} 的【${cardLabel(c)}】。`, {
+            seat: target.seatId,
+            action: 'discard',
+          });
+          fireCardDiscarded(state, target, [c], done);
+          return;
+        }
+      }
       const got = pickTargetCard(state, target, cardId);
       if (!got) {
         pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
@@ -6800,6 +6853,12 @@ function onUseSkill(
     if (skill.oncePerGame) player.usedOncePerGame[skill.id] = false;
     return err(result);
   }
+  // 兜底：技能跑完如果什么 pending 都没留下（比如「这一项做不到，就此结束」那种分支），
+  // 就把出牌阶段还给他——不然 pending 会一直是 null，界面直接卡住。
+  // 正常情况（留下询问、或询问里传了 returnTo）这里不会触发。
+  if (state.pending === null && !state.gameOver) {
+    state.pending = { kind: 'play', seatId: player.seatId };
+  }
   return { ok: true };
 }
 
@@ -6933,6 +6992,7 @@ export function createGame(
     ongoingTrick: null,
     ongoingChain: null,
     damagedThisTurn: [],
+    killedThisTurn: [],
     discardThisTurn: [],
     xianquSeat: null,
     resumeQueue: [],

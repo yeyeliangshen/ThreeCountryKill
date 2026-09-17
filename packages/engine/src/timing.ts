@@ -11,6 +11,11 @@ export type Timing =
   | 'drawPhase' // 摸牌阶段开始（可改摸牌数：突袭）
   | 'drawPhaseEnd' // 摸牌阶段结束时（裸衣：这时才弃牌加伤害）
   | 'playPhase'
+  /**
+   * **其他角色**的出牌阶段开始时（派给**除他以外**的所有存活角色，
+   * payload.turnSeatId 是回合玩家）。何太后·鸩毒挂这里——`playPhase` 只发给回合玩家本人。
+   */
+  | 'othersPlayPhase'
   | 'discardPhase'
   /**
    * 弃牌阶段**结束时**（弃完牌之后）。孟获·再起挂在这里——它要读「本回合进入
@@ -305,6 +310,22 @@ export interface SkillApi {
    * 这个是真把那张牌打出去——姜维·挑衅、贾诩·乱武都要求「使用一张【杀】」。
    * 借刀杀人那条路引擎内部就是这么做的，这里把它开放给技能用。
    */
+  /**
+   * 让某名玩家**私密地**看一些内容（别人的手牌，或暗置武将牌的名字），
+   * 他确认之后接着跑 `after`（不传就交回出牌阶段）。
+   * 蒋钦·尚义用它做「令一名其他角色观看你的手牌」「观看其手牌 / 暗置武将牌」。
+   */
+  privateView: (
+    viewerSeatId: string,
+    title: string,
+    content: { cards?: Card[]; note?: string },
+    opts?: {
+      /** 看完接着跑这里（技能里的中间步骤） */
+      after?: () => void;
+      /** 中间步骤以外的收尾：看完把出牌阶段还给谁（通常是技能使用者） */
+      returnTo?: string;
+    },
+  ) => void;
   useShaOn: (
     sourceSeatId: string,
     targetId: string,

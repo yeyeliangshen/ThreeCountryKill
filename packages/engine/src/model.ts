@@ -446,6 +446,11 @@ export type Pending =
       note?: string;
       /** 看完把控制权还给谁（通常是发起锦囊的玩家） */
       returnTo?: string;
+      /**
+       * 技能发起的私密查看：看完确认后接着跑这里（而不是把出牌阶段还给 returnTo）。
+       * 蒋钦·尚义要「看完对方手牌，再看你要不要弃一张」这种多步流程。
+       */
+      after?: () => void;
     };
 
 // 选将阶段：每人随机发到 K 张武将，各自选 1（并发，全选完才开局）
@@ -486,6 +491,12 @@ export interface GameState {
    * 在 runHooks 分发 afterDamage 时统一登记，所以不用去每处伤害点加代码。
    */
   damagedThisTurn: string[];
+  /**
+   * 本回合**杀死过角色**的人（何太后·戚乱：「你于此回合内杀死过角色」）。
+   * 与 damagedThisTurn 同一套做法：在 kill 时机的公共入口登记、随回合清空。
+   * 注意要按「回合」而不是「某人的回合」清——戚乱是在**任何**回合结束时检查的。
+   */
+  killedThisTurn: string[];
   /**
    * 本回合**进入过弃牌堆**的所有牌（孟获·再起的 X = 其中红桃牌的数量）。
    *

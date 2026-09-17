@@ -2040,6 +2040,375 @@ function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
  *   自伤不派发那个时机，所以自伤不算（官方口径里自伤也算「造成过伤害」，这里从简，已注明）。
  * - 「与你势力相同」仍是引擎既有的**互相认同**口径：双方都得已明置。
  */
+/**
+ * 何太后 —— 鸩毒 / 戚乱（君临天下·阵，2013 原版文本，已核）。
+ *
+ * - 鸩毒：其他角色的出牌阶段开始时，你可以弃置一张手牌。若如此做，其视为使用一张【酒】，
+ *   然后你对其造成 1 点伤害。
+ * - 戚乱：一名角色的回合结束后，若你于此回合内杀死过角色，你可以摸三张牌。
+ *
+ * ⚠️ 版本差异：OL 2020 起鸩毒改成「每名角色（含自己）…若其不是你，你对其造成 1 点伤害」，
+ *    戚乱改成按本回合死亡人数动态摸牌。这里取**君临天下·阵 印刷版（2013）**的口径：
+ *    鸩毒只对**其他角色**、戚乱固定摸三张。
+ *
+ * 实现说明：
+ * - 鸩毒挂在 `othersPlayPhase`（新时机）：`playPhase` 只发给回合玩家本人，看不到别人的出牌阶段。
+ * - 「视为使用一张【酒】」= 给他挂上 `flags.jiuActive`——引擎里【酒】的效果就是这个标记
+ *   （本回合下一张【杀】伤害 +1）。
+ * - 「你于此回合内杀死过角色」用 `state.killedThisTurn`（与 damagedThisTurn 同一套：
+ *   kill 时机的公共入口登记、每个回合开始清空）。戚乱是在**任何**回合结束时检查的，
+ *   所以必须按回合清、不能挂在何太后自己的 flags 上。
+ */
+/**
+ * 曹洪 —— 护援（君临天下·阵，已核国战文本）：
+ * 结束阶段，你可以将一张装备牌置入一名角色的装备区，然后你可以弃置其距离为 1 的
+ * 一名角色的一张牌。
+ *
+ * ⚠️ 鹤翼（阵法技：「与你处于同一队列的其他角色视为拥有『飞影』」）**尚未实现**——
+ *    队列/阵法那套系统还没建（同批的蒋钦·鸟翔、邓艾的围攻关系都等它）。
+ *    技能描述里如实标注。
+ *
+ * 实现要点：装备牌从**曹洪手里**挑（手上的装备牌；置入时若目标该栏已有装备，
+ * 旧的那张进弃牌堆并触发失去装备的时机——这段在 api.giveEquipTo 里）。
+ * 「其距离为 1」的「其」是**接收装备的那个人**，不是曹洪。
+ */
+/**
+ * 蒋钦 —— 尚义（君临天下·阵，已核文本）：
+ * 出牌阶段限一次，你可以令一名其他角色观看你的手牌。若如此做，你选择一项：
+ * ①观看其手牌并可以弃置其中的一张黑色牌；②观看其所有暗置的武将牌。
+ *
+ * 实现要点：三步都是「私密内容 + 确认」，用新原语 api.privateView
+ * （走的是引擎里既有的 viewCards 提示：内容按座位裁剪，日志里不出现牌名/武将名）。
+ *
+ * ⚠️ 鸟翔（阵法技：「在同一个围攻关系中，若你是围攻角色…该角色需依次使用两张【闪】」）
+ *    **尚未实现**——围攻关系/队列那套阵法系统还没建，技能描述里已注明。
+ */
+const JIANGQIN: Hero = {
+  id: 'jiangqin',
+  name: '蒋钦',
+  faction: 'wu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'shangyi',
+      name: '尚义',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: false,
+      canUse: (state, player) =>
+        state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      execute: (state, player, intent, api) => {
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名其他角色';
+        if (targetId === player.seatId) return '不能选择自己';
+        const target0 = getPlayer(state, targetId);
+        if (!target0 || !target0.alive) return '目标无效';
+        pushLog(state, 'skill', `${player.name} 发动【尚义】，令 ${target0.name} 观看其手牌。`);
+        // ①：目标观看蒋钦的手牌（私密内容，他确认后接着跑 ②）
+        api.privateView(
+          targetId,
+          `${player.name} 的手牌（${player.hand.length} 张）`,
+          { cards: player.hand.slice() },
+          {
+            after: () => {
+              const target = getPlayer(state, targetId);
+              if (!target) return;
+              // ②：蒋钦二选一
+              api.askChoice(
+                state,
+                player.seatId,
+                '【尚义】：选择一项',
+                [
+                  { id: 'hand', label: `观看 ${target.name} 的手牌，并可弃置其中一张黑色牌` },
+                  { id: 'hero', label: `观看 ${target.name} 所有暗置的武将牌` },
+                ],
+                (st, p, picked) => {
+                  const t = getPlayer(st, targetId);
+                  if (!t) return;
+                  if (picked === 'hero') {
+                    const hidden = unrevealedHeroes(st.mode, t);
+                    pushLog(st, 'skill', `${p.name} 观看了 ${t.name} 的暗置武将牌。`, {
+                      seat: p.seatId,
+                      action: 'zhibi',
+                    });
+                    // 最后一步：看完把出牌阶段还给蒋钦
+                    api.privateView(
+                      p.seatId,
+                      '你观看的暗置武将牌',
+                      {
+                        note:
+                          hidden.length > 0
+                            ? hidden.map((h) => h.name).join('、')
+                            : '（他没有暗置的武将牌）',
+                      },
+                      { returnTo: p.seatId },
+                    );
+                    return;
+                  }
+                  // 选①：看对方手牌，然后可以弃其中一张黑色牌
+                  api.privateView(
+                    p.seatId,
+                    `${t.name} 的手牌（${t.hand.length} 张）`,
+                    { cards: t.hand.slice() },
+                    {
+                      after: () => {
+                        const t2 = getPlayer(st, targetId);
+                        if (!t2) return;
+                        const blacks = t2.hand.filter((c) => cardColor(c) === 'black');
+                        if (blacks.length === 0) {
+                          pushLog(st, 'skill', `${t2.name} 手里没有黑色牌，【尚义】就此结束。`);
+                          return;
+                        }
+                        api.askPickCards(
+                          st,
+                          p.seatId,
+                          `【尚义】：弃置 ${t2.name} 的一张黑色牌（也可以一张都不选）`,
+                          blacks,
+                          0,
+                          1,
+                          (st2, _p2, chosen) => {
+                            const card = chosen[0];
+                            if (!card) return;
+                            api.discardTargetCard(targetId, card.id);
+                            pushLog(
+                              st2,
+                              'skill',
+                              `${player.name} 弃置了 ${t2.name} 的一张黑色牌。`,
+                              { seat: player.seatId, action: 'discard' },
+                            );
+                          },
+                          // 收尾：选完（或一张都不选）把出牌阶段还给蒋钦
+                          { returnTo: p.seatId },
+                        );
+                      },
+                    },
+                  );
+                },
+              );
+            },
+          },
+        );
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '尚义',
+      desc: '出牌阶段限一次，你可以令一名其他角色观看你的手牌。若如此做，你选择一项：1.观看其手牌并可以弃置其中的一张黑色牌；2.观看其所有暗置的武将牌。',
+    },
+    { name: '鸟翔', desc: '阵法技，在同一个围攻关系中……（阵法系统未实现，暂时不可用）' },
+  ],
+};
+
+const CAOHONG: Hero = {
+  id: 'caohong',
+  name: '曹洪',
+  faction: 'wei',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'turnEnd',
+      skillId: '护援',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const equips = me.hand.filter((c) => isEquipCard(c));
+        if (equips.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【护援】将一张装备牌置入一名角色的装备区？',
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const cards = p.hand.filter((c) => isEquipCard(c));
+            if (cards.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【护援】：选择要置入的装备牌',
+              cards,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                const others = st2.players.filter((x) => x.alive);
+                ctx.api.askChoice(
+                  st2,
+                  p2.seatId,
+                  '【护援】：置入谁的装备区？',
+                  others.map((x) => ({ id: x.seatId, label: x.name })),
+                  (st3, p3, toId) => {
+                    const receiver = getPlayer(st3, toId);
+                    if (!receiver) return;
+                    removeCard(p3.hand, card.id);
+                    // 置入别人的装备区；顶掉旧装备会触发「失去装备」的时机
+                    ctx.api.giveEquipTo(card, toId, () => {
+                      pushLog(
+                        st3,
+                        'skill',
+                        `${p3.name} 发动【护援】，将【${cardLabel(card)}】置入 ${receiver.name} 的装备区。`,
+                      );
+                      // 第二步（可选）：弃置**其**（接收者）距离 1 的一名角色的一张牌
+                      const near = getPlayer(st3, toId)!.alive
+                        ? st3.players.filter(
+                            (x) =>
+                              x.alive &&
+                              distance(st3, toId, x.seatId) === 1 &&
+                              x.seatId !== toId,
+                          )
+                        : [];
+                      if (near.length === 0) return;
+                      ctx.api.askChoice(
+                        st3,
+                        p3.seatId,
+                        `【护援】：是否弃置 ${receiver.name} 距离 1 的一名角色的一张牌？`,
+                        [
+                          ...near.map((x) => ({ id: x.seatId, label: `弃置 ${x.name} 的一张牌` })),
+                          { id: 'no', label: '不弃置' },
+                        ],
+                        (st4, p4, pickedId) => {
+                          if (pickedId === 'no') return;
+                          const victim = getPlayer(st4, pickedId);
+                          if (!victim) return;
+                          pickOneOfTargetCards(st4, p4, victim, ctx.api, '护援');
+                        },
+                      );
+                    });
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '护援',
+      desc: '结束阶段，你可以将一张装备牌置入一名角色的装备区，然后你可以弃置其距离为1的一名角色的一张牌。',
+    },
+    { name: '鹤翼', desc: '阵法技，与你处于同一队列的其他角色视为拥有【飞影】。（阵法系统未实现，暂时不可用）' },
+  ],
+};
+
+const HETAIHOU: Hero = {
+  id: 'hetaihou',
+  name: '何太后',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'othersPlayPhase',
+      skillId: '鸩毒',
+      handler: (ctx) => {
+        const turnSeatId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+        if (!turnSeatId) return;
+        const target = getPlayer(ctx.state, turnSeatId);
+        if (!target || !target.alive) return;
+        if (ctx.player.hand.length === 0) return; // 代价付不出
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否对 ${target.name} 发动【鸩毒】？`,
+          [
+            { id: 'yes', label: `发动（弃一张手牌，${target.name} 视为使用【酒】，你对其造成 1 点伤害）` },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【鸩毒】：弃置一张手牌',
+              p.hand.slice(),
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                pushLog(
+                  st2,
+                  'skill',
+                  `${p2.name} 发动【鸩毒】，弃置【${cardLabel(card)}】。`,
+                );
+                ctx.api.discardCard(p2.seatId, card, () => {
+                  const t = getPlayer(st2, turnSeatId);
+                  if (!t || !t.alive) return;
+                  t.flags.jiuActive = true;
+                  pushLog(st2, 'skill', `${t.name} 视为使用了一张【酒】。`);
+                  // 然后何太后对其造成 1 点伤害（真伤害：会触发卖血技、会被防止）
+                  ctx.api.dealDamage(t, 1, p2.seatId);
+                });
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'turnEnd',
+      skillId: '戚乱',
+      handler: (ctx) => qiluan(ctx),
+    },
+    {
+      timing: 'othersTurnEnd',
+      skillId: '戚乱',
+      handler: (ctx) => qiluan(ctx),
+    },
+  ],
+  skills: [
+    {
+      name: '鸩毒',
+      desc: '其他角色的出牌阶段开始时，你可以弃置一张手牌。若如此做，其视为使用一张【酒】，然后你对其造成1点伤害。',
+    },
+    {
+      name: '戚乱',
+      desc: '一名角色的回合结束后，若你于此回合内杀死过角色，你可以摸三张牌。',
+    },
+  ],
+};
+
+/** 戚乱：回合结束时，本回合杀死过角色就摸三张（自己的回合与别人的回合共用） */
+function qiluan(ctx: HookContext): void {
+  if (!ctx.state.killedThisTurn.includes(ctx.player.seatId)) return;
+  ctx.api.askChoice(
+    ctx.state,
+    ctx.player.seatId,
+    '是否发动【戚乱】摸三张牌？',
+    [
+      { id: 'yes', label: '摸三张牌' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      let got = 0;
+      for (let i = 0; i < 3; i++) {
+        const c = drawOne(st);
+        if (!c) break;
+        p.hand.push(c);
+        got++;
+      }
+      pushLog(st, 'skill', `${p.name} 发动【戚乱】，摸了 ${got} 张牌。`);
+    },
+  );
+}
+
 const JIANGWAN_FEYI: Hero = {
   id: 'jiangwan_feyi',
   name: '蒋琬费祎',
@@ -3958,6 +4327,7 @@ function pickOneOfTargetCards(
   picker: Player,
   target: Player,
   api: SkillApi,
+  skillName = '挑衅',
 ): void {
   const visible: Card[] = [
     ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
@@ -3974,9 +4344,15 @@ function pickOneOfTargetCards(
     pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
     return;
   }
-  api.askChoice(state, picker.seatId, `【挑衅】：弃置 ${target.name} 的一张牌`, options, (st, _p, picked) => {
-    api.discardTargetCard(target.seatId, picked === '__hand' ? undefined : picked);
-  });
+  api.askChoice(
+    state,
+    picker.seatId,
+    `【${skillName}】：弃置 ${target.name} 的一张牌`,
+    options,
+    (st, _p, picked) => {
+      api.discardTargetCard(target.seatId, picked === '__hand' ? undefined : picked);
+    },
+  );
 }
 
 const JIANGWEI: Hero = {
@@ -5847,6 +6223,9 @@ export const HEROES: Hero[] = [
   XIAOQIAO,
   XUSHENG,
   JIANGWAN_FEYI,
+  HETAIHOU,
+  CAOHONG,
+  JIANGQIN,
   TAISHICI,
   LVMENG,
   LUSU,
