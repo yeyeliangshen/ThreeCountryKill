@@ -3,6 +3,9 @@ import {
   applyIntent,
   baseDistance,
   effectiveHeroes,
+  siegeRelations,
+  formationQueue,
+  hasFeiying,
   canUseAsCard,
   canTarget,
   createGame,
@@ -14322,5 +14325,89 @@ describe('国战 · 变更副将 与 马谡·制蛮', () => {
     expect(b.deputyRevealed).toBe(false); // 新副将暗置
     expect(state.heroPool).toHaveLength(0); // 三个都亮掉了
     expect(state.log.some((e) => e.message.includes('张辽、许褚、黄忠'))).toBe(true);
+  });
+});
+
+/** 阵法技：队列（鹤翼→飞影）+ 围攻关系（鸟翔、锋矢） */
+describe('国战 · 阵法技（队列 / 围攻关系）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('围攻关系：左右都是敌人的角色处于被围攻', () => {
+    // 甲(魏) 乙(蜀) 丙(蜀) 丁(魏)：乙的左边是甲(魏)、右边是丙(蜀) → 不被围攻；
+    // 丙的左边乙(蜀)、右边丁(魏) → 也不被围攻。改一下势力让乙被围攻：
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'xusheng', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const rel = siegeRelations(state);
+    // 乙的左右是甲、丙（都是魏）→ 乙被围攻；丁的左右是丙(魏)、甲(魏) → 丁被围攻
+    expect(rel.some((r) => r.besiegedSeatId === B && r.besiegers.includes(A) && r.besiegers.includes(C))).toBe(true);
+    expect(rel.some((r) => r.besiegedSeatId === D)).toBe(true);
+    // 存活 3 人时不成立（阵法技的前提）
+    const small = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'xusheng', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    expect(siegeRelations(small)).toEqual([]);
+  });
+
+  it('鸟翔：围攻角色出的【杀】指定被围攻者 → 需两张【闪】', () => {
+    // 甲(魏·徐盛) 乙(蜀) 丙(魏) 丁(蜀)：乙被甲、丙围攻 → 甲出杀打乙，徐盛的鸟翔生效
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'xusheng', faction: 'wei', hand: [sha('a1', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    // 徐盛是吴将，这里势力给他改成魏只是为了让围攻关系成立（阵法只看势力）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.attack.requiredShan).toBe(2);
+    expect(state.log.some((e) => e.message.includes('鸟翔'))).toBe(true);
+  });
+
+  it('鹤翼：同一队列的角色之间距离 +1（飞影）', () => {
+    // 甲(蜀·曹洪) 乙(蜀) 丙(魏) 丁(魏)：甲的队列是「甲、乙」（连续同势力）
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    const q = formationQueue(state, state.players.find((p) => p.seatId === A)!).map((p) => p.seatId);
+    expect(q.sort()).toEqual([A, B].sort());
+    expect(hasFeiying(state, state.players.find((p) => p.seatId === B)!)).toBe(true);
+    // 丙计算与乙的距离：本来是 1，飞影 +1 → 2
+    expect(distance(state, C, B)).toBe(2);
+    // 丙计算与甲的距离也 +1（甲自己也在队列里？—— 甲是鹤翼持有者，飞影给的是**其他人**）
+    expect(distance(state, C, D)).toBe(1); // 丁不在队列里、没有飞影
   });
 });

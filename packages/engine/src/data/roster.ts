@@ -54,7 +54,8 @@ export type PrimitiveId =
   | 'discard_ledger' // 本回合进入弃牌堆的牌（再起）
   | 'remove_hero' // 移除武将牌（士兵牌顶替）
   | 'slot_skills' // 主将技 / 副将技
-  | 'change_deputy'; // 变更副将（变包）
+  | 'change_deputy' // 变更副将（变包）
+  | 'siege_formation'; // 阵法技（队列 / 围攻关系）
 
 export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   hook_interaction: '钩子内发起询问',
@@ -529,8 +530,8 @@ const ZHEN: RosterEntry[] = [
     faction: 'wei',
     pack: 'zhen',
     status: 'done',
-    primitives: ['hook_interaction'],
-    note: '护援已实现（装备牌置入他人装备区 → 可弃其距离 1 的一名角色的一张牌）。鹤翼＝阵法技，需要队列系统，尚未实现。',
+    primitives: ['hook_interaction', 'siege_formation'],
+    note: '护援 + 鹤翼（阵法技）都已实现：鹤翼用 grantsFeiyingToQueue，由 distance() 里的 hasFeiying 读——同一队列（formationQueue：连续相邻且同势力）的其他人视为拥有飞影。',
   },
   {
     id: 'jiangwei',
@@ -556,8 +557,8 @@ const ZHEN: RosterEntry[] = [
     faction: 'wu',
     pack: 'zhen',
     status: 'done',
-    primitives: ['hook_interaction'],
-    note: '疑城已实现（2019 典藏版口径：由成为目标的角色自己决定摸一弃一）。鸟翔＝阵法技，需要围攻关系/队列系统，尚未实现。',
+    primitives: ['hook_interaction', 'siege_formation'],
+    note: '疑城 + 鸟翔（阵法技）都已实现：鸟翔挂在 othersBecomeTarget，靠 siegeRelations（围攻关系）判断「同一个围攻关系里的围攻角色出杀指定被围攻者」→ requiredShan = 2。',
   },
   {
     id: 'jiangqin',
@@ -565,8 +566,8 @@ const ZHEN: RosterEntry[] = [
     faction: 'wu',
     pack: 'zhen',
     status: 'done',
-    primitives: ['pick_cards', 'hook_interaction'],
-    note: '尚义已实现（新原语 api.privateView：私密查看手牌 / 暗置武将牌）。鸟翔＝阵法技（围攻关系），需要队列系统，尚未实现。',
+    primitives: ['pick_cards', 'hook_interaction', 'siege_formation'],
+    note: '尚义 + 鸟翔（阵法技）都已实现。',
   },
   {
     id: 'yuji',
@@ -656,8 +657,8 @@ const SHI: RosterEntry[] = [
     faction: 'qun',
     pack: 'shi',
     status: 'done',
-    primitives: ['remove_hero', 'hook_interaction'],
-    note: '穿心已实现（挂在新时机 damageCaused——「造成伤害时」的**来源**视角，damageDealt 是目标那侧；防止伤害走 flags.damagePrevented）。锋矢＝阵法技（围攻关系），需要阵法系统，尚未实现。',
+    primitives: ['remove_hero', 'hook_interaction', 'siege_formation'],
+    note: '穿心 + 锋矢（阵法技）都已实现。',
   },
 ];
 

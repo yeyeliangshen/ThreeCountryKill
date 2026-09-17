@@ -1,7 +1,7 @@
 import type { Player } from './model';
 import type { GameState } from './model';
 import { getPlayer, getPlayerOrThrow } from './model';
-import { effectiveFaction, effectiveHeroes } from './heroes';
+import { effectiveFaction, effectiveHeroes, hasFeiying } from './heroes';
 
 /**
  * 基础距离：圆桌上从 fromId 到 toId 的最短座次距。
@@ -35,6 +35,8 @@ export function distance(state: GameState, fromId: string, toId: string): number
   const to = getPlayer(state, toId);
   if (from?.equipment.minusMount) d -= 1;
   if (to?.equipment.plusMount) d += 1;
+  // 飞影（曹洪·鹤翼授予同队列者）：别人计算与他的距离 +1
+  if (to && hasFeiying(state, to)) d += 1;
   if (from) {
     for (const hero of effectiveHeroes(state, from)) {
       d -= hero.distanceFrom ?? 0;

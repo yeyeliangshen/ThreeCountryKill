@@ -263,6 +263,10 @@ export interface Hero {
    * 否则此【杀】对你无效。由 engine 的 afterShaTargetResolve 在防具之前问。
    */
   xingleBasicDiscard?: boolean;
+  /** 飞影：其他角色计算与你的距离 +1（曹洪·鹤翼授予同队列者） */
+  feiying?: boolean;
+  /** 鹤翼（阵法技）：与你处于同一队列的其他角色视为拥有【飞影】 */
+  grantsFeiyingToQueue?: boolean;
   /**
    * 只作为「被授予的技能」存在的伪武将（崩坏、勇决…）：不进选将池，
    * 只能通过 api.grantSkill 挂到别人身上。
@@ -357,6 +361,10 @@ export type FieldSkill =
   | 'gainsUsedNanman'
   /** 刘禅·享乐：成为【杀】目标后使用者要弃一张基本牌 */
   | 'xingleBasicDiscard'
+  /** 曹洪·鹤翼（阵法技）：同一队列的其他角色视为拥有【飞影】 */
+  | 'grantsFeiyingToQueue'
+  /** 飞影：其他角色计算与你的距离 +1 */
+  | 'feiying'
   /** 小乔·红颜：你的黑桃牌视为红桃牌 */
   | 'spadeAsHeart';
 
@@ -383,6 +391,8 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'spadeAsHeart',
   'gainsUsedNanman',
   'xingleBasicDiscard',
+  'grantsFeiyingToQueue',
+  'feiying',
 ];
 
 const GUANYU: Hero = {
@@ -2046,6 +2056,101 @@ function tianxiangClassic(ctx: HookContext): void {
  * ⚠️ 鸟翔（阵法技：「在同一个围攻关系中…需依次使用两张【闪】」）**尚未实现**——
  *    围攻关系/队列那套阵法系统还没建，先把话说在技能描述里。
  */
+/**
+ * **队列**：存活座次里「连续相邻、势力相同」的一段。返回某人所在的那一段（含他自己）。
+ * 用于阵法技（曹洪·鹤翼「与你处于同一队列的其他角色视为拥有飞影」）。
+ */
+export function formationQueue(state: GameState, player: Player): Player[] {
+  const alive = state.seatOrder
+    .map((id) => getPlayer(state, id))
+    .filter((p): p is Player => !!p && p.alive);
+  const n = alive.length;
+  if (n < 2) return [];
+  const idx = alive.findIndex((p) => p.seatId === player.seatId);
+  if (idx < 0) return [];
+  const faction = effectiveFaction(state, player);
+  if (!faction) return [player];
+  const out: Player[] = [player];
+  // 往两边各走一圈，直到遇到不同势力（或绕回自己）
+  for (const step of [1, -1]) {
+    for (let k = 1; k < n; k++) {
+      const p = alive[(((idx + step * k) % n) + n) % n]!;
+      if (p.seatId === player.seatId) break;
+      if (effectiveFaction(state, p) !== faction) break;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/**
+ * **围攻关系**：一名角色左右两边都是**敌人**时，他处于「被围攻」，左右两人是他的
+ * 「围攻角色」。返回 { besiegedSeatId, besiegers } 的列表（存活 ≥4 人才成立——阵法技
+ * 的共同前提）。
+ */
+export function siegeRelations(
+  state: GameState,
+): { besiegedSeatId: string; besiegers: string[] }[] {
+  const alive = state.seatOrder
+    .map((id) => getPlayer(state, id))
+    .filter((p): p is Player => !!p && p.alive);
+  const n = alive.length;
+  if (n < 4) return [];
+  const out: { besiegedSeatId: string; besiegers: string[] }[] = [];
+  for (let i = 0; i < n; i++) {
+    const me = alive[i]!;
+    const my = effectiveFaction(state, me);
+    if (!my) continue;
+    const left = alive[(i + n - 1) % n]!;
+    const right = alive[(i + 1) % n]!;
+    const lf = effectiveFaction(state, left);
+    const rf = effectiveFaction(state, right);
+    if (!lf || !rf) continue;
+    if (lf !== my && rf !== my) {
+      out.push({ besiegedSeatId: me.seatId, besiegers: [left.seatId, right.seatId] });
+    }
+  }
+  return out;
+}
+
+/** 某人是不是「围攻角色」（即处于某个围攻关系的那一侧），返回他围攻的是谁 */
+export function besiegingTarget(state: GameState, player: Player): string | null {
+  for (const r of siegeRelations(state)) {
+    if (r.besiegers.includes(player.seatId)) return r.besiegedSeatId;
+  }
+  return null;
+}
+
+/**
+ * 飞影：别人计算与你的距离 +1。来源有两处——你自己的武将牌写着这个字段，
+ * 或者与你**同一队列**的队友有【鹤翼】（阵法技把飞影授予同队列其他人）。
+ */
+export function hasFeiying(state: GameState, player: Player): boolean {
+  if (effectiveHeroes(state, player).some((h) => h.feiying === true)) return true;
+  // 同队列里有人有鹤翼 → 我也视为拥有飞影
+  const q = formationQueue(state, player);
+  return q.some(
+    (ally) =>
+      ally.seatId !== player.seatId &&
+      effectiveHeroes(state, ally).some((h) => h.grantsFeiyingToQueue === true),
+  );
+}
+
+/**
+ * 阵法技「鸟翔 / 锋矢」的公共触发判断：被指定的目标是不是**正在被别人围攻**的角色，
+ * 而使用者是不是这个围攻关系里的**围攻角色**（同一个关系才算——「在同一个围攻关系中」）。
+ * 返回被围攻者（不是的话返回 null）。
+ */
+function besiegedBySha(state: GameState, sourceId: string, targetId: string): Player | null {
+  for (const r of siegeRelations(state)) {
+    if (r.besiegedSeatId !== targetId) continue;
+    if (!r.besiegers.includes(sourceId)) continue;
+    const t = getPlayer(state, targetId);
+    return t && t.alive ? t : null;
+  }
+  return null;
+}
+
 /** 双方是否**已明置**且势力相同（国战里暗置＝没有势力，判断同势力一律走这里） */
 function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
   const fa = effectiveFaction(state, a);
@@ -2116,6 +2221,29 @@ const JIANGQIN: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  hooks: [
+    {
+      // 【鸟翔】（阵法技，与徐盛同款）
+      timing: 'othersBecomeTarget',
+      skillId: '鸟翔',
+      handler: (ctx) => {
+        const payload = ctx.payload as { targetId?: string; attack?: AttackContext } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.asType !== 'sha' || !payload?.targetId) return;
+        const victim = besiegedBySha(ctx.state, attack.sourceId, payload.targetId);
+        if (!victim) return;
+        const mine = besiegingTarget(ctx.state, ctx.player);
+        if (mine !== victim.seatId) return;
+        attack.requiredShan = Math.max(attack.requiredShan ?? 1, 2);
+        pushLog(
+          ctx.state,
+          'skill',
+          `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`,
+          { seat: ctx.player.seatId, action: 'skill' },
+        );
+      },
+    },
+  ],
   activeSkills: [
     {
       id: 'shangyi',
@@ -2226,7 +2354,10 @@ const JIANGQIN: Hero = {
       name: '尚义',
       desc: '出牌阶段限一次，你可以令一名其他角色观看你的手牌。若如此做，你选择一项：1.观看其手牌并可以弃置其中的一张黑色牌；2.观看其所有暗置的武将牌。',
     },
-    { name: '鸟翔', desc: '阵法技，在同一个围攻关系中……（阵法系统未实现，暂时不可用）' },
+    {
+      name: '鸟翔',
+      desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色需依次使用两张【闪】才能抵消。',
+    },
   ],
 };
 
@@ -2238,6 +2369,9 @@ const CAOHONG: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 鹤翼（阵法技）：与你同一队列的其他角色视为拥有【飞影】——由 distance() 读
+  grantsFeiyingToQueue: true,
+  lockedFields: ['grantsFeiyingToQueue'],
   hooks: [
     {
       timing: 'turnEnd',
@@ -2325,7 +2459,10 @@ const CAOHONG: Hero = {
       name: '护援',
       desc: '结束阶段，你可以将一张装备牌置入一名角色的装备区，然后你可以弃置其距离为1的一名角色的一张牌。',
     },
-    { name: '鹤翼', desc: '阵法技，与你处于同一队列的其他角色视为拥有【飞影】。（阵法系统未实现，暂时不可用）' },
+    {
+      name: '鹤翼',
+      desc: '阵法技，与你处于同一队列的其他角色视为拥有【飞影】。',
+    },
   ],
 };
 
@@ -2618,6 +2755,28 @@ const XUSHENG: Hero = {
   modes: ['guozhan'],
   hooks: [
     {
+      // 【鸟翔】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 需两张【闪】
+      timing: 'othersBecomeTarget',
+      skillId: '鸟翔',
+      handler: (ctx) => {
+        const payload = ctx.payload as { targetId?: string; attack?: AttackContext } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.asType !== 'sha' || !payload?.targetId) return;
+        const victim = besiegedBySha(ctx.state, attack.sourceId, payload.targetId);
+        if (!victim) return;
+        // 本人在这个围攻关系里也是围攻角色吗？
+        const mine = besiegingTarget(ctx.state, ctx.player);
+        if (mine !== victim.seatId) return;
+        attack.requiredShan = Math.max(attack.requiredShan ?? 1, 2);
+        pushLog(
+          ctx.state,
+          'skill',
+          `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`,
+          { seat: ctx.player.seatId, action: 'skill' },
+        );
+      },
+    },
+    {
       timing: 'othersBecomeTarget',
       skillId: '疑城',
       handler: (ctx) => {
@@ -2667,7 +2826,10 @@ const XUSHENG: Hero = {
       name: '疑城',
       desc: '当一名与你势力相同的角色成为【杀】的目标后，该角色可以摸一张牌，然后弃置一张牌。',
     },
-    { name: '鸟翔', desc: '阵法技，在同一个围攻关系中……（阵法系统未实现，暂时不可用）' },
+    {
+      name: '鸟翔',
+      desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色需依次使用两张【闪】才能抵消。',
+    },
   ],
 };
 
@@ -3343,6 +3505,48 @@ const ZHANGREN: Hero = {
   modes: ['guozhan'],
   hooks: [
     {
+      // 【锋矢】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 令其弃装备区一张
+      timing: 'othersBecomeTarget',
+      skillId: '锋矢',
+      handler: (ctx) => {
+        const payload = ctx.payload as { targetId?: string; attack?: AttackContext } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.asType !== 'sha' || !payload?.targetId) return;
+        const victim = besiegedBySha(ctx.state, attack.sourceId, payload.targetId);
+        if (!victim) return;
+        const mine = besiegingTarget(ctx.state, ctx.player);
+        if (mine !== victim.seatId) return;
+        const equips = EQUIP_SLOTS.map((slot) => victim.equipment[slot]).filter(Boolean) as Card[];
+        if (equips.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否对 ${victim.name} 发动【锋矢】令其弃置装备区一张牌？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const t = getPlayer(st, victim.seatId);
+            if (!t) return;
+            const cards = EQUIP_SLOTS.map((slot) => t.equipment[slot]).filter(Boolean) as Card[];
+            if (cards.length === 0) return;
+            ctx.api.askChoice(
+              st,
+              t.seatId,
+              '【锋矢】：弃置装备区里的一张牌',
+              cards.map((c) => ({ id: c.id, label: `弃置【${cardLabel(c)}】` })),
+              (st2, t2, cardId) => {
+                const card = cards.find((c) => c.id === cardId);
+                if (card) ctx.api.discardCard(t2.seatId, card);
+              },
+            );
+          },
+        );
+      },
+    },
+    {
       // 「造成伤害时」——挂在**来源**这一侧（damageDealt 是目标那一侧）
       timing: 'damageCaused',
       skillId: '穿心',
@@ -3411,7 +3615,10 @@ const ZHANGREN: Hero = {
       name: '穿心',
       desc: '当你于出牌阶段内使用【杀】或【决斗】对目标角色造成伤害时，若其与你势力不同且有副将，你可以防止此伤害。若如此做，该角色选择一项：1.弃置装备区里的所有牌，若如此做，其失去1点体力；2.移除副将。',
     },
-    { name: '锋矢', desc: '阵法技，在同一个围攻关系中……（阵法系统未实现，暂时不可用）' },
+    {
+      name: '锋矢',
+      desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色弃置装备区里的一张牌。',
+    },
   ],
 };
 
