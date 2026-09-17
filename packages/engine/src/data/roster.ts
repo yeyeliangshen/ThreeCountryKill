@@ -609,7 +609,12 @@ const SHI: RosterEntry[] = [
     primitives: ['hook_interaction', 'pick_cards'],
     note: '潜袭（2013 印刷版：判定 → 令距离 1 的角色本回合不能用/打出该颜色手牌）+ 马术。颜色限制是新标记 flags.cannotPlayColor，在「使用/重铸/打出响应」三处统一拦。2018 修订版（摸一弃一代替判定）未采用；技能判定不走 askBeforeJudge（与雷击/悲歌同一档简化）。',
   },
-  { id: 'mifuren', name: '糜夫人', faction: 'shu', pack: 'shi', status: 'todo'
+  {
+    id: 'mifuren',
+    name: '糜夫人',
+    faction: 'shu',
+    pack: 'shi',
+    status: 'todo',
     note: '闺秀/存嗣都要「移除武将牌」那套制度（糜夫人是国战首个引入「移除」的武将），尚未实现。',
   },
   {
