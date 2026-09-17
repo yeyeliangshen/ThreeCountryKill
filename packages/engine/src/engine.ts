@@ -7263,7 +7263,9 @@ function finishDraft(state: GameState): void {
         // 主将技若写着「此武将牌减少半个阴阳鱼」（邓艾·急袭、董卓·暴凌），
         // 那张牌贡献的阴阳鱼少 0.5 ——本引擎的体力是阴阳鱼×2 的口径，所以是 -1。
         const mainHp = main.maxHp - (main.mainSlotHalfYang ? 1 : 0);
-        p.maxHp = Math.floor((mainHp + deputy.maxHp) / 2);
+        // 副将技写着「减少半个阴阳鱼」的（孙策·魂殇）同理，减在副将那半
+        const deputyHp = deputy.maxHp - (deputy.deputySlotHalfYang ? 1 : 0);
+        p.maxHp = Math.floor((mainHp + deputyHp) / 2);
       } else {
         p.maxHp = main?.maxHp ?? 4;
       }

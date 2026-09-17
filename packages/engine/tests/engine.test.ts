@@ -14740,3 +14740,85 @@ describe('国战 · 荀攸（奇策 / 智愚）', () => {
     expect(a.deputyHeroId).toBe('zhangliao');
   });
 });
+
+/** 孙策·激昂：用/被打【决斗】或红色【杀】时摸一张 */
+describe('国战 · 孙策（激昂）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('激昂：自己用红色【杀】指定目标后摸一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sunce', faction: 'wu', hand: [sha('a1', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('激昂');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d1']);
+    // 之后才是乙出闪
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('激昂：黑色【杀】不触发', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sunce', faction: 'wu', hand: [sha('a1', 'spade')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    expect(state.log.some((e) => e.message.includes('激昂'))).toBe(false);
+  });
+
+  it('激昂：自己成为【决斗】目标后摸一张', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [juedou('a1')] },
+        { seatId: B, name: '乙', heroId: 'sunce', faction: 'wu' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('激昂');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand.map((c) => c.id)).toEqual(['d1']);
+  });
+});

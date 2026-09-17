@@ -265,6 +265,8 @@ export interface Hero {
    * 否则此【杀】对你无效。由 engine 的 afterShaTargetResolve 在防具之前问。
    */
   xingleBasicDiscard?: boolean;
+  /** 副将技的「此武将牌减少半个阴阳鱼」（孙策·魂殇）：在**副将**位时 -1 体力上限 */
+  deputySlotHalfYang?: boolean;
   /** 邓艾·屯田：你计算与其他角色的距离 -X（X 为武将牌上「田」的数量） */
   distanceMinusPerTian?: boolean;
   /** 飞影：其他角色计算与你的距离 +1（曹洪·鹤翼授予同队列者） */
@@ -3535,6 +3537,115 @@ const MADAI: Hero = {
  * ⚠️ 虚拟锦囊的「花色」取第一张材料牌的花色（引擎的 castVirtualTrick 需要一个花色，
  *    而奇策的牌没有实体牌面）——只影响【帷幕】那类看颜色的判断，已注明。
  */
+/**
+ * 孙策 —— 激昂 / 鹰扬 / 魂殇（君临天下·势，已核国战文本）。
+ *
+ * - 激昂：当你使用【决斗】或红色【杀】指定目标后，或成为【决斗】或红色【杀】的目标后，
+ *   你可以摸一张牌。（两个方向：自己用、自己成为目标）
+ * - 鹰扬：当你拼点的牌亮出后，你可以令此牌的点数 +3 或 -3。
+ * - 魂殇：副将技，此武将牌减少半个阴阳鱼；准备阶段，若你的体力值不大于 1，
+ *   你本回合拥有「英姿」和「英魂」。
+ *
+ * ⚠️ 本批只做了【激昂】：鹰扬要动引擎的拼点流程（亮牌之后、比大小之前插一次询问），
+ *    魂殇要「本回合临时拥有别的技能」那套（现在只有永久 grantSkill）。两者都还没做，
+ *    roster 里标 partial 并写明。
+ */
+const SUNCE: Hero = {
+  id: 'sunce',
+  name: '孙策',
+  faction: 'wu',
+  // 国战牌面 2 阴阳鱼 → 4（副将位走魂殇时再减 1）
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  deputySlotSkills: ['魂殇'],
+  deputySlotHalfYang: true,
+  hooks: [
+    {
+      // 自己**使用**【决斗】或红色【杀】指定目标后
+      timing: 'useCard',
+      skillId: '激昂',
+      handler: (ctx) => {
+        const payload = ctx.payload as { card?: Card; attack?: AttackContext } | undefined;
+        const attack = payload?.attack;
+        const card = payload?.card;
+        const isDuel = card?.type === 'juedou' || attack?.asType === 'juedou';
+        const isRedSha = attack?.asType === 'sha' && attack.cardColor === 'red';
+        if (!isDuel && !isRedSha) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          '是否发动【激昂】摸一张牌？',
+          [
+            { id: 'yes', label: '摸一张牌' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const c = drawOne(st);
+            if (c) p.hand.push(c);
+            pushLog(st, 'skill', `${p.name} 发动【激昂】，摸了 1 张牌。`);
+          },
+        );
+      },
+    },
+    {
+      // 自己**成为**【杀】的目标后（红色杀才算）
+      timing: 'becomeTarget',
+      skillId: '激昂',
+      handler: (ctx) => {
+        const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+        if (!attack || attack.asType !== 'sha' || attack.cardColor !== 'red') return;
+        jiyangDraw(ctx);
+      },
+    },
+    {
+      // 自己成为【决斗】的目标后（单人目标的锦囊走这条派发）
+      timing: 'othersBecomeTarget',
+      skillId: '激昂',
+      handler: (ctx) => {
+        const payload = ctx.payload as { targetId?: string; card?: Card } | undefined;
+        if (payload?.targetId !== ctx.player.seatId) return;
+        if (payload?.card?.type !== 'juedou') return;
+        jiyangDraw(ctx);
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '激昂',
+      desc: '当你使用【决斗】或红色【杀】指定目标后，或成为【决斗】或红色【杀】的目标后，你可以摸一张牌。',
+    },
+    {
+      name: '鹰扬',
+      desc: '当你拼点的牌亮出后，你可以令此牌的点数+3或-3。（拼点流程的改造还没做，暂时不可用）',
+    },
+    {
+      name: '魂殇',
+      desc: '副将技，此武将牌减少半个阴阳鱼；准备阶段，若你的体力值不大于1，你本回合拥有「英姿」和「英魂」。（「本回合临时拥有技能」的机制还没做，暂时不可用）',
+    },
+  ],
+};
+
+/** 激昂：摸一张（「成为目标后」的两个入口共用） */
+function jiyangDraw(ctx: HookContext): void {
+  ctx.api.askChoice(
+    ctx.state,
+    ctx.player.seatId,
+    '是否发动【激昂】摸一张牌？',
+    [
+      { id: 'yes', label: '摸一张牌' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const c = drawOne(st);
+      if (c) p.hand.push(c);
+      pushLog(st, 'skill', `${p.name} 发动【激昂】，摸了 1 张牌。`);
+    },
+  );
+}
+
 const XUNYOU: Hero = {
   id: 'xunyou',
   name: '荀攸',
@@ -8130,6 +8241,7 @@ export const HEROES: Hero[] = [
   DENGAI,
   YUJI,
   XUNYOU,
+  SUNCE,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
