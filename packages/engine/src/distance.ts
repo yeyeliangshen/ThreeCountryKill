@@ -28,8 +28,10 @@ export function baseDistance(state: GameState, fromId: string, toId: string): nu
  * 距离修正是锁定技（马超·马术：你计算与其他角色的距离-1），国战暗将不算。
  */
 export function distance(state: GameState, fromId: string, toId: string): number {
-  let d = baseDistance(state, fromId, toId);
   const from = getPlayer(state, fromId);
+  // 丁奉·奋迅：本回合「你至其的距离视为 1」。这是**覆盖**，所以要在马匹/马术之前返回。
+  if (from?.flags.distanceToOneThisTurn === toId) return 1;
+  let d = baseDistance(state, fromId, toId);
   const to = getPlayer(state, toId);
   if (from?.equipment.minusMount) d -= 1;
   if (to?.equipment.plusMount) d += 1;

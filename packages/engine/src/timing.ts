@@ -27,11 +27,28 @@ export type Timing =
   | 'becomeTarget' // 成为目标时（目标可响应）
   | 'beforeResolve' // 结算前
   | 'afterResolve' // 结算后
+  /**
+   * **你使用的【杀】被【闪】抵消**（派发给**来源**，payload.attack）。
+   * 庞德·猛进挂这里。注意青龙偃月刀/贯石斧那两件武器是写死在 finishAttack 里的，
+   * 英雄技能要走这个时机才挂得上去。
+   */
+  | 'shaDodged'
   | 'afterUse' // 使用牌后
+  /**
+   * **你的牌因弃置而进入弃牌堆**（派给牌的拥有者，payload.cards 是刚进弃牌堆的那几张）。
+   * 孔融·礼让挂这里。注意只覆盖「弃置」：使用牌进弃牌堆、拼点亮牌、阵亡清牌都不算。
+   */
+  | 'cardDiscarded'
   | 'equipLost' // 失去装备区里的一张牌后（枭姬）
   | 'handEmptied' // 失去最后一张手牌后（连营）
   | 'damageDealt' // 受到伤害时（扣血前）
   | 'afterDamage' // 受到伤害后（派发给**受伤者**：反馈、刚烈、奸雄）
+  /**
+   * **一名角色**受到伤害后（派发给**所有存活角色**，payload.victimId 是谁受伤）。
+   * 蔡文姬·悲歌那种「当一名角色受到【杀】造成的伤害后」挂这里——
+   * `afterDamage` 只发给受伤者本人，观察不到别人挨打。
+   */
+  | 'anyDamaged'
   | 'afterDamageDealt' // 造成伤害后（派发给**伤害来源**：狂骨这类「你造成的伤害」技能）
   | 'nearDeath' // 濒死
   | 'kill' // 你**杀死**了一名角色（派发给凶手，payload.victimId）——曹丕·行殇
@@ -150,6 +167,16 @@ export interface SkillApi {
    * 找不到这张牌（已被移走/弃掉）就什么也不做，直接走 after。
    */
   moveFieldCard: (card: Card, toSeatId: string, after?: () => void) => void;
+  /**
+   * 立刻结束某人的出牌阶段，进入弃牌阶段（纪灵·双刃「没赢就结束出牌阶段」）。
+   * 与挟天子以令诸侯走的是同一条路（goToDiscardPhase）。
+   */
+  endPlayPhase: (seatId: string) => void;
+  /**
+   * 把**刚进弃牌堆**的几张牌交给某个角色（孔融·礼让）。
+   * 按 id 从弃牌堆里取出来塞进目标手牌；找不到的（已经被别人拿走了）跳过。
+   */
+  giveDiscardedTo: (cards: Card[], targetSeatId: string) => void;
   /** 交换两名角色的全部手牌（鲁肃·缔盟） */
   swapHands: (seatA: string, seatB: string) => void;
   /**

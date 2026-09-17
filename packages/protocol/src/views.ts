@@ -58,6 +58,10 @@ export interface PlayerView {
   faction?: Faction | null;
   // 主将是否已亮将（国战公开信息）
   heroRevealed?: boolean;
+  /** 被【断肠】点名的那张武将牌 id：它的技能全没了（界面上别再列它的技能） */
+  nullifiedHeroId?: string | null;
+  /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */
+  shuangxiongColor?: 'red' | 'black' | null;
   // 副将是否已亮将（国战公开信息）
   deputyRevealed?: boolean;
   // 国战标记（公开信息）：持有数量 > 0 的标记

@@ -56,6 +56,16 @@ export interface PlayerFlags {
    */
   skillNumbers: Record<string, number>;
   /**
+   * 颜良文丑·双雄：本回合**判定牌的颜色**。本回合可以把颜色**不同**的手牌当【决斗】使用。
+   * 随 emptyFlags 每回合清。
+   */
+  shuangxiongColor: 'red' | 'black' | null;
+  /**
+   * 本回合「你至某人的距离视为 1」（丁奉·奋迅）：存那个人的座位号。
+   * 由 distance() 读；随回合结束清（见 engine 的 clearTurnScoped）。
+   */
+  distanceToOneThisTurn: string | null;
+  /**
    * 本回合**自己的出牌阶段**里用过的牌（吕蒙·克己看颜色有几种、谋断看花色/类别有几种）。
    *
    * 只记摘要不记牌对象——牌用完就进弃牌堆了，留着引用没有意义。
@@ -145,6 +155,8 @@ export function emptyFlags(): PlayerFlags {
     discardedInDiscardPhase: false,
     removedFromSeating: false,
     cannotBeTargetThisTurn: false,
+    distanceToOneThisTurn: null,
+    shuangxiongColor: null,
   };
 }
 
@@ -197,6 +209,11 @@ export interface Player {
    */
   prelitSkills: string[];
 
+  /**
+   * 被【断肠】（蔡文姬）点名的那张武将牌：**它失去所有技能**
+   * （势力与性别不受影响）。存 heroId，永久生效（不随回合清）。
+   */
+  nullifiedHeroId: string | null;
   /**
    * 通过觉醒技/化身等途径「获得」的技能：从别的武将身上借来的。
    * 只记来源武将 id 与技能名，具体怎么摘见 heroes.grantedHeroes。

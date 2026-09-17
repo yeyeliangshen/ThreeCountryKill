@@ -290,8 +290,9 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         seen.add(card.id);
       }
     }
-    // 转化即时锦囊（甘宁·奇袭：黑色牌当过河拆桥；卧龙诸葛亮·火计：红色牌当火攻）
-    for (const it of ['guohe', 'huogong'] as const) {
+    // 转化即时锦囊（甘宁·奇袭：黑色牌当过河拆桥；卧龙诸葛亮·火计：红色牌当火攻；
+    // 颜良文丑·双雄：与判定牌异色的手牌当【决斗】）
+    for (const it of ['guohe', 'huogong', 'juedou'] as const) {
       if (seen.has(card.id)) break;
       if (!canUseAsCard(state, player, card, it)) continue;
       const legal = state.players.some(

@@ -357,12 +357,14 @@ export function canUseAsCard(
   type: CardType,
 ): boolean {
   const heroes = activeHeroes(state, player);
-  if (heroes.some((h) => heroCanUseAs(h, card, type))) return true;
+  if (heroes.some((h) => heroCanUseAs(h, card, type, state, player))) return true;
   // 国战暗置：**预亮过**的转化技可以先用（真正打出去时由 revealForConversion 明置，
   // 见「发动技能时必须明置该武将」）。没预亮就当作不会——暗置武将没有技能。
-  if (unrevealedHeroes(state.mode, player).some((h) => heroCanUseAs(h, card, type))) {
+  if (
+    unrevealedHeroes(state.mode, player).some((h) => heroCanUseAs(h, card, type, state, player))
+  ) {
     const skillName = conversionSkillName(
-      unrevealedHeroes(state.mode, player).find((h) => heroCanUseAs(h, card, type))!,
+      unrevealedHeroes(state.mode, player).find((h) => heroCanUseAs(h, card, type, state, player))!,
     );
     if (skillName && player.prelitSkills.includes(skillName)) return true;
   }
@@ -823,7 +825,9 @@ function doDrawPhase(state: GameState, player: Player): void {
     }
     pushLog(state, 'draw', `${player.name} 摸了 ${count} 张牌。`);
   } else {
-    pushLog(state, 'draw', `${player.name} 被【兵粮寸断】影响，跳过摸牌阶段。`);
+    // 原因由设 flag 的一方自己记（兵粮寸断在判定阶段已经记过），这里只记结果——
+    // 否则夏侯渊·神速、颜良文丑·双雄跳过摸牌时会被误记成「被兵粮寸断影响」。
+    pushLog(state, 'draw', `${player.name} 跳过摸牌阶段。`);
   }
 
   // 摸牌阶段结束时（裸衣在这个时机弃牌加伤害）
@@ -1147,6 +1151,8 @@ function afterTurnEnd(state: GameState): void {
       // 所以「本回合不能使用或打出手牌」实际上是永久生效的——顺手一起修了。
       p.flags.cannotPlayCardsThisTurn = false;
       p.flags.cannotHealThisTurn = false;
+      // 奋迅的「你至其距离视为 1」
+      p.flags.distanceToOneThisTurn = null;
     }
   };
   // 挟天子以令诸侯：本回合结束前若在弃牌阶段弃过牌，追加一个额外回合。
@@ -1254,20 +1260,20 @@ function playSha(
   const hasZhuge = source.equipment.weapon?.equipName === 'zhuge';
   const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
   if (source.flags.shaCountThisTurn >= maxSha) return err('本回合出杀数已达上限');
-  // 【方天画戟】同名两张牌，两个模式两套效果（见 fangtianRule）
-  const rule = fangtianRule(state, source, card);
+  // 目标数规则：方天画戟（同名两模式两套）+ 丁奉·短兵（额外一名距离 1 的）
+  const rule = shaTargetRule(state, source, card);
   if (targetIds.length === 0) return err('杀需指定至少 1 名目标');
   if (targetIds.length > (rule?.max ?? 1)) {
     if (!rule) return err('杀需指定 1 名目标');
     return err(
       rule.max === 3
         ? '【方天画戟】至多额外指定两个目标（共 3 名）'
-        : '【方天画戟】指定的目标数量超出限制',
+        : '目标数量超出限制（【方天画戟】/【短兵】决定了上限）',
     );
   }
   const seenTargets = new Set<string>();
   const usedFactions = new Set<string>();
-  for (const targetId of targetIds) {
+  for (const [index, targetId] of targetIds.entries()) {
     if (targetId === source.seatId) return err('不能对自己使用杀');
     if (seenTargets.has(targetId)) return err('目标不能重复');
     seenTargets.add(targetId);
@@ -1278,6 +1284,11 @@ function playSha(
     // 距离校验：攻击范围 ≥ 距离（天义拼点赢则本回合无视距离）
     if (!source.flags.ignoreShaDistanceThisTurn && !canTarget(state, source.seatId, targetId))
       return err('目标超出攻击范围');
+    // 短兵多出来的那一名必须是**距离 1** 的角色（方天画戟给的名额不受这条约束）
+    if (rule && rule.extraAtRange1 > 0 && index >= rule.baseMax) {
+      const d = distance(state, source.seatId, targetId);
+      if (d !== 1) return err('【短兵】额外指定的目标必须距离为 1');
+    }
     // 国战版才有「势力各不相同」的约束：暗置（未确定势力）的角色不受限，明置的势力不能重复
     if (rule?.distinctFactions) {
       const f = effectiveFaction(state, target);
@@ -1305,6 +1316,40 @@ function sortTargetsBySeat(state: GameState, sourceSeatId: string, targetIds: st
   // 万一有目标不在存活座次里（理论上不会），按原顺序补在后面，别把它弄丢
   for (const sid of targetIds) if (!sorted.includes(sid)) sorted.push(sid);
   return sorted;
+}
+
+/**
+ * 【杀】能指定几个目标、以及有什么附加约束。
+ *
+ * 两处来源合在一起算：
+ * - **【方天画戟】**（同名两张牌、两个模式两套效果，见 fangtianRule）；
+ * - **丁奉·短兵**：额外给一个名额，但那个名额必须指定**距离 1** 的角色
+ *   （`extraAtRange1`，由 playSha 校验；方天画戟给的名额不受这条约束）。
+ *
+ * 返回 null 表示只能指定 1 名目标。
+ */
+function shaTargetRule(
+  state: GameState,
+  source: Player,
+  card: Card,
+): {
+  max: number;
+  baseMax: number;
+  extraAtRange1: number;
+  distinctFactions: boolean;
+  abortOnDodge: boolean;
+} | null {
+  const base = fangtianRule(state, source, card);
+  const extra = activeHeroes(state, source).some((h) => h.shaExtraTargetAtRange1) ? 1 : 0;
+  if (!base && extra === 0) return null;
+  const baseMax = base?.max ?? 1;
+  return {
+    max: baseMax + extra,
+    baseMax,
+    extraAtRange1: extra,
+    distinctFactions: base?.distinctFactions ?? false,
+    abortOnDodge: base?.abortOnDodge ?? false,
+  };
 }
 
 /**
@@ -1625,14 +1670,12 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
   }
   p.chained = false;
   const chainAttack: AttackContext = { ...c.attack, targetId: p.seatId, dodged: false };
-  runHooks(state, 'damageDealt', p, { attack: chainAttack, damage: c.damage });
-  withHuxinjing(state, chainAttack, c.damage, (prevented) => {
+  damageStep(state, p, chainAttack, c.damage, (dmg, prevented) => {
     if (!prevented) {
-      p.hp -= c.damage;
       pushLog(
         state,
         'damage',
-        `${p.name} 因【铁索连环】受到 ${c.damage} 点伤害，剩余 ${Math.max(0, p.hp)} 体力。`,
+        `${p.name} 因【铁索连环】受到 ${dmg} 点伤害，剩余 ${Math.max(0, p.hp)} 体力。`,
       );
     }
     const next = (): void => {
@@ -1644,15 +1687,13 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
       next();
       return;
     }
-    runHooksPausable(state, 'afterDamage', p, { attack: chainAttack, damage: c.damage }, () => {
-      runDamageDealtHooksP(state, chainAttack, c.damage, () => {
-        if (p.hp <= 0) {
-          // 濒死流程接管；ongoingChain 留着，等 resumePlay 把剩下的人接着打完
-          enterNearDeath(state, chainAttack);
-          return;
-        }
-        next();
-      });
+    runDamagedHooks(state, p, chainAttack, dmg, () => {
+      if (p.hp <= 0) {
+        // 濒死流程接管；ongoingChain 留着，等 resumePlay 把剩下的人接着打完
+        enterNearDeath(state, chainAttack);
+        return;
+      }
+      next();
     });
   });
 }
@@ -1678,9 +1719,19 @@ function finishAttack(state: GameState, attack: AttackContext): void {
       runHooks(state, 'afterResolve', target, { attack });
       afterAttackSettled(state, attack);
     };
-    // 被闪避后还能翻盘的武器：青龙偃月刀（继续出杀）/ 贯石斧（弃两张牌仍造成伤害）
-    if (tryDodgeWeapon(state, attack, afterDodge)) return;
-    afterDodge();
+    const dodgeWeapon = (): void => {
+      // 被闪避后还能翻盘的武器：青龙偃月刀（继续出杀）/ 贯石斧（弃两张牌仍造成伤害）
+      if (tryDodgeWeapon(state, attack, afterDodge)) return;
+      afterDodge();
+    };
+    // 「【杀】被【闪】抵消」的时机派给**来源**（庞德·猛进挂这里）。
+    // 可挂起：这一问可能发起询问，问到一半不能把后面的收尾丢了。
+    const src = attack.sourceId ? getPlayer(state, attack.sourceId) : undefined;
+    if (src && src.alive) {
+      runHooksPausable(state, 'shaDodged', src, { attack }, dodgeWeapon);
+      return;
+    }
+    dodgeWeapon();
     return;
   }
 
@@ -1783,18 +1834,39 @@ function tryQinglongBlade(
 
 /** 一张牌从玩家身上（手牌或装备区）进弃牌堆；失去装备会触发 equipLost */
 function discardOwnCard(state: GameState, p: Player, card: Card, after: () => void): void {
+  const finish = (): void => fireCardDiscarded(state, p, [card], after);
   const eq = p.equipment;
   for (const slot of EQUIP_SLOTS) {
     if (eq[slot]?.id === card.id) {
       eq[slot] = null;
       toDiscard(state, card);
-      fireEquipLost(state, p, card, after);
+      fireEquipLost(state, p, card, finish);
       return;
     }
   }
   const c = removeCard(p.hand, card.id);
   if (c) toDiscard(state, c);
-  after();
+  finish();
+}
+
+/**
+ * 「某人的牌**因弃置**而进入弃牌堆」→ 派给牌的拥有者（孔融·礼让）。
+ *
+ * 只该在**弃置**时调：使用牌进弃牌堆、拼点亮牌、阵亡清牌都不算。
+ * 可挂起——礼让要问「要不要转交给别人」，所以用可挂起版本，
+ * 调用方把「弃置之后的收尾」放在 after 里。
+ */
+function fireCardDiscarded(
+  state: GameState,
+  owner: Player,
+  cards: Card[],
+  after: () => void,
+): void {
+  if (cards.length === 0 || !owner.alive) {
+    after();
+    return;
+  }
+  runHooksPausable(state, 'cardDiscarded', owner, { cards }, after);
 }
 
 /** 逐张弃置（中间可能被失去装备的询问打断），全部处理完再调 after */
@@ -1887,18 +1959,17 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
   if (skillBonus > 0) {
     pushLog(state, 'damage', `${target.name} 受到的伤害 +${skillBonus}（技能）。`);
   }
-  // 白银狮子（锁定技）：在**所有加成算完之后**夹取，防止多余的伤害
-  total = capDamageByBailong(state, target, total, source);
+  // 伤害数值的最后一道修正（孔融·名士 -1 / 白银狮子防止多余）交给 damageStep 里的
+  // finalizeDamage 统一做，这里不再单独夹一次（否则白银狮子会被夹两次）。
   runHooks(state, 'damageDealt', target, { attack, damage: total });
 
   /** 真正扣血 + 收尾（afterDamage / 铁索蔓延 / 濒死） */
-  const applyDamage = (prevented: boolean): void => {
+  const applyDamage = (dmg: number, prevented: boolean): void => {
     if (!prevented) {
-      target.hp -= total;
       pushLog(
         state,
         'damage',
-        `${target.name} 受到 ${total} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
+        `${target.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
       );
     }
     // afterDamage（派给受伤者）与 afterDamageDealt（派给来源）都可能挂起询问，
@@ -1908,7 +1979,7 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
       // 三尖两刃刀：造成伤害后（目标还活着才有效）
       askSanjian(state, attack, () => {
         // 铁索连环：先记账（重置横置目标 + 记下要蔓延给谁），再决定控制流
-        queueChainSpread(state, attack, total);
+        queueChainSpread(state, attack, dmg);
         if (target.hp <= 0) {
           // 目标自己濒死：蔓延的待办留在 ongoingChain 里，濒死结算完由 resumePlay 接着跑
           enterNearDeath(state, attack);
@@ -1924,15 +1995,119 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
       afterAttackSettled(state, attack);
       return;
     }
-    runHooksPausable(state, 'afterDamage', target, { attack, damage: total }, () => {
-      runDamageDealtHooksP(state, attack, total, tail);
-    });
+    runDamagedHooks(state, target, attack, dmg, tail);
   };
 
   // 伤害时的武器特效（寒冰剑 / 麒麟弓）——都可能要问，所以串着来
   askDamageWeaponEffects(state, attack, target, source, () => {
-    withHuxinjing(state, attack, total, applyDamage);
+    damageStep(state, target, attack, total, applyDamage);
   });
+}
+
+/**
+ * 一次伤害的**公共前置**：算减伤 → damageDealt → 护心镜（可能问）→ 扣血。
+ *
+ * `apply(dmg, prevented)` 是「扣血之后」的收尾：调用方在里面写自己的伤害日志、
+ * 跑受伤后钩子、决定濒死/铁索/推进。**扣血由这里统一做**，所以减伤只在这一处生效。
+ *
+ * 为什么要收口：伤害点本来有 8 处各抄一遍「damageDealt → 护心镜 → hp -= 」，
+ * 于是任何一处要按规则改伤害数值（孔融·名士）或加「任何人受伤后」的时机（蔡文姬·悲歌）
+ * 都得改 8 遍、必漏。顺带修掉一个老漏判：**白银狮子以前只挂在【杀】那条路径上**，
+ * 现在所有伤害都过它。
+ */
+function damageStep(
+  state: GameState,
+  target: Player,
+  attack: AttackContext,
+  rawDamage: number,
+  apply: (dmg: number, prevented: boolean) => void,
+): void {
+  const dmg = finalizeDamage(state, target, attack, rawDamage);
+  runHooks(state, 'damageDealt', target, { damage: dmg, attack });
+  withHuxinjing(state, attack, dmg, (prevented) => {
+    if (!prevented) target.hp -= dmg;
+    apply(dmg, prevented);
+  });
+}
+
+/**
+ * 伤害数值的**统一修正**（在扣血之前算）。目前两处：
+ *
+ * - **孔融·名士**（锁定技）：当你受到伤害时，若伤害来源**有暗置的武将牌**，此伤害 -1。
+ * - **白银狮子**（锁定技）：伤害大于 1 时防止多余的伤害（青釭剑无视防具）。
+ *
+ * ⚠️ 顺序：先名士再白银狮子。两者都是「变成多少」而不是「免不免」，
+ * 免不免那层是护心镜（withHuxinjing）。
+ */
+function finalizeDamage(
+  state: GameState,
+  target: Player,
+  attack: AttackContext,
+  damage: number,
+): number {
+  let d = damage;
+  const source = attack.sourceId ? getPlayer(state, attack.sourceId) : undefined;
+  // 名士：来源有暗置的武将牌（国战语义：暗置的武将牌没有技能、也没明置）
+  if (
+    activeHeroes(state, target).some((h) => h.reduceDamageFromHiddenSource) &&
+    source &&
+    source.seatId !== target.seatId &&
+    unrevealedHeroes(state.mode, source).length > 0
+  ) {
+    d = Math.max(0, d - 1);
+    pushLog(state, 'resolve', `${target.name} 的【名士】令此伤害 -1。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
+  }
+  return capDamageByBailong(state, target, d, source);
+}
+
+/**
+ * 「受到伤害后」的统一派发：受伤者的 `afterDamage` → 旁观者的 `anyDamaged`
+ * （蔡文姬·悲歌那种「当**一名角色**受到伤害后」）→ 来源的 `afterDamageDealt` → `after`。
+ *
+ * `anyDamaged` 派给**所有存活角色**（含受伤者自己与来源）——技能自己按 payload
+ * 判断要不要发动，引擎不做过滤。
+ */
+function runDamagedHooks(
+  state: GameState,
+  victim: Player,
+  attack: AttackContext,
+  damage: number,
+  after: () => void,
+): void {
+  runHooksPausable(state, 'afterDamage', victim, { attack, damage }, () => {
+    runAnyDamagedHooks(state, victim, attack, damage, () => {
+      runDamageDealtHooksP(state, attack, damage, after);
+    });
+  });
+}
+
+/** 把「一名角色受到伤害后」派发给所有存活角色（逐个跑，每个都可能挂起） */
+function runAnyDamagedHooks(
+  state: GameState,
+  victim: Player,
+  attack: AttackContext,
+  damage: number,
+  after: () => void,
+): void {
+  const list = alivePlayers(state).map((p) => p.seatId);
+  const step = (i: number): void => {
+    if (i >= list.length) {
+      after();
+      return;
+    }
+    const p = getPlayer(state, list[i]!);
+    if (!p) {
+      step(i + 1);
+      return;
+    }
+    runHooksPausable(state, 'anyDamaged', p, { attack, damage, victimId: victim.seatId }, () =>
+      step(i + 1),
+    );
+  };
+  step(0);
 }
 
 /**
@@ -2206,21 +2381,26 @@ function askSanjian(state: GameState, attack: AttackContext, after: () => void):
                 damage: 1,
                 dodged: false,
               };
-              withHuxinjing(st3, extra, 1, (prevented) => {
+              damageStep(st3, victim, extra, 1, (dmg, prevented) => {
                 if (!prevented) {
-                  victim.hp -= 1;
                   pushLog(
                     st3,
                     'damage',
-                    `${victim.name} 被【三尖两刃刀】造成 1 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
+                    `${victim.name} 被【三尖两刃刀】造成 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
                     { seat: victim.seatId, action: 'damage' },
                   );
                 }
-                if (!prevented && victim.hp <= 0) {
-                  enterNearDeath(st3, extra);
+                if (prevented) {
+                  after();
                   return;
                 }
-                after();
+                runDamagedHooks(st3, victim, extra, dmg, () => {
+                  if (victim.hp <= 0) {
+                    enterNearDeath(st3, extra);
+                    return;
+                  }
+                  after();
+                });
               });
             },
           );
@@ -2401,21 +2581,23 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
     const roleText = dying.role ? `（${ROLE_NAME[dying.role]}）` : '';
     const factionText = dying.faction ? `（${FACTION_NAME[dying.faction]}）` : '';
     pushLog(state, 'death', `${dying.name} 阵亡${roleText}${factionText}。`);
-    runHooks(state, 'death', dying, {});
-    // 清牌：行殇没拿走的才进弃牌堆
-    for (const c of dying.hand) toDiscard(state, c);
-    dying.hand = [];
-    const eq = dying.equipment;
-    for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
-      if (c) toDiscard(state, c);
-    }
-    dying.equipment = emptyEquipment();
-    for (const c of dying.judgment) toDiscard(state, c);
-    dying.judgment = [];
+    // 走可挂起版本：蔡文姬·断肠要在死亡时问「让凶手失去哪张武将牌的技能」
+    runHooksPausable(state, 'death', dying, { killerId }, () => {
+      // 清牌：行殇没拿走的才进弃牌堆
+      for (const c of dying.hand) toDiscard(state, c);
+      dying.hand = [];
+      const eq = dying.equipment;
+      for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
+        if (c) toDiscard(state, c);
+      }
+      dying.equipment = emptyEquipment();
+      for (const c of dying.judgment) toDiscard(state, c);
+      dying.judgment = [];
 
-    if (checkWin(state)) return;
-    // 回到当前回合玩家（伤害来源）的出牌阶段
-    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+      if (checkWin(state)) return;
+      // 回到当前回合玩家（伤害来源）的出牌阶段
+      resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    });
   };
 
   const killer = killerId && killerId !== dyingId ? getPlayer(state, killerId) : undefined;
@@ -3672,28 +3854,34 @@ function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
     dodged: false,
     attribute: 'fire',
   };
-  runHooks(state, 'damageDealt', target, { damage: 1, attack });
-  withHuxinjing(state, attack, 1, (prevented) => {
+  damageStep(state, target, attack, 1, (dmg, prevented) => {
     if (!prevented) {
-      target.hp -= 1;
       pushLog(
         state,
         'damage',
-        `${target.name} 因【火烧连营】受到 1 点火焰伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
+        `${target.name} 因【火烧连营】受到 ${dmg} 点火焰伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
       );
     }
-    if (!prevented) queueChainSpread(state, attack, 1);
-    const next = (): void => {
+    if (prevented) {
       ctx.responderIndex++;
       huoShaoStep(state, ctx);
-    };
-    if (target.hp <= 0) {
-      // 濒死打断：把剩下的队列留在 ctx 里，濒死结算完由 resumePlay 接着打
-      state.ongoingTrick = ctx;
-      enterNearDeath(state, attack);
       return;
     }
-    runChainSpread(state, next);
+    // 受伤后钩子（反馈/刚烈/悲歌…）在铁索蔓延之前跑
+    runDamagedHooks(state, target, attack, dmg, () => {
+      queueChainSpread(state, attack, dmg);
+      const next = (): void => {
+        ctx.responderIndex++;
+        huoShaoStep(state, ctx);
+      };
+      if (target.hp <= 0) {
+        // 濒死打断：把剩下的队列留在 ctx 里，濒死结算完由 resumePlay 接着打
+        state.ongoingTrick = ctx;
+        enterNearDeath(state, attack);
+        return;
+      }
+      runChainSpread(state, next);
+    });
   });
 }
 
@@ -3814,6 +4002,8 @@ function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
             if (slot) p2.equipment[slot] = null;
             toDiscard(st2, card);
             pushLog(st2, 'discard', `${p2.name} 因【敕令】弃置【${cardLabel(card)}】。`);
+            fireCardDiscarded(st2, p2, [card], () => chilingNext(st2, ctx));
+            return;
           }
           chilingNext(st2, ctx);
         });
@@ -4115,18 +4305,26 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
         attribute: 'thunder',
       };
       pushLog(st, 'damage', `${p.name} 选择受到 1 点雷电伤害。`);
-      runHooks(st, 'damageDealt', p, { damage: 1, attack });
-      withHuxinjing(st, attack, 1, (prevented) => {
+      damageStep(st, p, attack, 1, (dmg, prevented) => {
         if (!prevented) {
-          p.hp -= 1;
-          pushLog(st, 'damage', `${p.name} 受到 1 点雷电伤害，剩余 ${Math.max(0, p.hp)} 体力。`);
+          pushLog(
+            st,
+            'damage',
+            `${p.name} 受到 ${dmg} 点雷电伤害，剩余 ${Math.max(0, p.hp)} 体力。`,
+          );
         }
-        if (!prevented) queueChainSpread(st, attack, 1);
-        if (p.hp <= 0) {
-          enterNearDeath(st, attack);
+        if (prevented) {
+          resumePlay(st, ctx.sourceId);
           return;
         }
-        runChainSpread(st, () => resumePlay(st, ctx.sourceId));
+        runDamagedHooks(st, p, attack, dmg, () => {
+          queueChainSpread(st, attack, dmg);
+          if (p.hp <= 0) {
+            enterNearDeath(st, attack);
+            return;
+          }
+          runChainSpread(st, () => resumePlay(st, ctx.sourceId));
+        });
       });
     },
   );
@@ -4461,15 +4659,13 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
   if (bonus > 0) {
     pushLog(state, 'damage', `${victim.name} 受到的伤害 +${bonus}（技能）。`);
   }
-  runHooks(state, 'damageDealt', victim, { damage: total, attack });
   // 护心镜：这一步可能要问，所以整段（扣血 + 日志 + 收尾）都放进回调
-  withHuxinjing(state, attack, total, (prevented) => {
+  damageStep(state, victim, attack, total, (dmg, prevented) => {
     if (!prevented) {
-      victim.hp -= total;
       pushLog(
         state,
         'damage',
-        `${victim.name} 受到 ${total} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
+        `${victim.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
       );
     }
     const tail = (): void => {
@@ -4479,9 +4675,7 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
         resumePlay(state, ctx.sourceId);
       }
     };
-    runHooksPausable(state, 'afterDamage', victim, { damage: total, attack }, () => {
-      runDamageDealtHooksP(state, attack, total, tail);
-    });
+    runDamagedHooks(state, victim, attack, dmg, tail);
   });
   return { ok: true };
 }
@@ -4525,14 +4719,12 @@ function respondHuogongCard(
     dodged: false,
     attribute: 'fire',
   };
-  runHooks(state, 'damageDealt', target, { damage: 1, attack });
-  withHuxinjing(state, attack, 1, (prevented) => {
+  damageStep(state, target, attack, 1, (dmg, prevented) => {
     if (!prevented) {
-      target.hp -= 1;
       pushLog(
         state,
         'damage',
-        `${target.name} 受到 1 点火属性伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
+        `${target.name} 受到 ${dmg} 点火属性伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
       );
     }
     const tail = (): void => {
@@ -4546,9 +4738,7 @@ function respondHuogongCard(
       resumePlay(state, ctx.sourceId);
       return;
     }
-    runHooksPausable(state, 'afterDamage', target, { damage: 1, attack }, () => {
-      runDamageDealtHooksP(state, attack, 1, tail);
-    });
+    runDamagedHooks(state, target, attack, dmg, tail);
   });
   return { ok: true };
 }
@@ -4686,14 +4876,12 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
     damage: 1,
     dodged: false,
   };
-  runHooks(state, 'damageDealt', victim, { damage: 1, attack });
-  withHuxinjing(state, attack, 1, (prevented) => {
+  damageStep(state, victim, attack, 1, (dmg, prevented) => {
     if (!prevented) {
-      victim.hp -= 1;
       pushLog(
         state,
         'damage',
-        `${victim.name} 受到 1 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
+        `${victim.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
       );
     }
     const tail = (): void => {
@@ -4707,9 +4895,7 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
       resumePlay(state, ctx.sourceId);
       return;
     }
-    runHooksPausable(state, 'afterDamage', victim, { damage: 1, attack }, () => {
-      runDamageDealtHooksP(state, attack, 1, tail);
-    });
+    runDamagedHooks(state, victim, attack, dmg, tail);
   });
   return { ok: true };
 }
@@ -4777,14 +4963,12 @@ function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): Appl
     damage: 1,
     dodged: false,
   };
-  runHooks(state, 'damageDealt', victim, { damage: 1, attack });
-  withHuxinjing(state, attack, 1, (prevented) => {
+  damageStep(state, victim, attack, 1, (dmg, prevented) => {
     if (!prevented) {
-      victim.hp -= 1;
       pushLog(
         state,
         'damage',
-        `${victim.name} 受到 1 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
+        `${victim.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
       );
     }
     const tail = (): void => {
@@ -4800,9 +4984,7 @@ function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): Appl
       advanceTrick(state, ctx);
       return;
     }
-    runHooksPausable(state, 'afterDamage', victim, { damage: 1, attack }, () => {
-      runDamageDealtHooksP(state, attack, 1, tail);
-    });
+    runDamagedHooks(state, victim, attack, dmg, tail);
   });
   return { ok: true };
 }
@@ -5573,14 +5755,19 @@ function onDiscard(
   for (const id of intent.cardIds) {
     if (!player.hand.some((c) => c.id === id)) return err('弃的牌不在手中');
   }
+  const thrown: Card[] = [];
   for (const id of intent.cardIds) {
     const c = removeCard(player.hand, id);
-    if (c) toDiscard(state, c);
+    if (c) {
+      toDiscard(state, c);
+      thrown.push(c);
+    }
   }
   // 挟天子以令诸侯要看「弃牌阶段是否真弃过牌」
   if (intent.cardIds.length > 0) player.flags.discardedInDiscardPhase = true;
   pushLog(state, 'discard', `${player.name} 弃了 ${intent.cardIds.length} 张牌。`);
-  runDiscardPhaseEnd(state, player);
+  // 礼让这类「你的牌因弃置而进弃牌堆」的时机；之后再推进弃牌阶段结束
+  fireCardDiscarded(state, player, thrown, () => runDiscardPhaseEnd(state, player));
   return { ok: true };
 }
 
@@ -6019,6 +6206,29 @@ function makeSkillApi(
       // 原主失去装备区的牌 → 枭姬那类技能
       fireEquipLost(state, from, card, () => after?.());
     },
+    endPlayPhase: (seatId) => {
+      const p = getPlayer(state, seatId);
+      if (!p) return;
+      goToDiscardPhase(state, p);
+    },
+    giveDiscardedTo: (cards, targetSeatId) => {
+      const target = getPlayer(state, targetSeatId);
+      if (!target) return;
+      const got: string[] = [];
+      for (const c of cards) {
+        const i = state.discard.findIndex((x) => x.id === c.id);
+        if (i < 0) continue;
+        state.discard.splice(i, 1);
+        target.hand.push(c);
+        got.push(cardLabel(c));
+      }
+      if (got.length > 0) {
+        pushLog(state, 'skill', `${target.name} 因【礼让】获得了 ${got.join('、')}。`, {
+          seat: target.seatId,
+          action: 'gain',
+        });
+      }
+    },
     swapHands: (seatA, seatB) => {
       const a = getPlayer(state, seatA);
       const b = getPlayer(state, seatB);
@@ -6074,28 +6284,24 @@ function makeSkillApi(
         dodged: false,
         attribute,
       };
-      runHooks(state, 'damageDealt', target, { damage, attack });
-      withHuxinjing(state, attack, damage, (prevented) => {
+      damageStep(state, target, attack, damage, (dmg, prevented) => {
         if (!prevented) {
-          target.hp -= damage;
           pushLog(
             state,
             'damage',
-            `${target.name} 受到 ${damage} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
+            `${target.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
           );
         }
         if (prevented) {
           if (resumeTo) resumePlay(state, resumeTo);
           return;
         }
-        runHooksPausable(state, 'afterDamage', target, { damage, attack }, () => {
-          runDamageDealtHooksP(state, attack, damage, () => {
-            if (target.hp <= 0) {
-              enterNearDeath(state, attack);
-            } else if (resumeTo) {
-              resumePlay(state, resumeTo);
-            }
-          });
+        runDamagedHooks(state, target, attack, dmg, () => {
+          if (target.hp <= 0) {
+            enterNearDeath(state, attack);
+          } else if (resumeTo) {
+            resumePlay(state, resumeTo);
+          }
         });
       });
     },
@@ -6274,6 +6480,7 @@ export function createGame(
     chained: false,
     usedOncePerGame: {},
     prelitSkills: [],
+    nullifiedHeroId: null,
     grantedSkills: [],
   }));
   const seatOrder = seats.map((s) => s.seatId);

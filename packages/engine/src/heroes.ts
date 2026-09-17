@@ -118,7 +118,12 @@ export interface Hero {
    * 甄姬·倾国：黑色牌当【闪】。
    * 华佗·急救：红色牌当【桃】（用于濒死救援）。
    */
-  canUseAs?: (card: Card, type: CardType) => boolean;
+  /**
+   * 转化技。大部分技能只看牌面（武圣：红牌当杀）；
+   * 少数要看**本回合的状态**（颜良文丑·双雄：与判定牌颜色不同的手牌当【决斗】），
+   * 所以后两个参数是可选的 state/player。
+   */
+  canUseAs?: (card: Card, type: CardType, state?: GameState, player?: Player) => boolean;
   /**
    * 被动修改器：本回合最多可出杀数。默认 1。
    * 张飞·咆哮：无限。
@@ -238,6 +243,16 @@ export interface Hero {
    */
   nanmanDamageSource?: boolean;
   /**
+   * 孔融·名士（锁定技）：当你受到伤害时，若伤害来源**有暗置的武将牌**，
+   * 此伤害 -1。由 engine 的 finalizeDamage 在所有伤害点上统一读。
+   */
+  reduceDamageFromHiddenSource?: boolean;
+  /**
+   * 丁奉·短兵：使用【杀】时可以**多选择一名距离为 1** 的角色为目标。
+   * 由 engine 的 shaTargetRule 读（与方天画戟的目标数规则合在一处算）。
+   */
+  shaExtraTargetAtRange1?: boolean;
+  /**
    * 每个技能各自「拥有」哪些字段型能力，键是**技能中文名**。
    *
    * 只在一个地方用得上：把技能从别的武将身上摘出来时（「获得技能」，
@@ -266,7 +281,11 @@ export type FieldSkill =
   | 'duelShaRequired'
   | 'hasBaguaAlways'
   | 'immuneToNanman'
-  | 'nanmanDamageSource';
+  | 'nanmanDamageSource'
+  /** 丁奉·短兵：你使用【杀】可以**多选择一名距离为 1** 的角色为目标 */
+  | 'shaExtraTargetAtRange1'
+  /** 孔融·名士：伤害来源**有暗置的武将牌**时，你受到的伤害 -1 */
+  | 'reduceDamageFromHiddenSource';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -284,6 +303,8 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'hasBaguaAlways',
   'immuneToNanman',
   'nanmanDamageSource',
+  'shaExtraTargetAtRange1',
+  'reduceDamageFromHiddenSource',
 ];
 
 const GUANYU: Hero = {
@@ -3782,6 +3803,518 @@ const SUNJIAN: Hero = {
   ],
 };
 
+// —— 国战标准版·群 / 吴（第三批）——
+
+const PANGDE: Hero = {
+  id: 'pangde',
+  name: '庞德',
+  faction: 'qun',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 马术：锁定技，你计算与其他角色的距离 -1
+  distanceFrom: 1,
+  lockedFields: ['distanceFrom'],
+  skillFields: { 马术: ['distanceFrom'] },
+  hooks: [
+    {
+      // 猛进：**你使用的【杀】被【闪】抵消**时，可以弃置其一张牌。
+      // 注意这个时机是派给**来源**的（shaDodged），青龙偃月刀/贯石斧那两件武器
+      // 是写死在 finishAttack 里的，英雄技能只有走这个时机才挂得上去。
+      timing: 'shaDodged',
+      skillId: '猛进',
+      handler: (ctx) => {
+        const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+        if (!attack || attack.sourceId !== ctx.player.seatId) return;
+        const target = getPlayer(ctx.state, attack.targetId);
+        if (!target || !target.alive || target.seatId === ctx.player.seatId) return;
+        const pool = [
+          ...target.hand,
+          ...(EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[]),
+        ];
+        if (pool.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `【猛进】：是否弃置 ${target.name} 的一张牌？（他手里 ${target.hand.length} 张）`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动（随机弃置其一张牌）' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            // 手牌是暗信息：不看内容、随机抽一张（与过河拆桥/顺手牵羊同一套口径）。
+            // 装备牌本来就是明的，抽到谁就是谁。
+            const pool2 = [
+              ...target.hand,
+              ...(EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[]),
+            ];
+            if (pool2.length === 0) return;
+            const card = pool2[Math.floor(Math.random() * pool2.length)]!;
+            const fromHand = target.hand.some((c) => c.id === card.id);
+            st.log.push({
+              id: st.logSeq++,
+              kind: 'skill',
+              message: fromHand
+                ? `${ctx.player.name} 发动【猛进】，弃置了 ${target.name} 的一张手牌。`
+                : `${ctx.player.name} 发动【猛进】，弃置了 ${target.name} 的【${cardLabel(card)}】。`,
+              seat: ctx.player.seatId,
+              action: 'discard',
+            });
+            ctx.api.discardCard(target.seatId, card);
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    { name: '马术', desc: '锁定技，你计算与其他角色的距离-1。' },
+    {
+      name: '猛进',
+      desc: '当你使用的【杀】被目标角色使用的【闪】抵消时，你可以弃置其一张牌。',
+    },
+  ],
+};
+
+const DINGFENG: Hero = {
+  id: 'dingfeng',
+  name: '丁奉',
+  faction: 'wu',
+  maxHp: 4,
+  gender: 'male',
+  combos: ['xusheng'],
+  modes: ['guozhan'],
+  // 短兵：你使用【杀】可以**多选择一名距离为 1** 的角色为目标。
+  // 名额由 engine 的 shaTargetRule 与方天画戟合在一处算，距离约束在 playSha 里校验。
+  shaExtraTargetAtRange1: true,
+  lockedFields: ['shaExtraTargetAtRange1'],
+  skillFields: { 短兵: ['shaExtraTargetAtRange1'] },
+  activeSkills: [
+    {
+      id: 'fenxun',
+      name: '奋迅',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) =>
+        player.hand.length > 0 && state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      execute: (state, player, intent) => {
+        const cardId = intent.cardIds?.[0];
+        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        if (!card) return '请选择要弃置的一张牌';
+        const targetId = intent.targetIds[0];
+        const target = targetId ? getPlayer(state, targetId) : undefined;
+        if (!target || !target.alive || target.seatId === player.seatId) return '目标无效';
+        removeCard(player.hand, card.id);
+        toDiscard(state, card);
+        // 「本回合你计算与其的距离视为 1」——distance() 读这个字段，回合结束清掉
+        player.flags.distanceToOneThisTurn = target.seatId;
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【奋迅】，弃置【${cardLabel(card)}】：本回合至 ${target.name} 的距离视为 1。`,
+          { seat: player.seatId, action: 'skill' },
+        );
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    { name: '短兵', desc: '你使用【杀】可以多选择一名距离为1的角色为目标。' },
+    {
+      name: '奋迅',
+      desc: '出牌阶段限一次，你可以弃置一张牌并选择一名其他角色，然后本回合你计算与其的距离视为1。',
+    },
+  ],
+};
+
+const JILING: Hero = {
+  id: 'jiling',
+  name: '纪灵',
+  faction: 'qun',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 双刃：出牌阶段开始时与一名角色拼点。赢→视为对其或其同势力的另一名角色
+  // 使用一张【杀】（不计入次数）；没赢→结束出牌阶段。
+  hooks: [
+    {
+      timing: 'playPhase',
+      skillId: '双刃',
+      handler: (ctx) => {
+        const player = ctx.player;
+        if (player.hand.length === 0) return; // 没牌可拼
+        const others = ctx.state.players.filter(
+          (p) => p.alive && p.seatId !== player.seatId && p.hand.length > 0,
+        );
+        if (others.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          player.seatId,
+          '是否发动【双刃】？（与一名角色拼点，赢则视为对其使用一张【杀】）',
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askChoice(
+              st,
+              player.seatId,
+              '【双刃】：与谁拼点？',
+              others.map((p) => ({ id: p.seatId, label: `${p.name}（手牌 ${p.hand.length} 张）` })),
+              (st2, _p2, targetSeatId) => {
+                ctx.api.pindian(player.seatId, targetSeatId, (st3, winnerId) => {
+                  if (winnerId !== player.seatId) {
+                    // 没赢：结束出牌阶段（直接进弃牌阶段）
+                    pushLog(st3, 'skill', `${player.name} 的【双刃】没赢，结束出牌阶段。`, {
+                      seat: player.seatId,
+                      action: 'skill',
+                    });
+                    ctx.api.endPlayPhase(player.seatId);
+                    return;
+                  }
+                  // 赢：视为对「拼点对象」或「与其势力相同的另一名角色」使用一张【杀】。
+                  // 官方没写「无距离限制」，所以照常按攻击范围筛目标。
+                  const opponent = getPlayer(st3, targetSeatId);
+                  const faction = opponent ? effectiveFaction(st3, opponent) : null;
+                  const candidates = st3.players.filter(
+                    (p) =>
+                      p.alive &&
+                      p.seatId !== player.seatId &&
+                      (p.seatId === targetSeatId ||
+                        (faction !== null && effectiveFaction(st3, p) === faction)) &&
+                      canTarget(st3, player.seatId, p.seatId),
+                  );
+                  if (candidates.length === 0) {
+                    pushLog(st3, 'skill', `${player.name} 的【双刃】没有可指定的目标。`, {
+                      seat: player.seatId,
+                      action: 'skill',
+                    });
+                    return;
+                  }
+                  ctx.api.askChoice(
+                    st3,
+                    player.seatId,
+                    '【双刃】拼点赢了：视为对谁使用一张【杀】？',
+                    candidates.map((p) => ({ id: p.seatId, label: p.name })),
+                    (st4, _p4, victimId) => {
+                      ctx.api.castVirtualSha(player.seatId, victimId, { logKind: 'skill' });
+                    },
+                  );
+                });
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '双刃',
+      desc: '出牌阶段开始时，你可以与一名角色拼点。若你赢，你视为对其或与其势力相同的另一名角色使用一张【杀】（不计入出牌阶段使用次数的限制）；若你没赢，你结束出牌阶段。',
+    },
+  ],
+};
+
+// —— 国战标准版·群（第四批）——
+
+const KONGRONG: Hero = {
+  id: 'kongrong',
+  name: '孔融',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 身份局口径 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 名士：锁定技，当你受到伤害时，若伤害来源**有暗置的武将牌**，此伤害 -1。
+  // 实现在 engine 的 finalizeDamage 里——所有伤害点都过它，所以这里只挂字段。
+  reduceDamageFromHiddenSource: true,
+  lockedFields: ['reduceDamageFromHiddenSource'],
+  skillFields: { 名士: ['reduceDamageFromHiddenSource'] },
+  hooks: [
+    {
+      // 礼让：当你的牌**因弃置**而置入弃牌堆时，你可以将之交给一名其他角色。
+      // 由 engine 在「某人的牌被弃置」的几处发 cardDiscarded（弃牌阶段、被拆、
+      // 技能弃置…），payload.cards 是刚进弃牌堆的那几张。
+      timing: 'cardDiscarded',
+      skillId: '礼让',
+      handler: (ctx) => {
+        const payload = ctx.payload as { cards?: Card[] } | undefined;
+        const cards = payload?.cards ?? [];
+        if (cards.length === 0) return;
+        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== ctx.player.seatId);
+        if (others.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `【礼让】：是否把刚弃置的 ${cards.length} 张牌交给一名其他角色？`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: `发动（${cards.map((c) => cardLabel(c)).join('、')}）` },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askChoice(
+              st,
+              ctx.player.seatId,
+              '【礼让】：交给谁？',
+              others.map((p) => ({ id: p.seatId, label: p.name })),
+              (st2, _p2, targetSeatId) => {
+                ctx.api.giveDiscardedTo(cards, targetSeatId);
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '名士',
+      desc: '锁定技，当你受到伤害时，若伤害来源有暗置的武将牌，此伤害-1。',
+    },
+    { name: '礼让', desc: '当你的牌因弃置而置入弃牌堆时，你可以将之交给一名其他角色。' },
+  ],
+};
+
+const CAIWENJI: Hero = {
+  id: 'caiwenji',
+  name: '蔡文姬',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      // 悲歌：当**一名角色**受到【杀】造成的伤害后，你可以弃置一张牌，然后令其判定。
+      // 注意时机是 anyDamaged（派给所有人）——afterDamage 只发给受伤者本人，
+      // 观察不到别人挨打。
+      timing: 'anyDamaged',
+      skillId: '悲歌',
+      handler: (ctx) => {
+        const payload = ctx.payload as
+          { attack?: AttackContext; damage?: number; victimId?: string } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.asType !== 'sha' || !payload?.damage) return;
+        const victim = payload.victimId ? getPlayer(ctx.state, payload.victimId) : undefined;
+        if (!victim) return;
+        const me = ctx.player;
+        const mine = [
+          ...me.hand,
+          ...(EQUIP_SLOTS.map((slot) => me.equipment[slot]).filter(Boolean) as Card[]),
+        ];
+        // 只认「因【杀】受到的伤害」；但要不要发动得先有牌可弃
+        if (mine.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `【悲歌】：${victim.name} 受到了【杀】的伤害，是否弃置一张牌发动？`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动（弃一张牌并令其判定）' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const pool = [
+              ...me.hand,
+              ...(EQUIP_SLOTS.map((slot) => me.equipment[slot]).filter(Boolean) as Card[]),
+            ];
+            if (pool.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              me.seatId,
+              '【悲歌】：弃置一张牌',
+              pool,
+              1,
+              1,
+              (st2, _p2, chosen) => {
+                const cost = chosen[0];
+                if (cost) ctx.api.discardCard(me.seatId, cost);
+                const judgeCard = drawOne(st2);
+                if (!judgeCard) return;
+                pushLog(
+                  st2,
+                  'skill',
+                  `${me.name} 发动【悲歌】，判定牌：${cardLabel(judgeCard)}。`,
+                  { seat: me.seatId, action: 'skill' },
+                );
+                toDiscard(st2, judgeCard);
+                const source = attack.sourceId ? getPlayer(st2, attack.sourceId) : undefined;
+                switch (judgeCard.suit) {
+                  case 'heart': {
+                    const healed = ctx.api.heal(victim, 1);
+                    pushLog(st2, 'skill', `【悲歌】红桃：${victim.name} 回复 ${healed} 点体力。`);
+                    break;
+                  }
+                  case 'diamond': {
+                    for (let i = 0; i < 2; i++) {
+                      const c = drawOne(st2);
+                      if (c) victim.hand.push(c);
+                    }
+                    pushLog(st2, 'skill', `【悲歌】方块：${victim.name} 摸两张牌。`);
+                    break;
+                  }
+                  case 'club': {
+                    // 伤害来源弃置两张牌（手牌随机，与仓库口径一致）
+                    if (!source) break;
+                    for (let i = 0; i < 2; i++) {
+                      const pool2 = [
+                        ...source.hand,
+                        ...(EQUIP_SLOTS.map((slot) => source.equipment[slot]).filter(
+                          Boolean,
+                        ) as Card[]),
+                      ];
+                      if (pool2.length === 0) break;
+                      ctx.api.discardCard(
+                        source.seatId,
+                        pool2[Math.floor(Math.random() * pool2.length)]!,
+                      );
+                    }
+                    pushLog(st2, 'skill', `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`);
+                    break;
+                  }
+                  case 'spade': {
+                    if (!source) break;
+                    source.flipped = !source.flipped;
+                    pushLog(
+                      st2,
+                      'skill',
+                      `【悲歌】黑桃：${source.name} ${source.flipped ? '翻面' : '翻回正面'}。`,
+                    );
+                    break;
+                  }
+                }
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      // 断肠：锁定技，当你死亡时，你令杀死你的角色失去**一张武将牌**的所有技能。
+      // 官方 FAQ：**由蔡文姬选择**失去哪一张（不是凶手选）；暗置的武将牌被点名后
+      // 将来明置也只有势力和性别、没有技能。
+      timing: 'death',
+      skillId: '断肠',
+      locked: true,
+      handler: (ctx) => {
+        const killerId = (ctx.payload as { killerId?: string } | undefined)?.killerId;
+        const killer = killerId ? getPlayer(ctx.state, killerId) : undefined;
+        if (!killer || killer.seatId === ctx.player.seatId) return;
+        const slots: { id: string; label: string }[] = [];
+        if (killer.heroId) {
+          const h = getHero(killer.heroId);
+          slots.push({ id: killer.heroId, label: `${h?.name ?? '主将'}（主将）` });
+        }
+        if (killer.deputyHeroId) {
+          const h = getHero(killer.deputyHeroId);
+          slots.push({ id: killer.deputyHeroId, label: `${h?.name ?? '副将'}（副将）` });
+        }
+        if (slots.length === 0) return;
+        const dying = ctx.player;
+        ctx.api.askChoice(
+          ctx.state,
+          dying.seatId,
+          `【断肠】：令杀死你的 ${killer.name} 失去哪张武将牌的所有技能？`,
+          slots,
+          (st, _p, heroId) => {
+            killer.nullifiedHeroId = heroId;
+            const h = getHero(heroId);
+            pushLog(st, 'skill', `【断肠】：${killer.name} 的【${h?.name ?? '?'}】失去所有技能。`, {
+              seat: killer.seatId,
+              action: 'skill',
+            });
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '悲歌',
+      desc: '当一名角色受到【杀】造成的伤害后，你可以弃置一张牌，然后令其进行判定，若结果为：红桃，其回复1点体力；方块，其摸两张牌；梅花，伤害来源弃置两张牌；黑桃，伤害来源翻面。',
+    },
+    {
+      name: '断肠',
+      desc: '锁定技，当你死亡时，你令杀死你的角色失去一张武将牌的所有技能。',
+    },
+  ],
+};
+
+// —— 国战标准版·群（第四批，续）——
+
+const YANLIANG_WENCHOU: Hero = {
+  id: 'yanliang_wenchou',
+  name: '颜良文丑',
+  faction: 'qun',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  /**
+   * 双雄：摸牌阶段，你可以改为进行一次判定，你获得判定牌，
+   * 且本回合可以将一张**与之颜色不同**的手牌当【决斗】使用。
+   *
+   * 这是少数要看**本回合状态**的转化技，所以 canUseAs 用得上后面两个参数
+   * （state/player）——判定牌的颜色记在 flags.shuangxiongColor，每回合清。
+   */
+  canUseAs: (card, type, _state, player) => {
+    if (type !== 'juedou') return false;
+    const color = player?.flags.shuangxiongColor ?? null;
+    if (!color) return false;
+    return (isRed(card) ? 'red' : 'black') !== color;
+  },
+  skillFields: { 双雄: ['canUseAs'] },
+  hooks: [
+    {
+      timing: 'drawPhase',
+      skillId: '双雄',
+      handler: (ctx) => {
+        const player = ctx.player;
+        // 已经被跳过摸牌了（兵粮寸断/神速）就不再问
+        if (player.flags.skipDraw) return;
+        ctx.api.askChoice(
+          ctx.state,
+          player.seatId,
+          '是否发动【双雄】？（放弃摸牌，改为判定并获得判定牌；本回合可把异色手牌当【决斗】）',
+          [
+            { id: 'no', label: '不发动（正常摸两张）' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            // 「改为进行一次判定」＝正常的两张不摸了（跳过摸牌阶段），
+            // 判定牌直接进手牌（官方是「你获得判定牌」，不走判定区）
+            p.flags.skipDraw = true;
+            const judgeCard = drawOne(st);
+            if (!judgeCard) return;
+            p.hand.push(judgeCard);
+            p.flags.shuangxiongColor = isRed(judgeCard) ? 'red' : 'black';
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【双雄】，判定牌【${cardLabel(judgeCard)}】：本回合可将${
+                p.flags.shuangxiongColor === 'red' ? '黑' : '红'
+              }色手牌当【决斗】使用。`,
+              { seat: p.seatId, action: 'skill' },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '双雄',
+      desc: '摸牌阶段，你可以改为进行一次判定，你获得判定牌且本回合可以将一张与之颜色不同的手牌当【决斗】使用。',
+    },
+  ],
+};
+
 export const HEROES: Hero[] = [
   GUANYU,
   ZHANGFEI,
@@ -3832,6 +4365,12 @@ export const HEROES: Hero[] = [
   MATENG,
   PANFENG,
   SUNJIAN,
+  PANGDE,
+  DINGFENG,
+  JILING,
+  KONGRONG,
+  CAIWENJI,
+  YANLIANG_WENCHOU,
   VANILLA,
 ];
 
@@ -4023,7 +4562,10 @@ export function grantedHeroes(state: GameState, p: Player): Hero[] {
  * 引擎的 activeHeroes 与 distance.ts 的马术都走这里，所以两处口径一致。
  */
 export function effectiveHeroes(state: GameState, p: Player): Hero[] {
-  const heroes = [...revealedHeroes(state.mode, p), ...grantedHeroes(state, p)];
+  let heroes = [...revealedHeroes(state.mode, p), ...grantedHeroes(state, p)];
+  // 蔡文姬·断肠：被点名的那张武将牌**技能全失**（势力/性别照旧，所以它还在
+  // selectable 的名单里、只是没有技能）。暗置时被点名也照样算——将来明置也不会有技能。
+  if (p.nullifiedHeroId) heroes = heroes.filter((h) => h.id !== p.nullifiedHeroId);
   if (!p.flags.nonLockedSkillsDisabled) return heroes;
   return heroes.map(nullifyHero);
 }
@@ -4034,8 +4576,14 @@ export function heroShaLimit(hero: Hero): number {
 }
 
 /** 取武将可否把 card 当 type 用 */
-export function heroCanUseAs(hero: Hero, card: Card, type: CardType): boolean {
-  return hero.canUseAs?.(card, type) ?? false;
+export function heroCanUseAs(
+  hero: Hero,
+  card: Card,
+  type: CardType,
+  state?: GameState,
+  player?: Player,
+): boolean {
+  return hero.canUseAs?.(card, type, state, player) ?? false;
 }
 
 /** 取该武将参与【决斗】时、对手每次需打出的【杀】数（吕布·无双 = 2），缺省 1 */

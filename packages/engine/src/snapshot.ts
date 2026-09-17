@@ -42,6 +42,10 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     })),
     flipped: p.flipped,
     chained: p.chained,
+    // 断肠点名的武将牌：**公开信息**（失去技能是明面上的事），所有人看得到
+    nullifiedHeroId: p.nullifiedHeroId,
+    // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」
+    shuangxiongColor: p.flags.shuangxiongColor,
     // 预亮是对手看不到的信息，只放进本人的那一份快照
     ...(isMe
       ? {

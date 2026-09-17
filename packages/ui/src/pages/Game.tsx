@@ -132,11 +132,13 @@ function getMyActiveHeroes(me: PlayerView, mode: GameMode): Hero[] {
   const isGuozhan = mode === 'guozhan';
   if (isGuozhan) {
     const heroes: Hero[] = [];
-    if (me.heroRevealed && me.heroId) {
+    // 被【断肠】点名的武将牌：牌还在、势力性别也在，但**技能全没了**，界面别再列它
+    const nullified = me.nullifiedHeroId ?? null;
+    if (me.heroRevealed && me.heroId && me.heroId !== nullified) {
       const h = getHeroForMode(me.heroId, mode);
       if (h) heroes.push(h);
     }
-    if (me.deputyRevealed && me.deputyHeroId) {
+    if (me.deputyRevealed && me.deputyHeroId && me.deputyHeroId !== nullified) {
       const h = getHeroForMode(me.deputyHeroId, mode);
       if (h) heroes.push(h);
     }
@@ -200,6 +202,7 @@ function cardUses(
   hasZhuque: boolean,
   lianhengTargets: string[],
   zhangbaOk: boolean,
+  shuangxiongColor: 'red' | 'black' | null,
 ): CardUse[] {
   const uses: CardUse[] = [];
   if (isDirectlyPlayable(card)) {
@@ -220,6 +223,10 @@ function cardUses(
   // 朱雀羽扇：普通【杀】可以当火【杀】使用（同一张牌换属性，不是换牌型）
   if (hasZhuque && card.type === 'sha' && !card.attribute) {
     uses.push({ asAttribute: 'fire', label: '当火【杀】使用（朱雀羽扇）' });
+  }
+  // 颜良文丑·双雄：本回合可以把与判定牌**颜色不同**的手牌当【决斗】使用
+  if (shuangxiongColor && (isRed(card) ? 'red' : 'black') !== shuangxiongColor) {
+    uses.push({ as: 'juedou', label: '当【决斗】使用（双雄）' });
   }
   // 【丈八蛇矛】：两张手牌当【杀】。这里只是「第一张」，点完还要再选一张
   if (zhangbaOk && !uses.some((u) => u.zhangba)) {
@@ -458,7 +465,15 @@ export function Game() {
   function pickPlayCard(card: Card) {
     if (!prompt || prompt.kind !== 'play' || !legalSet.has(card.id)) return;
     const hasZhuque = me.equipment.some((c) => c.equipName === 'zhuque');
-    const uses = cardUses(card, myHeroes, aoyu, hasZhuque, lianhengTargets, zhangbaOk);
+    const uses = cardUses(
+      card,
+      myHeroes,
+      aoyu,
+      hasZhuque,
+      lianhengTargets,
+      zhangbaOk,
+      me.shuangxiongColor ?? null,
+    );
     if (uses.length === 0) return;
     if (uses.length === 1) {
       const only = uses[0]!;
