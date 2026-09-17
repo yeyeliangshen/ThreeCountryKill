@@ -712,7 +712,6 @@ const BIAN: RosterEntry[] = [
     faction: 'qun',
     pack: 'bian',
     status: 'done',
-    primitives: ['skill_nullify'],
     primitives: ['virtual_trick', 'hook_interaction'],
     note: '取**2019 典藏版**国战文本的「役鬼 + 汲魂」（2017 印刷版是「化身 + 新生」，两者是完全不同的两套技能，未采用）。魂牌堆 Player.hun（存武将 id，暗置→用时随机移去并亮出牌面，势力决定目标限制）；汲魂的「濒死结算结束后存活」用新时机 nearDeathResolved。',
   },
