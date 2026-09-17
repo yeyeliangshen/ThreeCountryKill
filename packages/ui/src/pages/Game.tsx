@@ -1230,11 +1230,22 @@ export function Game() {
             {prompt.kind === 'play' && skillMode && (
               <div className="skill-mode">
                 <span className="hint">
-                  【{skillMode.skill.name}】
-                  {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请选择手牌'}
+                  <b>【{skillMode.skill.name}】</b>
+                  {/* 把「要选几张、已经选了几张」写全：只说「请选择手牌」看不出选上没有 */}
+                  {skillMode.skill.needsCards &&
+                    ` 手牌 ${skillMode.cardIds.length} 张${
+                      skillMode.skill.maxCards
+                        ? ` / 至多 ${skillMode.skill.maxCards({ maxHp: me.maxHp, handCount: me.handCount })}`
+                        : ''
+                    }`}
+                  {skillMode.skill.maxTargets > 0 &&
+                    ` · 目标 ${skillMode.targetIds.length} / ${
+                      skillMode.skill.maxTargets >= 99 ? '不限' : skillMode.skill.maxTargets
+                    }`}
+                  {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请点手牌'}
                   {skillMode.skill.minTargets > 0 &&
                     skillMode.targetIds.length < skillMode.skill.minTargets &&
-                    ` · 请选${skillMode.skill.minTargets - skillMode.targetIds.length > 0 ? '目标' : ''}目标`}
+                    ' · 请点角色'}
                 </span>
                 <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
                   确认技能
@@ -1351,6 +1362,9 @@ export function Game() {
               (prompt?.kind === 'play' && selected?.cardId === card.id) ||
               !!zhangbaMode?.picked.includes(card.id);
             const isSkillCard = !!skillMode && skillMode.cardIds.includes(card.id);
+            // 技能模式要选牌时整手牌都是候选——不能沿用「不合法就变灰」的样式，
+            // 否则可选的牌看起来全是用不了的（这是「选中技能后看不清」的主要来源）
+            const dimmed = skillMode?.skill.needsCards ? false : !legal;
             const fireClass = card.type === 'sha' && card.attribute === 'fire' ? 'fire-attr' : '';
             const thunderClass =
               card.type === 'sha' && card.attribute === 'thunder' ? 'thunder-attr' : '';
@@ -1370,7 +1384,7 @@ export function Game() {
             return (
               <button
                 key={card.id}
-                className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass} ${isCargo ? 'cargo' : ''}`}
+                className={`card ${isRed(card) ? 'red' : 'black'} ${dimmed ? 'dim' : 'legal'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass} ${isCargo ? 'cargo' : ''}`}
                 aria-disabled={cardDisabled}
                 aria-label={cardLabel(card)}
                 onMouseEnter={

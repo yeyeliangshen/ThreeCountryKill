@@ -597,47 +597,63 @@ button:disabled {
   justify-content: flex-end;
   gap: 6px;
 }
+/* 技能按钮压在**浅色羊皮纸**上：原来是透明底配浅灰/浅金字，实测对比度只有
+   1.0–2.4:1（「选中」那一档几乎等于隐形，这就是看不清的根源）。
+   这里只改**底色、字色、字号**——padding / 圆角 / 排列一律不动。
+
+   四档状态靠「底色 + 字色」区分：
+     不可点   = 半透明暖墨底 + 墨色字（像压暗的纸面，安静但不糊）
+     可用     = 金色实底 + 墨色字（最像「按钮」的一档）
+     已选中   = 墨底 + 金字 + 墨色外环（和「可用」拉开明显距离，一眼看到）
+     暗置     = 虚线边 + 墨色字（可点去预亮）
+     已预亮   = 墨底 + 金字 + 虚线金边（和「已选中」同族，靠虚线区分） */
 .skill-chip {
   padding: 5px 10px;
   border-radius: 8px;
-  background: transparent;
-  border: 1px solid var(--panel-2);
-  font-size: 13px;
+  /* 13 → 14：中文小字压在花纹桌布上会糊，加一号最省事 */
+  font-size: 14px;
   font-weight: 700;
-  color: var(--muted);
+  letter-spacing: 0.3px;
+  background: rgba(74, 55, 30, 0.08);
+  border: 1px solid rgba(109, 87, 54, 0.45);
+  /* 字色用墨色（灰墨只有 3.6:1，13-14px 中文不够）：安静感靠「没有金底」表达，
+     不靠把字调淡 */
+  color: var(--ink);
   white-space: nowrap;
 }
 /* 可以用的时候高亮成按钮的样子，点一下就发动 */
 .skill-chip.usable {
   cursor: pointer;
-  border-color: var(--gold);
-  background: rgba(212, 168, 75, 0.14);
-  color: var(--gold);
+  background: var(--gold);
+  border-color: #8a6a1a;
+  color: #2a2110;
 }
 .skill-chip.usable:hover {
-  background: rgba(212, 168, 75, 0.26);
+  background: #e2bd66;
 }
+/* 已选中（正在配置这个技能）：墨底金字，和「可用」的金底墨字正好反过来 */
 .skill-chip.active {
-  border-color: #5a9b3a;
-  background: rgba(90, 155, 58, 0.22);
-  color: #8fd06a;
+  background: #2a2110;
+  border-color: var(--gold);
+  color: #f0c96a;
+  box-shadow: 0 0 0 2px rgba(42, 33, 16, 0.3);
 }
 .skill-chip[aria-disabled='true'] {
   cursor: default;
 }
 /* —— 国战暗置的技能 ——
-   暗置：虚线边 + 压暗，表示「技能还没生效，点一下预亮」。
-   预亮：实线金边，表示「时机到了引擎会问你发不发动」。
+   暗置：虚线边 + 墨字，表示「技能还没生效，点一下预亮」。
+   预亮：虚线金边 + 墨底金字，表示「时机到了引擎会问你发不发动」。
    这两种都还得能点（预亮开关），所以不靠 aria-disabled 表达。 */
 .skill-chip.dark {
   border-style: dashed;
-  opacity: 0.75;
+  color: var(--ink);
 }
 .skill-chip.prelit {
-  border-style: solid;
+  border-style: dashed;
   border-color: var(--gold);
-  background: rgba(212, 168, 75, 0.22);
-  color: var(--gold);
+  background: #2a2110;
+  color: #f0c96a;
 }
 
 /* —— 牌桌 ——
@@ -1462,6 +1478,15 @@ button:disabled {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
+}
+/* 选了技能之后的提示行：原来和别处共用 --muted（暗底上 3.9:1），
+   提亮成正文色，技能名加粗描金，一眼看出「现在在配这个技能」 */
+.skill-mode .hint {
+  color: #f0e6cd;
+}
+.skill-mode .hint b {
+  color: #f0c96a;
+  font-size: 15px;
 }
 
 /* —— 响应类提示 —— */
