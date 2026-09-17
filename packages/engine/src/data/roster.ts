@@ -756,8 +756,9 @@ const QUAN: RosterEntry[] = [
     name: '于禁',
     faction: 'wei',
     pack: 'quan',
-    status: 'todo',
-    primitives: ['hook_interaction'],
+    status: 'done',
+    primitives: ['army_order', 'pick_cards'],
+    note: '节钺（与印刷版/OL 一致）：准备阶段交给「不是魏势力」（＝与你势力不同）的一名角色一张手牌，令其执行军令；执行则你摸一张，不执行则你本回合摸牌阶段多摸三张（drawCountDelta +3）。军令机制复用董昭·劝进那套 api.armyOrder。',
   },
   {
     id: 'fazheng',
