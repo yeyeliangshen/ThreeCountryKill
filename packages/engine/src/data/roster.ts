@@ -591,7 +591,15 @@ const SHI: RosterEntry[] = [
     primitives: ['pick_cards'],
     note: '恂恂（2013 印刷版：摸牌阶段看四取二、其余置牌堆底）+ 忘隙（造成/受到 1 点伤害后各摸一张，逐点）。忘隙的「若该角色存活」用 hp>0 代指（本引擎伤害层顺序是「伤害后钩子→濒死」，官方是反的，已注明简化）。',
   },
-  { id: 'zangba', name: '臧霸', faction: 'wei', pack: 'shi', status: 'todo' },
+  {
+    id: 'zangba',
+    name: '臧霸',
+    faction: 'wei',
+    pack: 'shi',
+    status: 'done',
+    primitives: ['hook_interaction'],
+    note: '横江已实现（印刷版：受伤后令当前回合角色手牌上限-1，其弃牌阶段没弃牌则臧霸摸一张；用新标记 flags.hengjiangTarget + othersDiscardPhaseEnd 时机）。2023 典藏版修订（上限>0 条件、摸 X 张）未采用。',
+  },
   { id: 'madai', name: '马岱', faction: 'shu', pack: 'shi', status: 'todo' },
   { id: 'mifuren', name: '糜夫人', faction: 'shu', pack: 'shi', status: 'todo' },
   {
@@ -616,8 +624,9 @@ const SHI: RosterEntry[] = [
     name: '董卓',
     faction: 'qun',
     pack: 'shi',
-    status: 'todo',
-    primitives: ['maxhp_change'],
+    status: 'done',
+    primitives: ['maxhp_change', 'pick_cards'],
+    note: '横征已实现（放弃摸牌，从其他每名角色区域里各拿一张）。暴凌＝主将技＋「移除副将」制度，尚未实现（连带它给的崩坏）。',
   },
   { id: 'zhangren', name: '张任', faction: 'qun', pack: 'shi', status: 'todo' },
 ];

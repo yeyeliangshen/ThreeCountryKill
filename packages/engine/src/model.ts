@@ -80,6 +80,10 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 臧霸·横江：本回合对**哪个**当前回合角色用过（回合结束时看他在弃牌阶段弃没弃牌）。
+   */
+  hengjiangTarget: string | null;
+  /**
    * 本回合有没有**造成过伤害**（蒋琬费利·生息：没造成过才能在弃牌阶段开始时摸两张）。
    * 由 damageDealt 钩子的入口登记，随回合重置。
    */
@@ -159,6 +163,7 @@ export function emptyFlags(): PlayerFlags {
     skipDiscard: false,
     damagePrevented: false,
     dealtDamageThisTurn: false,
+    hengjiangTarget: null,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,

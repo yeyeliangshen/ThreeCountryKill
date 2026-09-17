@@ -13567,3 +13567,125 @@ describe('国战 · 陈武董袭（断绁 / 奋命）', () => {
     expect(state.log.some((e) => e.message.includes('奋命'))).toBe(false);
   });
 });
+
+/** 董卓·横征（放弃摸牌改成各拿一张）/ 臧霸·横江（减手牌上限，没弃牌则我摸一张） */
+describe('国战 · 董卓（横征）/ 臧霸（横江）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('横征：没手牌时可以放弃摸牌，从每名其他角色各拿一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'dongzhuo', faction: 'qun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [sha('c1')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('横征');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 候选里没有甲（他空手空装备）→ 直接问丙
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('丙');
+    ok(act(state, B, { type: 'chooseOption', optionId: '__hand' }));
+    expect(c.hand).toHaveLength(0);
+    expect(b.hand).toHaveLength(1); // 拿到了
+    expect(state.log.some((e) => e.message.includes('横征'))).toBe(true);
+  });
+
+  it('横征：满手牌且体力不为 1 时不问', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'dongzhuo', faction: 'qun', hand: [tao('b1')], hp: 4 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [sha('c1')] },
+    ]);
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.log.some((e) => e.message.includes('横征'))).toBe(false);
+  });
+
+  it('横江：减当前回合角色的手牌上限；他没弃牌则臧霸摸一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zangba', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 臧霸挨 1 点
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('横江');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.flags.handLimitBonus).toBe(-1); // 甲是当前回合角色
+    // 甲这个回合没牌可弃（手牌 0 张、上限 3）→ 回合结束时臧霸摸一张
+    ok(act(state, A, { type: 'endPhase' }));
+    // 注意：回合已经交给乙，乙摸牌时会从弃牌堆洗牌，所以不断言具体手牌，只看日志
+    expect(state.log.some((e) => e.message.includes('【横江】生效'))).toBe(true);
+  });
+
+  it('横江：他弃了牌就不给臧霸摸', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'vanilla',
+        faction: 'wei',
+        hand: ['a1', 'a2', 'a3', 'a4', 'a5'].map((id) => sha(id)),
+      },
+      { seatId: B, name: '乙', heroId: 'zangba', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    // 让甲先挨一刀（由丙打不了，这里直接构造：让甲自己回合内受到伤害不方便，
+    // 所以改为：丙的回合里打甲 — 换一下座位顺序的用法：直接用 A 打 B 不合适）
+    // 简化：手动触发一次「甲受伤」（用决斗/南蛮都不便），这里直接调用引擎的伤害入口不可得，
+    // 于是改测「减了上限之后甲在弃牌阶段弃了牌」这条分支：
+    // 先手动把横江标记和目标设好（等价于已经发动过）
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'discard' };
+    b.flags.hengjiangTarget = A;
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.flags.handLimitBonus = -1;
+    state.pending = { kind: 'discard', seatId: A, count: 2 };
+    ok(act(state, A, { type: 'discard', cardIds: ['a1', 'a2'] }));
+    // 他在弃牌阶段弃了牌 → 横江不给臧霸摸牌（只看日志，手牌会被下一回合的摸牌搅乱）
+    expect(state.log.some((e) => e.message.includes('【横江】生效'))).toBe(false);
+  });
+});

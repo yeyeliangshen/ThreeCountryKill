@@ -2756,6 +2756,239 @@ const TAISHICI: Hero = {
  * - 忘隙：每当你对其他角色造成 1 点伤害后，或受到其他角色造成的 1 点伤害后，若该角色存活，
  *   你可以令你与其各摸一张牌。（两个方向、逐点都要问）
  */
+/**
+ * 从某人的区域里「**拿**」一张牌交给 picker（董卓·横征）。
+ * 可见的牌（装备/判定）给选项，手牌只能随机拿——与「弃置其一张牌」同一套口径，
+ * 区别只是搬运方向（走 api.transferCard 而不是 discardTargetCard）。
+ */
+function takeOneOfTargetCards(
+  state: GameState,
+  picker: Player,
+  target: Player,
+  api: SkillApi,
+  skillName: string,
+  after?: () => void,
+): void {
+  const visible: Card[] = [
+    ...(EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[]),
+    ...target.judgment,
+  ];
+  const options: { id: string; label: string }[] = visible.map((c) => ({
+    id: c.id,
+    label: `获得其【${cardLabel(c)}】`,
+  }));
+  if (target.hand.length > 0) {
+    options.push({ id: '__hand', label: `获得其一张手牌（随机，共 ${target.hand.length} 张）` });
+  }
+  if (options.length === 0) {
+    after?.();
+    return;
+  }
+  api.askChoice(
+    state,
+    picker.seatId,
+    `【${skillName}】：获得 ${target.name} 的一张牌`,
+    options,
+    (st, _p, picked) => {
+      if (picked === '__hand') {
+        const idx = Math.floor(Math.random() * target.hand.length);
+        const card = target.hand[idx];
+        if (!card) {
+          after?.();
+          return;
+        }
+        api.transferCard(target.seatId, card, picker.seatId, after);
+        return;
+      }
+      const card = visible.find((c) => c.id === picked);
+      if (!card) {
+        after?.();
+        return;
+      }
+      api.transferCard(target.seatId, card, picker.seatId, after);
+    },
+  );
+}
+
+/** 横征：放弃摸牌，挨个从其他角色区域里拿一张（一条续接链） */
+function hengzhengStep(
+  state: GameState,
+  me: Player,
+  queue: string[],
+  i: number,
+  api: SkillApi,
+): void {
+  const target = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+  if (!target || !target.alive) {
+    if (i < queue.length) hengzhengStep(state, me, queue, i + 1, api);
+    return;
+  }
+  takeOneOfTargetCards(state, me, target, api, '横征', () =>
+    hengzhengStep(state, me, queue, i + 1, api),
+  );
+}
+
+/**
+ * 董卓 —— 横征 / 暴凌（君临天下·势）。
+ *
+ * - 横征（2019 典藏版文本，已核）：摸牌阶段开始时，若你的体力值为 1 或你没有手牌，
+ *   你可以放弃摸牌，改为从其他每名角色的所属区域内各获得一张牌。
+ * - 暴凌（**主将技**，锁定技）：出牌阶段结束时，移除你的副将，然后加 3 点体力上限并
+ *   回复 3 点体力，失去【暴凌】并获得【崩坏】。
+ *
+ * ⚠️ 暴凌（以及它给的【崩坏】）**尚未实现**：它要「移除副将的武将牌」这套制度
+ *    （副将移除后势力/体力/技能怎么算），等主将技/副将技那批一起做。技能描述里已注明。
+ */
+const DONGZHUO: Hero = {
+  id: 'dongzhuo',
+  name: '董卓',
+  faction: 'qun',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'drawPhase',
+      skillId: '横征',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.flags.skipDraw) return;
+        // 条件：体力值为 1 或没有手牌
+        if (!(me.hp === 1 || me.hand.length === 0)) return;
+        const others = ctx.state.players.filter(
+          (p) =>
+            p.alive &&
+            p.seatId !== me.seatId &&
+            (p.hand.length > 0 ||
+              p.judgment.length > 0 ||
+              EQUIP_SLOTS.some((slot) => !!p.equipment[slot])),
+        );
+        if (others.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【横征】放弃摸牌，改为从其他每名角色各获得一张牌？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            p.flags.skipDraw = true; // 放弃摸牌
+            pushLog(st, 'skill', `${p.name} 发动【横征】，放弃摸牌。`);
+            hengzhengStep(st, p, others.map((x) => x.seatId), 0, ctx.api);
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '横征',
+      desc: '摸牌阶段开始时，若你的体力值为1或你没有手牌，你可以放弃摸牌，改为从其他每名角色的所属区域内各获得一张牌。',
+    },
+    {
+      name: '暴凌',
+      desc: '主将技，锁定技，出牌阶段结束时，移除你的副将，然后你加3点体力上限并回复3点体力，失去【暴凌】并获得【崩坏】。（移除副将的制度未实现，暂时不可用）',
+    },
+  ],
+};
+
+/**
+ * 臧霸 —— 横江（君临天下·势，印刷版文本，已核）：
+ * 当你受到 1 点伤害后，你可以令当前回合角色的手牌上限于此回合内 -1，
+ * 回合结束时，若其未于弃牌阶段内弃置过牌，你摸一张牌。
+ *
+ * （2023 典藏版修订成「若其手牌上限大于 0」+「摸 X 张，X 为本回合发动次数」，
+ *   这里按印刷版写，差异写在注释里。）
+ *
+ * 实现：减上限直接改那名角色自己的 `handLimitBonus`（与吕蒙·克己同一套标记）；
+ * 「未于弃牌阶段内弃置过牌」在 `othersDiscardPhaseEnd` 时机看那一阶段弃掉的牌——
+ * 这个时机本来就带着「他这阶段弃了哪些牌」的 payload。
+ */
+const ZANGBA: Hero = {
+  id: 'zangba',
+  name: '臧霸',
+  faction: 'wei',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'afterDamage',
+      skillId: '横江',
+      handler: (ctx) => hengjiangAsk(ctx),
+    },
+    {
+      timing: 'othersDiscardPhaseEnd',
+      skillId: '横江',
+      handler: (ctx) => {
+        const payload = ctx.payload as
+          | { discardingSeatId?: string; cards?: Card[] }
+          | undefined;
+        const who = payload?.discardingSeatId;
+        if (!who) return;
+        // 本回合没对他用过横江就别触发
+        if (ctx.player.flags.hengjiangTarget !== who) return;
+        ctx.player.flags.hengjiangTarget = null;
+        if ((payload?.cards ?? []).length > 0) return; // 他弃过牌 → 不摸
+        const c = drawOne(ctx.state);
+        if (!c) return;
+        ctx.player.hand.push(c);
+        pushLog(
+          ctx.state,
+          'skill',
+          `${ctx.player.name} 的【横江】生效：${getPlayer(ctx.state, who)?.name ?? '对方'} 未弃牌，其摸一张牌。`,
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '横江',
+      desc: '当你受到1点伤害后，你可以令当前回合角色的手牌上限于此回合内-1，回合结束时，若其未于弃牌阶段内弃置过牌，你摸一张牌。',
+    },
+  ],
+};
+
+/** 横江：受到 1 点伤害就问一次「要不要减当前回合角色的手牌上限」（逐点） */
+function hengjiangAsk(ctx: HookContext, left?: number): void {
+  const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+  const times = left ?? payload?.damage ?? 0;
+  if (times <= 0) return;
+  const turnSeat = ctx.state.seatOrder[ctx.state.turn.seatIndex];
+  const turnPlayer = turnSeat ? getPlayer(ctx.state, turnSeat) : undefined;
+  if (!turnPlayer) return;
+  ctx.api.askChoice(
+    ctx.state,
+    ctx.player.seatId,
+    times > 1
+      ? `【横江】：是否令 ${turnPlayer.name} 本回合手牌上限 -1？（还有 ${times} 点没结算）`
+      : `【横江】：是否令 ${turnPlayer.name} 本回合手牌上限 -1？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'yes') {
+        const t = getPlayer(st, turnSeat!);
+        if (t) {
+          t.flags.handLimitBonus -= 1;
+          p.flags.hengjiangTarget = t.seatId;
+          pushLog(
+            st,
+            'skill',
+            `${p.name} 发动【横江】，${t.name} 本回合手牌上限 -1。`,
+          );
+        }
+      }
+      if (times > 1) hengjiangAsk(ctx, times - 1);
+    },
+  );
+}
+
 const LIDIAN: Hero = {
   id: 'lidian',
   name: '李典',
@@ -6436,6 +6669,8 @@ export const HEROES: Hero[] = [
   ZHANGLIAO,
   ZHANGHE,
   LIDIAN,
+  ZANGBA,
+  DONGZHUO,
   CAOCAO,
   XUNYU,
   CAOPI,
