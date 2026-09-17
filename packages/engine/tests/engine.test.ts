@@ -12688,3 +12688,242 @@ describe('国战标准版 · 贾诩（乱武）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });
+
+/** 徐盛·疑城（2019 文本）：同势力角色成为【杀】目标后，该角色可摸一弃一 */
+describe('国战 · 徐盛（疑城）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('疑城：同势力队友成为【杀】目标 → 他自己决定摸一弃一', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xusheng', faction: 'wu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'lvmeng', faction: 'wu', hand: [tao('c1'), tao('c2')] },
+      ],
+      A,
+    );
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    // 问的是**目标自己**（丙），不是徐盛
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(C);
+      expect(state.pending.title).toContain('疑城');
+    }
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    expect(c.hand.map((x) => x.id).sort()).toEqual(['c1', 'c2', 'd1']); // 摸了 d1
+    // 然后弃一张
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, C, { type: 'pickCards', cardIds: ['c1'] }));
+    expect(c.hand.map((x) => x.id).sort()).toEqual(['c2', 'd1']);
+    expect(state.discard.some((x) => x.id === 'c1')).toBe(true);
+    // 弃完之后继续走原来的结算：等丙出闪
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('疑城：不同势力不触发', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xusheng', faction: 'wu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [tao('c1')] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    expect(state.log.some((e) => e.message.includes('疑城'))).toBe(false);
+  });
+
+  it('疑城：徐盛自己成为目标也能发动', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xusheng', faction: 'wu', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'lvmeng', faction: 'wu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(b.hand.map((x) => x.id)).toEqual(['d1']);
+  });
+
+  it('疑城：暗置的同势力角色不算（暗将没有势力）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xusheng', faction: 'wu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'lvmeng', faction: 'wu', hand: [tao('c1')], revealed: false },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    expect(state.log.some((e) => e.message.includes('疑城'))).toBe(false);
+  });
+});
+
+/** 蒋琬费祎·生息（弃牌阶段摸两张）/ 守成（同势力队友回合外清空手牌 → 摸一张） */
+describe('国战 · 蒋琬费祎（生息 / 守成）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      revealed?: boolean;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('生息：本回合没造成过伤害 → 弃牌阶段开始可以摸两张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'jiangwan_feyi', faction: 'shu', hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
+    ok(act(state, A, { type: 'endPhase' })); // 直接结束出牌阶段 → 进弃牌阶段
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('生息');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.map((c) => c.id).sort()).toEqual(['a1', 'd2', 'd1'].sort());
+  });
+
+  it('生息：本回合造成过伤害就不能发动', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'jiangwan_feyi', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 乙挨 1 点
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.log.some((e) => e.message.includes('生息'))).toBe(false);
+    expect(state.pending?.kind).not.toBe('choice');
+  });
+
+  it('守成：同势力队友在其回合外清空手牌 → 可以令他摸一张', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1'), sha('a2')] },
+        { seatId: B, name: '乙', heroId: 'jiangwan_feyi', faction: 'shu', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [mk('c1', 'shan', 'heart', 2)] },
+      ],
+      A,
+    );
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    // 甲对丙用【杀】→ 丙打出唯一一张手牌【闪】→ 回合外清空
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    expect(c.hand).toHaveLength(0);
+    // 蒋琬费祎被问守成
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('守成');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(c.hand.map((x) => x.id)).toEqual(['d1']);
+  });
+
+  it('守成：不同势力不触发；本人回合内清空也不触发', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'jiangwan_feyi', faction: 'shu', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [mk('c1', 'shan', 'heart', 2)] },
+      ],
+      A,
+    );
+    // 丙是吴（不同势力）→ 不触发
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    expect(state.log.some((e) => e.message.includes('守成'))).toBe(false);
+  });
+
+  it('守成：自己回合内清空手牌不算（换甲来当清空的人）', () => {
+    // 甲（蜀）自己回合里把手牌用完 → 蒋琬费祎是蜀，但「于其回合外」不成立
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'jiangwan_feyi', faction: 'shu', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.log.some((e) => e.message.includes('守成'))).toBe(false);
+  });
+});

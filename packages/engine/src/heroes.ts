@@ -2007,6 +2007,182 @@ function tianxiangClassic(ctx: HookContext): void {
  * 红颜的「黑桃视为红桃」是**全局口径**（手牌/装备/她自己进行的判定），
  * 由 `cardAsSeenBy()` 一处提供，engine/equip/legal 都在用。
  */
+/**
+ * 徐盛 —— 疑城（君临天下·阵，2019 典藏版文本，已核）：
+ * 当一名与你势力相同的角色成为【杀】的目标后，该角色可以摸一张牌，然后弃置一张牌。
+ *
+ * ⚠️ 与 2013 初版的差别：旧版是**徐盛**决定要不要发动、且只能对他人生效；
+ *    2019 典藏版把发动权交给**成为目标的那个角色**，也涵盖徐盛自己。
+ *    这里按 2019 口径写（项目统一的取新国战口径）。
+ *
+ * 「与你势力相同」按引擎既有的**互相认同**口径：双方都得已明置（暗置＝没势力），
+ * 徐盛自己当然满足。见 docs/guozhan-roster.md 里 effectiveFaction 的说明。
+ *
+ * ⚠️ 鸟翔（阵法技：「在同一个围攻关系中…需依次使用两张【闪】」）**尚未实现**——
+ *    围攻关系/队列那套阵法系统还没建，先把话说在技能描述里。
+ */
+/** 双方是否**已明置**且势力相同（国战里暗置＝没有势力，判断同势力一律走这里） */
+function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
+  const fa = effectiveFaction(state, a);
+  return !!fa && fa === effectiveFaction(state, b);
+}
+
+/**
+ * 蒋琬费祎 —— 生息 / 守成（君临天下·阵，2015 版文本，已核；实卡在国战典藏版 2017 定稿）。
+ *
+ * - 生息：弃牌阶段开始时，若你未于此回合内造成过伤害，你可以摸两张牌。
+ *   （2013 初版在**出牌阶段结束时**，2015 挪到弃牌阶段开始，避免与刘禅·放权打架；
+ *     移动版 2021 又挪到结束阶段。这里按 2015/典藏版口径。）
+ * - 守成：当与你势力相同的一名角色于其回合外失去所有手牌后，你可以令其摸一张牌。
+ *
+ * 两处实现说明：
+ * - 「造成过伤害」用新标记 `flags.dealtDamageThisTurn`，在 afterDamageDealt 的入口登记；
+ *   自伤不派发那个时机，所以自伤不算（官方口径里自伤也算「造成过伤害」，这里从简，已注明）。
+ * - 「与你势力相同」仍是引擎既有的**互相认同**口径：双方都得已明置。
+ */
+const JIANGWAN_FEYI: Hero = {
+  id: 'jiangwan_feyi',
+  name: '蒋琬费祎',
+  faction: 'shu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'discardPhase',
+      skillId: '生息',
+      handler: (ctx) => {
+        if (ctx.player.flags.dealtDamageThisTurn) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          '是否发动【生息】摸两张牌？',
+          [
+            { id: 'yes', label: '摸两张牌' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            let got = 0;
+            for (let i = 0; i < 2; i++) {
+              const c = drawOne(st);
+              if (!c) break;
+              p.hand.push(c);
+              got++;
+            }
+            pushLog(st, 'skill', `${p.name} 发动【生息】，摸了 ${got} 张牌。`);
+          },
+        );
+      },
+    },
+    {
+      timing: 'othersHandEmptied',
+      skillId: '守成',
+      handler: (ctx) => {
+        const payload = ctx.payload as { emptiedSeatId?: string } | undefined;
+        const sid = payload?.emptiedSeatId;
+        if (!sid || sid === ctx.player.seatId) return;
+        const who = getPlayer(ctx.state, sid);
+        if (!who || !who.alive) return;
+        // 「**于其回合外**失去所有手牌」——他自己回合里清空不算
+        if (ctx.state.seatOrder[ctx.state.turn.seatIndex] === sid) return;
+        if (!sameKnownFaction(ctx.state, ctx.player, who)) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `【守成】：是否令 ${who.name} 摸一张牌？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const t = getPlayer(st, sid);
+            if (!t) return;
+            const c = drawOne(st);
+            if (c) t.hand.push(c);
+            pushLog(st, 'skill', `${who.name} 因【守成】摸了 1 张牌。`, { seat: who.seatId });
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '生息',
+      desc: '弃牌阶段开始时，若你未于此回合内造成过伤害，你可以摸两张牌。',
+    },
+    {
+      name: '守成',
+      desc: '当与你势力相同的一名角色于其回合外失去所有手牌后，你可以令其摸一张牌。',
+    },
+  ],
+};
+
+const XUSHENG: Hero = {
+  id: 'xusheng',
+  name: '徐盛',
+  faction: 'wu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'othersBecomeTarget',
+      skillId: '疑城',
+      handler: (ctx) => {
+        const payload = ctx.payload as { targetId?: string; attack?: AttackContext } | undefined;
+        const tid = payload?.targetId;
+        const attack = payload?.attack;
+        if (!tid || !attack || attack.asType !== 'sha') return;
+        if (attack.dodged) return;
+        const target = getPlayer(ctx.state, tid);
+        if (!target || !target.alive) return;
+        const mine = effectiveFaction(ctx.state, ctx.player);
+        const theirs = effectiveFaction(ctx.state, target);
+        if (!mine || mine !== theirs) return;
+        ctx.api.askChoice(
+          ctx.state,
+          target.seatId,
+          '【疑城】：是否摸一张牌，然后弃置一张牌？',
+          [
+            { id: 'yes', label: '摸一张牌，然后弃置一张牌' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, t, picked) => {
+            if (picked !== 'yes') return;
+            const c = drawOne(st);
+            if (c) t.hand.push(c);
+            pushLog(st, 'skill', `${t.name} 因【疑城】摸了 1 张牌。`);
+            if (t.hand.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              t.seatId,
+              '【疑城】：弃置一张牌',
+              t.hand.slice(),
+              1,
+              1,
+              (st2, t2, chosen) => {
+                const card = chosen[0];
+                if (card) ctx.api.discardCard(t2.seatId, card);
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '疑城',
+      desc: '当一名与你势力相同的角色成为【杀】的目标后，该角色可以摸一张牌，然后弃置一张牌。',
+    },
+    { name: '鸟翔', desc: '阵法技，在同一个围攻关系中……（阵法系统未实现，暂时不可用）' },
+  ],
+};
+
 const XIAOQIAO: Hero = {
   id: 'xiaoqiao',
   name: '小乔',
@@ -5669,6 +5845,8 @@ export const HEROES: Hero[] = [
   HUANGGAI,
   DAQIAO,
   XIAOQIAO,
+  XUSHENG,
+  JIANGWAN_FEYI,
   TAISHICI,
   LVMENG,
   LUSU,

@@ -25,6 +25,13 @@ export type Timing =
   | 'othersTurnEnd'
   | 'useCard' // 使用牌时（声明使用、指定目标后）
   | 'becomeTarget' // 成为目标时（目标可响应）
+  /**
+   * **一名角色**成为【杀】的目标后（派给**所有存活角色**，payload.targetId 是谁成为目标）。
+   * 徐盛·疑城挂这里——「与你势力相同的角色成为【杀】的目标后」，那是别人的事，
+   * `becomeTarget` 只发给当事人本人，看不到。派发在目标自己的 becomeTarget **之前**，
+   * 所以摸一弃一发生在防具/八卦/等出闪之前。
+   */
+  | 'othersBecomeTarget'
   | 'beforeResolve' // 结算前
   | 'afterResolve' // 结算后
   /**
@@ -46,6 +53,12 @@ export type Timing =
   | 'cardDiscarded'
   | 'equipLost' // 失去装备区里的一张牌后（枭姬）
   | 'handEmptied' // 失去最后一张手牌后（连营）
+  /**
+   * **其他角色**失去所有手牌后（派给**除他以外**的所有存活角色，payload.emptiedSeatId）。
+   * 蒋琬费祎·守成挂这里——「与你势力相同的一名角色于其回合外失去所有手牌后」是别人的事，
+   * `handEmptied` 只发给当事人本人。是不是「其回合外」由技能自己按 payload 判断。
+   */
+  | 'othersHandEmptied'
   /**
    * 受到伤害时（扣血前）。**可挂起**，也是唯一能**取消**伤害的时机：
    * 钩子里设 `flags.damagePrevented = true`，引擎在钩子跑完之后读到就整条伤害作废

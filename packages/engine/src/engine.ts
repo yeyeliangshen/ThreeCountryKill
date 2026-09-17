@@ -412,6 +412,12 @@ function revealForConversion(state: GameState, player: Player, card: Card, as: C
  *    伤害路径大多走后者，只挂在前面会漏掉绝大多数伤害。
  */
 function markDamaged(state: GameState, timing: Timing, player: Player, payload?: unknown): void {
+  // 「你于本回合内造成过伤害吗」（蒋琬费祎·生息）：afterDamageDealt 是派给**来源**的，
+  // 正好就是「谁造成的」那个视角。自伤不派发这个时机，所以自伤不算（已在注释里说明）。
+  if (timing === 'afterDamageDealt') {
+    player.flags.dealtDamageThisTurn = true;
+    return;
+  }
   if (timing !== 'afterDamage') return;
   const dmg = (payload as { damage?: number } | undefined)?.damage ?? 0;
   if (dmg > 0 && !state.damagedThisTurn.includes(player.seatId)) {
@@ -1553,6 +1559,18 @@ function startAttack(
  * （被动亮将、新目标的 becomeTarget 钩子、防具、八卦、等出闪）。
  */
 function becomeTargetFor(state: GameState, target: Player, attack: AttackContext): void {
+  // 先派发「一名角色成为【杀】目标后」给全场（徐盛·疑城那类「别人的事」），
+  // 再走目标自己的 becomeTarget（改目标/防具/八卦/出闪）。
+  runAllPlayersHooks(
+    state,
+    'othersBecomeTarget',
+    { targetId: target.seatId, attack },
+    () => becomeTargetSelf(state, target, attack),
+  );
+}
+
+/** 目标自己的「成为目标后」：becometarget 钩子 → 雌雄/享乐/防具/八卦/出闪 */
+function becomeTargetSelf(state: GameState, target: Player, attack: AttackContext): void {
   const box: AttackBox = {};
   runHooksPausable(
     state,
@@ -2857,7 +2875,17 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
 function checkHandEmptied(state: GameState, handBefore: number[]): void {
   state.players.forEach((p, i) => {
     if ((handBefore[i] ?? 0) > 0 && p.hand.length === 0 && p.alive) {
-      runHooksPausable(state, 'handEmptied', p, undefined, () => {});
+      runHooksPausable(state, 'handEmptied', p, undefined, () => {
+        // 「**其他角色**失去所有手牌后」（蒋琬费祎·守成）：连营那种只发给本人的
+        // 时机观察不到别人的手牌清空，所以这里再派一轮给旁人
+        runAllPlayersHooks(
+          state,
+          'othersHandEmptied',
+          { emptiedSeatId: p.seatId },
+          () => {},
+          p.seatId,
+        );
+      });
     }
   });
 }

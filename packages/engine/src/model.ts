@@ -80,6 +80,11 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 本回合有没有**造成过伤害**（蒋琬费利·生息：没造成过才能在弃牌阶段开始时摸两张）。
+   * 由 damageDealt 钩子的入口登记，随回合重置。
+   */
+  dealtDamageThisTurn: boolean;
+  /**
    * 「本次伤害已被防止」——`damageDealt` 钩子唯一的**取消通道**。
    *
    * 钩子只能设标记（没有返回值），所以 damageStep 在派发前清、派发后读，
@@ -153,6 +158,7 @@ export function emptyFlags(): PlayerFlags {
     skipDraw: false,
     skipDiscard: false,
     damagePrevented: false,
+    dealtDamageThisTurn: false,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,
