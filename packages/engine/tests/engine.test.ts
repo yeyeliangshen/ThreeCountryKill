@@ -15352,3 +15352,93 @@ describe('国战 · 李傕郭汜（凶算）', () => {
     void a;
   });
 });
+
+/** 于禁·节钺：交给异势力角色一张手牌并令其执行军令 */
+describe('国战 · 于禁（节钺）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('节钺：交给异势力角色一张手牌；他执行军令则自己摸一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'yujin', faction: 'wei', hand: [tao('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 准备阶段问节钺
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('节钺');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 挑要交出的牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 交给谁（甲、丙都是异势力；选丙）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id).sort()).toEqual([A, C].sort());
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(c.hand.some((x) => x.id === 'b1')).toBe(true);
+    // 军令：先由于禁从（随机两张里）挑一条
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    const tokenId = state.pending?.kind === 'choice' ? state.pending.options[0]!.id : 'damage';
+    ok(act(state, B, { type: 'chooseOption', optionId: tokenId }));
+    // 再由丙决定执不执行
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.log.some((e) => e.message.includes('军令'))).toBe(true);
+    expect(b.flags.drawCountDelta).toBe(0); // 执行了 → 不加摸牌
+  });
+
+  it('节钺：不执行的场合，于禁本回合摸牌阶段多摸三张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'yujin', faction: 'wei', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 先由于禁挑一条军令
+    const tokenId = state.pending?.kind === 'choice' ? state.pending.options[0]!.id : 'damage';
+    ok(act(state, B, { type: 'chooseOption', optionId: tokenId }));
+    // 丙拒绝执行
+    const opts = state.pending?.kind === 'choice' ? state.pending.options.map((o) => o.id) : [];
+    expect(opts).toContain('no');
+    ok(act(state, C, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.flags.drawCountDelta).toBe(3);
+    expect(state.log.some((e) => e.message.includes('多摸三张'))).toBe(true);
+  });
+});

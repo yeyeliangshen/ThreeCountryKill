@@ -3627,6 +3627,111 @@ const MADAI: Hero = {
  * 所以先把被点名的技能 id 记在被点名角色身上（flags.limitedToReset），
  * 到李傕郭汜自己的结束阶段（turnEnd，锁定技式、不问）统一清掉。
  */
+/**
+ * 于禁 —— 节钺（君临天下·权，已核；与印刷版/OL 一致）。
+ *
+ * 节钺：准备阶段开始时，你可以交给**不是魏势力**（即与你势力不同）的一名角色一张手牌，
+ * 然后令其执行一次「军令」。若其执行，你摸一张牌；若其不执行，则你本回合摸牌阶段额外摸三张牌。
+ *
+ * 军令那套机制是现成的（董昭·劝进用过：api.armyOrder），这里只是方向相反——
+ * 劝进是自己交给受伤角色、节钺是交给异势力角色。
+ */
+const YUJIN: Hero = {
+  id: 'yujin',
+  name: '于禁',
+  faction: 'wei',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'turnStart',
+      skillId: '节钺',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.hand.length === 0) return;
+        const mine = effectiveFaction(ctx.state, me);
+        const targets = ctx.state.players.filter(
+          (p) => p.alive && p.seatId !== me.seatId && effectiveFaction(ctx.state, p) !== mine,
+        );
+        if (targets.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【节钺】？',
+          [
+            { id: 'yes', label: '发动（交给一名其他势力的角色一张手牌，令其执行「军令」）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【节钺】：选择要交出的手牌',
+              p.hand.slice(),
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                const list = st2.players.filter(
+                  (x) =>
+                    x.alive &&
+                    x.seatId !== p2.seatId &&
+                    effectiveFaction(st2, x) !== effectiveFaction(st2, p2),
+                );
+                if (list.length === 0) return;
+                ctx.api.askChoice(
+                  st2,
+                  p2.seatId,
+                  '【节钺】：把这张牌交给谁？',
+                  list.map((x) => ({ id: x.seatId, label: x.name })),
+                  (st3, p3, targetId) => {
+                    const target = getPlayer(st3, targetId);
+                    if (!target) return;
+                    removeCard(p3.hand, card.id);
+                    target.hand.push(card);
+                    pushLog(
+                      st3,
+                      'skill',
+                      `${p3.name} 发动【节钺】，将【${cardLabel(card)}】交给 ${target.name} 并令其执行军令。`,
+                    );
+                    ctx.api.armyOrder(p3.seatId, targetId, (st4, executed) => {
+                      if (executed) {
+                        const c = drawOne(st4);
+                        if (c) p3.hand.push(c);
+                        pushLog(st4, 'skill', `${target.name} 执行了军令，${p3.name} 摸一张牌。`);
+                        return;
+                      }
+                      // 不执行：本回合摸牌阶段额外摸三张
+                      p3.flags.drawCountDelta += 3;
+                      pushLog(
+                        st4,
+                        'skill',
+                        `${target.name} 拒绝执行军令，${p3.name} 本回合摸牌阶段多摸三张牌。`,
+                      );
+                    });
+                  },
+                  p2.seatId,
+                );
+              },
+              { returnTo: p.seatId },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '节钺',
+      desc: '准备阶段，你可以交给不是魏势力的一名角色一张手牌，然后令其执行一次「军令」。若其执行，你摸一张牌；若其不执行，你本回合摸牌阶段多摸三张牌。',
+    },
+  ],
+};
+
 const LIJUE_GUOSI: Hero = {
   id: 'lijue_guosi',
   name: '李傕郭汜',
@@ -9020,6 +9125,7 @@ export const HEROES: Hero[] = [
   BIANFUREN,
   SHAMOKE,
   LIJUE_GUOSI,
+  YUJIN,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
