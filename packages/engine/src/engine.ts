@@ -1604,6 +1604,9 @@ function afterShaTargetResolve(
   targetId: string,
   attack: AttackContext,
 ): void {
+  // 刘禅·享乐：使用者先决定弃不弃一张基本牌（不弃则此【杀】对刘禅无效）
+  if (tryXingle(state, target, attack)) return;
+
   // 防具令此杀无效（仁王盾：黑杀；藤甲：普通杀）
   const nullified = armorNullifiesSha(state, attack);
   if (nullified) {
@@ -1635,6 +1638,74 @@ function afterShaTargetResolve(
 
   // 暂停：等待目标响应（出闪或弃权）
   state.pending = { kind: 'respondSha', responderId: targetId, attack };
+}
+
+/**
+ * 刘禅·享乐（锁定技）：当你成为一名角色使用【杀】的目标后，除非其弃置一张基本牌，
+ * 否则令此【杀】对你无效。
+ *
+ * 三处细节：
+ * - 是**锁定技**，所以刘禅这边没有「发不发动」的询问；要选的是**使用者**那边。
+ * - 使用者没有基本牌 → 没什么可弃的，直接判无效（不弹空询问）。
+ * - 弃完要继续走「防具 / 八卦 / 等出闪」那一段，所以在这里打个 `xingleChecked` 记号，
+ *   否则回到本函数时会再问一次。
+ *
+ * 位置：在雌雄双股剑之后、防具之前（都在「成为目标后」这个时机里）。
+ * 返回 true 表示这次调用已经接管了后续（挂起了询问，或者已经判了无效）。
+ */
+function tryXingle(state: GameState, target: Player, attack: AttackContext): boolean {
+  if (attack.xingleChecked || attack.dodged) return false;
+  if (!activeHeroes(state, target).some((h) => h.xingleBasicDiscard === true)) return false;
+  const source = attack.sourceId ? getPlayer(state, attack.sourceId) : undefined;
+  if (!source || !source.alive || source.seatId === target.seatId) return false;
+  attack.xingleChecked = true;
+  const nullify = (): void => {
+    pushLog(state, 'resolve', `${target.name} 的【享乐】令此【杀】无效。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
+    attack.dodged = true;
+    finishAttack(state, attack);
+  };
+  const basics = source.hand.filter((c) => isBasicCard(c));
+  if (basics.length === 0) {
+    nullify();
+    return true;
+  }
+  askChoice(
+    state,
+    source.seatId,
+    `【享乐】：弃置一张基本牌，否则此【杀】对 ${target.name} 无效`,
+    [
+      { id: 'discard', label: '弃置一张基本牌' },
+      { id: 'no', label: '不弃置（此【杀】无效）' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'discard') {
+        nullify();
+        return;
+      }
+      askPickCards(
+        st,
+        p.seatId,
+        '【享乐】：弃置一张基本牌',
+        p.hand.filter((c) => isBasicCard(c)),
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const card = chosen[0];
+          if (!card) {
+            nullify();
+            return;
+          }
+          discardOwnCard(st2, p2, card, () =>
+            afterShaTargetResolve(st2, target, target.seatId, attack),
+          );
+        },
+      );
+    },
+  );
+  return true;
 }
 
 /**
@@ -1863,6 +1934,13 @@ function afterAttackSettled(state: GameState, attack: AttackContext): void {
       requiredShan: 1,
       redirected: false,
     });
+    return;
+  }
+  // 技能驱动的连环出杀（贾诩·乱武）在这里接着往下走；普通出杀回到出牌阶段
+  if (attack.afterSettled) {
+    const after = attack.afterSettled;
+    attack.afterSettled = undefined;
+    after();
     return;
   }
   resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
@@ -3506,6 +3584,9 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
     case 'wanjian':
       // AOE：从第一个响应者开始
       if (ctx.responders.length === 0) {
+        // 没有响应者（全都不受影响，例如只剩祝融且她免疫）也算「结算结束」——
+        // 巨象照样要拿到这张牌
+        giveResolvedNanman(state, ctx);
         resumePlay(state, ctx.sourceId);
         return;
       }
@@ -4595,6 +4676,30 @@ function resolveZhibi(state: GameState, ctx: TrickContext): void {
 }
 
 /** AOE：进入第一个响应者的 respondTrick */
+/**
+ * 祝融·巨象（锁定技）的后半句：**其他角色**使用的【南蛮入侵】结算结束后，你获得之。
+ *
+ * 判定口径：这张牌得是「用来当南蛮」并且结算完还躺在弃牌堆里。官方 FAQ 举的反例是
+ * 曹操·奸雄把它收走了、或者于吉把别的牌蛊惑成了南蛮（牌面不是南蛮）——前者由
+ * 「还在不在弃牌堆」自然挡掉，后者根本不会走到这里（虚拟牌没有实体牌）。
+ */
+function giveResolvedNanman(state: GameState, ctx: TrickContext): void {
+  if (ctx.card.type !== 'nanman') return;
+  for (const p of state.players) {
+    if (!p.alive || p.seatId === ctx.sourceId) continue; // 自己用的不拿回来
+    if (!activeHeroes(state, p).some((h) => h.gainsUsedNanman === true)) continue;
+    const i = state.discard.findIndex((c) => c.id === ctx.card.id);
+    if (i < 0) continue; // 已经被别人收走了（奸雄之类）
+    const [card] = state.discard.splice(i, 1);
+    if (!card) continue;
+    p.hand.push(card);
+    pushLog(state, 'skill', `${p.name} 的【巨象】获得了【南蛮入侵】。`, {
+      seat: p.seatId,
+      action: 'gain',
+    });
+  }
+}
+
 function enterTrickResponse(state: GameState, ctx: TrickContext): void {
   // 跳过已阵亡的响应者，以及被【藤甲】免疫的南蛮/万箭目标
   while (ctx.responderIndex < ctx.responders.length) {
@@ -4625,6 +4730,8 @@ function enterTrickResponse(state: GameState, ctx: TrickContext): void {
     ctx.responderIndex++;
   }
   if (ctx.responderIndex >= ctx.responders.length) {
+    // 群体锦囊整个结算完了：祝融·巨象在这个时机把【南蛮入侵】捞走
+    giveResolvedNanman(state, ctx);
     resumePlay(state, ctx.sourceId);
     return;
   }
@@ -4946,10 +5053,12 @@ function resolvePlayedSha(
   card: Card,
   asType: CardType,
   log: { kind: string; text: string },
+  after?: () => void,
 ): void {
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
-    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    if (after) after();
+    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
     return;
   }
   const attack: AttackContext = {
@@ -4962,6 +5071,7 @@ function resolvePlayedSha(
     attribute: card.attribute,
     cardColor: colorSeenAs(state, source, card),
     requiredShan: 1,
+    afterSettled: after,
   };
   pushLog(state, log.kind, log.text);
   runHooks(state, 'useCard', source, { attack, card });
@@ -6183,6 +6293,52 @@ function makeSkillApi(
       if (old) toDiscard(state, old);
       if (old) fireEquipLost(state, target, old, done);
       else done();
+    },
+    useShaOn: (sourceSeatId, targetId, card, opts) => {
+      const src = getPlayer(state, sourceSeatId);
+      const tgt = getPlayer(state, targetId);
+      if (!src || !src.alive || !tgt || !tgt.alive) {
+        opts?.after?.();
+        return;
+      }
+      consumeCard(state, src, card);
+      resolvePlayedSha(
+        state,
+        src,
+        targetId,
+        card,
+        'sha',
+        {
+          kind: opts?.logKind ?? 'skill',
+          text: `${src.name} 对 ${tgt.name} 使用了【杀】。`,
+        },
+        opts?.after,
+      );
+    },
+    discardTargetCard: (targetSeatId, cardId, after) => {
+      const target = getPlayer(state, targetSeatId);
+      const done = after ?? (() => {});
+      if (!target) {
+        done();
+        return;
+      }
+      // pickTargetCard：指定 id 的明牌（装备/判定）优先，否则随机一张手牌
+      const got = pickTargetCard(state, target, cardId);
+      if (!got) {
+        pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
+        done();
+        return;
+      }
+      toDiscard(state, got.card);
+      pushLog(state, 'skill', `弃置了 ${target.name} 的【${cardLabel(got.card)}】。`, {
+        seat: target.seatId,
+        action: 'discard',
+      });
+      if (got.fromEquip) {
+        fireEquipLost(state, target, got.card, done);
+        return;
+      }
+      fireCardDiscarded(state, target, [got.card], done);
     },
     discardCard: (ownerSeatId, card, after) => {
       const owner = getPlayer(state, ownerSeatId);

@@ -259,6 +259,17 @@ export interface Hero {
    */
   canRevealInPlayPhase?: boolean;
   /**
+   * 刘禅·享乐（锁定技）：当你成为【杀】的目标后，除非使用者弃置一张基本牌，
+   * 否则此【杀】对你无效。由 engine 的 afterShaTargetResolve 在防具之前问。
+   */
+  xingleBasicDiscard?: boolean;
+  /**
+   * 祝融·巨象的后半句（锁定技）：**其他角色**使用的【南蛮入侵】结算结束后，你获得之。
+   * 由 engine 在南蛮结算完（enterTrickResponse 的出口）读——只在牌还躺在弃牌堆里时给
+   * （被曹操·奸雄那类收走就不给了）。
+   */
+  gainsUsedNanman?: boolean;
+  /**
    * 小乔·红颜（锁定技）：你的黑桃牌视为红桃牌。
    *
    * 「你的牌」按官方口径包括：你的手牌、你装备区的牌、**由你进行的判定**的判定牌
@@ -317,6 +328,10 @@ export type FieldSkill =
   | 'blocksOthersReveal'
   /** 邹氏·祸水：出牌阶段也可以明置这张武将牌 */
   | 'canRevealInPlayPhase'
+  /** 祝融·巨象后半句：其他角色用过的【南蛮入侵】结算后你获得之 */
+  | 'gainsUsedNanman'
+  /** 刘禅·享乐：成为【杀】目标后使用者要弃一张基本牌 */
+  | 'xingleBasicDiscard'
   /** 小乔·红颜：你的黑桃牌视为红桃牌 */
   | 'spadeAsHeart';
 
@@ -341,6 +356,8 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'blocksOthersReveal',
   'canRevealInPlayPhase',
   'spadeAsHeart',
+  'gainsUsedNanman',
+  'xingleBasicDiscard',
 ];
 
 const GUANYU: Hero = {
@@ -1645,6 +1662,46 @@ const ZHUGELIANG: Hero = {
   ],
 };
 
+/**
+ * 狂骨：每造成 1 点伤害就有一个「回复 1 点体力 / 摸一张牌 / 不发动」的机会。
+ *
+ * 「扣减体力前」的距离：距离只跟座次与装备有关、跟体力无关，而这个时机仍在阵亡结算
+ * 之前（受伤者 hp<=0 但还没被移出座次），所以此刻算出来的就是官方要的那个距离。
+ */
+function askKuanggu(ctx: HookContext, left?: number): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+  const attack = payload?.attack;
+  const times = left ?? payload?.damage ?? 0;
+  if (!attack || times <= 0) return;
+  if (attack.sourceId !== me.seatId) return;
+  if (attack.targetId === me.seatId) return; // 自伤不触发
+  if (distance(state, me.seatId, attack.targetId) > 1) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    times > 1 ? `【狂骨】：选择一项（本次伤害还有 ${times} 点没结算）` : '【狂骨】：选择一项',
+    [
+      { id: 'heal', label: '回复 1 点体力' },
+      { id: 'draw', label: '摸一张牌' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'heal') {
+        const healed = ctx.api.heal(p, 1);
+        pushLog(st, 'skill', `${p.name} 发动【狂骨】，回复 ${healed} 点体力。`);
+      } else if (picked === 'draw') {
+        const c = drawOne(st);
+        if (c) p.hand.push(c);
+        pushLog(st, 'skill', `${p.name} 发动【狂骨】，摸了 1 张牌。`);
+      }
+      // 多点伤害逐点问：这一点的选择不影响下一点
+      if (times > 1) askKuanggu(ctx, times - 1);
+    },
+  );
+}
+
 const WEIYAN: Hero = {
   id: 'weiyan',
   name: '魏延',
@@ -1652,30 +1709,25 @@ const WEIYAN: Hero = {
   maxHp: 4,
   gender: 'male',
   combos: ['huangzhong'], // 黄忠 ❤ 魏延
-  // 狂骨：对距离 1 以内的角色造成伤害后，回复 1 点体力
+  // 狂骨（2019 国标 / 界魏延文本，已核）：当你对一名角色造成 1 点伤害后，若其**扣减体力前**
+  // 你计算与其的距离不大于 1，你可以选择一项：①回复 1 点体力；②摸一张牌。
+  //
+  // ⚠️ 与旧国战文本的差别：旧版是**锁定技**、只能回血（「每当你对距离1以内的一名角色
+  //    造成1点伤害后，你回复1点体力」）；新版多了「或摸一张牌」，所以它不是锁定技。
+  //    多点伤害**逐点结算**（官方 FAQ：酒杀造成 2 点可以一点回血、一点摸牌），
+  //    所以按 payload.damage 的次数循环问。
   hooks: [
     {
       // 注意是 afterDamageDealt（派给伤害来源），不是 afterDamage（那是派给受伤者的）
       timing: 'afterDamageDealt',
       skillId: '狂骨',
-      locked: true, // 狂骨是锁定技
-      handler: (ctx) => {
-        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
-        const attack = payload?.attack;
-        if (!attack || !payload?.damage) return;
-        if (attack.sourceId !== ctx.player.seatId) return;
-        if (attack.targetId === ctx.player.seatId) return;
-        if (distance(ctx.state, ctx.player.seatId, attack.targetId) > 1) return;
-        if (ctx.player.hp >= ctx.player.maxHp) return;
-        const healed = ctx.api.heal(ctx.player, 1);
-        pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【狂骨】，回复 ${healed} 点体力。`);
-      },
+      handler: (ctx) => askKuanggu(ctx),
     },
   ],
   skills: [
     {
       name: '狂骨',
-      desc: '锁定技，当你对距离 1 以内的角色造成伤害后，你回复 1 点体力。（简化：官方为「回复1点体力或摸一张牌」二选一）',
+      desc: '当你对一名角色造成1点伤害后，若其扣减体力前你计算与其的距离不大于1，你可以选择一项：1.回复1点体力；2.摸一张牌。',
     },
   ],
 };
@@ -2397,6 +2449,105 @@ const SUNSHANGXIANG: Hero = {
   ],
 };
 
+/**
+ * 乱武的续接链：按座次问每一个其他角色「对最近的人出【杀】 / 失去 1 点体力」。
+ *
+ * 为什么是一条链而不是一个循环：每一次询问都会挂起（引擎的 pending），
+ * 出杀还要等那张【杀】整个结算完（`useShaOn` 的 after 回调），所以只能一个一个接着推。
+ */
+function luanwuStep(
+  state: GameState,
+  jia: Player,
+  queue: string[],
+  i: number,
+  api: SkillApi,
+): void {
+  if (state.gameOver) return;
+  const me = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+  if (!me || !me.alive) {
+    // 阵亡/中途没了 → 跳过
+    if (i < queue.length) luanwuStep(state, jia, queue, i + 1, api);
+    return;
+  }
+  const next = (): void => luanwuStep(state, jia, queue, i + 1, api);
+
+  // 「距离最近的另一名角色」（可能并列，并列时他自己挑）
+  let best = Infinity;
+  const nearest: Player[] = [];
+  for (const o of state.players) {
+    if (!o.alive || o.seatId === me.seatId) continue;
+    const d = distance(state, me.seatId, o.seatId);
+    if (d < best) {
+      best = d;
+      nearest.length = 0;
+      nearest.push(o);
+    } else if (d === best) {
+      nearest.push(o);
+    }
+  }
+  // 最近的里面还得够得着（【杀】本身有攻击范围限制）
+  const inRange = nearest.filter((o) => attackRange(state, me) >= distance(state, me.seatId, o.seatId));
+  const canSha = inRange.length > 0 && usableShaCards(state, me).length > 0;
+
+  const options: { id: string; label: string }[] = [];
+  if (canSha) {
+    options.push({
+      id: 'sha',
+      label: `对 ${inRange.map((o) => o.name).join('、')} 使用一张【杀】`,
+    });
+  }
+  options.push({ id: 'hp', label: '失去 1 点体力' });
+
+  // returnTo 传**贾诩**：整条链跑完后要把出牌阶段还给他（技能是在他的出牌阶段里用的）
+  api.askChoice(state, me.seatId, `【乱武】（${jia.name}）：选择一项`, options, (st, p, picked) => {
+    if (picked !== 'sha' || !canSha) {
+      api.loseHp(p, 1, next);
+      return;
+    }
+    const useOn = (card: Card, victim: Player): void => {
+      pushLog(st, 'skill', `${p.name} 因【乱武】对 ${victim.name} 使用了【杀】。`);
+      api.useShaOn(p.seatId, victim.seatId, card, {
+        after: () => luanwuStep(st, jia, queue, i + 1, api),
+      });
+    };
+    api.askPickCards(
+      st,
+      p.seatId,
+      '【乱武】：选择一张【杀】',
+      usableShaCards(st, p),
+      1,
+      1,
+      (st2, p2, chosen) => {
+        const card = chosen[0];
+        if (!card) {
+          next();
+          return;
+        }
+        if (inRange.length === 1) {
+          useOn(card, inRange[0]!);
+          return;
+        }
+        api.askChoice(
+          st2,
+          p2.seatId,
+          '【乱武】：选择【杀】的目标',
+          inRange.map((o) => ({ id: o.seatId, label: o.name })),
+          (st3, _p2, targetId) => {
+            const victim = getPlayer(st3, targetId);
+            if (!victim) {
+              next();
+              return;
+            }
+            useOn(card, victim);
+          },
+          jia.seatId,
+        );
+      },
+      { returnTo: jia.seatId },
+    );
+  }, jia.seatId);
+}
+
 const JIAXU: Hero = {
   id: 'jiaxu',
   name: '贾诩',
@@ -2408,11 +2559,51 @@ const JIAXU: Hero = {
     (isInstantTrick(card) || isDelayedTrick(card)) && !isRed(card),
   lockedFields: ['cannotBeTargetOf', 'blocksExternalSaves'],
   blocksExternalSaves: true, // 完杀
+  // 乱武（限定技，已核国战文本）：出牌阶段，你可以令所有其他角色依次选择一项：
+  // ①对其距离最近的另一名角色使用一张【杀】；②失去 1 点体力。
+  //
+  // 三个要点：
+  // - 「依次」= 按座次一个一个问，所以是一条续接链（每个人答完才轮到下一个人）。
+  // - 「距离最近」按**这个角色自己**算（不是贾诩的），并列时他可以从中挑一个。
+  // - 最近的若不在他的攻击范围内，这一项就做不了（只能失去 1 点体力）——
+  //   官方 FAQ 里「因+1马导致无法指定目标」就是这种情况。失去体力是**体力流失**，
+  //   不触发卖血技，所以用 api.loseHp 而不是造成伤害。
+  activeSkills: [
+    {
+      id: 'luanwu',
+      name: '乱武',
+      oncePerGame: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state, player) =>
+        state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      execute: (state, player, _intent, api) => {
+        // 从贾诩的下家起、按座次排出所有存活的其他角色（heroes.ts 拿不到引擎的
+        // aliveSeatsFrom，就地算一份）
+        const idx = state.seatOrder.indexOf(player.seatId);
+        const n = state.seatOrder.length;
+        const queue: string[] = [];
+        for (let k = 1; k <= n; k++) {
+          const sid = state.seatOrder[(idx + k) % n]!;
+          if (sid === player.seatId) continue;
+          if (getPlayer(state, sid)?.alive) queue.push(sid);
+        }
+        pushLog(state, 'skill', `${player.name} 发动【乱武】！`);
+        luanwuStep(state, player, queue, 0, api);
+        return undefined;
+      },
+    },
+  ],
   skills: [
     { name: '帷幕', desc: '锁定技，你不能成为黑色锦囊牌的目标。' },
     {
       name: '完杀',
       desc: '锁定技，你的回合内，除你以外，只有处于濒死状态的角色才能使用【桃】。',
+    },
+    {
+      name: '乱武',
+      desc: '限定技，出牌阶段，你可以令所有其他角色依次选择一项：1.对其距离最近的另一名角色使用一张【杀】；2.失去1点体力。',
     },
   ],
 };
@@ -3261,12 +3452,12 @@ const ZHURONG: Hero = {
   faction: 'shu',
   maxHp: 4,
   gender: 'female',
-  // 巨象：锁定技，【南蛮入侵】对你无效。
-  // 「若其他角色使用的【南蛮入侵】结算后置入弃牌堆，你获得之」这一半暂未实现——
-  // 需要在南蛮结算完把那张牌捞出来给她。
+  // 巨象（锁定技，已核文本）：【南蛮入侵】对你无效；**其他角色**使用的【南蛮入侵】
+  // 结算结束后，你获得之（前提是那张牌还在弃牌堆里——曹操·奸雄那类先收走就没有了）。
   immuneToNanman: true,
-  lockedFields: ['immuneToNanman'],
-  skillFields: { 巨象: ['immuneToNanman'] },
+  gainsUsedNanman: true,
+  lockedFields: ['immuneToNanman', 'gainsUsedNanman'],
+  skillFields: { 巨象: ['immuneToNanman', 'gainsUsedNanman'] },
   // 烈刃：你使用【杀】对目标造成伤害后，可以与其拼点，若你赢则获得其一张牌。
   hooks: [
     {
@@ -3439,7 +3630,68 @@ const DONGZHAO: Hero = {
   gender: 'male',
   modes: ['guozhan'], // 不臣篇是国战专属
   // 劝进：把一张手牌交给一名**本回合受到过伤害**的角色，令其执行一次军令。
+  // 凿运（不臣篇·上 2021，已核）：出牌阶段限一次，你可以选择一名与你势力不同且距离
+  // 大于 1 的角色并弃置 X 张手牌（X 为你计算与其的距离 - 1），令你本回合计算与其的
+  // 距离视为 1，然后你对其造成 1 点伤害。
+  //
+  // ⚠️ 代价张数看**距离**，而距离要等目标定了才知道，所以走缔盟那套：
+  //    主动技只收目标，弃牌在 execute 里再问（不然界面没法告诉玩家要弃几张）。
   activeSkills: [
+    {
+      id: 'zaoyun',
+      name: '凿运',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: false,
+      canUse: (state, player) =>
+        state.players.some((p) => {
+          if (!p.alive || p.seatId === player.seatId) return false;
+          const f = effectiveFaction(state, p);
+          // 只能选**明置**且势力不同的角色（暗将没有势力，选不了）
+          if (!f || f === effectiveFaction(state, player)) return false;
+          return distance(state, player.seatId, p.seatId) > 1;
+        }),
+      execute: (state, player, intent, api) => {
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名与你势力不同、且距离大于 1 的角色';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        if (target.seatId === player.seatId) return '不能选择自己';
+        const tf = effectiveFaction(state, target);
+        if (!tf) return '该角色尚未明置，无法选择（暗将没有势力）';
+        if (tf === effectiveFaction(state, player)) return '只能选择与你势力不同的角色';
+        const dist = distance(state, player.seatId, target.seatId);
+        if (dist <= 1) return '只能选择距离大于 1 的角色';
+        const cost = dist - 1;
+        if (player.hand.length < cost) return `手牌不足：需要弃置 ${cost} 张（距离 ${dist}）`;
+        // 顺序按官方：先弃牌 → 再把距离视为 1 → 最后造成伤害。
+        // 距离标记先落，所以即使伤害被防止/转移，本回合的距离也已经拉近了。
+        api.askPickCards(
+          state,
+          player.seatId,
+          `【凿运】：弃置 ${cost} 张手牌（与 ${target.name} 距离 ${dist}，弃 ${dist} - 1 张）`,
+          player.hand.slice(),
+          cost,
+          cost,
+          (st, p, picked) => {
+            for (const c of picked) {
+              removeCard(p.hand, c.id);
+              toDiscard(st, c);
+            }
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【凿运】，弃置 ${picked.length} 张手牌，本回合计算与 ${target.name} 的距离视为 1。`,
+            );
+            p.flags.distanceToOneThisTurn = target.seatId;
+            api.dealDamage(target, 1, p.seatId);
+          },
+          { returnTo: player.seatId },
+        );
+        return undefined;
+      },
+    },
     {
       id: 'quanjin',
       name: '劝进',
@@ -3503,10 +3755,53 @@ const DONGZHAO: Hero = {
     },
     {
       name: '凿运',
-      desc: '尚未实现：需要「本回合计算与其的距离视为 1」的距离覆盖机制。',
+      desc: '出牌阶段限一次，你可以选择一名与你势力不同且距离大于1的角色并弃置X张手牌（X为你计算与其的距离-1），令你本回合计算与其的距离视为1，然后你对其造成1点伤害。',
     },
   ],
 };
+
+/**
+ * 某人手里「能当【杀】用」的牌。
+ *
+ * 明置武将的转化技（武圣/龙胆那类）算——挑衅/乱武要的是「使用一张【杀】」，转化技合法。
+ * 不含【丈八蛇矛】的两张凑一张（那要额外的 extraCardIds，留给专门的入口）。
+ * ⚠️ 暗置武将的转化技不在内：暗将等于没有技能，要用就得先明置（国战语义）。
+ */
+function usableShaCards(state: GameState, p: Player): Card[] {
+  return p.hand.filter(
+    (c) => c.type === 'sha' || effectiveHeroes(state, p).some((h) => heroCanUseAs(h, c, 'sha', state, p)),
+  );
+}
+
+/**
+ * 让 `picker` 从 `target` 的牌里挑一张弃掉：装备/判定这类明牌给选项，手牌只能随机。
+ * （手牌不可见，官方也是随机抽——所以不给「看看手牌再挑」的机会。）
+ */
+function pickOneOfTargetCards(
+  state: GameState,
+  picker: Player,
+  target: Player,
+  api: SkillApi,
+): void {
+  const visible: Card[] = [
+    ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
+    ...target.judgment,
+  ];
+  const options: { id: string; label: string }[] = visible.map((c) => ({
+    id: c.id,
+    label: `弃置其【${cardLabel(c)}】`,
+  }));
+  if (target.hand.length > 0) {
+    options.push({ id: '__hand', label: `弃置其一张手牌（随机，共 ${target.hand.length} 张）` });
+  }
+  if (options.length === 0) {
+    pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
+    return;
+  }
+  api.askChoice(state, picker.seatId, `【挑衅】：弃置 ${target.name} 的一张牌`, options, (st, _p, picked) => {
+    api.discardTargetCard(target.seatId, picked === '__hand' ? undefined : picked);
+  });
+}
 
 const JIANGWEI: Hero = {
   id: 'jiangwei',
@@ -3514,9 +3809,78 @@ const JIANGWEI: Hero = {
   faction: 'shu',
   maxHp: 4,
   gender: 'male',
-  // 挑衅：出牌阶段限一次，令一名其他角色对你使用一张【杀】，否则你弃置其一张牌。
-  // 未实现——要接「令目标决定是否对我出杀」这条链（可以照离间/借刀的做法）。
+  // 挑衅（已核国战文本）：出牌阶段限一次，你可以令一名**攻击范围内包含你**的角色对你
+  // 使用一张【杀】，否则你弃置其一张牌。
   //
+  // 两步走：先问目标「对姜维使用一张【杀】 / 不（让姜维弃你一张牌）」；选前者再让他挑
+  // 一张能当【杀】的牌，真打出去（api.useShaOn，走正常结算，姜维自己得出闪）；
+  // 选后者由姜维挑一张牌弃掉（明牌可选、手牌随机——手牌本来就不该被看见）。
+  activeSkills: [
+    {
+      id: 'tiaoxin',
+      name: '挑衅',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: false,
+      canUse: (state, player) =>
+        state.players.some(
+          (p) =>
+            p.alive &&
+            p.seatId !== player.seatId &&
+            attackRange(state, p) >= distance(state, p.seatId, player.seatId),
+        ),
+      execute: (state, player, intent, api) => {
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名攻击范围内包含你的角色';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        if (target.seatId === player.seatId) return '不能选择自己';
+        if (attackRange(state, target) < distance(state, target.seatId, player.seatId)) {
+          return '该角色的攻击范围不包含你';
+        }
+        const shaCards = usableShaCards(state, target);
+        const options: { id: string; label: string }[] = [];
+        if (shaCards.length > 0) {
+          options.push({ id: 'sha', label: `对 ${player.name} 使用一张【杀】` });
+        }
+        options.push({ id: 'no', label: `不（${player.name} 弃置你一张牌）` });
+        api.askChoice(
+          state,
+          target.seatId,
+          `【挑衅】：${player.name} 令你选择一项`,
+          options,
+          (st, t, picked) => {
+            if (picked === 'sha') {
+              api.askPickCards(
+                st,
+                t.seatId,
+                `【挑衅】：选择一张【杀】（对 ${player.name} 使用）`,
+                usableShaCards(st, t),
+                1,
+                1,
+                (st2, t2, chosen) => {
+                  const card = chosen[0];
+                  if (!card) return;
+                  pushLog(
+                    st2,
+                    'skill',
+                    `${t2.name} 因【挑衅】对 ${player.name} 使用了【杀】。`,
+                  );
+                  api.useShaOn(t2.seatId, player.seatId, card);
+                },
+                { returnTo: t.seatId },
+              );
+              return;
+            }
+            // 不出杀 → 姜维弃其一张牌
+            pickOneOfTargetCards(st, player, target, api);
+          },
+        );
+        return undefined;
+      },
+    },
+  ],
   // 志继：觉醒技，准备阶段，若你没有手牌，你减 1 点体力上限并获得【观星】。
   //
   // 觉醒技按定义就是锁定技，满足条件**必须**发动，所以这里不问、直接结算。
@@ -3547,7 +3911,7 @@ const JIANGWEI: Hero = {
     },
     {
       name: '挑衅',
-      desc: '尚未实现：需要「令目标决定是否对你使用【杀】」这条链。',
+      desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的角色对你使用一张【杀】，否则你弃置其一张牌。',
     },
   ],
 };
@@ -3558,8 +3922,12 @@ const LIUSHAN: Hero = {
   faction: 'shu',
   maxHp: 4,
   gender: 'male',
-  // 享乐：锁定技，当你成为【杀】的目标时，使用者需弃置一张基本牌，否则此【杀】对你无效。
-  // 未实现——需要「成为目标时令使用者响应」，等 target_transfer 那批一起做。
+  // 享乐（锁定技，已核国战文本）：当你成为一名角色使用【杀】的目标后，
+  // 除非其弃置一张基本牌，否则令此【杀】对你无效。
+  // 由 engine 的 afterShaTargetResolve 在「防具之前」问使用者（雌雄双股剑之后）。
+  xingleBasicDiscard: true,
+  lockedFields: ['xingleBasicDiscard'],
+  skillFields: { 享乐: ['xingleBasicDiscard'] },
   //
   // 放权：结束阶段，你可以弃置一张手牌，令一名其他角色进行一个额外的回合
   hooks: [
@@ -3622,7 +3990,7 @@ const LIUSHAN: Hero = {
     },
     {
       name: '享乐',
-      desc: '锁定技，当你成为【杀】的目标时，使用者需弃置一张基本牌，否则此【杀】对你无效。（尚未实现）',
+      desc: '锁定技，当你成为一名角色使用【杀】的目标后，除非其弃置一张基本牌，否则令此【杀】对你无效。',
     },
   ],
 };

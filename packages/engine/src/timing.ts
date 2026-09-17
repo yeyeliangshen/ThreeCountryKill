@@ -285,6 +285,28 @@ export interface SkillApi {
    * 只是没有实体牌（也不会进任何牌堆）。
    */
   castVirtualSha: (sourceSeatId: string, targetId: string, opts?: { logKind?: string }) => void;
+  /**
+   * 让某人**用一张实体牌**对某人使用【杀】（牌从手里扣掉、走正常结算）。
+   *
+   * 与 `castVirtualSha` 的区别：那个是「视为使用」（没有实体牌，如夏侯渊·神速）；
+   * 这个是真把那张牌打出去——姜维·挑衅、贾诩·乱武都要求「使用一张【杀】」。
+   * 借刀杀人那条路引擎内部就是这么做的，这里把它开放给技能用。
+   */
+  useShaOn: (
+    sourceSeatId: string,
+    targetId: string,
+    card: Card,
+    opts?: {
+      logKind?: string;
+      /** 这张【杀】**整个结算完**（含出闪/伤害/濒死）之后接着做的事 */
+      after?: () => void;
+    },
+  ) => void;
+  /**
+   * 弃置某名角色区域里的一张牌（明牌按 id 指定；没指定或指定的是手牌时**随机**抽一张）。
+   * 姜维·挑衅的「你弃置其一张牌」用它——手牌是不可见的，想拿哪张只能随机。
+   */
+  discardTargetCard: (targetSeatId: string, cardId?: string, after?: () => void) => void;
 }
 
 // 钩子上下文
