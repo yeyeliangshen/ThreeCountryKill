@@ -389,7 +389,7 @@ const STANDARD_WU: RosterEntry[] = [
     name: '孙坚',
     faction: 'wu',
     pack: 'standard',
-    status: 'todo',
+    status: 'done',
     primitives: ['hook_interaction'],
   },
   {
@@ -442,7 +442,7 @@ const STANDARD_QUN: RosterEntry[] = [
   { id: 'lvbu', name: '吕布', faction: 'qun', pack: 'standard', status: 'done' },
   { id: 'huatuo', name: '华佗', faction: 'qun', pack: 'standard', status: 'done' },
   { id: 'diaochan', name: '貂蝉', faction: 'qun', pack: 'standard', status: 'done' },
-  { id: 'mateng', name: '马腾', faction: 'qun', pack: 'standard', status: 'todo' },
+  { id: 'mateng', name: '马腾', faction: 'qun', pack: 'standard', status: 'done' },
   { id: 'kongrong', name: '孔融', faction: 'qun', pack: 'standard', status: 'todo' },
   { id: 'zoushi', name: '邹氏', faction: 'qun', pack: 'standard', status: 'todo' },
   { id: 'tianfeng', name: '田丰', faction: 'qun', pack: 'standard', status: 'todo' },
@@ -454,7 +454,7 @@ const STANDARD_QUN: RosterEntry[] = [
     status: 'todo',
     primitives: ['pindian'],
   },
-  { id: 'panfeng', name: '潘凤', faction: 'qun', pack: 'standard', status: 'todo' },
+  { id: 'panfeng', name: '潘凤', faction: 'qun', pack: 'standard', status: 'done' },
   {
     id: 'zhangjiao',
     name: '张角',

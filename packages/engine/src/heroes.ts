@@ -3529,6 +3529,259 @@ const VANILLA: Hero = {
   skills: [],
 };
 
+// —— 国战标准版·群 / 吴（续）——
+//
+// 这三个都是**国战专属文本**（身份局同名武将的技能不一样），所以 modes 只放 guozhan。
+// 体力按仓库约定填身份局口径：阴阳鱼 × 2（见 docs/guozhan-roster.md §4.1）。
+
+const MATENG: Hero = {
+  id: 'mateng',
+  name: '马腾',
+  faction: 'qun',
+  // 国战牌面 2 阴阳鱼
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 马术：锁定技，你计算与其他角色的距离 -1（distance() 读 distanceFrom 这个字段，
+  // 与马超同款）
+  distanceFrom: 1,
+  lockedFields: ['distanceFrom'],
+  skillFields: { 马术: ['distanceFrom'] },
+  activeSkills: [
+    {
+      id: 'xiongyi',
+      name: '雄异',
+      // 限定技：**每局**一次（不是每回合）
+      oncePerGame: true,
+      minTargets: 0,
+      maxTargets: 0,
+      canUse: () => true,
+      execute: (state, player, _intent, api) => {
+        // 令与你**势力相同**的所有角色各摸三张牌。暗置的人没有势力（effectiveFaction
+        // 返回 null），所以不会跟未确定势力的人算成同势力——这条在国战里很关键。
+        const faction = effectiveFaction(state, player);
+        const mates = state.players.filter(
+          (p) => p.alive && (p.seatId === player.seatId || effectiveFaction(state, p) === faction),
+        );
+        for (const m of mates) {
+          for (let i = 0; i < 3; i++) {
+            const c = drawOne(state);
+            if (!c) break;
+            m.hand.push(c);
+          }
+        }
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动限定技【雄异】：${mates.map((m) => m.name).join('、')} 各摸三张牌。`,
+          { seat: player.seatId, action: 'draw' },
+        );
+        // 然后若你的势力是**角色最少的势力（或之一）**，你回复 1 点体力。
+        // 数的是真实势力人数（野心家不算势力），所以别用 effectiveFaction 那一套。
+        const counts = [...new Set(state.players.filter((p) => p.alive).map((p) => p.faction))]
+          .filter((f) => f !== 'ambitionist')
+          .map((f) => factionAliveCount(state, f));
+        const mine = factionAliveCount(state, faction);
+        if (counts.length > 0 && mine <= Math.min(...counts)) {
+          const healed = api.heal(player, 1);
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 的势力人数最少，【雄异】令其回复 ${healed} 点体力。`,
+          );
+        }
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    { name: '马术', desc: '锁定技，你计算与其他角色的距离-1。' },
+    {
+      name: '雄异',
+      desc: '限定技，出牌阶段，你可以令与你势力相同的所有角色各摸三张牌，然后若你的势力是角色最少的势力（或之一），你回复1点体力。',
+    },
+  ],
+};
+
+const PANFENG: Hero = {
+  id: 'panfeng',
+  name: '潘凤',
+  faction: 'qun',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 狂斧：当你使用【杀】对目标造成伤害后，你可以将其装备区里的一张牌
+  // 置入你的装备区（同栏位顶替）或弃置之。
+  hooks: [
+    {
+      timing: 'afterDamageDealt',
+      skillId: '狂斧',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.asType !== 'sha') return; // 只认【杀】
+        if (attack.sourceId !== ctx.player.seatId) return;
+        const target = getPlayer(ctx.state, attack.targetId);
+        if (!target || !target.alive || target.seatId === ctx.player.seatId) return;
+        const equips = EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[];
+        if (equips.length === 0) return;
+        const me = ctx.player;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `【狂斧】：是否处置 ${target.name} 装备区里的一张牌？`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动（取走或弃置一张）' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askPickCards(
+              st,
+              me.seatId,
+              `【狂斧】：选择 ${target.name} 装备区里的一张牌`,
+              equips,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                // 结算期间那张牌可能已经被挪走/弃掉了
+                if (!EQUIP_SLOTS.some((slot) => target.equipment[slot]?.id === card.id)) return;
+                ctx.api.askChoice(
+                  st2,
+                  p2.seatId,
+                  `【狂斧】：把【${cardLabel(card)}】怎么办？`,
+                  [
+                    { id: 'take', label: '置入自己的装备区' },
+                    { id: 'drop', label: '弃置' },
+                  ],
+                  (st3, p3, how) => {
+                    if (how === 'take') {
+                      // moveFieldCard 会顶掉自己同栏位里的旧装备
+                      ctx.api.moveFieldCard(card, p3.seatId);
+                      pushLog(
+                        st3,
+                        'skill',
+                        `${p3.name} 发动【狂斧】，取走了 ${target.name} 的【${cardLabel(card)}】。`,
+                        { seat: p3.seatId, action: 'equip' },
+                      );
+                    } else {
+                      ctx.api.discardCard(target.seatId, card);
+                      pushLog(
+                        st3,
+                        'skill',
+                        `${p3.name} 发动【狂斧】，弃置了 ${target.name} 的【${cardLabel(card)}】。`,
+                        { seat: p3.seatId, action: 'discard' },
+                      );
+                    }
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '狂斧',
+      desc: '当你使用【杀】对目标角色造成伤害后，你可以将其装备区里的一张牌置入你的装备区或弃置之。',
+    },
+  ],
+};
+
+const SUNJIAN: Hero = {
+  id: 'sunjian',
+  name: '孙坚',
+  faction: 'wu',
+  // 国战牌面 **2.5 阴阳鱼**（2018 年由 2 上调）→ 身份局口径 5。
+  // 别照身份局孙坚的 4 填——这是国战专属体力。
+  maxHp: 5,
+  gender: 'male',
+  combos: ['wuguotai'],
+  modes: ['guozhan'],
+  // 英魂：准备阶段（本引擎里就是回合开始的 turnStart），若你已受伤，
+  // 选择一名其他角色 + 二选一。
+  hooks: [
+    {
+      timing: 'turnStart',
+      skillId: '英魂',
+      handler: (ctx) => {
+        const player = ctx.player;
+        const lost = player.maxHp - player.hp;
+        if (lost <= 0) return; // 未受伤不发动
+        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== player.seatId);
+        if (others.length === 0) return;
+        const X = lost;
+        ctx.api.askChoice(
+          ctx.state,
+          player.seatId,
+          `是否发动【英魂】？（你已损失 ${X} 点体力）`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'drawX', label: `令一名角色摸 ${X} 张，然后弃一张` },
+            { id: 'draw1', label: `令一名角色摸 1 张，然后弃 ${X} 张` },
+          ],
+          (st, _p, picked) => {
+            if (picked === 'no') return;
+            ctx.api.askChoice(
+              st,
+              player.seatId,
+              '【英魂】：选择一名其他角色',
+              others.map((p) => ({ id: p.seatId, label: p.name })),
+              (st2, _p2, targetSeatId) => {
+                const target = getPlayer(st2, targetSeatId);
+                if (!target || !target.alive) return;
+                const drawCount = picked === 'drawX' ? X : 1;
+                const discardCount = picked === 'drawX' ? 1 : X;
+                let drew = 0;
+                for (let i = 0; i < drawCount; i++) {
+                  const c = drawOne(st2);
+                  if (!c) break;
+                  target.hand.push(c);
+                  drew++;
+                }
+                pushLog(
+                  st2,
+                  'skill',
+                  `${player.name} 对 ${target.name} 发动【英魂】：摸 ${drew} 张，然后弃 ${discardCount} 张。`,
+                  { seat: player.seatId, action: 'draw' },
+                );
+                // 弃牌数按实际手牌夹取（手牌不够就有什么弃什么）
+                const need = Math.min(discardCount, target.hand.length);
+                if (need <= 0) return;
+                ctx.api.askPickCards(
+                  st2,
+                  target.seatId,
+                  `【英魂】：请弃置 ${need} 张牌`,
+                  target.hand.slice(),
+                  need,
+                  need,
+                  (st3, t3, picked2) => {
+                    for (const c of picked2) {
+                      removeCard(t3.hand, c.id);
+                      toDiscard(st3, c);
+                    }
+                    pushLog(st3, 'skill', `${t3.name} 因【英魂】弃置了 ${picked2.length} 张牌。`);
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '英魂',
+      desc: '准备阶段，若你已受伤，你可以选择一名其他角色并选择一项：1.令其摸X张牌，然后弃置一张牌；2.令其摸一张牌，然后弃置X张牌（X为你已损失的体力值）。',
+    },
+  ],
+};
+
 export const HEROES: Hero[] = [
   GUANYU,
   ZHANGFEI,
@@ -3576,6 +3829,9 @@ export const HEROES: Hero[] = [
   LUSU,
   LUXUN,
   SUNSHANGXIANG,
+  MATENG,
+  PANFENG,
+  SUNJIAN,
   VANILLA,
 ];
 

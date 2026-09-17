@@ -10446,3 +10446,193 @@ describe('方天画戟 · 军争版（最后的手牌可额外指定至多两个
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }));
   });
 });
+
+describe('国战标准版 · 马腾 / 潘凤 / 孙坚', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+      equip?: Card[];
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      for (const c of s.equip ?? []) p.equipment[c.type as 'plusMount'] = c;
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+  // 给目标挂的装备用**武器栏**：+1 马会把距离顶到 2，范围 1 的杀就打不着了，
+  // 而武器既不影响距离、也是狂斧能处置的牌。
+  const qinggang: Card = {
+    id: 'e1',
+    type: 'weapon',
+    suit: 'spade',
+    rank: 6,
+    equipName: 'qinggang',
+    range: 2,
+  };
+
+  it('马腾：雄异令同势力各摸三张（暗置的人不算同势力）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mateng', faction: 'qun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'lvbu', faction: 'qun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'guanyu', faction: 'shu', revealed: false, hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    const d = state.players.find((p) => p.seatId === D)!;
+    state.deck = Array.from({ length: 12 }, (_, i) => mk(`d${i}`, 'sha', 'spade', 7));
+    ok(act(state, A, { type: 'useSkill', skillId: 'xiongyi', targetIds: [] }));
+    expect(a.hand).toHaveLength(3);
+    expect(b.hand).toHaveLength(3); // 同势力（群）
+    expect(c.hand).toHaveLength(0); // 不同势力
+    expect(d.hand).toHaveLength(0); // 暗置 → 势力未确定，不算同势力
+    // 限定技：每局一次
+    expect(act(state, A, { type: 'useSkill', skillId: 'xiongyi', targetIds: [] }).ok).toBe(false);
+  });
+
+  it('马腾：雄异在势力人数最少时回复 1 点体力', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mateng', faction: 'qun', hand: [], hp: 2 },
+      { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.deck = Array.from({ length: 6 }, (_, i) => mk(`d${i}`, 'sha', 'spade', 7));
+    ok(act(state, A, { type: 'useSkill', skillId: 'xiongyi', targetIds: [] }));
+    expect(a.hp).toBe(3); // 群 1 人 vs 蜀 1 人 → 并列最少 → 回复 1
+  });
+
+  it('马腾：马术让距离 -1', () => {
+    // 要四人局才看得出：三人局里 A 和 C 从另一边数本来就只有 1
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mateng', faction: 'qun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'lvbu', faction: 'qun', hand: [] },
+    ]);
+    const plain = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'lvbu', faction: 'qun', hand: [] },
+    ]);
+    expect(distance(plain, A, C)).toBe(2); // 四人局的对角
+    expect(distance(state, A, C)).toBe(1); // 马术 -1
+  });
+
+  it('潘凤：狂斧把目标装备区的一张牌取走', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [], equip: [qinggang] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不闪 → 受伤 → 狂斧
+    expect(b.hp).toBe(3);
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['e1'] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'take' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.equipment.weapon?.id).toBe('e1');
+    expect(b.equipment.weapon).toBeNull();
+  });
+
+  it('潘凤：狂斧也可以选择弃置', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [], equip: [qinggang] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['e1'] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'drop' }));
+    expect(b.equipment.weapon).toBeNull();
+    expect(state.discard.some((c) => c.id === 'e1')).toBe(true);
+  });
+
+  it('潘凤：目标装备区空着就不问', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('play'); // 没有狂斧的询问
+  });
+
+  it('孙坚：英魂只在受伤时发动（未受伤不问）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'sunjian', faction: 'wu', hand: [] },
+    ]);
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'endPhase' }));
+    // 乙满血 → 没有英魂询问（直接进甲的判定/摸牌流程）
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('英魂')).toBe(false);
+  });
+
+  it('孙坚：英魂第二项——先摸 1 张再弃 X 张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      // 孙坚上限 5（2.5 阴阳鱼），掉到 3 → 已损失 2
+      { seatId: B, name: '乙', heroId: 'sunjian', faction: 'wu', hand: [], hp: 3 },
+    ]);
+    state.deck = ['d1', 'd2'].map((id) => mk(id, 'sha', 'spade', 7));
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'draw1' })); // 摸1弃2
+    ok(act(state, B, { type: 'chooseOption', optionId: A })); // 选甲
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(1); // 摸了 1 张
+    // 然后甲要弃 X=2 张，但他只有 1 张 → 按实际弃 1 张
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['d2'] }));
+    expect(a.hand).toHaveLength(0);
+  });
+
+  it('孙坚：英魂第一项——先摸 X 张再弃 1 张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'sunjian', faction: 'wu', hand: [], hp: 3 },
+    ]);
+    state.deck = ['d1', 'd2', 'd3'].map((id) => mk(id, 'sha', 'spade', 7));
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'drawX' })); // 摸2弃1
+    ok(act(state, B, { type: 'chooseOption', optionId: A }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hand).toHaveLength(2);
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['d3'] }));
+    expect(a.hand).toHaveLength(1);
+  });
+});
