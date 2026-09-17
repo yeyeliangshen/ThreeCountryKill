@@ -702,8 +702,9 @@ const BIAN: RosterEntry[] = [
     name: '吕范',
     faction: 'wu',
     pack: 'bian',
-    status: 'todo',
-    primitives: ['pick_cards'],
+    status: 'done',
+    primitives: ['pick_cards', 'move_field_card', 'change_deputy'],
+    note: '调度（2017 印刷版：同势力角色依次「使用一张装备牌 / 把装备区的牌移给同势力队友」）+ 典财（新时机 othersPlayPhaseEnd + flags.lostCardsThisPhase 计数；摸至手牌上限后可选变更副将）都已实现。2019 修订版把调度整个换掉了，未采用。',
   },
   {
     id: 'zuoci',

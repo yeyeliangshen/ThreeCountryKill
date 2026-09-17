@@ -80,6 +80,11 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 吕范·典财：本**出牌阶段**你失去了几张牌（cardsLost 那个公共事件上累加，
+   * 出牌阶段结束时清零）。「其他角色的出牌阶段结束时」按它跟体力值比。
+   */
+  lostCardsThisPhase: number;
+  /**
    * 臧霸·横江：本回合对**哪个**当前回合角色用过（回合结束时看他在弃牌阶段弃没弃牌）。
    */
   hengjiangTarget: string | null;
@@ -169,6 +174,7 @@ export function emptyFlags(): PlayerFlags {
     damagePrevented: false,
     dealtDamageThisTurn: false,
     hengjiangTarget: null,
+    lostCardsThisPhase: 0,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,

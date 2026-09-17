@@ -3550,6 +3550,193 @@ const MADAI: Hero = {
  *    魂殇要「本回合临时拥有别的技能」那套（现在只有永久 grantSkill）。两者都还没做，
  *    roster 里标 partial 并写明。
  */
+/**
+ * 吕范 —— 调度 / 典财（君临天下·变，**2017 印刷版**文本，已核）。
+ *
+ * - 调度：出牌阶段限一次，所有与你势力相同的角色可以依次选择一项：
+ *   ①使用一张装备牌；②将装备区里的一张牌移动至另一名与你势力相同的角色的装备区里。
+ *   ⚠️ 2019 修订版把调度整个换掉了（改成「同势力角色使用装备牌时摸一张」+「出牌阶段开始时
+ *      拿队友一张装备再交给别人」）。这里按印刷版写，与项目对君临天下各包的一贯取法一致。
+ * - 典财：其他角色的出牌阶段结束时，若你于此阶段失去了 X 张或更多的牌，则你可以将手牌
+ *   摸至体力上限。若如此做，你可以变更副将（X 为你**当前体力值**）。
+ *
+ * 两处小地基：新时机 `othersPlayPhaseEnd`（其他角色的出牌阶段结束时，派给全场——与
+ * othersPlayPhase 对称），以及「你这一个出牌阶段内失去了几张牌」的计数
+ * （flags.lostCardsThisPhase，在 cardsLost 那个公共事件上累加、阶段结束再清零）。
+ */
+const LVFAN: Hero = {
+  id: 'lvfan',
+  name: '吕范',
+  faction: 'wu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'othersPlayPhaseEnd',
+      skillId: '典财',
+      handler: (ctx) => {
+        const me = ctx.player;
+        // 「其他角色的」出牌阶段结束时——派发时已经排除了回合玩家，这里再确认一次
+        const turnSeatId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+        if (!turnSeatId || turnSeatId === me.seatId) return;
+        const lost = me.flags.lostCardsThisPhase;
+        if (lost < me.hp) return; // 失去 X 张或更多（X＝你的体力值）
+        const limit = ctx.api.handLimit(me.seatId);
+        if (me.hand.length >= limit) return; // 补不上就不用问
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【典财】将手牌摸至体力上限（${limit} 张）？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const need = ctx.api.handLimit(p.seatId) - p.hand.length;
+            let got = 0;
+            for (let i = 0; i < Math.max(0, need); i++) {
+              const c = drawOne(st);
+              if (!c) break;
+              p.hand.push(c);
+              got++;
+            }
+            pushLog(st, 'skill', `${p.name} 发动【典财】，摸了 ${got} 张牌。`);
+            if (!p.deputyHeroId) return;
+            ctx.api.askChoice(
+              st,
+              p.seatId,
+              '【典财】：是否变更一次副将？',
+              [
+                { id: 'yes', label: '变更副将' },
+                { id: 'no', label: '不变更' },
+              ],
+              (st2, p2, choice) => {
+                if (choice === 'yes') ctx.api.changeDeputyHero(p2.seatId);
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  activeSkills: [
+    {
+      id: 'diaodu',
+      name: '调度',
+      oncePerTurn: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state, player) => diaoduQueue(state, player).length > 0,
+      execute: (state, player, _intent, api) => {
+        const queue = diaoduQueue(state, player);
+        if (queue.length === 0) return '没有与你势力相同的角色';
+        pushLog(state, 'skill', `${player.name} 发动【调度】。`);
+        diaoduStep(state, player, queue, 0, api);
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '调度',
+      desc: '出牌阶段限一次，所有与你势力相同的角色可以依次选择一项：1.使用一张装备牌；2.将装备区里的一张牌移动至另一名与你势力相同的角色的装备区里。',
+    },
+    {
+      name: '典财',
+      desc: '其他角色的出牌阶段结束时，若你于此阶段失去了X张或更多的牌，则你可以将手牌摸至体力上限。若如此做，你可以变更副将（X为你当前体力值）。',
+    },
+  ],
+};
+
+/** 调度要依次问的人：所有与你势力相同的角色（含自己） */
+function diaoduQueue(state: GameState, player: Player): string[] {
+  const mine = effectiveFaction(state, player);
+  if (!mine) return [];
+  return state.seatOrder.filter((id) => {
+    const p = getPlayer(state, id);
+    return !!p && p.alive && effectiveFaction(state, p) === mine;
+  });
+}
+
+/** 调度：按座次一个一个问「使用一张装备牌 / 把装备移给队友 / 不选」 */
+function diaoduStep(
+  state: GameState,
+  lvfan: Player,
+  queue: string[],
+  i: number,
+  api: SkillApi,
+): void {
+  const p = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+  if (!p || !p.alive) {
+    if (i < queue.length) diaoduStep(state, lvfan, queue, i + 1, api);
+    return;
+  }
+  const mine = effectiveFaction(state, p);
+  const mates = state.seatOrder
+    .map((id) => getPlayer(state, id))
+    .filter((x): x is Player => !!x && x.alive && x.seatId !== p.seatId && effectiveFaction(state, x) === mine);
+  const options: { id: string; label: string }[] = [];
+  for (const c of p.hand.filter((c) => isEquipCard(c))) {
+    options.push({ id: `use:${c.id}`, label: `使用【${cardLabel(c)}】` });
+  }
+  if (mates.length > 0) {
+    for (const slot of EQUIP_SLOTS) {
+      const c = p.equipment[slot];
+      if (c) options.push({ id: `move:${c.id}`, label: `把【${cardLabel(c)}】移给队友` });
+    }
+  }
+  options.push({ id: 'no', label: '不选择' });
+  const next = (): void => diaoduStep(state, lvfan, queue, i + 1, api);
+  if (options.length === 1) {
+    next();
+    return;
+  }
+  api.askChoice(
+    state,
+    p.seatId,
+    `【调度】：${p.name} 选择一项（也可以不选）`,
+    options,
+    (st, p2, picked) => {
+      if (picked === 'no') {
+        next();
+        return;
+      }
+      const [kind, cardId] = picked.split(':');
+      const card = kind === 'use' ? p2.hand.find((c) => c.id === cardId) : undefined;
+      if (kind === 'use' && card) {
+        removeCard(p2.hand, card.id);
+        api.giveEquipTo(card, p2.seatId, next);
+        return;
+      }
+      let equipCard: Card | undefined;
+      for (const slot of EQUIP_SLOTS) {
+        if (p2.equipment[slot]?.id === cardId) equipCard = p2.equipment[slot] ?? undefined;
+      }
+      if (kind === 'move' && equipCard && mates.length > 0) {
+        if (mates.length === 1) {
+          api.moveFieldCard(equipCard, mates[0]!.seatId, next);
+          return;
+        }
+        api.askChoice(
+          st,
+          p2.seatId,
+          `【调度】：把【${cardLabel(equipCard)}】移给谁？`,
+          mates.map((m) => ({ id: m.seatId, label: m.name })),
+          (_st2, _p3, toId) => api.moveFieldCard(equipCard!, toId, next),
+          p2.seatId,
+        );
+        return;
+      }
+      next();
+    },
+    lvfan.seatId,
+  );
+}
+
 const SUNCE: Hero = {
   id: 'sunce',
   name: '孙策',
@@ -8242,6 +8429,7 @@ export const HEROES: Hero[] = [
   YUJI,
   XUNYOU,
   SUNCE,
+  LVFAN,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

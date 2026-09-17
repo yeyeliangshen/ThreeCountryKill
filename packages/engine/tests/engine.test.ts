@@ -14822,3 +14822,124 @@ describe('国战 · 孙策（激昂）', () => {
     expect(b.hand.map((c) => c.id)).toEqual(['d1']);
   });
 });
+
+/** 吕范·调度（同势力依次用装备/移装备）/ 典财（别人出牌阶段你失牌够多 → 补至上限） */
+describe('国战 · 吕范（调度 / 典财）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('调度：同势力角色可以借这次机会使用一张装备牌', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvfan',
+        faction: 'wu',
+        hand: [mk('a1', 'armor', 'club', 2)],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        faction: 'wu',
+        hand: [mk('b1', 'weapon', 'spade', 3)],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'diaodu', cardIds: [], targetIds: [] }));
+    // 先问甲（发动者自己）：他手上有装备
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('调度');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    // 再问乙：使用武器
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'use:b1' }));
+    expect(b.equipment.weapon?.id).toBe('b1');
+    expect(b.hand).toHaveLength(0);
+    void a;
+  });
+
+  it('调度：把装备移给同势力队友', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lvfan', faction: 'wu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.armor = { id: 'arm1', type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' };
+    ok(act(state, A, { type: 'useSkill', skillId: 'diaodu', cardIds: [], targetIds: [] }));
+    // 问甲：把八卦阵移给乙（同势力唯一队友 → 不用再选目的地）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'move:arm1' }));
+    expect(a.equipment.armor).toBeNull();
+    expect(b.equipment.armor?.id).toBe('arm1');
+  });
+
+  it('典财：别人出牌阶段里失去够多的牌 → 摸至手牌上限', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'lvfan', faction: 'wu', hand: [] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          faction: 'shu',
+          hand: [
+            mk('b1', 'guohe', 'spade', 6),
+            mk('b2', 'guohe', 'spade', 7),
+            mk('b3', 'guohe', 'spade', 8),
+          ],
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+      ],
+      B,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 典财的条件：这一阶段失去 ≥ 体力值 张牌（甲的体力 3 → 失 3 张），
+    // 且手牌要低于手牌上限（上限＝体力 3，所以甲清空手牌后才补得上）
+    a.hp = 3;
+    a.hand = ['a1', 'a2', 'a3'].map((id) => mk(id, 'shan', 'heart', 2));
+    for (const id of ['b1', 'b2', 'b3']) {
+      ok(act(state, B, { type: 'playCard', cardId: id, targetIds: [A] }));
+      passWuxie(state);
+    }
+    expect(a.hand).toHaveLength(0);
+    expect(a.flags.lostCardsThisPhase).toBe(3);
+    // 乙结束出牌阶段 → 典财
+    ok(act(state, B, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('典财');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand).toHaveLength(3); // 摸至手牌上限（＝体力 3）
+    expect(state.log.some((e) => e.message.includes('典财'))).toBe(true);
+  });
+});

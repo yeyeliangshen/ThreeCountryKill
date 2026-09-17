@@ -17,6 +17,11 @@ export type Timing =
    */
   | 'playPhaseEnd'
   /**
+   * **其他角色**的出牌阶段结束时（派给除回合玩家外的所有存活角色，
+   * payload.turnSeatId）。吕范·典财挂这里——`playPhaseEnd` 只发给回合玩家本人。
+   */
+  | 'othersPlayPhaseEnd'
+  /**
    * **其他角色**的出牌阶段开始时（派给**除他以外**的所有存活角色，
    * payload.turnSeatId 是回合玩家）。何太后·鸩毒挂这里——`playPhase` 只发给回合玩家本人。
    */
@@ -160,6 +165,11 @@ export interface SkillApi {
     after?: () => void,
   ) => void;
   /** 失去体力（不触发伤害钩子，但触发濒死检查） */
+  /**
+   * 某人当前的**手牌上限**（含体力、技能与「本回合 +N」的修正）。
+   * 吕范·典财要把手牌摸至体力上限，用它算差多少张。
+   */
+  handLimit: (seatId: string) => number;
   /** 失去体力（不是伤害：没有来源、不触发卖血技，但会进濒死）。`after` 同上。 */
   loseHp: (target: Player, amount: number, after?: () => void) => void;
   /**

@@ -950,8 +950,20 @@ function goToDiscardPhase(state: GameState, player: Player): void {
   // 「出牌阶段结束时」（董卓·暴凌）：只有这个阶段**真的发生过**才发——
   // 被乐不思蜀或巧变整个跳过的不算（那时 skipPlay 是 true）。
   if (state.turn.phase === 'play' && !player.flags.skipPlay) {
-    const rest = (): void => beginDiscardPhasePart(state, player);
-    runHooksPausable(state, 'playPhaseEnd', player, undefined, rest);
+    const rest = (): void => {
+      // 出牌阶段结束：所有人的「本阶段失去牌」计数清零（吕范·典财用）
+      for (const pl of state.players) pl.flags.lostCardsThisPhase = 0;
+      beginDiscardPhasePart(state, player);
+    };
+    runHooksPausable(state, 'playPhaseEnd', player, undefined, () => {
+      // 「**其他角色**的出牌阶段结束时」（吕范·典财）：派给全场（技能自己排掉回合玩家）
+      runAllPlayersHooks(
+        state,
+        'othersPlayPhaseEnd',
+        { turnSeatId: player.seatId },
+        rest,
+      );
+    });
     return;
   }
   beginDiscardPhasePart(state, player);
@@ -2986,7 +2998,9 @@ function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
     const now = new Set(ownedCardIds(p));
     const lost = before.filter((id) => !now.has(id));
     if (lost.length === 0) return;
-    if (p.seatId === turnSeat) return; // 回合外才触发
+    // 「你于此阶段失去了几张牌」（吕范·典财）：不管是不是自己的回合都累加
+    p.flags.lostCardsThisPhase += lost.length;
+    if (p.seatId === turnSeat) return; // 屯田那种「回合外失去牌」才派发
     runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
   });
 }
@@ -6955,6 +6969,10 @@ function makeSkillApi(
       });
     },
     heal: (target, amount) => healAndTrigger(state, target, amount),
+    handLimit: (seatId) => {
+      const p = getPlayer(state, seatId);
+      return p ? handLimit(state, p) : 0;
+    },
     loseHp: (target, amount, after) => {
       target.hp -= amount;
       pushLog(
