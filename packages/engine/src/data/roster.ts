@@ -600,7 +600,15 @@ const SHI: RosterEntry[] = [
     primitives: ['hook_interaction'],
     note: '横江已实现（印刷版：受伤后令当前回合角色手牌上限-1，其弃牌阶段没弃牌则臧霸摸一张；用新标记 flags.hengjiangTarget + othersDiscardPhaseEnd 时机）。2023 典藏版修订（上限>0 条件、摸 X 张）未采用。',
   },
-  { id: 'madai', name: '马岱', faction: 'shu', pack: 'shi', status: 'todo' },
+  {
+    id: 'madai',
+    name: '马岱',
+    faction: 'shu',
+    pack: 'shi',
+    status: 'done',
+    primitives: ['hook_interaction', 'pick_cards'],
+    note: '潜袭（2013 印刷版：判定 → 令距离 1 的角色本回合不能用/打出该颜色手牌）+ 马术。颜色限制是新标记 flags.cannotPlayColor，在「使用/重铸/打出响应」三处统一拦。2018 修订版（摸一弃一代替判定）未采用；技能判定不走 askBeforeJudge（与雷击/悲歌同一档简化）。',
+  },
   { id: 'mifuren', name: '糜夫人', faction: 'shu', pack: 'shi', status: 'todo' },
   {
     id: 'sunce',

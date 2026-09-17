@@ -124,6 +124,11 @@ export interface PlayerFlags {
    * 比 skipPlay 窄：还能发动技能、结束阶段照常。
    */
   cannotPlayCardsThisTurn: boolean;
+  /**
+   * 马岱·潜袭：本回合不能使用或打出**这个颜色**的手牌（判定结果的颜色）。
+   * 与 cannotPlayCardsThisTurn 同一套：回合结束时清掉。
+   */
+  cannotPlayColor: 'red' | 'black' | null;
   /** 本回合不能回复体力（军令「翻面且本回合不能回复体力」那一项） */
   cannotHealThisTurn: boolean;
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
@@ -171,6 +176,7 @@ export function emptyFlags(): PlayerFlags {
     ignoreShaDistanceThisTurn: false,
     nonLockedSkillsDisabled: false,
     cannotPlayCardsThisTurn: false,
+    cannotPlayColor: null,
     cannotHealThisTurn: false,
     revealRewarded: false,
     xietianziPending: false,

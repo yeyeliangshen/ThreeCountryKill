@@ -355,6 +355,18 @@ function onHeroRevealed(state: GameState, player: Player): void {
 }
 
 /** 检查玩家是否可将 card 当 type 使用（含鏖战桃当杀） */
+/**
+ * 这张牌现在能不能被打出/使用（考虑「本回合不能使用或打出」的两条限制）。
+ * 马岱·潜袭是按**颜色**限制手牌的，所以要看牌的颜色。
+ */
+export function blockedForPlay(player: Player, card: Card): string | null {
+  if (player.flags.cannotPlayCardsThisTurn) return '你本回合不能使用或打出手牌';
+  if (player.flags.cannotPlayColor && cardColorOf(card) === player.flags.cannotPlayColor) {
+    return `你本回合不能使用或打出${player.flags.cannotPlayColor === 'red' ? '红' : '黑'}色手牌`;
+  }
+  return null;
+}
+
 export function canUseAsCard(
   state: GameState,
   player: Player,
@@ -1268,6 +1280,7 @@ function afterTurnEnd(state: GameState): void {
       // 军令（董昭）的两条也是「本回合」语义。以前它们既没被读取、也没被清掉，
       // 所以「本回合不能使用或打出手牌」实际上是永久生效的——顺手一起修了。
       p.flags.cannotPlayCardsThisTurn = false;
+      p.flags.cannotPlayColor = null;
       p.flags.cannotHealThisTurn = false;
       // 奋迅的「你至其距离视为 1」
       p.flags.distanceToOneThisTurn = null;
@@ -3027,8 +3040,11 @@ function onPlayCard(
   const resolved = resolveUsedCard(state, player, intent);
   if ('error' in resolved) return err(resolved.error);
   const card = resolved.card;
-  // 「本回合不能使用或打出手牌」（军令 seal / 势备篇调虎离山）
-  if (player.flags.cannotPlayCardsThisTurn) return err('你本回合不能使用或打出手牌');
+  // 「本回合不能使用或打出手牌」（军令 seal / 势备篇调虎离山）+ 马岱·潜袭的颜色限制
+  {
+    const blocked = blockedForPlay(player, card);
+    if (blocked) return err(blocked);
+  }
 
   const as = intent.as ?? card.type;
   // 转化合法性（武圣：红牌当杀；鏖战：桃当杀）。
@@ -3122,7 +3138,11 @@ function onRecast(
   if (!pending || pending.kind !== 'play' || pending.seatId !== seatId)
     return err('不是你的出牌阶段');
   const player = getPlayerOrThrow(state, seatId);
-  if (player.flags.cannotPlayCardsThisTurn) return err('你本回合不能使用或打出手牌');
+  {
+    const card0 = player.hand.find((c) => c.id === intent.cardId);
+    const blocked = card0 ? blockedForPlay(player, card0) : null;
+    if (blocked) return err(blocked);
+  }
   const card = player.hand.find((c) => c.id === intent.cardId);
   if (!card) return err('你没有这张牌');
   if (!canRecastCard(state, player, card)) return err('这张牌不能重铸');
@@ -5566,9 +5586,13 @@ function onRespondCard(
   intent: Extract<Intent, { type: 'respondCard' }>,
 ): ApplyResult {
   const pending = state.pending!;
-  // 「本回合不能使用或打出手牌」：响应类打出同样受限
-  if (getPlayerOrThrow(state, seatId).flags.cannotPlayCardsThisTurn)
-    return err('你本回合不能使用或打出手牌');
+  // 「本回合不能使用或打出手牌」：响应类打出同样受限（潜袭的颜色限制也在这里）
+  {
+    const p0 = getPlayerOrThrow(state, seatId);
+    const card0 = p0.hand.find((c) => c.id === intent.cardId);
+    const blocked = card0 ? blockedForPlay(p0, card0) : null;
+    if (blocked) return err(blocked);
+  }
   if (pending.kind === 'respondSha' && pending.responderId === seatId) {
     return respondSha(state, seatId, intent);
   }

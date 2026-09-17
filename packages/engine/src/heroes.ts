@@ -2839,6 +2839,89 @@ function hengzhengStep(
  * ⚠️ 暴凌（以及它给的【崩坏】）**尚未实现**：它要「移除副将的武将牌」这套制度
  *    （副将移除后势力/体力/技能怎么算），等主将技/副将技那批一起做。技能描述里已注明。
  */
+/**
+ * 马岱 —— 潜袭 / 马术（君临天下·势，2013 印刷版，已核）。
+ *
+ * - 潜袭：准备阶段，你可以进行判定，然后令距离为 1 的一名角色本回合不能使用或打出与
+ *   结果颜色相同的手牌。（2018 修订版改成「摸一张牌并弃置一张牌」代替判定，未采用。）
+ * - 马术：锁定技，你计算与其他角色的距离 -1（distanceFrom，与马超同一个字段）。
+ *
+ * 实现说明：
+ * - 「本回合不能使用或打出**这个颜色**的手牌」是引擎级限制（新标记 flags.cannotPlayColor），
+ *   在「使用牌 / 重铸 / 打出响应」三处统一拦（与既有的 cannotPlayCardsThisTurn 并列），
+ *   回合结束清掉。
+ * - 判定用的是技能自带判定（drawOne + 进弃牌堆），与张角·雷击 / 蔡文姬·悲歌同一档：
+ *   不走 askBeforeJudge，所以鬼才/鬼道改不了它——这是引擎里既有的一处简化。
+ */
+const MADAI: Hero = {
+  id: 'madai',
+  name: '马岱',
+  faction: 'shu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  distanceFrom: 1,
+  lockedFields: ['distanceFrom'],
+  hooks: [
+    {
+      timing: 'turnStart',
+      skillId: '潜袭',
+      handler: (ctx) => {
+        const targets = ctx.state.players.filter(
+          (x) =>
+            x.alive && x.seatId !== ctx.player.seatId && distance(ctx.state, ctx.player.seatId, x.seatId) === 1,
+        );
+        if (targets.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          '是否发动【潜袭】？',
+          [
+            { id: 'yes', label: '发动（判定，令距离 1 的一名角色本回合不能用对应颜色的手牌）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const judge = drawOne(st);
+            if (!judge) return;
+            const color: 'red' | 'black' = cardColor(judge) === 'red' ? 'red' : 'black';
+            toDiscard(st, judge);
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【潜袭】，判定牌：${cardLabel(judge)}（${color === 'red' ? '红色' : '黑色'}）。`,
+            );
+            ctx.api.askChoice(
+              st,
+              p.seatId,
+              `【潜袭】：令谁本回合不能使用或打出${color === 'red' ? '红色' : '黑色'}手牌？`,
+              targets.map((x) => ({ id: x.seatId, label: x.name })),
+              (st2, _p2, targetId) => {
+                const t = getPlayer(st2, targetId);
+                if (!t) return;
+                t.flags.cannotPlayColor = color;
+                pushLog(
+                  st2,
+                  'skill',
+                  `${t.name} 本回合不能使用或打出${color === 'red' ? '红色' : '黑色'}手牌。`,
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '潜袭',
+      desc: '准备阶段，你可以进行判定，然后令距离为1的一名角色本回合不能使用或打出与结果颜色相同的手牌。',
+    },
+    { name: '马术', desc: '锁定技，你计算与其他角色的距离-1。' },
+  ],
+};
+
 const DONGZHUO: Hero = {
   id: 'dongzhuo',
   name: '董卓',
@@ -6670,6 +6753,7 @@ export const HEROES: Hero[] = [
   ZHANGHE,
   LIDIAN,
   ZANGBA,
+  MADAI,
   DONGZHUO,
   CAOCAO,
   XUNYU,

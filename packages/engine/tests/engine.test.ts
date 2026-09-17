@@ -13689,3 +13689,120 @@ describe('国战 · 董卓（横征）/ 臧霸（横江）', () => {
     expect(state.log.some((e) => e.message.includes('【横江】生效'))).toBe(false);
   });
 });
+
+/** 马岱·潜袭：判定结果的颜色 → 令距离 1 的角色本回合不能用该色手牌 */
+describe('国战 · 马岱（潜袭 / 马术）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('潜袭：判定为黑 → 目标本回合打不出黑色手牌（红色照常）', () => {
+    // 「本回合」＝马岱自己这个回合。所以验证方式：马岱出【杀】，目标用手牌响应
+    // （黑【闪】被禁、红【闪】可以）——这正是这个技能真正拦住的场景。
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'madai',
+        faction: 'shu',
+        hand: [sha('b1')],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      {
+        seatId: D,
+        name: '丁',
+        heroId: 'vanilla',
+        faction: 'qun',
+        hand: [mk('d1x', 'shan', 'spade', 5), mk('d2x', 'shan', 'heart', 6)],
+      },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const d = state.players.find((p) => p.seatId === D)!;
+    // 预置：乙的回合开始时先过潜袭。为了控制判定牌，先把牌堆安排好
+    state.deck = [
+      mk('j1', 'sha', 'spade', 5), // 判定：黑色
+      mk('d1', 'sha', 'club', 7),
+      mk('d2', 'sha', 'club', 8),
+      mk('d3', 'sha', 'club', 9),
+    ];
+    // 让甲结束回合，轮到乙（马岱）
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('潜袭');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id)).toEqual([D]);
+    ok(act(state, B, { type: 'chooseOption', optionId: D }));
+    expect(d.flags.cannotPlayColor).toBe('black');
+    // 乙的出牌阶段：对丁出【杀】
+    skipRevealAsk(state);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [D] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    // 丁用黑【闪】响应 → 不允许
+    const black = act(state, D, { type: 'respondCard', cardId: 'd1x' });
+    expect(black.ok).toBe(false);
+    // 红【闪】→ 允许
+    const red = act(state, D, { type: 'respondCard', cardId: 'd2x' });
+    expect(red.ok).toBe(true);
+  });
+
+  it('潜袭：不发动就什么都不限制', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'madai', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: [] },
+    ]);
+    const d = state.players.find((p) => p.seatId === D)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(d.flags.cannotPlayColor).toBeNull();
+  });
+
+  it('马术：计算与其他角色的距离 -1', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'madai', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: [] },
+    ]);
+    // 四人一圈：乙到丁本来是 2，马术 -1 → 1
+    expect(distance(state, B, D)).toBe(1);
+  });
+});
