@@ -190,13 +190,17 @@ export function muniuCargoOf(player: Player): Card[] {
 
 /** 可以「如手牌般使用或打出」的牌：手牌 + 木牛流马的扣置牌 */
 export function usableCardsOf(player: Player): Card[] {
-  return [...player.hand, ...muniuCargoOf(player)];
+  // 手牌 + 木牛流马扣置的牌 + 武将牌上的「田」（邓艾·急袭把田当顺手牵羊用）
+  return [...player.hand, ...muniuCargoOf(player), ...player.tian];
 }
 
 /** 在「可使用/可打出」的范围里找一张牌（手牌优先，其次扣置区） */
 export function findUsableCard(player: Player, cardId: string): Card | undefined {
   return (
-    player.hand.find((c) => c.id === cardId) ?? muniuCargoOf(player).find((c) => c.id === cardId)
+    player.hand.find((c) => c.id === cardId) ??
+    muniuCargoOf(player).find((c) => c.id === cardId) ??
+    // 邓艾·急袭：武将牌上的「田」也可以当作牌使用
+    player.tian.find((c) => c.id === cardId)
   );
 }
 
@@ -207,6 +211,15 @@ export function findUsableCard(player: Player, cardId: string): Card | undefined
 function takeUsableCard(player: Player, cardId: string): Card | null {
   const inHand = removeCard(player.hand, cardId);
   if (inHand) return inHand;
+  // 「田」（邓艾·急袭）：从武将牌上取走，取走后就不再是「田」了
+  {
+    const i = player.tian.findIndex((c) => c.id === cardId);
+    if (i >= 0) {
+      const [c] = player.tian.splice(i, 1);
+      if (c) c.tian = false;
+      return c ?? null;
+    }
+  }
   const cargo = player.equipment.treasure?.cargo;
   if (!cargo) return null;
   const i = cargo.findIndex((c) => c.id === cardId);
@@ -2935,14 +2948,47 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
 export function applyIntent(state: GameState, seatId: string, intent: Intent): ApplyResult {
   // 手牌清空检测要在任何变更之前取快照，否则拿不到「原来是几张」
   const handBefore = state.players.map((p) => p.hand.length);
+  // 「失去牌」也走快照比对：把每个人「手牌 + 装备区」的牌 id 记下来，意图跑完再看少了谁
+  // ——比在二十多处移牌的地方逐处挂钩子可靠得多（与 checkHandEmptied 同一套思路）。
+  const ownedBefore = state.players.map((p) => ownedCardIds(p));
   const result = applyIntentInner(state, seatId, intent);
   if (result.ok) {
     // 询问结束后接着跑被打断的流程。控制流的唯一收口，别在别处再调 drainResume。
     drainResume(state);
     // 手牌清空检测放最后：续接都跑完了才是这一手意图的真正终态
     checkHandEmptied(state, handBefore);
+    checkCardsLost(state, ownedBefore);
   }
   return result;
+}
+
+/** 某人「手牌 + 装备区」里的牌 id（失去牌的快照用） */
+function ownedCardIds(p: Player): string[] {
+  const out = p.hand.map((c) => c.id);
+  for (const slot of EQUIP_SLOTS) {
+    const c = p.equipment[slot];
+    if (c) out.push(c.id);
+  }
+  return out;
+}
+
+/**
+ * 「你于**回合外**失去牌后」（邓艾·屯田）：比对意图前后的「手牌 + 装备区」，
+ * 少掉的牌就是这一手失去的。只派人**自己的回合之外**的那一条（官方条件），
+ * 交给技能自己判断要不要发动。
+ */
+function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
+  const turnSeat = state.seatOrder[state.turn.seatIndex];
+  state.players.forEach((p, i) => {
+    if (!p.alive) return;
+    const before = ownedBefore[i];
+    if (!before) return;
+    const now = new Set(ownedCardIds(p));
+    const lost = before.filter((id) => !now.has(id));
+    if (lost.length === 0) return;
+    if (p.seatId === turnSeat) return; // 回合外才触发
+    runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
+  });
 }
 
 /**
@@ -7080,6 +7126,7 @@ export function createGame(
     usedOncePerGame: {},
     prelitSkills: [],
     removedHeroIds: [],
+    tian: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],

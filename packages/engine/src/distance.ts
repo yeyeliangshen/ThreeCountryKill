@@ -40,6 +40,8 @@ export function distance(state: GameState, fromId: string, toId: string): number
   if (from) {
     for (const hero of effectiveHeroes(state, from)) {
       d -= hero.distanceFrom ?? 0;
+      // 邓艾·屯田：「你计算与其他角色的距离 -X，X 为『田』的数量」
+      if (hero.distanceMinusPerTian === true) d -= from.tian.length;
     }
   }
   return Math.max(0, d);

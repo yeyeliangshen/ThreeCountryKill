@@ -62,6 +62,8 @@ export interface PlayerView {
   nullifiedHeroId?: string | null;
   /** 已被移除的武将牌（国战：用士兵牌顶替，没有技能，但势力/性别/体力上限保留） */
   removedHeroIds?: string[];
+  /** 武将牌上的「田」张数（邓艾·屯田） */
+  tianCount?: number;
   /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
   wounds?: Card[];
   /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */

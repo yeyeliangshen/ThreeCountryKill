@@ -45,6 +45,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     // 断肠点名的武将牌：**公开信息**（失去技能是明面上的事），所有人看得到
     nullifiedHeroId: p.nullifiedHeroId,
     removedHeroIds: p.removedHeroIds.slice(),
+    // 「田」是扣在武将牌上的牌，公开信息
+    tianCount: p.tian.length,
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
     wounds: p.wounds.slice(),
     // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」

@@ -522,8 +522,10 @@ const ZHEN: RosterEntry[] = [
     name: '邓艾',
     faction: 'wei',
     pack: 'zhen',
-    status: 'todo',
+    status: 'partial',
     primitives: ['awaken_skill', 'pick_cards'],
+    missing: ['屯田/急袭/资粮 的测试（实现已落地，测试待补）'],
+    note: '屯田（新时机 cardsLost——回合外失去牌，快照比对实现）+ 急袭（主将技：田当顺手牵羊，走 Card.tian 标记 + usableCardsOf/findUsableCard 扩展）+ 资粮（副将技）都已实现；但**测试还没写**，所以先标 partial。',
   },
   {
     id: 'caohong',

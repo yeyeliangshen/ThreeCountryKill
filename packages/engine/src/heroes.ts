@@ -263,6 +263,8 @@ export interface Hero {
    * 否则此【杀】对你无效。由 engine 的 afterShaTargetResolve 在防具之前问。
    */
   xingleBasicDiscard?: boolean;
+  /** 邓艾·屯田：你计算与其他角色的距离 -X（X 为武将牌上「田」的数量） */
+  distanceMinusPerTian?: boolean;
   /** 飞影：其他角色计算与你的距离 +1（曹洪·鹤翼授予同队列者） */
   feiying?: boolean;
   /** 鹤翼（阵法技）：与你处于同一队列的其他角色视为拥有【飞影】 */
@@ -365,6 +367,8 @@ export type FieldSkill =
   | 'grantsFeiyingToQueue'
   /** 飞影：其他角色计算与你的距离 +1 */
   | 'feiying'
+  /** 邓艾·屯田：距离 -X（X 为「田」的数量） */
+  | 'distanceMinusPerTian'
   /** 小乔·红颜：你的黑桃牌视为红桃牌 */
   | 'spadeAsHeart';
 
@@ -393,6 +397,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'xingleBasicDiscard',
   'grantsFeiyingToQueue',
   'feiying',
+  'distanceMinusPerTian',
 ];
 
 const GUANYU: Hero = {
@@ -3062,6 +3067,125 @@ function hengzhengStep(
  *    武将牌堆里连续亮将直到与主将势力相同，替换现有副将）。散谣已完成，所以这名武将
  *    在 roster 里是 partial。
  */
+/**
+ * 邓艾 —— 屯田 / 急袭（主将技）/ 资粮（副将技）（君临天下·阵，已核国战文本）。
+ *
+ * - 屯田：当你于**回合外失去牌后**，你可以判定，当非红桃判定牌生效后，你将此牌置于你的
+ *   武将牌上，称为「田」。你计算与其他角色的距离 -X（X 为「田」的数量）。
+ * - 急袭：主将技，此武将牌减少半个阴阳鱼。你可以将一张「田」当【顺手牵羊】使用。
+ * - 资粮：副将技，当与你势力相同的一名角色受到伤害后，你可以交给其一张「田」。
+ *
+ * 三处地基：新时机 cardsLost（回合外失去牌，快照比对实现）、Player.tian（武将牌上的牌堆）、
+ * distanceMinusPerTian（距离随「田」减少）。急袭的转化走 canUseAs + 引擎的 usable 区扩展。
+ */
+const DENGAI: Hero = {
+  id: 'dengai',
+  name: '邓艾',
+  faction: 'wei',
+  // 国战牌面 2 阴阳鱼 → 4（走主将技时再减 1）
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 屯田：距离 -「田」数；急袭是主将技（并让那张牌少半个阴阳鱼）
+  distanceMinusPerTian: true,
+  lockedFields: ['distanceMinusPerTian'],
+  skillFields: { 屯田: ['distanceMinusPerTian'] },
+  mainSlotSkills: ['急袭'],
+  mainSlotHalfYang: true,
+  deputySlotSkills: ['资粮'],
+  // 急袭：一张「田」当【顺手牵羊】使用（判定在 canUseAs 里，用的是武将牌上的牌）
+  canUseAs: (card, type) => type === 'shunshou' && card.tian === true,
+  hooks: [
+    {
+      timing: 'cardsLost',
+      skillId: '屯田',
+      handler: (ctx) => {
+        // 一张「田」都没有时也要问（判定可以只是一次判定），所以这里不做前置过滤
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          '是否发动【屯田】判定？',
+          [
+            { id: 'yes', label: '发动（判定，非红桃则收为「田」）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const judge = drawOne(st);
+            if (!judge) return;
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【屯田】，判定牌：${cardLabel(judge)}。`,
+            );
+            if (judge.suit === 'heart') {
+              toDiscard(st, judge);
+              pushLog(st, 'skill', '判定为红桃，此牌不能作为「田」。');
+              return;
+            }
+            judge.tian = true;
+            p.tian.push(judge);
+            pushLog(
+              st,
+              'skill',
+              `【屯田】判定牌置于武将牌上作为「田」（现有 ${p.tian.length} 张）。`,
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'anyDamaged',
+      skillId: '资粮',
+      handler: (ctx) => {
+        const payload = ctx.payload as { victimId?: string } | undefined;
+        const victim = payload?.victimId ? getPlayer(ctx.state, payload.victimId) : undefined;
+        if (!victim || !victim.alive) return;
+        if (victim.seatId === ctx.player.seatId) return; // 「与你势力相同的一名角色」＝其他人
+        if (!sameKnownFaction(ctx.state, ctx.player, victim)) return;
+        if (ctx.player.tian.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `【资粮】：是否交给 ${victim.name} 一张「田」？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const card = p.tian[0];
+            if (!card) return;
+            p.tian.shift();
+            const t = getPlayer(st, victim.seatId);
+            if (!t) return;
+            t.hand.push(card);
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【资粮】，把一张「田」交给 ${t.name}。`,
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '屯田',
+      desc: '当你于回合外失去牌后，你可以进行判定，当非红桃判定牌生效后，你将此牌置于你的武将牌上，称为「田」。你计算与其他角色的距离-X（X为你「田」的数量）。',
+    },
+    {
+      name: '急袭',
+      desc: '主将技，此武将牌减少半个阴阳鱼。你可以将一张「田」当【顺手牵羊】使用。',
+    },
+    {
+      name: '资粮',
+      desc: '副将技，当与你势力相同的一名角色受到伤害后，你可以交给其一张「田」。',
+    },
+  ],
+};
+
 const MASU: Hero = {
   id: 'masu',
   name: '马谡',
@@ -7589,6 +7713,7 @@ export const HEROES: Hero[] = [
   HETAIHOU,
   MIFUREN,
   ZHANGREN,
+  DENGAI,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
