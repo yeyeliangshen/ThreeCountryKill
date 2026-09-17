@@ -11395,3 +11395,189 @@ describe('国战标准版 · 张昭张纮 / 田丰 / 邹氏', () => {
     ).toBe(false);
   });
 });
+
+describe('国战标准版 · 张角 / 周泰', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('张角·雷击：打出【闪】后判定为黑桃 → 对目标造成 2 点雷电伤害', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangjiao', faction: 'qun', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [], hp: 4 },
+    ]);
+    // 判定牌放好（drawOne 从末尾抽）
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    state.deck.push(mk('j1', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' })); // 乙出闪 → 雷击询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C })); // 令丙判定
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(2); // 黑桃 → 2 点雷电
+  });
+
+  it('张角·雷击：判定不是黑桃就没有伤害', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangjiao', faction: 'qun', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [], hp: 4 },
+    ]);
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    state.deck.push(mk('j1', 'sha', 'heart', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(4);
+    expect(state.log.some((e) => e.message.includes('不是黑桃'))).toBe(true);
+  });
+
+  it('张角·鬼道：判定牌生效前打出黑色牌替换', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [lebu('a1')] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'zhangjiao',
+        faction: 'qun',
+        hand: [mk('b1', 'shan', 'spade', 7)],
+      },
+    ]);
+    // 甲的回合给乙贴【乐不思蜀】，等乙的判定阶段
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    // 乙的判定：先摸到一张非红桃（会生效），张角可以鬼道换成黑桃……黑桃也是「非红桃」，
+    // 所以这里换个方向：给乙一张判定牌是红桃（乐不思蜀失效），鬼道换成黑色让它生效
+    expect(state.pending?.kind === 'choice').toBe(true);
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+      ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    }
+    // 乙弃掉了一张黑桃牌、判定牌进了弃牌堆
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand.some((c) => c.id === 'b1')).toBe(false);
+  });
+
+  it('张角·黄天：其他群势力角色可以在自己的出牌阶段把【闪】交给他', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangjiao', faction: 'qun', hand: [] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'lvbu',
+        faction: 'qun',
+        hand: [shan('b1'), mk('b2', 'shandian', 'spade')],
+      },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 黄天是「别人在自己的出牌阶段发动」→ 得让乙成为回合玩家，他才会收到出牌提示
+    state.turn = { seatIndex: state.seatOrder.indexOf(B), phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    expect(toSnapshot(state, B).prompt?.legalSkillIds).toContain('huangtian');
+    ok(act(state, B, { type: 'useSkill', skillId: 'huangtian', cardIds: ['b1'], targetIds: [] }));
+    expect(a.hand.map((c) => c.id)).toEqual(['b1']);
+    expect(b.hand.map((c) => c.id)).toEqual(['b2']);
+
+    // 对照组：非群势力的角色没有这条技能
+    const other = gz([
+      { seatId: A, name: '甲', heroId: 'zhangjiao', faction: 'qun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [shan('c1')] },
+    ]);
+    other.turn = { seatIndex: other.seatOrder.indexOf(C), phase: 'play' };
+    other.pending = { kind: 'play', seatId: C };
+    expect(toSnapshot(other, C).prompt?.legalSkillIds ?? []).not.toContain('huangtian');
+  });
+
+  it('周泰·不屈：点数不同 → 回复至 1 点体力活下来', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhoutai', faction: 'wu', hand: [], hp: 1 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    state.deck.push(mk('j1', 'sha', 'spade', 5));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不闪 → 血归 0 → 不屈
+    expect(b.alive).toBe(true);
+    expect(b.hp).toBe(1);
+    expect(b.wounds.map((c) => c.id)).toEqual(['j1']); // 「创」扣在武将牌上
+    expect(state.pending?.kind).toBe('play'); // 没进濒死队列
+  });
+
+  it('周泰·不屈：点数相同 → 移去此牌，照常濒死', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhoutai', faction: 'wu', hand: [], hp: 1 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 先塞一个「创」：点数 5
+    b.wounds.push(mk('w1', 'sha', 'club', 5));
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    state.deck.push(mk('j1', 'sha', 'diamond', 5)); // 点数同样是 5
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.wounds.map((c) => c.id)).toEqual(['w1']); // 没新增
+    expect(state.discard.some((c) => c.id === 'j1')).toBe(true); // 移去此牌
+    // 进了濒死队列（等别人出桃）
+    expect(state.pending?.kind).toBe('respondDeath');
+    passDeathSaves(state);
+    expect(b.alive).toBe(false);
+  });
+
+  it('周泰·奋激：某人结束阶段没有手牌时，让他摸两张、自己失去 1 点体力', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhoutai', faction: 'wu', hand: [], hp: 4 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = ['d1', 'd2', 'd3'].map((id) => mk(id, 'sha', 'club', 9));
+    // 甲结束回合（甲没手牌）→ 奋激问乙
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'endPhase' }));
+    // 弃牌阶段（甲没牌）→ 结束阶段 → 奋激
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.players.find((p) => p.seatId === A)!.hand).toHaveLength(2);
+    expect(b.hp).toBe(3); // 乙失去 1 点体力
+  });
+});

@@ -22,6 +22,7 @@ import {
 } from './heroes';
 import { MARKER_DESC, MARKER_SKILL_PREFIX, markerActiveSkills } from './markers';
 import { equipActiveSkills } from './equip';
+import { huangtianFor } from './heroes';
 import {
   activeHeroes,
   canUseAsCard,
@@ -351,6 +352,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     ...darkHeroes.flatMap((h) => h.activeSkills ?? []),
     ...markerActiveSkills(state, player),
     ...equipActiveSkills(state, player),
+    // 黄天（张角·群势力技）：**别人**的出牌阶段多出来的一条操作
+    ...huangtianFor(state, player),
   ];
   for (const skill of skills) {
     if (

@@ -60,6 +60,8 @@ export interface PlayerView {
   heroRevealed?: boolean;
   /** 被【断肠】点名的那张武将牌 id：它的技能全没了（界面上别再列它的技能） */
   nullifiedHeroId?: string | null;
+  /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
+  wounds?: Card[];
   /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */
   shuangxiongColor?: 'red' | 'black' | null;
   // 副将是否已亮将（国战公开信息）

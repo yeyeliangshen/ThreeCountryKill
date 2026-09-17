@@ -417,7 +417,7 @@ const STANDARD_WU: RosterEntry[] = [
     status: 'done',
     primitives: ['pick_cards'],
   },
-  { id: 'zhoutai', name: '周泰', faction: 'wu', pack: 'standard', status: 'todo' },
+  { id: 'zhoutai', name: '周泰', faction: 'wu', pack: 'standard', status: 'done' },
   {
     id: 'luxun',
     name: '陆逊',
@@ -460,7 +460,7 @@ const STANDARD_QUN: RosterEntry[] = [
     name: '张角',
     faction: 'qun',
     pack: 'standard',
-    status: 'todo',
+    status: 'done',
     primitives: ['hook_interaction', 'judge_ownership'],
   },
   {

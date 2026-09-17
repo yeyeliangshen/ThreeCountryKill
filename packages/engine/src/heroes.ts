@@ -4604,6 +4604,300 @@ const ZOUSHI: Hero = {
   ],
 };
 
+// —— 国战标准版·群 / 吴（第六批）——
+
+/**
+ * 黄天（张角·**群势力技**）：其他群势力角色可以在其出牌阶段，
+ * 将一张【闪】或【闪电】交给张角。
+ *
+ * 这是**反向**势力技：技能由**别人**发动、好处给张角。所以它不在张角本人的技能表里，
+ * 而是「场上有明置的张角时，其他群势力玩家出牌阶段多出来的一条操作」——
+ * 与标记技能一样挂在 legal / onUseSkill 的技能表上（见 engine 的 externalActiveSkills）。
+ */
+function huangtianDonors(state: GameState, player: Player): Player[] {
+  if (state.mode !== 'guozhan') return [];
+  if (effectiveFaction(state, player) !== 'qun') return [];
+  return state.players.filter(
+    (p) =>
+      p.alive &&
+      p.seatId !== player.seatId &&
+      // 用 effectiveHeroes 而不是 engine 的 activeHeroes：heroes.ts 不能反向依赖 engine
+      effectiveHeroes(state, p).some((h) => h.id === 'zhangjiao'),
+  );
+}
+
+/** 能交给张角的牌：手牌里的【闪】或【闪电】 */
+function huangtianCards(player: Player): Card[] {
+  return player.hand.filter((c) => c.type === 'shan' || c.type === 'shandian');
+}
+
+const HUANGTIAN: ActiveSkill = {
+  id: 'huangtian',
+  name: '黄天',
+  minTargets: 0,
+  maxTargets: 0,
+  needsCards: true,
+  maxCards: () => 1,
+  canUse: (state, player) =>
+    huangtianDonors(state, player).length > 0 && huangtianCards(player).length > 0,
+  execute: (state, player, intent, api) => {
+    const cardId = intent.cardIds?.[0];
+    const card = cardId ? huangtianCards(player).find((c) => c.id === cardId) : undefined;
+    if (!card) return '只能交【闪】或【闪电】';
+    const donors = huangtianDonors(state, player);
+    if (donors.length === 0) return '场上没有明置的张角';
+    const give = (target: Player): void => {
+      removeCard(player.hand, card.id);
+      target.hand.push(card);
+      pushLog(
+        state,
+        'skill',
+        `${player.name} 发动【黄天】，把【${cardLabel(card)}】交给 ${target.name}。`,
+        { seat: player.seatId, action: 'gain' },
+      );
+    };
+    if (donors.length === 1) {
+      give(donors[0]!);
+      return undefined;
+    }
+    api.askChoice(
+      state,
+      player.seatId,
+      '【黄天】：交给哪位张角？',
+      donors.map((p) => ({ id: p.seatId, label: p.name })),
+      (_st, _p, targetSeatId) => {
+        const t = donors.find((p) => p.seatId === targetSeatId);
+        if (t) give(t);
+      },
+    );
+    return undefined;
+  },
+};
+
+/** 张角能拿黄天吗（给 engine 的技能表用） */
+export function huangtianFor(state: GameState, player: Player): ActiveSkill[] {
+  return HUANGTIAN.canUse(state, player) ? [HUANGTIAN] : [];
+}
+
+const ZHANGJIAO: Hero = {
+  id: 'zhangjiao',
+  name: '张角',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 身份局口径 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      // 雷击：当你使用或打出【闪】时，你可以令一名其他角色判定，若为黑桃，
+      // 你对其造成 2 点雷电伤害。（八卦阵那种「视为使用【闪】」也算，见 engine 的 shanUsed）
+      timing: 'shanUsed',
+      skillId: '雷击',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+        if (others.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【雷击】？（令一名其他角色判定，黑桃则对其造成 2 点雷电伤害）',
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askChoice(
+              st,
+              me.seatId,
+              '【雷击】：令谁判定？',
+              others.map((p) => ({ id: p.seatId, label: p.name })),
+              (st2, _p2, targetSeatId) => {
+                const target = getPlayer(st2, targetSeatId);
+                if (!target || !target.alive) return;
+                const judgeCard = drawOne(st2);
+                if (!judgeCard) return;
+                toDiscard(st2, judgeCard);
+                pushLog(
+                  st2,
+                  'skill',
+                  `${me.name} 发动【雷击】，${target.name} 判定：${cardLabel(judgeCard)}。`,
+                  { seat: me.seatId, action: 'skill' },
+                );
+                if (judgeCard.suit !== 'spade') {
+                  pushLog(st2, 'skill', `判定不是黑桃，【雷击】无效。`);
+                  return;
+                }
+                ctx.api.dealDamage(target, 2, me.seatId, 'thunder');
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      // 鬼道：当一名角色的判定牌生效前，你可以打出一张**黑色牌**替换之。
+      // 与司马懿·鬼才同一套机制（api.replaceJudgeCard 会把挂起的判定流程接回去），
+      // 区别只在于限定黑色牌。
+      timing: 'beforeJudge',
+      skillId: '鬼道',
+      handler: (ctx) => {
+        const payload = ctx.payload as { judgeCard?: Card } | undefined;
+        if (!payload?.judgeCard) return;
+        const blacks = ctx.player.hand.filter((c) => !isRed(c));
+        if (blacks.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否发动【鬼道】替换判定牌（当前 ${cardLabel(payload.judgeCard)}）？`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动（打出一张黑色牌替换）' },
+          ],
+          (st, p, picked) => {
+            const pool = p.hand.filter((c) => !isRed(c));
+            if (picked !== 'yes' || pool.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【鬼道】：选择要打出的黑色牌（将替换判定牌）',
+              pool,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                removeCard(p2.hand, card.id);
+                toDiscard(st2, card);
+                pushLog(
+                  st2,
+                  'skill',
+                  `${p2.name} 发动【鬼道】，打出【${cardLabel(card)}】替换判定牌。`,
+                );
+                ctx.api.replaceJudgeCard(card);
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '雷击',
+      desc: '当你使用或打出【闪】时，你可以令一名其他角色进行判定，若结果为黑桃，你对其造成2点雷电伤害。',
+    },
+    {
+      name: '鬼道',
+      desc: '当一名角色的判定牌生效前，你可以打出一张黑色牌替换之。',
+    },
+    {
+      name: '黄天',
+      desc: '群势力技，其他群势力角色可以在其出牌阶段将一张【闪】或【闪电】交给你。',
+    },
+  ],
+};
+
+const ZHOUTAI: Hero = {
+  id: 'zhoutai',
+  name: '周泰',
+  faction: 'wu',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      // 不屈（锁定技）：当你处于濒死状态时，你将牌堆顶的一张牌置于你的武将牌上，
+      // 称为「创」；若此牌点数与其他「创」均不同，你回复至 1 点体力，否则移去此牌。
+      //
+      // 挂在 nearDeath（可挂起）：把体力改回 1 就等于「没死」——engine 会看到
+      // hp > 0 而不建濒死队列（涅槃是同一套用法）。
+      timing: 'nearDeath',
+      skillId: '不屈',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const card = drawOne(ctx.state);
+        if (!card) return;
+        const dup = me.wounds.some((w) => w.rank === card.rank);
+        if (dup) {
+          // 点数相同 → 移去此「创」（进弃牌堆），照常走濒死
+          toDiscard(ctx.state, card);
+          pushLog(
+            ctx.state,
+            'skill',
+            `${me.name} 的【不屈】翻出 ${cardLabel(card)}，与已有的「创」点数相同——移去此牌。`,
+            { seat: me.seatId, action: 'skill' },
+          );
+          return;
+        }
+        me.wounds.push(card);
+        me.hp = 1;
+        pushLog(
+          ctx.state,
+          'skill',
+          `${me.name} 发动【不屈】，翻出 ${cardLabel(card)}（第 ${me.wounds.length} 个「创」），体力回复至 1。`,
+          { seat: me.seatId, action: 'skill' },
+        );
+      },
+    },
+    // 奋激：一名角色的结束阶段，若其没有手牌，你可以令其摸两张牌，然后你失去 1 点体力。
+    // 自己的结束阶段走 turnEnd，别人的走 othersTurnEnd（payload.turnSeatId）。
+    {
+      timing: 'turnEnd',
+      skillId: '奋激',
+      handler: (ctx) => fenji(ctx, ctx.player),
+    },
+    {
+      timing: 'othersTurnEnd',
+      skillId: '奋激',
+      handler: (ctx) => {
+        const turnSeatId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+        const turnPlayer = turnSeatId ? getPlayer(ctx.state, turnSeatId) : undefined;
+        if (!turnPlayer) return;
+        fenji(ctx, turnPlayer);
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '不屈',
+      desc: '锁定技，当你处于濒死状态时，你将牌堆顶的一张牌置于你的武将牌上，称为「创」，若此牌点数与其他「创」均不同，你回复至1点体力，否则移去此牌。',
+    },
+    {
+      name: '奋激',
+      desc: '一名角色的结束阶段，若其没有手牌，你可以令其摸两张牌，然后你失去1点体力。',
+    },
+  ],
+};
+
+/** 奋激的共用处理：`who` 是那个要结束回合、且没有手牌的角色 */
+function fenji(ctx: HookContext, who: Player): void {
+  const me = ctx.player;
+  if (!who.alive || who.hand.length > 0) return;
+  ctx.api.askChoice(
+    ctx.state,
+    me.seatId,
+    `【奋激】：${who.name} 的结束阶段没有手牌，是否令其摸两张牌？（你失去 1 点体力）`,
+    [
+      { id: 'no', label: '不发动' },
+      { id: 'yes', label: '发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      for (let i = 0; i < 2; i++) {
+        const c = drawOne(st);
+        if (c) who.hand.push(c);
+      }
+      pushLog(st, 'skill', `${me.name} 发动【奋激】：${who.name} 摸两张牌。`, {
+        seat: me.seatId,
+        action: 'draw',
+      });
+      ctx.api.loseHp(p, 1);
+    },
+  );
+}
+
 export const HEROES: Hero[] = [
   GUANYU,
   ZHANGFEI,
@@ -4663,6 +4957,8 @@ export const HEROES: Hero[] = [
   ZHANGZHAO_ZHANGHONG,
   TIANFENG,
   ZOUSHI,
+  ZHANGJIAO,
+  ZHOUTAI,
   VANILLA,
 ];
 

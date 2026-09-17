@@ -79,6 +79,7 @@ import {
   factionAliveCount,
   skillNameForField,
   unrevealedHeroes,
+  huangtianFor,
   ROLE_NAME,
   type ActiveSkill,
   type Hero,
@@ -1540,8 +1541,11 @@ function afterShaTargetResolve(
   // 八卦阵：需要出闪时自动判定，红色则视为出闪
   if (tryBaguaDodge(state, attack)) {
     pushLog(state, 'resolve', `${target.name} 的【八卦阵】判定为红色，视为出【闪】。`);
-    attack.dodged = true;
-    finishAttack(state, attack);
+    // 「视为使用【闪】」同样触发「你使用或打出【闪】」的时机（张角·雷击）
+    runHooksPausable(state, 'shanUsed', target, { attack }, () => {
+      attack.dodged = true;
+      finishAttack(state, attack);
+    });
     return;
   }
 
@@ -4979,7 +4983,10 @@ function respondWanjianShan(
     seat: responder.seatId,
     action: 'shan',
   });
-  advanceTrick(state, ctx);
+  // 也是「打出【闪】」（张角·雷击）
+  runHooksPausable(state, 'shanUsed', responder, { attack: undefined }, () =>
+    advanceTrick(state, ctx),
+  );
   return { ok: true };
 }
 
@@ -5349,16 +5356,19 @@ function respondSha(
  * 护驾（同势力代打）也走这里——代打的那张闪同样算发起者的。
  */
 function afterShanPlayed(state: GameState, who: Player, attack: AttackContext): void {
-  // 吕布·无双：需出 2 张闪，出 1 张后减 1，>1 则继续等
-  const required = attack.requiredShan ?? 1;
-  if (required > 1) {
-    attack.requiredShan = required - 1;
-    pushLog(state, 'shan', `${who.name} 还需出 ${required - 1} 张【闪】。`);
-    state.pending = { kind: 'respondSha', responderId: attack.targetId, attack };
-    return;
-  }
-  attack.dodged = true;
-  finishAttack(state, attack);
+  // 「你使用或打出【闪】」的时机（张角·雷击）。可挂起：雷击要问目标、还要判定。
+  runHooksPausable(state, 'shanUsed', who, { attack }, () => {
+    // 吕布·无双：需出 2 张闪，出 1 张后减 1，>1 则继续等
+    const required = attack.requiredShan ?? 1;
+    if (required > 1) {
+      attack.requiredShan = required - 1;
+      pushLog(state, 'shan', `${who.name} 还需出 ${required - 1} 张【闪】。`);
+      state.pending = { kind: 'respondSha', responderId: attack.targetId, attack };
+      return;
+    }
+    attack.dodged = true;
+    finishAttack(state, attack);
+  });
 }
 
 /**
@@ -6470,6 +6480,8 @@ function onUseSkill(
   if (!skill) skill = markerActiveSkills(state, player).find((s) => s.id === intent.skillId);
   // 装备牌带来的主动技（【木牛流马】）
   if (!skill) skill = equipActiveSkills(state, player).find((s) => s.id === intent.skillId);
+  // 别人的势力技（黄天：群势力角色把【闪】/【闪电】交给明置的张角）
+  if (!skill) skill = huangtianFor(state, player).find((s) => s.id === intent.skillId);
   if (!skill) return err('你没有这个技能');
   // 检查可用性
   if (!skill.canUse(state, player)) return err('该技能当前不可使用');
@@ -6573,6 +6585,7 @@ export function createGame(
     usedOncePerGame: {},
     prelitSkills: [],
     nullifiedHeroId: null,
+    wounds: [],
     grantedSkills: [],
   }));
   const seatOrder = seats.map((s) => s.seatId);
