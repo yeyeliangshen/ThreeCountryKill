@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from './store';
 import { JoinPage } from './pages/JoinPage';
+import { Hall } from './pages/Hall';
 import { Lobby } from './pages/Lobby';
 import { Game } from './pages/Game';
 import { SoundToggle, useGameAudio } from './audio';
@@ -27,6 +28,7 @@ export function App() {
       <SoundToggle />
 
       {screen === 'join' && <JoinPage />}
+      {screen === 'hall' && <Hall />}
       {screen === 'lobby' && <Lobby />}
       {screen === 'game' && <Game />}
 

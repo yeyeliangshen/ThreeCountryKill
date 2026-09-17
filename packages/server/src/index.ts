@@ -6,7 +6,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ClientMessage, ServerMessage } from '@sgs/protocol';
+import type { ClientMessage, RoomSummary, ServerMessage } from '@sgs/protocol';
 import { Room } from './room';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -68,15 +68,53 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void 
   });
 }
 
+// —— 房间表与大厅 ——
+//
+// 房间**只由房主显式创建**（`createRoom`）：没有「谁先填这个房号谁就建出房间」那条路了。
+// 房间的存活条件只有一条：**还有没有人占着座位**（离线也算占着，所以他们能认回来）。
+// 座位全空 → 删房。删房只走 `destroyRoom` 一个入口。
 const rooms = new Map<string, Room>();
 
-function getOrCreateRoom(code: string): Room {
-  let r = rooms.get(code);
-  if (!r) {
-    r = new Room(code.trim() || 'default');
-    rooms.set(r.roomCode, r);
+/** 目前「在大厅里」的连接：只有这些需要收房间列表 */
+const hallClients = new Set<WebSocket>();
+
+/** 分配一个没被占用的 4 位房号 */
+function allocateRoomCode(): string {
+  for (let i = 0; i < 200; i++) {
+    const code = String(1000 + Math.floor(Math.random() * 9000));
+    if (!rooms.has(code)) return code;
   }
-  return r;
+  // 极端情况：4 位都被占了，用递增兜底（保证一定能建房）
+  for (let n = 1000; n <= 9999; n++) {
+    const code = String(n);
+    if (!rooms.has(code)) return code;
+  }
+  return String(Date.now() % 10000);
+}
+
+/** 大厅列表：等人中的房间排前面，然后按房号 */
+function roomSummaries(): RoomSummary[] {
+  return [...rooms.values()]
+    .map((r) => r.summary())
+    .sort((a, b) =>
+      a.started === b.started ? a.roomCode.localeCompare(b.roomCode) : a.started ? 1 : -1,
+    );
+}
+
+function broadcastHall(): void {
+  const rooms0 = roomSummaries();
+  for (const ws of hallClients) send(ws, { type: 'hall', rooms: rooms0 });
+}
+
+/**
+ * 删房的**唯一入口**：通知房里的人 → 从表里删掉 → 广播给大厅。
+ * 触发点：房主离开且没人留下（座位全空）、以及连接关闭后房间空了。
+ */
+function destroyRoom(room: Room, reason: string): void {
+  if (!rooms.has(room.roomCode)) return;
+  room.notifyClosed(reason);
+  rooms.delete(room.roomCode);
+  broadcastHall();
 }
 
 function send(ws: WebSocket, msg: ServerMessage): void {
@@ -99,9 +137,36 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 
 wss.on('connection', (ws: WebSocket) => {
   // 每条连接维护：所在房间、所坐座位、昵称
+  // （room === null 就是「在大厅里」，这种连接收 `hall` 房间列表）
   let room: Room | null = null;
   let seatId: string | null = null;
   let name = '';
+
+  /** 进大厅：登记昵称、收房间列表、不再算房间成员 */
+  const enterHall = (nick: string): void => {
+    name = nick.trim() || '无名';
+    room = null;
+    seatId = null;
+    hallClients.add(ws);
+    send(ws, { type: 'hall', rooms: roomSummaries() });
+  };
+
+  /**
+   * 离开当前房间：释放座位（换房/退出前都会先调它）。
+   * 座位全空就把房间删掉——**房间的存活条件只有这一条**。
+   */
+  const leaveCurrentRoom = (): void => {
+    const r = room;
+    if (!r) return;
+    if (seatId) r.releaseSeat(seatId);
+    room = null;
+    seatId = null;
+    if (r.isEmpty()) destroyRoom(r, '房间里没人了，房间已关闭。');
+    else {
+      r.broadcastLobby();
+      broadcastHall();
+    }
+  };
 
   ws.on('message', (raw) => {
     let msg: ClientMessage;
@@ -113,27 +178,102 @@ wss.on('connection', (ws: WebSocket) => {
     }
 
     switch (msg.type) {
-      case 'join': {
-        room = getOrCreateRoom(msg.roomCode);
-        name = msg.name?.trim() || '无名';
-        // 先给本连接回一个 lobby，再广播给全房
-        send(ws, {
-          type: 'lobby',
-          roomCode: room.roomCode,
-          seats: room.seatViews(),
-          started: room.started,
-          mySeatId: seatId,
-          mode: room.pendingMode,
-          freePick: room.freePick,
-          shibei: room.shibei,
-        });
-        room.broadcastLobby();
+      case 'enterHall': {
+        enterHall(msg.name);
+        break;
+      }
+
+      case 'listRooms': {
+        // 界面上的「刷新」：顺手把它登记成大厅连接（断线重连后可能不在集合里）
+        hallClients.add(ws);
+        send(ws, { type: 'hall', rooms: roomSummaries() });
+        break;
+      }
+
+      case 'createRoom': {
+        if (!name) {
+          send(ws, { type: 'error', message: '请先进入大厅' });
+          break;
+        }
+        leaveCurrentRoom();
+        const r = new Room(allocateRoomCode());
+        rooms.set(r.roomCode, r);
+        // 创建者自动落座 1 号位，并成为房主（新房还没有房主，claimSeat 会指派）
+        const created = r.claimSeat('1', ws, name);
+        if (!created.ok) {
+          rooms.delete(r.roomCode);
+          send(ws, { type: 'error', message: created.error });
+          break;
+        }
+        room = r;
+        seatId = created.seatId;
+        hallClients.delete(ws);
+        r.broadcastLobby();
+        broadcastHall();
+        break;
+      }
+
+      case 'joinRoom': {
+        if (!name) {
+          send(ws, { type: 'error', message: '请先进入大厅' });
+          break;
+        }
+        const target = rooms.get(msg.roomCode.trim());
+        if (!target) {
+          send(ws, { type: 'error', message: '房间不存在（可能已经关闭）' });
+          break;
+        }
+        // 认回/接替：那个座位有名字但离线。已开局的房间只允许这一种进入方式
+        const joinable = target.canJoin(msg.seatId);
+        if (!joinable.ok) {
+          send(ws, { type: 'error', message: joinable.error });
+          break;
+        }
+        const seat = msg.seatId ? target.seats.find((x) => x.seatId === msg.seatId) : undefined;
+        const reclaiming = !!seat && seat.name !== null && !seat.connected;
+        leaveCurrentRoom();
+        room = target;
+        hallClients.delete(ws);
+        const wantSeatId = reclaiming ? msg.seatId! : (target.findEmpty()?.seatId ?? null);
+        if (wantSeatId) {
+          const res = target.claimSeat(wantSeatId, ws, name);
+          if (!res.ok) send(ws, { type: 'error', message: res.error });
+          else seatId = res.seatId;
+        } else {
+          // 满员：人先进房间待着（界面会提示「请先落座」）
+          seatId = null;
+        }
+        // lobby **一定要发**：客户端靠它知道「我坐在哪个位子」（也是本地记住会话、
+        // 之后刷新能认回座位的前提）；已开局的话再补一份快照把对局界面推上去。
+        target.broadcastLobby();
+        if (target.started) target.broadcastSnapshots();
+        broadcastHall();
+        break;
+      }
+
+      case 'leaveRoom': {
+        if (!room) {
+          send(ws, { type: 'error', message: '你不在房间里' });
+          break;
+        }
+        // 对局中不放人（座位保留，重连能接着打）；打完了才允许退出去
+        if (!room.canLeave()) {
+          send(ws, {
+            type: 'error',
+            message: '对局中不能离开房间——直接关页面就行，座位会给你留着',
+          });
+          break;
+        }
+        const leaving = room.roomCode;
+        leaveCurrentRoom();
+        enterHall(name);
+        console.log(`[三国杀] 房间 ${leaving}：一位玩家离开`);
         break;
       }
 
       case 'claimSeat': {
         if (!room) {
-          send(ws, { type: 'error', message: '请先发送 join 进房' });
+          send(ws, { type: 'error', message: '请先进入房间' });
           break;
         }
         const res = room.claimSeat(msg.seatId, ws, name);
@@ -142,8 +282,10 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
         seatId = res.seatId;
-        if (room.started) room.broadcastSnapshots();
-        else room.broadcastLobby();
+        hallClients.delete(ws);
+        room.broadcastLobby();
+        if (room.started) room.broadcastSnapshots(); // 认回对局中的座位：把界面推到对局
+        broadcastHall(); // 人数变了，大厅列表也跟着更新
         break;
       }
 
@@ -158,6 +300,7 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
         room.broadcastLobby();
+        broadcastHall();
         break;
       }
 
@@ -200,6 +343,7 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
         room.broadcastSnapshots();
+        broadcastHall();
         break;
       }
 
@@ -220,12 +364,15 @@ wss.on('connection', (ws: WebSocket) => {
     }
   });
 
-  ws.on('close', () => {
-    if (room) room.disconnect(ws);
-  });
+  const onDisconnect = (): void => {
+    hallClients.delete(ws);
+    if (!room) return;
+    room.disconnect(ws);
+    // 正常情况下座位还占着（离线可重连），所以不会删；这行是兜底
+    if (room.isEmpty()) destroyRoom(room, '房间里没人了，房间已关闭。');
+  };
 
-  ws.on('error', () => {
-    // 连接异常：等同断线，标记座位离线
-    if (room) room.disconnect(ws);
-  });
+  ws.on('close', onDisconnect);
+  // 连接异常：等同断线，标记座位离线
+  ws.on('error', onDisconnect);
 });

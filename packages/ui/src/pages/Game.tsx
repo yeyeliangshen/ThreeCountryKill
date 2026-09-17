@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CARD_TYPE_NAME,
+  MODE_NAME,
   SUIT_NAME,
   SUIT_SYMBOL,
   rankLabel,
@@ -45,13 +46,6 @@ const PHASE_NAME: Record<string, string> = {
   turnEnd: '回合结束',
   gameOver: '游戏结束',
   draft: '选将',
-};
-
-const MODE_NAME: Record<GameMode, string> = {
-  junzheng: '军争',
-  '2v2': '2v2',
-  melee: '混战',
-  guozhan: '国战',
 };
 
 /** 国战：武将显示——亮将后显示名，未亮显示「暗将」 */
@@ -261,6 +255,7 @@ export function Game() {
   const chooseOption = useStore((s) => s.chooseOption);
   const sendPickCards = useStore((s) => s.pickCards);
   const sendFactionCall = useStore((s) => s.factionCall);
+  const leaveRoom = useStore((s) => s.leaveRoom);
 
   // 出牌阶段：选中一张需目标的牌后，再选目标
   const [selected, setSelected] = useState<{
@@ -763,6 +758,10 @@ export function Game() {
             {winnerText(snapshot.mode, snapshot.winner!, snapshot.players)}
           </div>
           <div className="hint">游戏结束</div>
+          {/* 打完了才允许离开房间：服务端对局中会拒绝释放座位（座位留着等人重连） */}
+          <button className="ghost" onClick={leaveRoom}>
+            离开房间
+          </button>
         </div>
         <div className="players-row">
           {snapshot.players.map((p) => {

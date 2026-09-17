@@ -19,7 +19,7 @@ export function Lobby() {
   const setFreePick = useStore((s) => s.setFreePick);
   const setShibei = useStore((s) => s.setShibei);
   const startGame = useStore((s) => s.startGame);
-  const disconnect = useStore((s) => s.disconnect);
+  const leaveRoom = useStore((s) => s.leaveRoom);
 
   if (!lobby) return null;
   const mySeatId = lobby.mySeatId;
@@ -35,8 +35,12 @@ export function Lobby() {
     <div className="lobby">
       <header>
         <span>房间号：{lobby.roomCode}</span>
-        <button className="ghost" onClick={disconnect}>
-          退出
+        <button
+          className="ghost"
+          onClick={leaveRoom}
+          title="离开房间回大厅（房子里没人了这个房间就关了）"
+        >
+          离开房间
         </button>
       </header>
 
@@ -68,11 +72,23 @@ export function Lobby() {
       <section className="seats-grid">
         {lobby.seats.map((s) => {
           const mine = s.seatId === mySeatId;
-          const clickable = !mySeatId && s.name === null;
+          // 空座位：还没落座的人可以坐；**离线座位：谁都能点**——
+          // 点它就等于认回/接替那个玩家（服务端会保留原武将），
+          // 这样锁屏、刷新、换设备都能回到原来的位置。
+          const empty = s.name === null;
+          const offline = s.name !== null && !s.connected;
+          const clickable = !mine && (empty ? !mySeatId : offline);
           return (
             <div
               key={s.seatId}
               className={`seat ${mine ? 'mine' : ''} ${clickable ? 'clickable' : ''}`}
+              title={
+                offline
+                  ? `${s.name} 离线了，点一下接替他`
+                  : empty && !mySeatId
+                    ? '点一下坐这里'
+                    : undefined
+              }
               onClick={clickable ? () => claimSeat(s.seatId) : undefined}
             >
               <div className="seat-no">座位 {s.seatId}</div>

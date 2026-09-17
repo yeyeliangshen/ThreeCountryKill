@@ -1,5 +1,5 @@
 // 房间：座位管理 + 意图驱动引擎 + 按座位裁剪广播 + 断线重连占位
-import type { GameMode, Intent, ServerMessage, SeatView } from '@sgs/protocol';
+import type { GameMode, Intent, RoomSummary, ServerMessage, SeatView } from '@sgs/protocol';
 import {
   applyIntent,
   createGame,
@@ -74,10 +74,14 @@ export class Room {
   }
 
   /**
-   * 落座 / 重连。
-   * - 空座位：新落座，首个落座者成为房主。
-   * - 已占用且断线：重连，恢复原身份（保留 name / heroId / isHost）。
+   * 落座 / 重连 / 换座。
+   * - 空座位：新落座。房里还没有房主时（＝刚建好的房间）他成为房主。
+   * - 已占用且断线：**重连**，恢复原身份（保留 name / heroId / isHost）——
+   *   这就是「认回座位」和「接替离线的人」，服务端本来就靠这条实现。
    * - 已占用且在线：拒绝。
+   *
+   * 同一条连接如果已经坐在别的座位上，会**先释放原座位**（换座），
+   * 否则换一次座会占着两个位置、还能把房主身份一起搬走。
    */
   claimSeat(
     seatId: string,
@@ -86,7 +90,13 @@ export class Room {
   ): { ok: true; seatId: string } | { ok: false; error: string } {
     const seat = this.seats.find((s) => s.seatId === seatId);
     if (!seat) return { ok: false, error: '座位不存在' };
-    if (seat.name !== null && seat.connected) return { ok: false, error: '该座位已被占用' };
+    if (seat.name !== null && seat.connected && seat.ws !== ws)
+      return { ok: false, error: '该座位已被占用' };
+
+    // 换座：先离开原来那个座位（房主换座时身份也要跟着走，见下方再次指派）
+    const previous = this.seats.find((s) => s.ws === ws && s.seatId !== seatId);
+    const keepHost = !!previous?.isHost;
+    if (previous) this.releaseSeat(previous.seatId);
 
     if (seat.name !== null) {
       // 重连：保留原 name / heroId / isHost
@@ -97,12 +107,94 @@ export class Room {
       seat.name = name;
       seat.connected = true;
       seat.ws = ws;
-      if (this.hostSeatId === null) {
-        this.hostSeatId = seatId;
-        seat.isHost = true;
-      }
+    }
+    // 房主：新房里第一个落座的人（＝建房者），或刚换座过来的房主
+    if (this.hostSeatId === null || keepHost) {
+      this.setHost(seatId);
     }
     return { ok: true, seatId };
+  }
+
+  /** 把房主身份交给某个座位（先把旧的清掉，保证全场只有一个 isHost） */
+  private setHost(seatId: string): void {
+    for (const s of this.seats) s.isHost = false;
+    const seat = this.seats.find((s) => s.seatId === seatId);
+    if (!seat) {
+      this.hostSeatId = null;
+      return;
+    }
+    seat.isHost = true;
+    this.hostSeatId = seatId;
+  }
+
+  /**
+   * 释放一个座位（离开房间 / 换座时腾位置）。
+   *
+   * **房主让位时把房主移交给房间里下一个占着座位的人**；没人了就留 null
+   * （调用方据此删房，见 index.ts 的 destroyRoom）。
+   * 注意这里只处理「座位」，删房的判断在调用方——房间的存活条件只有一条：
+   * 还有没有人占着座位（离线也算占着，所以他们能回来）。
+   */
+  releaseSeat(seatId: string): void {
+    const seat = this.seats.find((s) => s.seatId === seatId);
+    if (!seat) return;
+    const wasHost = this.hostSeatId === seatId || seat.isHost;
+    seat.name = null;
+    seat.connected = false;
+    seat.ws = null;
+    seat.heroId = null;
+    seat.isHost = false;
+    if (wasHost) {
+      this.hostSeatId = null;
+      const next = this.seats.find((s) => s.name !== null);
+      if (next) this.setHost(next.seatId);
+    }
+  }
+
+  /** 房间里还有没有人**占着座位**（离线也算占着）——空了就该删房 */
+  isEmpty(): boolean {
+    return this.seats.every((s) => s.name === null);
+  }
+
+  /**
+   * 能不能进这个房间。**已开局的房间只允许「认回/接替」**——
+   * 即那个座位已经有名字但离线（刷新回来、换设备、救掉线的队友）；
+   * 其他人一律进不去，免得半路插进一局正在打的牌。
+   * 这是大厅那条「已开局 → 显示但点不进去」的唯一判定处。
+   */
+  canJoin(seatId?: string): { ok: true } | { ok: false; error: string } {
+    if (!this.started) return { ok: true };
+    const seat = seatId ? this.seats.find((s) => s.seatId === seatId) : undefined;
+    if (seat && seat.name !== null && !seat.connected) return { ok: true };
+    return { ok: false, error: '该房间已开局，无法加入' };
+  }
+
+  /**
+   * 现在能不能离开房间。对局中不放人（座位保留、重连能接着打），
+   * 打完（gameOver）之后就可以走了。
+   */
+  canLeave(): boolean {
+    return !this.started || !!this.game?.gameOver;
+  }
+
+  /** 大厅房间列表里的一行 */
+  summary(): RoomSummary {
+    const host = this.seats.find((s) => s.seatId === this.hostSeatId);
+    return {
+      roomCode: this.roomCode,
+      hostName: host?.name ?? '—',
+      players: this.seats.filter((s) => s.name !== null).length,
+      maxSeats: this.maxSeats,
+      mode: this.pendingMode,
+      started: this.started,
+    };
+  }
+
+  /** 房间被删时的通知（房主离开且没人留下） */
+  notifyClosed(reason: string): void {
+    for (const s of this.seats) {
+      if (s.name !== null && s.connected) this.sendToSeat(s.seatId, { type: 'roomClosed', reason });
+    }
   }
 
   /** 房主切换模式（大厅阶段） */

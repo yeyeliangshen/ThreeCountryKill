@@ -222,6 +222,105 @@ button:disabled {
   color: var(--gold);
   font-size: 13px;
 }
+
+/* —— 大厅（房间列表）——
+   连上服务器先看到的一屏：所有房主创建的房间。
+   卡片沿用下面 .seat 的视觉（深色面板 + 虚线圈表示可点），
+   落在羊皮纸上的标题文字要墨色，见文件末尾那组覆盖规则。 */
+.hall {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+.hall header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hall-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+.hall-me {
+  margin-right: auto;
+  font-size: 13px;
+}
+.hall-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.hall-or {
+  font-size: 13px;
+  opacity: 0.7;
+}
+.hall-code {
+  width: 150px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-2);
+  background: var(--panel);
+  color: var(--text);
+}
+.hall-empty {
+  padding: 18px 4px;
+  font-size: 14px;
+}
+.hall-rooms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.room-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-2);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.room-card.clickable {
+  cursor: pointer;
+  border-style: dashed;
+}
+.room-card.clickable:hover {
+  border-color: var(--gold);
+}
+.room-code {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gold);
+}
+.room-host {
+  font-size: 13px;
+}
+.room-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.room-status {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.room-status.waiting {
+  background: var(--green);
+  color: #10200f;
+}
+.room-status.playing {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.room-status.full {
+  background: var(--red);
+  color: #f6e8e8;
+}
 .seat-offline {
   position: absolute;
   top: 8px;
@@ -1526,9 +1625,16 @@ button:disabled {
    .draft-title 等规则同优先级竞争，靠顺序取胜；放在前面会被它们覆盖。
    面板里的文字不用动，那些是深色底。 */
 .lobby header,
+.hall header,
+.hall-title,
 .turn-info,
 .draft-title {
   color: var(--ink);
+}
+.hall-me,
+.hall-or,
+.hall-empty {
+  color: var(--ink-soft);
 }
 .lobby-foot,
 .deal-count,

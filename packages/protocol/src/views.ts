@@ -4,6 +4,14 @@ import type { Phase } from './intent';
 // —— 游戏模式 ——
 export type GameMode = 'junzheng' | '2v2' | 'melee' | 'guozhan';
 
+/** 各模式的中文名（界面上的模式选择、房间列表、对局标题都用这一份） */
+export const MODE_NAME: Record<GameMode, string> = {
+  junzheng: '军争',
+  '2v2': '2v2',
+  melee: '混战',
+  guozhan: '国战',
+};
+
 // —— 身份（军争模式） ——
 export type RoleId = 'lord' | 'loyal' | 'rebel' | 'renegade';
 
@@ -176,6 +184,24 @@ export interface SeatView {
   isHost: boolean;
   connected: boolean;
   heroId: string | null;
+}
+
+/**
+ * 大厅房间列表里的一张卡片。
+ *
+ * 只给「概况」——进了房间才拿 `lobby`（完整座位表）。
+ * `players` 数的是**占着座位的人数**，不看在不在线：离线/锁屏/刷新的人还算占着，
+ * 所以他们能认回座位，房间也不会因为一次断线就被判成空房。
+ */
+export interface RoomSummary {
+  roomCode: string;
+  /** 房主昵称（房主一定存在；房主离开时会把身份移交给房间里另一个人） */
+  hostName: string;
+  players: number;
+  maxSeats: number;
+  mode: GameMode;
+  /** 已开局：大厅里显示但进不去 */
+  started: boolean;
 }
 
 // 下发给某个玩家的完整快照
