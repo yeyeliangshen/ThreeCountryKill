@@ -475,6 +475,21 @@ function markCardUsed(state: GameState, timing: Timing, player: Player, payload?
     : isBasicCard(card)
       ? 'basic'
       : 'trick';
+  const targets = (payload as { targetIds?: string[]; attack?: AttackContext } | undefined)
+    ?.targetIds ??
+    ((payload as { attack?: AttackContext } | undefined)?.attack
+      ? [(payload as { attack?: AttackContext }).attack!.targetId]
+      : []);
+  if (targets.length > 0) {
+    const mine = effectiveFaction(state, player);
+    const bad = targets.some((tid) => {
+      const t = getPlayer(state, tid);
+      if (!t || !t.alive) return false;
+      const tf = effectiveFaction(state, t);
+      return !mine || !tf || tf !== mine; // 未确定势力也算「其他势力」
+    });
+    if (bad) player.flags.targetedOtherFactionThisTurn = true;
+  }
   player.flags.usedCardsInPlayPhase.push({
     // 红颜：小乔用掉的黑桃要按红桃记账，否则克己（颜色不同）与谋断（四种花色）会算错
     suit: suitSeenAs(state, player, card),
@@ -972,6 +987,13 @@ function goToDiscardPhase(state: GameState, player: Player): void {
 /** 弃牌阶段的实体部分（出牌阶段结束的钩子跑完之后进这里） */
 function beginDiscardPhasePart(state: GameState, player: Player): void {
   state.turn.phase = 'discard';
+  // 「与你势力相同的角色的弃牌阶段开始时」（卞夫人·约俭）：派给全场，技能自己按势力过滤
+  runAllPlayersHooks(
+    state,
+    'othersDiscardPhase',
+    { turnSeatId: player.seatId },
+    () => {},
+  );
   // 走可挂起版本：张郃·巧变要在这里问「是否弃一张牌跳过弃牌阶段」
   runHooksPausable(state, 'discardPhase', player, undefined, () => {
     if (player.flags.skipDiscard) {
@@ -3511,7 +3533,8 @@ function playTrick(
     seat: player.seatId,
     action: type,
   });
-  runHooks(state, 'useCard', player, { card });
+  // 载荷带上目标：卞夫人·约俭要判断「本回合有没有指定过其他势力的角色」
+  runHooks(state, 'useCard', player, { card, targetIds: intent.targetIds });
 
   startTrickResolution(state, player, card, intent.targetIds, intent.targetCardId);
   return { ok: true };
@@ -3865,6 +3888,12 @@ function pickTargetCard(
     const ji = target.judgment.findIndex((c) => c.id === targetCardId);
     if (ji >= 0) {
       const [c] = target.judgment.splice(ji, 1);
+      return c ? { card: c, fromEquip: false } : null;
+    }
+    // 指定的是**手牌**里的一张（卞夫人·挽危让目标自己挑）→ 精确取那张
+    const hi = target.hand.findIndex((c) => c.id === targetCardId);
+    if (hi >= 0) {
+      const [c] = target.hand.splice(hi, 1);
       return c ? { card: c, fromEquip: false } : null;
     }
   }

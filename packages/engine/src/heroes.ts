@@ -3587,6 +3587,109 @@ const MADAI: Hero = {
  *   限制"时才列出来（否则用了也会违反限制）。
  * - 「每回合内未以此法使用过」按**牌名**记（flags.hunUsedNames ✓ 回合开始清零）。
  */
+/**
+ * 卞夫人 —— 挽危 / 约俭（君临天下·变，**2017 印刷版**文本，已核）。
+ *
+ * - 挽危：当你因被其他角色**获得或弃置**而失去牌时，你可以改为**自己选择**失去的牌。
+ *   ⚠️ 2020 修订版整个换掉了（改成「从牌堆获得一张同名牌」，每回合限一次），未采用；
+ *      版本差异写在这里与 roster。
+ * - 约俭：锁定技，与你势力相同的角色的弃牌阶段开始时，若其本回合未使用牌指定过
+ *   其他势力的角色为目标，其本回合手牌上限等于其体力上限。
+ *
+ * 实现：
+ * - 挽危：单人目标的锦囊在结算前会派一环「成为目标后」（payload 里带 trickCtx 与牌），
+ *   如果那张是【过河拆桥】/【顺手牵羊】且**自己就是目标**，就问自己挑哪张丢，
+ *   把结果写进 `trickCtx.targetCardId` —— 引擎那边的 pickTargetCard 已经支持
+ *   「指定的手牌」（刚补的），所以拆/顺就按她挑的那张结算。
+ * - 约俭：新时机 othersDiscardPhase（派给全场，技能自己按势力过滤）+
+ *   flags.targetedOtherFactionThisTurn（在 useCard 时按载荷里的 targetIds 登记）。
+ *   手牌上限＝体力上限的做法是给那名角色加 `handLimitBonus += maxHp - hp`。
+ */
+const BIANFUREN: Hero = {
+  id: 'bianfuren',
+  name: '卞夫人',
+  faction: 'wei',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'othersBecomeTarget',
+      skillId: '挽危',
+      handler: (ctx) => {
+        const payload = ctx.payload as
+          | { targetId?: string; card?: Card; trickCtx?: TrickContext }
+          | undefined;
+        if (payload?.targetId !== ctx.player.seatId) return;
+        const type = payload?.card?.type;
+        if (type !== 'guohe' && type !== 'shunshou') return;
+        const me = ctx.player;
+        if (me.hand.length <= 1) return; // 只有一张牌时挑不挑都一样
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【挽危】自己选择失去哪张牌？`,
+          [
+            { id: 'yes', label: '发动（自己挑）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const cards = p.hand.slice();
+            if (cards.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【挽危】：选择失去哪张手牌',
+              cards,
+              1,
+              1,
+              (_st2, _p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                if (payload?.trickCtx) payload.trickCtx.targetCardId = card.id;
+                pushLog(_st2, 'skill', `${_p2.name} 发动【挽危】，自己选择了失去的牌。`);
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'othersDiscardPhase',
+      skillId: '约俭',
+      locked: true,
+      handler: (ctx) => {
+        const turnSeatId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+        if (!turnSeatId) return;
+        const who = getPlayer(ctx.state, turnSeatId);
+        if (!who || !who.alive) return;
+        if (!sameKnownFaction(ctx.state, ctx.player, who)) return; // 「与你势力相同」
+        if (who.flags.targetedOtherFactionThisTurn) return; // 指定过其他势力 → 不生效
+        const bonus = Math.max(0, who.maxHp - who.hp);
+        if (bonus === 0) return; // 上限本来就等于体力上限
+        who.flags.handLimitBonus += bonus;
+        pushLog(
+          ctx.state,
+          'skill',
+          `${ctx.player.name} 的【约俭】生效：${who.name} 本回合手牌上限视为体力上限（${who.maxHp}）。`,
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '挽危',
+      desc: '当你因被其他角色获得或弃置而失去牌时，你可以改为自己选择失去的牌。',
+    },
+    {
+      name: '约俭',
+      desc: '锁定技，与你势力相同的角色的弃牌阶段开始时，若其本回合未使用牌指定过其他势力的角色为目标，其本回合手牌上限等于其体力上限。',
+    },
+  ],
+};
+
 const ZUOCI: Hero = {
   id: 'zuoci',
   name: '左慈',
@@ -8724,6 +8827,7 @@ export const HEROES: Hero[] = [
   SUNCE,
   LVFAN,
   ZUOCI,
+  BIANFUREN,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

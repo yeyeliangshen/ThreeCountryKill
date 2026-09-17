@@ -677,7 +677,9 @@ const BIAN: RosterEntry[] = [
     primitives: ['virtual_trick', 'change_deputy'],
     note: '奇策（先选锦囊再选目标：目标数受手牌数限制，收尾可选变更一次副将）+ 智愚 都已实现。虚拟锦囊的花色取第一张材料牌（只影响帷幕那类看颜色的判断）。',
   },
-  { id: 'bianfuren', name: '卞夫人', faction: 'wei', pack: 'bian', status: 'todo' },
+  { id: 'bianfuren', name: '卞夫人', faction: 'wei', pack: 'bian', status: 'done'
+    note: '取 2017 印刷版：挽危（被拆/被顺时可自己挑失去哪张牌——引擎的 pickTargetCard 现在也认「指定的手牌」）+ 约俭（新时机 othersDiscardPhase + flags.targetedOtherFactionThisTurn）。2020 修订版把挽危整个换成「从牌堆拿同名牌」，未采用。',
+  },
   {
     id: 'masu',
     name: '马谡',

@@ -80,6 +80,11 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 卞夫人·约俭：本回合有没有**指定过其他势力（含未确定势力）的角色**为目标。
+   * 由 markCardUsed 在 useCard 时登记（载荷里带了 targetIds），随回合清零。
+   */
+  targetedOtherFactionThisTurn: boolean;
+  /**
    * 左慈·役鬼：「本回合内已以此法使用过哪些牌名」（按牌名限一次，回合开始清零）。
    */
   hunUsedNames: string[];
@@ -180,6 +185,7 @@ export function emptyFlags(): PlayerFlags {
     hengjiangTarget: null,
     lostCardsThisPhase: 0,
     hunUsedNames: [],
+    targetedOtherFactionThisTurn: false,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,

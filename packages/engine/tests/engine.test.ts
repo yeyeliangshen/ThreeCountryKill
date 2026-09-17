@@ -15031,3 +15031,108 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     expect(state.log.some((e) => e.message.includes('汲魂'))).toBe(true);
   });
 });
+
+/** 卞夫人·挽危（被拆/被顺时自己挑牌）/ 约俭（锁定技：同势力弃牌阶段上限提到体力上限） */
+describe('国战 · 卞夫人（挽危 / 约俭）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('挽危：被【过河拆桥】时可自己挑失去哪张手牌', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [mk('a1', 'guohe', 'spade', 6)] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'bianfuren',
+        faction: 'wei',
+        hand: [mk('b1', 'shan', 'heart', 2), mk('b2', 'sha', 'spade', 9)],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 挽危：卞夫人自己挑
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('挽危');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b2'] }));
+    // 丢的是她自己挑的那张（黑桃杀），而不是随机的
+    expect(state.discard.some((c) => c.id === 'b2')).toBe(true);
+    expect(b.hand.map((c) => c.id)).toEqual(['b1']);
+  });
+
+  it('约俭：同势力队友没打过其他势力 → 弃牌阶段手牌上限＝体力上限', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'bianfuren',
+          faction: 'wei',
+          hand: [],
+        },
+        // 乙是魏，体力 4、上限 4、手牌 6：正常要弃 2 张；约俭让他上限保持 4
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+      ],
+      B,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.hp = 2; // 已受伤：手牌上限本来是 2，约俭让它变回 4
+    b.maxHp = 4;
+    b.hand = ['b1', 'b2', 'b3', 'b4'].map((id) => mk(id, 'shan', 'heart', 2));
+    ok(act(state, B, { type: 'endPhase' }));
+    // 弃牌阶段：4 张手牌、上限 4 → 不用弃
+    expect(b.flags.handLimitBonus).toBe(2); // maxHp(4) - hp(2)
+    expect(state.log.some((e) => e.message.includes('约俭'))).toBe(true);
+  });
+
+  it('约俭：该角色本回合指定过其他势力 → 不生效', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'bianfuren', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [sha('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+      ],
+      B,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.hp = 2;
+    b.maxHp = 4;
+    // 乙打丙（蜀，其他势力）→ 本回合指定过其他势力 → 约俭不生效
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    b.hand = ['b2', 'b3', 'b4', 'b5'].map((id) => mk(id, 'shan', 'heart', 2));
+    ok(act(state, B, { type: 'endPhase' }));
+    expect(b.flags.handLimitBonus).toBe(0);
+    expect(state.log.some((e) => e.message.includes('约俭'))).toBe(false);
+  });
+});

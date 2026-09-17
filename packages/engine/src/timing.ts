@@ -28,6 +28,11 @@ export type Timing =
   | 'othersPlayPhase'
   | 'discardPhase'
   /**
+   * **与你势力相同的角色的弃牌阶段开始时**——实际派给**全场**（payload.turnSeatId），
+   * 由技能自己按势力过滤。卞夫人·约俭挂这里（`discardPhase` 只发给回合玩家本人）。
+   */
+  | 'othersDiscardPhase'
+  /**
    * 弃牌阶段**结束时**（弃完牌之后）。孟获·再起挂在这里——它要读「本回合进入
    * 弃牌堆的红桃牌数」，必须等弃牌阶段真的结束。
    */
