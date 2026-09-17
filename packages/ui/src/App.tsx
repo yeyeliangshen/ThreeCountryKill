@@ -7,6 +7,10 @@ import { Game } from './pages/Game';
 import { SoundToggle, useGameAudio } from './audio';
 import './styles.css';
 
+/** 构建版本戳（由 client 的 vite 注入）。开发模式下没有，显示占位 */
+const BUILD_STAMP =
+  typeof __BUILD_STAMP__ === 'string' ? __BUILD_STAMP__ : '开发模式（未构建）';
+
 export function App() {
   const screen = useStore((s) => s.screen);
   const error = useStore((s) => s.error);
@@ -31,6 +35,11 @@ export function App() {
       {screen === 'hall' && <Hall />}
       {screen === 'lobby' && <Lobby />}
       {screen === 'game' && <Game />}
+
+      {/* 版本戳：判断「浏览器看到的是不是最新那份构建」用，出问题先看这里 */}
+      <div className="build-stamp" title="前端构建版本（commit · 构建时间）">
+        {BUILD_STAMP}
+      </div>
 
       {reconnecting && <div className="overlay-banner">连接断开，正在重连…</div>}
       {error && (

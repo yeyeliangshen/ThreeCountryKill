@@ -1056,6 +1056,18 @@ button:disabled {
   z-index: 2;
 }
 
+/* 版本戳：右下角很小的一行，不挡东西但一眼能看到 */
+.build-stamp {
+  position: fixed;
+  right: 6px;
+  bottom: 4px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  opacity: 0.75;
+  pointer-events: none;
+  z-index: 50;
+}
+
 /* —— toast / overlay —— */
 .error-toast {
   position: fixed;

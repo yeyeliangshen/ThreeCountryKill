@@ -125,11 +125,14 @@ cmd_start() {
     pnpm install
   fi
 
-  # 构建前端（dist 不存在则构建）
-  if [ ! -f packages/client/dist/index.html ]; then
-    log "构建前端（vite build）…"
-    pnpm --filter @sgs/client exec vite build
-  fi
+  # 构建前端。
+  #
+  # ⚠️ 以前这里是「dist 不存在才构建」，那是个陷阱：`git pull` 拿到新前端之后
+  #    dist 还是旧的那一份，服务器就把**旧前端**发给浏览器——界面是旧的（比如
+  #    还是填房间号那一版），而旧前端发的是旧协议消息（join），新服务端只认
+  #    enterHall，于是「拉下来就跑不起来」。前端构建只要 1 秒左右，每次都重建。
+  log "构建前端（vite build）…"
+  pnpm --filter @sgs/client exec vite build
 
   log "启动服务端（pm2）…"
   # 已存在则先删掉，保证幂等
