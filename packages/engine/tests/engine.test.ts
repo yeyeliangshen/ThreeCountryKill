@@ -14633,3 +14633,110 @@ describe('国战 · 于吉（千幻）', () => {
     expect(state.pending?.kind).not.toBe('choice');
   });
 });
+
+/** 荀攸·奇策（所有手牌当任意普通锦囊；目标数受手牌数限制）/ 智愚 */
+describe('国战 · 荀攸（奇策 / 智愚）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      hand?: Card[];
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('奇策：所有手牌当【过河拆桥】用（先选锦囊再选目标）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'xunyou', faction: 'wei', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'qice', cardIds: [], targetIds: [] }));
+    // 先选锦囊
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.title).toContain('奇策');
+      expect(state.pending.options.map((o) => o.id)).toContain('guohe');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'guohe' }));
+    // 再选目标
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 两张手牌当【过河拆桥】打出去 → 拆掉乙一张牌
+    expect(a.hand).toHaveLength(0);
+    expect(b.hand).toHaveLength(0);
+    expect(state.log.some((e) => e.message.includes('用 2 张手牌当【过河拆桥】使用'))).toBe(true);
+  });
+
+  it('奇策：手牌数不够目标数时那张锦囊不出现（南蛮要另外 2 人的手牌数 ≥ 2）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'xunyou', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    // 手牌只有 1 张，而南蛮/万箭要指定 2 人 → 不该出现在选项里
+    ok(act(state, A, { type: 'useSkill', skillId: 'qice', cardIds: [], targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      const opts = state.pending.options.map((o) => o.id);
+      expect(opts).not.toContain('nanman');
+      expect(opts).not.toContain('wanjian');
+      expect(opts).toContain('guohe'); // 单目标可以
+    }
+  });
+
+  it('奇策：打完可以选择变更一次副将', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'xunyou',
+        deputyHeroId: 'xuchu',
+        faction: 'wei',
+        hand: [sha('a1')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+    ]);
+    state.heroPool = ['zhangliao', 'zhouyu'];
+    ok(act(state, A, { type: 'useSkill', skillId: 'qice', cardIds: [], targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'guohe' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 变更副将的询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('变更');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 连亮的第一张就是魏将（张辽，与主将荀攸同势力）→ 立刻停下，牌堆还剩周瑜
+    expect(state.heroPool).toEqual(['zhouyu']);
+    expect(a.deputyHeroId).toBe('zhangliao');
+  });
+});

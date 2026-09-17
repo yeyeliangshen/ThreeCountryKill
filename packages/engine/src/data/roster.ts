@@ -671,8 +671,9 @@ const BIAN: RosterEntry[] = [
     name: '荀攸',
     faction: 'wei',
     pack: 'bian',
-    status: 'todo',
-    primitives: ['virtual_trick'],
+    status: 'done',
+    primitives: ['virtual_trick', 'change_deputy'],
+    note: '奇策（先选锦囊再选目标：目标数受手牌数限制，收尾可选变更一次副将）+ 智愚 都已实现。虚拟锦囊的花色取第一张材料牌（只影响帷幕那类看颜色的判断）。',
   },
   { id: 'bianfuren', name: '卞夫人', faction: 'wei', pack: 'bian', status: 'todo' },
   {

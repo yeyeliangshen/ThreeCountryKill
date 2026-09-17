@@ -1,4 +1,5 @@
 import {
+  CARD_TYPE_NAME,
   cardColor,
   cardLabel,
   FIRE_TRICKS,
@@ -17,6 +18,7 @@ import type {
   Intent,
   RoleId,
   Suit,
+  TrickType,
 } from '@sgs/protocol';
 import type { HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
@@ -3519,6 +3521,273 @@ const MADAI: Hero = {
  * startTrickResolution），【杀】那边本来就派发；取消【杀】走 attack.dodged，
  * 取消锦囊走 ctx.negatedSeats（与【无懈可击·国】同一条路）。
  */
+/**
+ * 荀攸 —— 奇策 / 智愚（君临天下·变，已核文本）。
+ *
+ * - 奇策：出牌阶段限一次，你可以将**所有手牌**当**任意一张普通锦囊牌**使用，
+ *   你不能以此法使用目标数超过 X 的牌（X 为你的手牌数），然后你可以变更一次副将。
+ * - 智愚：当你受到伤害后，你可以摸一张牌，然后展示所有手牌，若颜色均相同，来源弃置一张手牌。
+ *
+ * 奇策的交互形状与别的主动技相反：**先定锦囊、再定目标**（目标数还受手牌数限制），
+ * 所以它不收 targetIds，全在 execute 里问：选锦囊 → 按那张锦囊的目标数选目标 →
+ * 把手牌全部当材料打出去（api.castVirtualTrick）→ 最后可以变更一次副将。
+ *
+ * ⚠️ 虚拟锦囊的「花色」取第一张材料牌的花色（引擎的 castVirtualTrick 需要一个花色，
+ *    而奇策的牌没有实体牌面）——只影响【帷幕】那类看颜色的判断，已注明。
+ */
+const XUNYOU: Hero = {
+  id: 'xunyou',
+  name: '荀攸',
+  faction: 'wei',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'qice',
+      name: '奇策',
+      oncePerTurn: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state, player) => player.hand.length > 0 && qiceOptions(state, player).length > 0,
+      execute: (state, player, _intent, api) => {
+        const options = qiceOptions(state, player);
+        if (options.length === 0) return '当前没有可以这样使用的锦囊';
+        pushLog(state, 'skill', `${player.name} 发动【奇策】。`);
+        api.askChoice(
+          state,
+          player.seatId,
+          `【奇策】：把所有手牌（${player.hand.length} 张）当哪张普通锦囊使用？`,
+          options,
+          (st, p, picked) => {
+            const spec = QICE_TRICKS.find((t) => t.type === picked);
+            if (!spec) return;
+            const maxTargets = Math.min(p.hand.length, spec.max);
+            const step = (chosen: string[]): void => {
+              if (chosen.length < Math.min(spec.min, maxTargets)) {
+                const candidates = qiceTargets(st, p, spec.type).filter(
+                  (c) => !chosen.includes(c.seatId),
+                );
+                if (candidates.length === 0) {
+                  pushLog(st, 'skill', '没有合法目标，【奇策】未生效。');
+                  return;
+                }
+                api.askChoice(
+                  st,
+                  p.seatId,
+                  `【奇策】：为【${CARD_TYPE_NAME[spec.type]}】选择目标（第 ${chosen.length + 1} 个）`,
+                  candidates.map((c) => ({ id: c.seatId, label: c.name })),
+                  (st2, p2, tid) => step2(st2, p2, tid, chosen, spec, api),
+                  p.seatId,
+                );
+                return;
+              }
+              fire(st, p, spec, chosen, api);
+            };
+            step([]);
+          },
+        );
+        return undefined;
+      },
+    },
+  ],
+  hooks: [
+    {
+      timing: 'afterDamage',
+      skillId: '智愚',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const sourceId = (ctx.payload as { attack?: AttackContext } | undefined)?.attack?.sourceId;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【智愚】摸一张牌并展示手牌？',
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const c = drawOne(st);
+            if (c) p.hand.push(c);
+            pushLog(st, 'skill', `${p.name} 发动【智愚】，摸了一张牌并展示手牌。`);
+            if (p.hand.length === 0) return;
+            const colors = new Set(p.hand.map((x) => cardColor(x)));
+            if (colors.size !== 1) return; // 颜色均相同才继续
+            const src = sourceId ? getPlayer(st, sourceId) : undefined;
+            if (!src || !src.alive || src.seatId === p.seatId || src.hand.length === 0) return;
+            const idx = Math.floor(Math.random() * src.hand.length);
+            const card = src.hand[idx];
+            if (!card) return;
+            ctx.api.discardCard(src.seatId, card);
+            pushLog(st, 'skill', `${src.name} 因【智愚】弃置了一张手牌。`);
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '奇策',
+      desc: '出牌阶段限一次，你可以将所有手牌当任意一张普通锦囊牌使用，你不能以此法使用目标数超过X的牌（X为你的手牌数），然后你可以变更一次副将。',
+    },
+    {
+      name: '智愚',
+      desc: '当你受到伤害后，你可以摸一张牌，然后展示所有手牌，若颜色均相同，来源弃置一张手牌。',
+    },
+  ],
+};
+
+/** 奇策能当的普通锦囊：min/max 是要指定的目标数（0 表示不用指定） */
+const QICE_TRICKS: { type: TrickType; min: number; max: number }[] = [
+  { type: 'guohe', min: 1, max: 1 },
+  { type: 'shunshou', min: 1, max: 1 },
+  { type: 'juedou', min: 1, max: 1 },
+  { type: 'huogong', min: 1, max: 1 },
+  { type: 'jiedao', min: 2, max: 2 },
+  { type: 'tiesuo', min: 1, max: 2 },
+  { type: 'huoshao', min: 1, max: 2 },
+  { type: 'zhibi', min: 1, max: 1 },
+  { type: 'yuanjiao', min: 1, max: 1 },
+  { type: 'wuzhong', min: 0, max: 0 },
+  { type: 'taoyuan', min: 0, max: 0 },
+  { type: 'wugu', min: 0, max: 0 },
+  { type: 'nanman', min: 0, max: 0 },
+  { type: 'wanjian', min: 0, max: 0 },
+  { type: 'yiyi', min: 0, max: 0 },
+  { type: 'xietianzi', min: 0, max: 0 },
+];
+
+/** 不指定目标的锦囊「这次使用会指定多少人」（奇策的限制看的是这个数） */
+function qiceTargetCount(state: GameState, player: Player, type: TrickType): number {
+  const alive = state.players.filter((p) => p.alive);
+  switch (type) {
+    case 'nanman':
+    case 'wanjian':
+      return alive.length - 1;
+    case 'taoyuan':
+    case 'wugu':
+      return alive.length;
+    case 'wuzhong':
+      return 1;
+    case 'yiyi':
+      return alive.filter((p) => sameKnownFaction(state, player, p)).length;
+    case 'xietianzi':
+      return alive.filter((p) => !effectiveFaction(state, p)).length;
+    default:
+      return QICE_TRICKS.find((t) => t.type === type)?.min ?? 1;
+  }
+}
+
+/** 奇策现在能当哪些普通锦囊用（目标数不能超过手牌数） */
+function qiceOptions(state: GameState, player: Player): { id: string; label: string }[] {
+  const hand = player.hand.length;
+  const out: { id: string; label: string }[] = [];
+  for (const spec of QICE_TRICKS) {
+    if (qiceTargetCount(state, player, spec.type) > hand) continue;
+    out.push({ id: spec.type, label: CARD_TYPE_NAME[spec.type] });
+  }
+  return out;
+}
+
+/** 奇策可选的目标（距离 + 既有的目标封锁，如帷幕/空城） */
+function qiceTargets(state: GameState, player: Player, type: TrickType): Player[] {
+  const alive = state.players.filter((p) => p.alive);
+  const others = alive.filter((p) => p.seatId !== player.seatId);
+  const legal = (p: Player): boolean =>
+    !heroBlocksBeingTarget(state, p, cardOfType(type), player);
+  switch (type) {
+    case 'tiesuo':
+    case 'taoyuan':
+    case 'wugu':
+      return alive.filter(legal);
+    case 'shunshou':
+      return others.filter(
+        (p) => distance(state, player.seatId, p.seatId) <= 1 && legal(p),
+      );
+    case 'guohe':
+    case 'huogong':
+    case 'juedou':
+    case 'zhibi':
+    case 'yuanjiao':
+      return others.filter(legal);
+    case 'huoshao':
+      return alive.filter(legal);
+    default:
+      return others.filter(legal);
+  }
+}
+
+/** 造一张「只为问目标合法性」的假牌（不对应牌堆里的实体牌） */
+function cardOfType(type: TrickType): Card {
+  return { id: `virtual-ask-${type}`, type, suit: 'spade', rank: 0 };
+}
+
+/** 收下一个目标：够了就把它打出去 */
+function step2(
+  state: GameState,
+  player: Player,
+  targetId: string,
+  chosen: string[],
+  spec: { type: TrickType; min: number; max: number },
+  api: SkillApi,
+): void {
+  const next = [...chosen, targetId];
+  const need = Math.min(spec.min, Math.min(player.hand.length, spec.max));
+  if (next.length < need) {
+    const candidates = qiceTargets(state, player, spec.type).filter(
+      (c) => !next.includes(c.seatId),
+    );
+    if (candidates.length > 0) {
+      api.askChoice(
+        state,
+        player.seatId,
+        `【奇策】：为【${CARD_TYPE_NAME[spec.type]}】选择目标（第 ${next.length + 1} 个）`,
+        candidates.map((c) => ({ id: c.seatId, label: c.name })),
+        (st2, p2, tid) => step2(st2, p2, tid, next, spec, api),
+        player.seatId,
+      );
+      return;
+    }
+  }
+  fire(state, player, spec, next, api);
+}
+
+/** 把手牌全部当材料打出去，然后可以变更一次副将 */
+function fire(
+  state: GameState,
+  player: Player,
+  spec: { type: TrickType },
+  targets: string[],
+  api: SkillApi,
+): void {
+  const materials = player.hand.slice();
+  const suit = materials[0]?.suit ?? 'spade';
+  for (const c of materials) removeCard(player.hand, c.id);
+  toDiscard(state, ...materials);
+  pushLog(
+    state,
+    'skill',
+    `${player.name} 用 ${materials.length} 张手牌当【${CARD_TYPE_NAME[spec.type]}】使用。`,
+  );
+  api.castVirtualTrick(player.seatId, { type: spec.type, suit }, targets);
+  if (!player.deputyHeroId) return;
+  api.askChoice(
+    state,
+    player.seatId,
+    '【奇策】：是否变更一次副将？',
+    [
+      { id: 'yes', label: '变更副将' },
+      { id: 'no', label: '不变更' },
+    ],
+    (st, p, choice) => {
+      if (choice === 'yes') api.changeDeputyHero(p.seatId);
+    },
+  );
+}
+
 const YUJI: Hero = {
   id: 'yuji',
   name: '于吉',
@@ -7860,6 +8129,7 @@ export const HEROES: Hero[] = [
   ZHANGREN,
   DENGAI,
   YUJI,
+  XUNYOU,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
