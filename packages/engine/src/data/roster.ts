@@ -618,8 +618,9 @@ const SHI: RosterEntry[] = [
     name: '糜夫人',
     faction: 'shu',
     pack: 'shi',
-    status: 'todo',
-    note: '闺秀/存嗣都要「移除武将牌」那套制度（糜夫人是国战首个引入「移除」的武将），尚未实现。',
+    status: 'done',
+    primitives: ['remove_hero'],
+    note: '闺秀（明置摸两张走新时机 heroRevealed；移除时回 1 血走 Hero.healOwnerOnRemoval）+ 存嗣（移除自己并把【勇决】给一名角色，非自己则其摸两张）都已实现。【勇决】是伪武将（notDraftable），触发走新时机 attackSettled。',
   },
   {
     id: 'sunce',
@@ -647,7 +648,15 @@ const SHI: RosterEntry[] = [
     primitives: ['maxhp_change', 'pick_cards', 'remove_hero'],
     note: '横征 + 暴凌（主将技、锁定技）都已实现：暴凌在出牌阶段结束时移除副将、+3 上限、回 3 血并把【崩坏】授予自己（崩坏是伪武将，notDraftable）。主将技按技能名限制（mainSlotSkills），并让它少半个阴阳鱼（mainSlotHalfYang）。',
   },
-  { id: 'zhangren', name: '张任', faction: 'qun', pack: 'shi', status: 'todo' },
+  {
+    id: 'zhangren',
+    name: '张任',
+    faction: 'qun',
+    pack: 'shi',
+    status: 'done',
+    primitives: ['remove_hero', 'hook_interaction'],
+    note: '穿心已实现（挂在新时机 damageCaused——「造成伤害时」的**来源**视角，damageDealt 是目标那侧；防止伤害走 flags.damagePrevented）。锋矢＝阵法技（围攻关系），需要阵法系统，尚未实现。',
+  },
 ];
 
 const BIAN: RosterEntry[] = [
