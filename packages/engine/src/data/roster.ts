@@ -661,8 +661,10 @@ const BIAN: RosterEntry[] = [
     name: '马谡',
     faction: 'shu',
     pack: 'bian',
-    status: 'todo',
+    status: 'partial',
     primitives: ['pick_cards'],
+    missing: ['制蛮（要「变更副将」机制，变包引入的那套）'],
+    note: '散谣已实现（印刷版：弃一张牌，对体力值最大的角色造成 1 点伤害）。制蛮依赖变更副将，尚未实现。',
   },
   { id: 'shamoke', name: '沙摩柯', faction: 'shu', pack: 'bian', status: 'todo' },
   {

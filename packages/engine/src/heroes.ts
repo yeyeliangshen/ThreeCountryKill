@@ -2863,6 +2863,77 @@ function hengzhengStep(
  *
  * 两个技能都用现成的搬运原语：弃牌走 discardTargetCard，移动走 api.moveFieldCard。
  */
+/**
+ * 马谡 —— 散谣 / 制蛮（君临天下·变，2013 印刷版文本，已核）。
+ *
+ * - 散谣：出牌阶段限一次，你可以弃置一张牌并选择一名体力值最大的角色，然后你对其造成 1 点伤害。
+ *   （移动版后来改成「手牌数或体力值大于你的其他角色」，这里按印刷版写。）
+ * - 制蛮：当你对其他角色造成伤害时，你可以防止此伤害，然后获得其装备区或判定区里的一张牌；
+ *   然后若其与你势力相同，其可以**变更副将**。
+ *
+ * ⚠️ 制蛮**尚未实现**：它的后半句依赖「变更副将」那套机制（变包引入：从未加入游戏的
+ *    武将牌堆里连续亮将直到与主将势力相同，替换现有副将）。散谣已完成，所以这名武将
+ *    在 roster 里是 partial。
+ */
+const MASU: Hero = {
+  id: 'masu',
+  name: '马谡',
+  faction: 'shu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'sanyao',
+      name: '散谣',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) => {
+        if (player.hand.length === 0) return false;
+        const pool = state.players.filter((x) => x.alive && x.seatId !== player.seatId);
+        if (pool.length === 0) return false;
+        const top = Math.max(...state.players.filter((x) => x.alive).map((x) => x.hp));
+        return pool.some((x) => x.hp === top);
+      },
+      execute: (state, player, intent, api) => {
+        const cardId = intent.cardIds?.[0];
+        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        if (!card) return '请选择要弃置的一张牌';
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名体力值最大的角色';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        if (target.seatId === player.seatId) return '不能选择自己';
+        const top = Math.max(...state.players.filter((x) => x.alive).map((x) => x.hp));
+        if (target.hp !== top) return '只能选择体力值最大的角色';
+        removeCard(player.hand, card.id);
+        toDiscard(state, card);
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【散谣】，弃置【${cardLabel(card)}】并对 ${target.name} 造成 1 点伤害。`,
+        );
+        api.dealDamage(target, 1, player.seatId);
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '散谣',
+      desc: '出牌阶段限一次，你可以弃置一张牌并选择一名体力值最大的角色，然后你对其造成1点伤害。',
+    },
+    {
+      name: '制蛮',
+      desc: '当你对其他角色造成伤害时，你可以防止此伤害，然后获得其装备区或判定区里的一张牌。然后若该角色与你势力相同，其可以变更副将。（变更副将的机制未实现，暂时不可用）',
+    },
+  ],
+};
+
 const LINGTONG: Hero = {
   id: 'lingtong',
   name: '凌统',
@@ -6885,6 +6956,7 @@ export const HEROES: Hero[] = [
   ZANGBA,
   MADAI,
   LINGTONG,
+  MASU,
   DONGZHUO,
   CAOCAO,
   XUNYU,

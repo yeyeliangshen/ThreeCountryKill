@@ -13928,3 +13928,65 @@ describe('国战 · 凌统（旋略 / 勇进）', () => {
     expect(again.ok).toBe(false);
   });
 });
+
+/** 马谡·散谣（弃一张牌，对体力值最大的角色造成 1 点伤害） */
+describe('国战 · 马谡（散谣）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('散谣：弃一张牌，对体力值最大的角色造成 1 点伤害', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'masu', faction: 'shu', hand: [tao('a1')], hp: 3 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 2 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'sanyao', cardIds: ['a1'], targetIds: [B] }));
+    expect(b.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('散谣'))).toBe(true);
+    // 限一次
+    const again = act(state, A, { type: 'useSkill', skillId: 'sanyao', cardIds: [], targetIds: [B] });
+    expect(again.ok).toBe(false);
+  });
+
+  it('散谣：不能选体力值不是最大的角色', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'masu', faction: 'shu', hand: [tao('a1')], hp: 3 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 2 },
+    ]);
+    const res = act(state, A, { type: 'useSkill', skillId: 'sanyao', cardIds: ['a1'], targetIds: [C] });
+    expect(res.ok).toBe(false);
+  });
+});
