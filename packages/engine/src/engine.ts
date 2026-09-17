@@ -3563,7 +3563,20 @@ function startTrickResolution(
     if (type === 'juedou') ctx.duelTurn = 'target';
   }
 
-  // 时机一：锦囊开始结算前的无懈窗口
+  // 时机一之前：「一名角色成为**非装备牌的唯一目标**时」（于吉·千幻）。
+  // 单人目标的锦囊要在这里派一环，让技能有机会取消它；多人目标不算「唯一目标」。
+  // （锦囊牌本身不可能是装备牌，所以这里不用排装备，只排「目标数不等于 1」）
+  const singleTargetId = targetIds.length === 1 ? targetIds[0]! : null;
+  if (singleTargetId) {
+    runAllPlayersHooks(
+      state,
+      'othersBecomeTarget',
+      // 把 trickCtx 一并给出去：技能取消这张锦囊时要用它记「抵消」（见于吉·千幻）
+      { targetId: singleTargetId, card, trickCtx: ctx },
+      () => openWuxieWindow(state, ctx, () => resolveTrick(state, ctx)),
+    );
+    return;
+  }
   openWuxieWindow(state, ctx, () => resolveTrick(state, ctx));
 }
 
@@ -7127,6 +7140,7 @@ export function createGame(
     prelitSkills: [],
     removedHeroIds: [],
     tian: [],
+    qianhuan: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],

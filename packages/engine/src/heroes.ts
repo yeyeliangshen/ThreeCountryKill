@@ -19,7 +19,7 @@ import type {
   Suit,
 } from '@sgs/protocol';
 import type { HookContext, HookRegistration, SkillApi, Timing } from './timing';
-import type { AttackContext, GameState, Player } from './model';
+import type { AttackContext, GameState, Player, TrickContext } from './model';
 import { drawOne } from './deck';
 import { attackRange, canTarget, distance } from './distance';
 
@@ -3505,6 +3505,151 @@ const MADAI: Hero = {
  * 【崩坏】（伪武将，只作为「被授予的技能」存在）。
  * 董卓·暴凌把自己变成「大董卓」时获得它。
  */
+/**
+ * 于吉 —— 千幻（君临天下·阵，**现行国战文本**，已核）。
+ *
+ * ⚠️ 注意：国战于吉是【千幻】，不是【蛊惑】——蛊惑是身份局版本的于吉，两者完全不同。
+ *
+ * 千幻：当与你势力相同的一名角色受到伤害后，你可以将一张与你武将牌上牌花色均不同的牌
+ *      置于你的武将牌上。当与你势力相同的角色成为非装备牌的唯一目标时，你可以移去一张
+ *      「千幻」牌取消之。
+ *
+ * 实现：千幻牌堆放在 Player.qianhuan（与「田」同类的武将牌上区域）；「成为非装备牌的
+ * 唯一目标」用 othersBecomeTarget 这个时机——单人目标的锦囊现在也会派发它（见
+ * startTrickResolution），【杀】那边本来就派发；取消【杀】走 attack.dodged，
+ * 取消锦囊走 ctx.negatedSeats（与【无懈可击·国】同一条路）。
+ */
+const YUJI: Hero = {
+  id: 'yuji',
+  name: '于吉',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'anyDamaged',
+      skillId: '千幻',
+      handler: (ctx) => {
+        const victimId = (ctx.payload as { victimId?: string } | undefined)?.victimId;
+        const victim = victimId ? getPlayer(ctx.state, victimId) : undefined;
+        if (!victim || !victim.alive) return;
+        if (!sameKnownFaction(ctx.state, ctx.player, victim)) return;
+        const me = ctx.player;
+        const suits = new Set(me.qianhuan.map((c) => c.suit));
+        // 「与你武将牌上牌花色均不同的牌」——手牌或装备区里挑
+        const pool = [...me.hand, ...(EQUIP_SLOTS.map((slot) => me.equipment[slot]).filter(Boolean) as Card[])].filter(
+          (c) => !suits.has(c.suit),
+        );
+        if (pool.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【千幻】把一张牌置于武将牌上（成为「千幻」）？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const cards = p.hand.filter((c) => !suits.has(c.suit)).concat(
+              (EQUIP_SLOTS.map((slot) => p.equipment[slot]).filter(Boolean) as Card[]).filter(
+                (c) => !suits.has(c.suit),
+              ),
+            );
+            if (cards.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【千幻】：选择一张置于武将牌上（花色要与已有「千幻」都不同）',
+              cards,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                // 从手牌或装备区搬走（装备要用 discardCard 那套触发失去装备）
+                const inHand = p2.hand.some((c) => c.id === card.id);
+                if (inHand) {
+                  removeCard(p2.hand, card.id);
+                  p2.qianhuan.push(card);
+                  pushLog(st2, 'skill', `${p2.name} 发动【千幻】，将一张牌置于武将牌上。`);
+                } else {
+                  // 装备区的牌：先离场再进「千幻」
+                  for (const slot of EQUIP_SLOTS) {
+                    if (p2.equipment[slot]?.id === card.id) {
+                      p2.equipment[slot] = null;
+                      p2.qianhuan.push(card);
+                      pushLog(st2, 'skill', `${p2.name} 发动【千幻】，将装备区的牌置于武将牌上。`);
+                      break;
+                    }
+                  }
+                }
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'othersBecomeTarget',
+      skillId: '千幻',
+      handler: (ctx) => {
+        const payload = ctx.payload as
+          | { targetId?: string; card?: Card; attack?: AttackContext; trickCtx?: TrickContext }
+          | undefined;
+        const targetId = payload?.targetId;
+        if (!targetId) return;
+        const victim = getPlayer(ctx.state, targetId);
+        if (!victim || !victim.alive) return;
+        if (!sameKnownFaction(ctx.state, ctx.player, victim)) return;
+        if (ctx.player.qianhuan.length === 0) return;
+        const me = ctx.player;
+        // 「非装备牌」：装备牌不算；【杀】要看是不是唯一目标（方天画戟那种多目标不算）
+        const card = payload?.card;
+        if (card && isEquipCard(card)) return;
+        const attack = payload?.attack;
+        if (attack && (attack.fangtianQueue?.length ?? 0) > 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否移去一张「千幻」取消针对 ${victim.name} 的这张牌？`,
+          [
+            { id: 'yes', label: '取消之' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const gone = p.qianhuan.shift();
+            if (!gone) return;
+            toDiscard(st, gone);
+            pushLog(st, 'skill', `${p.name} 移去一张「千幻」，取消了这张牌。`);
+            const a2 = payload?.attack;
+            if (a2) {
+              a2.dodged = true;
+              return;
+            }
+            // 锦囊：走「抵消」那套（与【无懈可击·国】同一条路——引擎里被抵消的角色是靠
+            // wuxieChain 的奇数张生效来判的，这里记一条只针对该目标的链）
+            const trick = payload?.trickCtx;
+            if (trick) {
+              trick.wuxieChain = { scope: [targetId], count: 1 };
+            }
+            void card;
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '千幻',
+      desc: '当与你势力相同的一名角色受到伤害后，你可以将一张与你武将牌上牌花色均不同的牌置于你的武将牌上。当与你势力相同的角色成为非装备牌的唯一目标时，你可以移去一张「千幻」牌取消之。',
+    },
+  ],
+};
+
 const BENGSHUAI: Hero = {
   id: 'bengshuai',
   name: '崩坏',
@@ -7714,6 +7859,7 @@ export const HEROES: Hero[] = [
   MIFUREN,
   ZHANGREN,
   DENGAI,
+  YUJI,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

@@ -14536,3 +14536,100 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     expect(b.hand.some((c) => c.id === 't1')).toBe(true);
   });
 });
+
+/** 于吉·千幻：受伤后往武将牌上放「千幻」，同势力被单独指定时移去一张取消之 */
+describe('国战 · 于吉（千幻）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('千幻①：同势力角色受伤后，可以放一张不同花色的牌在武将牌上', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'yuji', faction: 'qun', hand: [mk('b1', 'sha', 'spade', 3)] },
+      { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'qun' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 甲（魏）打丙（群）→ 丙受伤 → 同势力的于吉可以发动千幻
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('千幻');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(b.qianhuan).toHaveLength(1);
+    expect(b.hand).toHaveLength(0);
+  });
+
+  it('千幻②：同势力角色成为【杀】的唯一目标时，移去一张「千幻」取消之', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'yuji', faction: 'qun', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'qun' },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    const qh = mk('qh1', 'sha', 'club', 4);
+    b.qianhuan.push(qh);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    // 千幻询问（取消这张杀）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('千幻');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.qianhuan).toHaveLength(0); // 移去了一张
+    expect(c.hp).toBe(4); // 杀被取消，丙没受伤
+  });
+
+  it('千幻②：不是唯一目标（多目标锦囊）不触发', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [nanman('a1')] },
+        { seatId: B, name: '乙', heroId: 'yuji', faction: 'qun', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'qun' },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    const qh = mk('qh1', 'sha', 'club', 4);
+    b.qianhuan.push(qh);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    // 南蛮是多目标 → 不该问千幻（问的是无懈/出杀）
+    expect(state.log.some((e) => e.message.includes('千幻，取消了'))).toBe(false);
+    expect(state.pending?.kind).not.toBe('choice');
+  });
+});

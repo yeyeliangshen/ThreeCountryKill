@@ -576,8 +576,9 @@ const ZHEN: RosterEntry[] = [
     name: '于吉',
     faction: 'qun',
     pack: 'zhen',
-    status: 'todo',
-    primitives: ['hook_interaction'],
+    status: 'done',
+    primitives: ['hook_interaction', 'pick_cards'],
+    note: '国战于吉是【千幻】（蛊惑是身份局版本，国战不用）。千幻牌堆放 Player.qianhuan（与「田」同类）；「成为非装备牌的唯一目标」用 othersBecomeTarget——单人目标的锦囊现在也派发它（startTrickResolution），取消【杀】走 attack.dodged、取消锦囊走 wuxieChain（与无懈·国同一条路）。',
   },
   {
     id: 'hetaihou',
