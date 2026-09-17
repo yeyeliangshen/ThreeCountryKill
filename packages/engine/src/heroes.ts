@@ -3636,6 +3636,244 @@ const MADAI: Hero = {
  * 军令那套机制是现成的（董昭·劝进用过：api.armyOrder），这里只是方向相反——
  * 劝进是自己交给受伤角色、节钺是交给异势力角色。
  */
+/**
+ * 崔琰毛玠 —— 征辟 / 奉迎（君临天下·权，取 **2019 修订版**文本，已核）。
+ *
+ * ⚠️ 三版差异很大，这里按 2019 修订版（2023 国战典藏版也是这版）写：
+ *   - 2018 初版：征辟①是「令一名未确定势力的角色**视为与你势力相同**」——官方随后以
+ *     「逼人亮将、可能直接引发胜利」为由改掉；
+ *   - 2019 修订版（本实现）：①改成「你对其使用牌无距离和次数限制」；
+ *   - 2021 现行线上版：征辟①又变成「此阶段结束时，若其明置过武将牌，你获得其一张手牌和
+ *     一张装备区里的牌」；奉迎也从「同势力摸至体力上限」改成「弃光手牌换一个额外回合」。
+ *
+ * 2019 版原文：
+ * - 征辟：出牌阶段开始时，你可以选择一项：①选择一名未确定势力的其他角色，直到回合结束
+ *   或其明置武将牌，你对其使用牌无距离和次数限制；②选择一名有明置武将牌的其他角色，
+ *   你将一张基本牌交给该角色，然后其将一张非基本牌或两张基本牌交给你。
+ * - 奉迎：限定技，你可以将所有手牌当【挟天子以令诸侯】使用（无视大势力限制），
+ *   然后每名与你势力相同的角色将手牌摸至体力上限。
+ *
+ * 实现要点：
+ * - 「无距离和次数限制」用新标记 flags.distanceLimitlessToSeat：distance() 里对那个座位
+ *   直接返回 1（够得着），playSha 的距离/次数校验也放行；「直到其明置武将牌」靠**惰性判断**
+ *   实现——只要目标还有暗置武将牌，这个效果就还在（明置了自然失效）。
+ * - 奉迎的虚拟锦囊走 api.castVirtualTrick（不带大势力校验），之后按 api.handLimit 给
+ *   同势力角色补到手牌上限。
+ */
+const CUIYAN_MAOJIE: Hero = {
+  id: 'cuiyan_maojie',
+  name: '崔琰毛玠',
+  faction: 'wei',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'playPhase',
+      skillId: '征辟',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const hiddenOthers = ctx.state.players.filter(
+          (p) =>
+            p.alive &&
+            p.seatId !== me.seatId &&
+            unrevealedHeroes(ctx.state.mode, p).length > 0 &&
+            !effectiveFaction(ctx.state, p),
+        );
+        const shownOthers = ctx.state.players.filter(
+          (p) => p.alive && p.seatId !== me.seatId && !!effectiveFaction(ctx.state, p),
+        );
+        const basics = me.hand.filter((c) => isBasicCard(c));
+        const options: { id: string; label: string }[] = [];
+        if (hiddenOthers.length > 0) {
+          options.push({ id: 'limitless', label: '①令一名未确定势力的角色：本回合你对其用牌无距离和次数限制' });
+        }
+        if (shownOthers.length > 0 && basics.length > 0) {
+          options.push({ id: 'swap', label: '②与一名已明置的角色交换牌（你给一张基本牌）' });
+        }
+        options.push({ id: 'no', label: '不发动' });
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【征辟】？',
+          options,
+          (st, p, picked) => {
+            if (picked === 'no') return;
+            if (picked === 'limitless') {
+              ctx.api.askChoice(
+                st,
+                p.seatId,
+                '【征辟①】：选择一名未确定势力的角色',
+                hiddenOthers.map((x) => ({ id: x.seatId, label: x.name })),
+                (st2, p2, targetId) => {
+                  p2.flags.distanceLimitlessToSeat = targetId;
+                  pushLog(
+                    st2,
+                    'skill',
+                    `${p2.name} 发动【征辟】：本回合对 ${getPlayer(st2, targetId)?.name ?? '对方'} 使用牌无距离和次数限制。`,
+                  );
+                },
+                p.seatId,
+              );
+              return;
+            }
+            // ②交换：先挑一张基本牌，再挑一名已明置的角色
+            const basicsNow = p.hand.filter((c) => isBasicCard(c));
+            if (basicsNow.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【征辟②】：选择要交出的基本牌',
+              basicsNow,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                const shown = st2.players.filter(
+                  (x) => x.alive && x.seatId !== p2.seatId && !!effectiveFaction(st2, x),
+                );
+                if (shown.length === 0) return;
+                ctx.api.askChoice(
+                  st2,
+                  p2.seatId,
+                  '【征辟②】：交给谁？',
+                  shown.map((x) => ({ id: x.seatId, label: x.name })),
+                  (st3, p3, targetId) => {
+                    const target = getPlayer(st3, targetId);
+                    if (!target) return;
+                    removeCard(p3.hand, card.id);
+                    target.hand.push(card);
+                    pushLog(
+                      st3,
+                      'skill',
+                      `${p3.name} 发动【征辟】，把【${cardLabel(card)}】交给 ${target.name}。`,
+                    );
+                    caoyanSwapBack(st3, p3, target, ctx.api);
+                  },
+                  p2.seatId,
+                );
+              },
+              { returnTo: p.seatId },
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'playPhase',
+      skillId: '奉迎',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.usedOncePerGame.fengying) return;
+        if (me.hand.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动限定技【奉迎】（所有手牌当【挟天子以令诸侯】使用）？',
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            p.usedOncePerGame.fengying = true;
+            const materials = p.hand.slice();
+            const suit = materials[0]?.suit ?? 'spade';
+            for (const c of materials) removeCard(p.hand, c.id);
+            toDiscard(st, ...materials);
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【奉迎】，用 ${materials.length} 张手牌当【挟天子以令诸侯】使用。`,
+            );
+            ctx.api.castVirtualTrick(p.seatId, { type: 'xietianzi', suit }, []);
+            // 然后每名同势力角色摸至手牌上限
+            for (const ally of st.players) {
+              if (!ally.alive) continue;
+              if (!sameKnownFaction(st, p, ally)) continue;
+              const need = ctx.api.handLimit(ally.seatId) - ally.hand.length;
+              let got = 0;
+              for (let i = 0; i < Math.max(0, need); i++) {
+                const c = drawOne(st);
+                if (!c) break;
+                ally.hand.push(c);
+                got++;
+              }
+              if (got > 0) {
+                pushLog(st, 'skill', `${ally.name} 因【奉迎】摸了 ${got} 张牌。`, {
+                  seat: ally.seatId,
+                });
+              }
+            }
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '征辟',
+      desc: '出牌阶段开始时，你可以选择一项：1.选择一名未确定势力的其他角色，直到回合结束或其明置武将牌，你对其使用牌无距离和次数限制；2.选择一名有明置武将牌的其他角色，你将一张基本牌交给该角色，然后其将一张非基本牌或两张基本牌交给你。',
+    },
+    {
+      name: '奉迎',
+      desc: '限定技，你可以将所有手牌当【挟天子以令诸侯】使用（无视大势力限制），然后每名与你势力相同的角色将手牌摸至体力上限。',
+    },
+  ],
+};
+
+/** 征辟②的回礼：由**对方**选择交一张非基本牌，或两张基本牌 */
+function caoyanSwapBack(
+  state: GameState,
+  me: Player,
+  target: Player,
+  api: SkillApi,
+): void {
+  const nonBasics = target.hand.filter((c) => !isBasicCard(c));
+  const basics = target.hand.filter((c) => isBasicCard(c));
+  const options: { id: string; label: string }[] = [];
+  if (nonBasics.length > 0) options.push({ id: 'nonbasic', label: '交给对方一张非基本牌' });
+  if (basics.length >= 2) options.push({ id: 'twoBasics', label: '交给对方两张基本牌' });
+  if (options.length === 0) {
+    pushLog(state, 'skill', `${target.name} 没有合适的牌可以交回，【征辟】就此结束。`);
+    return;
+  }
+  api.askChoice(
+    state,
+    target.seatId,
+    `【征辟】：${me.name} 给了你一张基本牌，你交回什么？`,
+    options,
+    (st, t, picked) => {
+      const pool = picked === 'nonbasic' ? nonBasics : basics;
+      const count = picked === 'nonbasic' ? 1 : 2;
+      api.askPickCards(
+        st,
+        t.seatId,
+        `【征辟】：选择交给 ${me.name} 的牌`,
+        pool,
+        count,
+        count,
+        (st2, t2, chosen) => {
+          for (const c of chosen) {
+            removeCard(t2.hand, c.id);
+            me.hand.push(c);
+          }
+          pushLog(
+            st2,
+            'skill',
+            `${t2.name} 交给 ${me.name} ${chosen.length} 张牌。`,
+            { seat: t2.seatId },
+          );
+        },
+        { returnTo: t.seatId },
+      );
+    },
+    me.seatId,
+  );
+}
+
 const YUJIN: Hero = {
   id: 'yujin',
   name: '于禁',
@@ -9126,6 +9364,7 @@ export const HEROES: Hero[] = [
   SHAMOKE,
   LIJUE_GUOSI,
   YUJIN,
+  CUIYAN_MAOJIE,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

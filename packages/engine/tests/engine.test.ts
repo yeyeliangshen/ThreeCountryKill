@@ -15442,3 +15442,69 @@ describe('国战 · 于禁（节钺）', () => {
     expect(state.log.some((e) => e.message.includes('多摸三张'))).toBe(true);
   });
 });
+
+/** 崔琰毛玠·征辟/奉迎（都是「出牌阶段开始时」的钩子） */
+describe('国战 · 崔琰毛玠（征辟 / 奉迎）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('征辟①的「无距离限制」：暗置目标放行，其明置后失效', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'cuiyan_maojie', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    // 四人一圈：甲到丙本来是 2 格；把丙做成暗置并挂上标记 → 视为够得着
+    c.heroRevealed = false;
+    c.deputyRevealed = false;
+    expect(distance(state, A, C)).toBe(2);
+    a.flags.distanceLimitlessToSeat = C;
+    expect(distance(state, A, C)).toBe(1); // 无视距离
+    c.heroRevealed = true; // 丙明置 → 效果失效
+    expect(distance(state, A, C)).toBe(2);
+  });
+
+  it('征辟/奉迎：出牌阶段开始时会被问到（钩子已挂上）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'cuiyan_maojie', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+      ],
+      C,
+    );
+    ok(act(state, C, { type: 'endPhase' })); // 轮到甲
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('征辟');
+  });
+});

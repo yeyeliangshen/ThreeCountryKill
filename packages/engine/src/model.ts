@@ -80,6 +80,11 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 崔琰毛玠·征辟①：本回合你对其**使用牌无距离和次数限制**（存的是那个座位）。
+   * 「直到回合结束**或其明置武将牌**」——后者用惰性判断：目标还有暗置武将牌时才有效。
+   */
+  distanceLimitlessToSeat: string | null;
+  /**
    * 李傕郭汜·凶算：被点名「本回合结束时视为未发动」的限定技 id（在那一回合结束时清掉）。
    */
   limitedToReset: string[];
@@ -197,6 +202,7 @@ export function emptyFlags(): PlayerFlags {
     lostCardsThisPhase: 0,
     hunUsedNames: [],
     targetedOtherFactionThisTurn: false,
+    distanceLimitlessToSeat: null,
     limitedToReset: [],
     cardsUsedOrPlayed: 0,
     actionRangeSnapshot: 0,

@@ -1464,7 +1464,17 @@ function playSha(
   // 诸葛连弩：本回合可出无限杀
   const hasZhuge = source.equipment.weapon?.equipName === 'zhuge';
   const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
-  if (source.flags.shaCountThisTurn >= maxSha) return err('本回合出杀数已达上限');
+  // 崔琰毛玠·征辟①：本回合对那名角色「使用牌无距离和次数限制」——
+  // 目标里有他就跳过次数限制（距离那层由 distance() 放行）
+  const limitless =
+    !!source.flags.distanceLimitlessToSeat &&
+    targetIds.includes(source.flags.distanceLimitlessToSeat) &&
+    (() => {
+      const t = getPlayer(state, source.flags.distanceLimitlessToSeat!);
+      return !!t && unrevealedHeroes(state.mode, t).length > 0;
+    })();
+  if (!limitless && source.flags.shaCountThisTurn >= maxSha)
+    return err('本回合出杀数已达上限');
   // 目标数规则：方天画戟（同名两模式两套）+ 丁奉·短兵（额外一名距离 1 的）
   const rule = shaTargetRule(state, source, card);
   if (targetIds.length === 0) return err('杀需指定至少 1 名目标');

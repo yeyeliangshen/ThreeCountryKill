@@ -1,7 +1,7 @@
 import type { Player } from './model';
 import type { GameState } from './model';
 import { getPlayer, getPlayerOrThrow } from './model';
-import { effectiveFaction, effectiveHeroes, hasFeiying } from './heroes';
+import { effectiveFaction, effectiveHeroes, hasFeiying, unrevealedHeroes } from './heroes';
 
 /**
  * 基础距离：圆桌上从 fromId 到 toId 的最短座次距。
@@ -31,6 +31,12 @@ export function distance(state: GameState, fromId: string, toId: string): number
   const from = getPlayer(state, fromId);
   // 丁奉·奋迅：本回合「你至其的距离视为 1」。这是**覆盖**，所以要在马匹/马术之前返回。
   if (from?.flags.distanceToOneThisTurn === toId) return 1;
+  // 崔琰毛玠·征辟①：本回合对其「使用牌无距离限制」——同样在距离这一层直接放行。
+  // 目标明置武将牌后就失效（惰性判断：他还得有暗置武将牌）。
+  if (from?.flags.distanceLimitlessToSeat === toId) {
+    const target = getPlayer(state, toId);
+    if (target && unrevealedHeroes(state.mode, target).length > 0) return 1;
+  }
   let d = baseDistance(state, fromId, toId);
   const to = getPlayer(state, toId);
   if (from?.equipment.minusMount) d -= 1;
