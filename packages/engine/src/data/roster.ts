@@ -199,7 +199,7 @@ const STANDARD_WEI: RosterEntry[] = [
     name: '张郃',
     faction: 'wei',
     pack: 'standard',
-    status: 'todo',
+    status: 'done',
     primitives: ['extra_turn', 'pick_cards'],
   },
   {
@@ -372,7 +372,7 @@ const STANDARD_WU: RosterEntry[] = [
     name: '小乔',
     faction: 'wu',
     pack: 'standard',
-    status: 'todo',
+    status: 'done',
     primitives: ['target_transfer'],
   },
   {
