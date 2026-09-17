@@ -784,6 +784,13 @@ function startJudgmentPhase(state: GameState, player: Player): void {
     return;
   }
   runHooksPausable(state, 'judgePhase', player, undefined, () => {
+    // 张郃·巧变是在**判定阶段一开始**才决定跳过的（标记在钩子里设），
+    // 所以这个检查必须放在钩子之后——startJudgmentPhase 开头那次只看兵粮那类事先设好的。
+    if (player.flags.skipJudgment) {
+      pushLog(state, 'judge', `${player.name} 跳过判定阶段。`);
+      afterJudgmentPhase(state, player);
+      return;
+    }
     processJudgmentPhase(state, player);
   });
 }
@@ -845,6 +852,12 @@ function enterPlayPhase(state: GameState, player: Player): void {
   if (!player.flags.skipPlay) {
     state.turn.phase = 'play';
     runHooksPausable(state, 'playPhase', player, undefined, () => {
+      // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
+      if (player.flags.skipPlay) {
+        pushLog(state, 'trick', `${player.name} 跳过出牌阶段。`);
+        goToDiscardPhase(state, player);
+        return;
+      }
       // 玉玺（锁定技）：出牌阶段开始时，视为使用一张【知己知彼】。
       // 放在**设置出牌 pending 之前**——它是这个阶段的开场动作，结算完才轮到玩家正常出牌。
       askYuxiZhibi(state, player, () => {
@@ -860,7 +873,19 @@ function enterPlayPhase(state: GameState, player: Player): void {
 /** 进入弃牌阶段：检查手牌上限 */
 function goToDiscardPhase(state: GameState, player: Player): void {
   state.turn.phase = 'discard';
-  runHooks(state, 'discardPhase', player);
+  // 走可挂起版本：张郃·巧变要在这里问「是否弃一张牌跳过弃牌阶段」
+  runHooksPausable(state, 'discardPhase', player, undefined, () => {
+    if (player.flags.skipDiscard) {
+      pushLog(state, 'discard', `${player.name} 跳过弃牌阶段。`);
+      runDiscardPhaseEnd(state, player);
+      return;
+    }
+    afterDiscardPhaseHooks(state, player);
+  });
+}
+
+/** 弃牌阶段钩子跑完之后的正常流程（阴阳鱼 → 建弃牌 pending） */
+function afterDiscardPhaseHooks(state: GameState, player: Player): void {
   // 阴阳鱼可以在弃牌阶段弃置，令本回合手牌上限 +2。
   // 只在这一阶段确实要弃牌时才问，否则等于白白消耗掉一个标记。
   if (

@@ -75,8 +75,10 @@ export interface PlayerFlags {
   usedCardsInPlayPhase: { suit: Suit; color: 'red' | 'black'; kind: 'basic' | 'trick' | 'equip' }[];
   /** 跳过出牌阶段（乐不思蜀） */
   skipPlay: boolean;
-  /** 跳过摸牌阶段（兵粮寸断） */
+  /** 跳过摸牌阶段（兵粮寸断 / 夏侯渊·神速 / 张郃·巧变） */
   skipDraw: boolean;
+  /** 跳过弃牌阶段（张郃·巧变） */
+  skipDiscard: boolean;
   /**
    * 跳过判定阶段（夏侯渊·神速）。
    * 注意是**整个判定阶段跳过**，所以判定区的延时锦囊会原样留着、下回合再判。
@@ -142,6 +144,7 @@ export function emptyFlags(): PlayerFlags {
     usedCardsInPlayPhase: [],
     skipPlay: false,
     skipDraw: false,
+    skipDiscard: false,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,

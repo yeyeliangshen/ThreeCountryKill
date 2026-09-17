@@ -11581,3 +11581,201 @@ describe('国战标准版 · 张角 / 周泰', () => {
     expect(b.hp).toBe(3); // 乙失去 1 点体力
   });
 });
+
+/** 张郃·巧变：弃置一张手牌并跳过一个阶段（准备/结束阶段除外） */
+describe('国战标准版 · 张郃（巧变：跳过阶段）', () => {
+  it('跳过判定阶段：判定区的延时锦囊原样留着', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhanghe', hand: [sha('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 判定阶段开始时问巧变
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('巧变');
+      expect(state.pending.title).toContain('判定阶段');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 代价：弃一张手牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
+    // 判定阶段被跳过 → 乐不思蜀还在判定区，也没有任何判定发生
+    expect(b.judgment.some((c) => c.id === 'lb0')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('判定：'))).toBe(false);
+    // 摸牌阶段又问一次（这次不发动）→ 照常摸两张
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('摸牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand).toHaveLength(3); // b2 + 摸到的两张
+    // 出牌阶段还是先问一次（不发动）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('出牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    skipRevealAsk(state);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('跳过摸牌阶段：不摸牌，改为获得一名角色的一张手牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhanghe', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1'), sha('c2')] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 判定阶段：不发动
+    // 摸牌阶段：发动
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('摸牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] })); // 代价
+    // 候选只有丙（甲没手牌）——和突袭同一套流程
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice')
+      expect(state.pending.options.map((o) => o.id)).toEqual([C]);
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['c1'] }));
+    expect(c.hand.map((x) => x.id)).toEqual(['c2']);
+    // 关键：摸牌阶段被跳过 → 手上只有拿来的那张，没有摸牌
+    expect(b.hand.map((x) => x.id)).toEqual(['c1']);
+    expect(state.log.some((e) => e.message.includes('跳过摸牌阶段'))).toBe(true);
+  });
+
+  it('跳过出牌阶段：可以移动场上的一张牌', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhanghe', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const c = state.players.find((p) => p.seatId === C)!;
+    c.equipment.armor = { id: 'arm1', type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' };
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 判定阶段
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 摸牌阶段（照常摸两张）
+    // 出牌阶段：发动
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('出牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] })); // 代价
+    // 奖励：移动场上的一张牌
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'arm1' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: A }));
+    expect(c.equipment.armor).toBeNull();
+    expect(state.players.find((p) => p.seatId === A)!.equipment.armor?.id).toBe('arm1');
+    // 出牌阶段确实被跳过了：直接进弃牌阶段（又问一次巧变）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('弃牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    skipRevealAsk(state);
+    expect(state.turn.seatIndex).not.toBe(1); // 回合已经交给下家
+  });
+
+  it('跳过弃牌阶段：手牌超上限也不用弃', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'zhanghe',
+        hand: ['b1', 'b2', 'b3', 'b4', 'b5', 'b6'].map((id) => sha(id)),
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 判定
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 摸牌（6 → 8 张）
+    expect(b.hand).toHaveLength(8);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 出牌阶段
+    ok(act(state, B, { type: 'endPhase' })); // 主动结束出牌阶段
+    // 弃牌阶段：8 张手牌、上限 4 → 正常要弃 4 张；发动巧变只弃 1 张
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('弃牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(b.hand).toHaveLength(7);
+    expect(state.pending?.kind).not.toBe('discard');
+    expect(state.log.some((e) => e.message.includes('跳过弃牌阶段'))).toBe(true);
+  });
+
+  it('每个阶段都不发动 → 一切照常', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhanghe', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand).toHaveLength(3); // 照常摸两张
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+    expect(state.log.some((e) => e.message.includes('弃置一张手牌跳过'))).toBe(false);
+  });
+
+  it('一张手牌都没有时不问（弃不出牌就发动不了）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhanghe', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'endPhase' }));
+    // 判定/摸牌两个阶段手里都是空的 → 都不问；摸完两张之后出牌阶段才有得问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('出牌阶段');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.log.some((e) => e.message.includes('巧变'))).toBe(false);
+  });
+
+  it('国战：暗置时不问，明置之后各阶段才会问', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei' },
+        { seatId: B, name: '乙', heroId: 'zhanghe' },
+        { seatId: C, name: '丙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const setup: [string, string, Faction][] = [
+      [A, 'zhangfei', 'shu'],
+      [B, 'zhanghe', 'wei'],
+      [C, 'guanyu', 'shu'],
+    ];
+    for (const [seat, heroId, faction] of setup) {
+      const p = state.players.find((x) => x.seatId === seat)!;
+      p.heroId = heroId;
+      p.faction = faction;
+      p.heroRevealed = seat !== B; // 乙是暗将
+      p.deputyRevealed = seat !== B;
+      p.maxHp = Math.max(1, Math.floor(getHero(heroId)!.maxHp));
+      p.hp = p.maxHp;
+      p.flags = emptyFlags();
+    }
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.hand = [sha('b1')];
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    state.log = [];
+    ok(act(state, A, { type: 'endPhase' }));
+    // 准备阶段：暗置的巧变不生效，先问的是明置
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('明置武将牌');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'all' }));
+    // 明置之后，判定阶段开始时会问巧变
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('巧变');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.log.some((e) => e.message.includes('巧变'))).toBe(false);
+  });
+});

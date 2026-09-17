@@ -1485,12 +1485,19 @@ function guanxing(state: GameState, player: Player, api: SkillApi): void {
  * 分两步而不是一步：先定人再拿牌（拿牌要一张张问，因为要看对方手牌）。
  * 选人阶段给一个「不再选人」的选项——官方是「至多两名」，只选一个也合法。
  */
-function tuxiAskTargets(state: GameState, player: Player, picked: string[], api: SkillApi): void {
+function tuxiAskTargets(
+  state: GameState,
+  player: Player,
+  picked: string[],
+  api: SkillApi,
+  // 技能名只是日志/提示文案的差别：张郃·巧变跳过摸牌阶段时用的是**同一套**拿手牌流程
+  skillName = '突袭',
+): void {
   const candidates = state.players.filter(
     (p) => p.alive && p.seatId !== player.seatId && p.hand.length > 0 && !picked.includes(p.seatId),
   );
   if (picked.length >= 2 || candidates.length === 0) {
-    tuxiTakeCards(state, player, picked, 0, api);
+    tuxiTakeCards(state, player, picked, 0, api, skillName);
     return;
   }
   const options = candidates.map((p) => ({ id: p.seatId, label: p.name }));
@@ -1498,14 +1505,14 @@ function tuxiAskTargets(state: GameState, player: Player, picked: string[], api:
   api.askChoice(
     state,
     player.seatId,
-    `【突袭】：选择要拿谁的一张手牌（已选 ${picked.length} 人，至多 2 人）`,
+    `【${skillName}】：选择要拿谁的一张手牌（已选 ${picked.length} 人，至多 2 人）`,
     options,
     (st, p, id) => {
       if (id === '__stop') {
-        tuxiTakeCards(st, p, picked, 0, api);
+        tuxiTakeCards(st, p, picked, 0, api, skillName);
         return;
       }
-      tuxiAskTargets(st, p, [...picked, id], api);
+      tuxiAskTargets(st, p, [...picked, id], api, skillName);
     },
   );
 }
@@ -1517,31 +1524,32 @@ function tuxiTakeCards(
   targets: string[],
   i: number,
   api: SkillApi,
+  skillName = '突袭',
 ): void {
   if (i >= targets.length) {
     pushLog(
       state,
       'skill',
-      `${player.name} 发动【突袭】，获得 ${targets.length} 名角色的各一张手牌。`,
+      `${player.name} 发动【${skillName}】，获得 ${targets.length} 名角色的各一张手牌。`,
     );
     return;
   }
   const t = getPlayer(state, targets[i]!);
   if (!t || !t.alive || t.hand.length === 0) {
-    tuxiTakeCards(state, player, targets, i + 1, api);
+    tuxiTakeCards(state, player, targets, i + 1, api, skillName);
     return;
   }
   api.askPickCards(
     state,
     player.seatId,
-    `【突袭】：选择获得 ${t.name} 的一张手牌`,
+    `【${skillName}】：选择获得 ${t.name} 的一张手牌`,
     t.hand.slice(),
     1,
     1,
     (st, p, chosen) => {
       const c = chosen[0];
       if (c) api.transferCard(t.seatId, c, p.seatId);
-      tuxiTakeCards(st, p, targets, i + 1, api);
+      tuxiTakeCards(st, p, targets, i + 1, api, skillName);
     },
   );
 }
@@ -1800,6 +1808,35 @@ const TAISHICI: Hero = {
  * ⚠️ 界限突破版的吕蒙是「克己（未出杀可跳过弃牌阶段）+ 勤学（觉醒技）」，
  *    那是另一套技能，国战用的是克己 + 谋断。
  */
+/**
+ * 张郃 —— 巧变（国战/标准版文本，已核）：
+ * 你可以弃置一张手牌并跳过一个阶段（准备阶段和结束阶段除外）。
+ * 若你以此法跳过摸牌阶段，你可以获得至多两名角色的各一张手牌；
+ * 若你以此法跳过出牌阶段，你可以移动场上的一张牌。
+ *
+ * ⚠️ 跳过**判定阶段**时，判定区的延时锦囊原样留着（和夏侯渊·神速一样，
+ *    因为整个阶段被跳过了，牌不结算也不进弃牌堆）。
+ */
+const ZHANGHE: Hero = {
+  id: 'zhanghe',
+  name: '张郃',
+  faction: 'wei',
+  maxHp: 4,
+  gender: 'male',
+  hooks: [
+    { timing: 'judgePhase', skillId: '巧变', handler: (ctx) => qiaobianAsk(ctx, 'judgment') },
+    { timing: 'drawPhase', skillId: '巧变', handler: (ctx) => qiaobianAsk(ctx, 'draw') },
+    { timing: 'playPhase', skillId: '巧变', handler: (ctx) => qiaobianAsk(ctx, 'play') },
+    { timing: 'discardPhase', skillId: '巧变', handler: (ctx) => qiaobianAsk(ctx, 'discard') },
+  ],
+  skills: [
+    {
+      name: '巧变',
+      desc: '你可以弃置一张手牌并跳过一个阶段（准备阶段和结束阶段除外）。若你以此法跳过摸牌阶段，你可以获得至多两名角色的各一张手牌；若你以此法跳过出牌阶段，你可以移动场上的一张牌。',
+    },
+  ],
+};
+
 const LVMENG: Hero = {
   id: 'lvmeng',
   name: '吕蒙',
@@ -2758,6 +2795,87 @@ function askMoveFieldCard(ctx: HookContext, skillName: string): void {
         candidates.map((x) => ({ id: x.seatId, label: x.name })),
         (st2, _p2, seatId) => {
           ctx.api.moveFieldCard(entry.card, seatId);
+        },
+      );
+    },
+  );
+}
+
+/** 巧变能跳过的阶段（官方把准备阶段与结束阶段排除在外） */
+type QiaobianPhase = 'judgment' | 'draw' | 'play' | 'discard';
+
+const QIAOBIAN_PHASE_NAME: Record<QiaobianPhase, string> = {
+  judgment: '判定阶段',
+  draw: '摸牌阶段',
+  play: '出牌阶段',
+  discard: '弃牌阶段',
+};
+
+/**
+ * 巧变：弃置一张手牌，跳过当前这个阶段。
+ *
+ * 四个阶段各挂一个钩子，钩子问的时机就是**该阶段一开始**——所以同一回合里
+ * 每个阶段都能各自决定跳不跳（各付一张手牌），两个奖励也各自只在跳过对应阶段时给。
+ * 这里只负责收代价、设标记、发奖励；标记由各阶段的收尾逻辑去读
+ * （engine.ts 的 startJudgmentPhase / doDrawPhase / enterPlayPhase / goToDiscardPhase）。
+ *
+ * ⚠️ 奖励必须在**设完标记之后**再跑：拿手牌和移动场上的牌都会挂起询问，
+ *    要是等询问回来才设标记，这个阶段可能已经带着旧标记走过去了。
+ */
+function qiaobianAsk(ctx: HookContext, phase: QiaobianPhase): void {
+  const state = ctx.state;
+  const player = ctx.player;
+  if (player.hand.length === 0) return; // 没手牌可弃，问了也发动不了
+  const bonus =
+    phase === 'draw'
+      ? '，并获得至多两名角色各一张手牌'
+      : phase === 'play'
+        ? '，并移动场上的一张牌'
+        : '';
+  ctx.api.askChoice(
+    state,
+    player.seatId,
+    `是否发动【巧变】弃置一张手牌，跳过${QIAOBIAN_PHASE_NAME[phase]}${bonus}？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        '【巧变】：弃置一张手牌',
+        p.hand.slice(),
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const card = chosen[0];
+          if (!card) return; // 上面已保证手牌非空，走不到；真弃不了就当没发动
+          ctx.api.discardCard(p2.seatId, card, () => {
+            pushLog(
+              st2,
+              'skill',
+              `${p2.name} 发动【巧变】，弃置一张手牌跳过${QIAOBIAN_PHASE_NAME[phase]}。`,
+            );
+            switch (phase) {
+              case 'judgment':
+                p2.flags.skipJudgment = true;
+                return;
+              case 'discard':
+                p2.flags.skipDiscard = true;
+                return;
+              case 'draw':
+                p2.flags.skipDraw = true;
+                // 「若你以此法跳过摸牌阶段」——和突袭同一套拿牌流程，只是不用少摸牌
+                tuxiAskTargets(st2, p2, [], ctx.api, '巧变');
+                return;
+              case 'play':
+                p2.flags.skipPlay = true;
+                askMoveFieldCard(ctx, '巧变');
+                return;
+            }
+          });
         },
       );
     },
@@ -4925,6 +5043,7 @@ export const HEROES: Hero[] = [
   XUCHU,
   GUOJIA,
   ZHANGLIAO,
+  ZHANGHE,
   CAOCAO,
   XUNYU,
   CAOPI,
