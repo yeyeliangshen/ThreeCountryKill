@@ -14411,3 +14411,128 @@ describe('国战 · 阵法技（队列 / 围攻关系）', () => {
     expect(distance(state, C, D)).toBe(1); // 丁不在队列里、没有飞影
   });
 });
+
+/** 邓艾·屯田/急袭/资粮（第 3 步的地基：cardsLost 时机 + 「田」牌堆） */
+describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      hand?: Card[];
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('屯田：回合外被别人拆牌 → 判定非红桃就收为「田」，距离随之减少', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
+      { seatId: B, name: '乙', heroId: 'dengai', faction: 'wei', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'sha', 'club', 5)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 过河拆桥结算完（乙掉了一张手牌）→ 屯田问乙
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('屯田');
+    }
+    const distBefore = distance(state, B, C);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.tian).toHaveLength(1);
+    expect(b.tian[0]!.id).toBe('j1');
+    expect(b.tian[0]!.tian).toBe(true); // 打上「田」标记（急袭靠它认牌）
+    expect(distance(state, B, C)).toBe(distBefore - 1); // 一张「田」→ 距离 -1
+  });
+
+  it('屯田：红桃判定牌不作为「田」，直接进弃牌堆', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
+      { seatId: B, name: '乙', heroId: 'dengai', faction: 'wei', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'sha', 'heart', 5)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.tian).toHaveLength(0);
+    expect(state.discard.some((c) => c.id === 'j1')).toBe(true);
+  });
+
+  it('急袭（主将技）：「田」可以当【顺手牵羊】使用', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'dengai', deputyHeroId: 'xuchu', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const tianCard = mk('t1', 'sha', 'spade', 5);
+    tianCard.tian = true;
+    a.tian.push(tianCard);
+    // 「田」出现在合法牌里（可以当作牌使用）
+    expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('t1');
+    ok(act(state, A, { type: 'playCard', cardId: 't1', as: 'shunshou', targetIds: [B] }));
+    passWuxie(state);
+    expect(a.tian).toHaveLength(0); // 田被取走
+    expect(b.hand).toHaveLength(0); // 顺手牵羊拿走了乙那张牌
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
+  });
+
+  it('资粮（副将技）：同势力角色受伤后，可以把「田」交给他', () => {
+    const state = gz(
+      [
+        // 邓艾放在**副将**位（资粮是副将技）
+        { seatId: A, name: '甲', heroId: 'xuchu', deputyHeroId: 'dengai', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [sha('c1')] },
+      ],
+      C,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const tianCard = mk('t1', 'sha', 'spade', 5);
+    tianCard.tian = true;
+    a.tian.push(tianCard);
+    // 丙（蜀）打乙（魏）→ 乙受伤 → 甲（魏，副将邓艾·资粮）可以把「田」给乙
+    ok(act(state, C, { type: 'playCard', cardId: 'c1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('资粮');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.tian).toHaveLength(0);
+    expect(b.hand.some((c) => c.id === 't1')).toBe(true);
+  });
+});

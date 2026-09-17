@@ -522,10 +522,9 @@ const ZHEN: RosterEntry[] = [
     name: '邓艾',
     faction: 'wei',
     pack: 'zhen',
-    status: 'partial',
+    status: 'done',
     primitives: ['awaken_skill', 'pick_cards'],
-    missing: ['屯田/急袭/资粮 的测试（实现已落地，测试待补）'],
-    note: '屯田（新时机 cardsLost——回合外失去牌，快照比对实现）+ 急袭（主将技：田当顺手牵羊，走 Card.tian 标记 + usableCardsOf/findUsableCard 扩展）+ 资粮（副将技）都已实现；但**测试还没写**，所以先标 partial。',
+    note: '屯田（新时机 cardsLost：意图前后对「手牌+装备区」做快照比对，只在自己回合外派发）+ 急袭（主将技、减半个阴阳鱼：田当顺手牵羊，靠 Card.tian 标记 + usableCardsOf/findUsableCard/takeUsableCard 扩展）+ 资粮（副将技：同势力角色受伤后交一张田）都已实现并有测试。局限：同一段结算里「先丢掉又摸回来」检测不到（与 handEmptied 同一处局限）。',
   },
   {
     id: 'caohong',
