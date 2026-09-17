@@ -80,6 +80,13 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 沙摩柯·蒺藜：本回合**使用或打出**的牌数，以及「这张牌生效前你的攻击范围」。
+   * 范围要取**牌生效之前**的值——官方 FAQ：本回合先出牌再装武器，那张牌不算；
+   * 先装武器再出牌，才算（武器装上后范围就变了）。
+   */
+  cardsUsedOrPlayed: number;
+  actionRangeSnapshot: number;
+  /**
    * 卞夫人·约俭：本回合有没有**指定过其他势力（含未确定势力）的角色**为目标。
    * 由 markCardUsed 在 useCard 时登记（载荷里带了 targetIds），随回合清零。
    */
@@ -186,6 +193,8 @@ export function emptyFlags(): PlayerFlags {
     lostCardsThisPhase: 0,
     hunUsedNames: [],
     targetedOtherFactionThisTurn: false,
+    cardsUsedOrPlayed: 0,
+    actionRangeSnapshot: 0,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,

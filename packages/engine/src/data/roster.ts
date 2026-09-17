@@ -695,7 +695,9 @@ const BIAN: RosterEntry[] = [
     primitives: ['pick_cards'],
     note: '散谣 + 制蛮 都已实现：制蛮挂在新时机 damageCaused（来源视角），防止伤害后获得其装备/判定区一张牌，同势力时其可以变更副将（变包机制：从残留武将牌堆连亮到与主将同势力）。',
   },
-  { id: 'shamoke', name: '沙摩柯', faction: 'shu', pack: 'bian', status: 'todo' },
+  { id: 'shamoke', name: '沙摩柯', faction: 'shu', pack: 'bian', status: 'done'
+    note: '蒺藜已实现（新时机 cardActionStarted + flags.cardsUsedOrPlayed/actionRangeSnapshot；范围取「牌生效前」的值）。',
+  },
   {
     id: 'lingtong',
     name: '凌统',

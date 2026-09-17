@@ -3605,6 +3605,67 @@ const MADAI: Hero = {
  *   flags.targetedOtherFactionThisTurn（在 useCard 时按载荷里的 targetIds 登记）。
  *   手牌上限＝体力上限的做法是给那名角色加 `handLimitBonus += maxHp - hp`。
  */
+/**
+ * 沙摩柯 —— 蒺藜（君临天下·变，已核）。
+ *
+ * 蒺藜：当你于一回合内使用或打出第 X 张牌时，你可以摸 X 张牌（X 为你的攻击范围）。
+ *
+ * 官方 FAQ 里那条最容易做错的：**武器牌自己不算**——「本回合先出牌、再装青釭剑」不能发动，
+ * 「先装青釭剑（范围变 2）、再出牌」才可以。所以范围要取**这张牌生效之前**的值，
+ * 引擎在 onPlayCard/onRespondCard 里记了 `flags.actionRangeSnapshot` 就是干这个的
+ * （装备牌的生效会把范围改掉，快照留的是改之前的值）。
+ */
+const SHAMOKE: Hero = {
+  id: 'shamoke',
+  name: '沙摩柯',
+  faction: 'shu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'cardActionStarted',
+      skillId: '蒺藜',
+      handler: (ctx) => cili(ctx),
+    },
+  ],
+  skills: [
+    {
+      name: '蒺藜',
+      desc: '当你于一回合内使用或打出第X张牌时，你可以摸X张牌（X为你的攻击范围）。',
+    },
+  ],
+};
+
+/** 蒺藜：本回合使用/打出的牌数正好等于（牌生效前的）攻击范围时，摸那么多张 */
+function cili(ctx: HookContext): void {
+  const me = ctx.player;
+  const x = me.flags.actionRangeSnapshot;
+  if (x <= 0) return;
+  if (me.flags.cardsUsedOrPlayed !== x) return;
+  ctx.api.askChoice(
+    ctx.state,
+    me.seatId,
+    `是否发动【蒺藜】摸 ${x} 张牌？`,
+    [
+      { id: 'yes', label: `摸 ${x} 张牌` },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      let got = 0;
+      for (let i = 0; i < x; i++) {
+        const c = drawOne(st);
+        if (!c) break;
+        p.hand.push(c);
+        got++;
+      }
+      pushLog(st, 'skill', `${p.name} 发动【蒺藜】，摸了 ${got} 张牌。`);
+    },
+  );
+}
+
 const BIANFUREN: Hero = {
   id: 'bianfuren',
   name: '卞夫人',
@@ -8828,6 +8889,7 @@ export const HEROES: Hero[] = [
   LVFAN,
   ZUOCI,
   BIANFUREN,
+  SHAMOKE,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

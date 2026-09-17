@@ -42,7 +42,7 @@ import {
   type Player,
   type TrickContext,
 } from './model';
-import { canTarget, distance } from './distance';
+import { attackRange, canTarget, distance } from './distance';
 import {
   applyQixingSweep,
   armorNullifiesSha,
@@ -3190,20 +3190,39 @@ function onPlayCard(
     revealForConversion(state, player, card, intent.as);
   }
 
-  if (as === 'sha') return playSha(state, player, card, intent.targetIds, as, intent.asAttribute);
-  if (as === 'tao') return playTao(state, player, card);
-  if (as === 'jiu') return playJiu(state, player, card);
-  if (canRecastCard(state, player, card)) return playMaybeRecast(state, player, card, as, intent);
-  // 转化锦囊（甘宁·奇袭：黑色牌当过河拆桥）
-  if (as !== card.type && isInstantTrick({ ...card, type: as }))
-    return playTrick(state, player, { ...card, type: as }, intent);
-  // 转化的延时锦囊（大乔·国色：方块牌当【乐不思蜀】）
-  if (as !== card.type && isDelayedTrick({ ...card, type: as }))
-    return playDelayedTrick(state, player, { ...card, type: as }, intent.targetIds);
-  if (isEquipCard(card)) return playEquip(state, player, card);
-  if (isDelayedTrick(card)) return playDelayedTrick(state, player, card, intent.targetIds);
-  if (isInstantTrick(card)) return playTrick(state, player, card, intent);
-  return err('该牌不能在出牌阶段主动使用');
+  // 沙摩柯·蒺藜：记下「这是本回合第几张使用/打出的牌」以及**牌生效前**的攻击范围。
+  // 放在这里＝所有校验都过了、牌马上要生效之前（武器装上会改范围，所以必须取快照）。
+  // 沙摩柯·蒺藜：记下「这是本回合第几张使用/打出的牌」以及**牌生效前**的攻击范围。
+  // 放在这里＝所有校验都过了、牌马上要生效之前（武器装上会改范围，所以必须取快照）。
+  player.flags.cardsUsedOrPlayed += 1;
+  player.flags.actionRangeSnapshot = attackRange(state, player);
+  const doPlay = (): ApplyResult => {
+    // 「你使用或打出了本回合第 N 张牌」（沙摩柯·蒺藜）：在计数的同一处派发，
+    // 这样使用与打出两条路都覆盖到，也不用去动 useCard 那套既有记账。
+    runHooksPausable(state, 'cardActionStarted', player, { card }, () => {});
+    if (as === 'sha') return playSha(state, player, card, intent.targetIds, as, intent.asAttribute);
+    if (as === 'tao') return playTao(state, player, card);
+    if (as === 'jiu') return playJiu(state, player, card);
+    if (canRecastCard(state, player, card)) return playMaybeRecast(state, player, card, as, intent);
+    // 转化锦囊（甘宁·奇袭：黑色牌当过河拆桥）
+    if (as !== card.type && isInstantTrick({ ...card, type: as }))
+      return playTrick(state, player, { ...card, type: as }, intent);
+    // 转化的延时锦囊（大乔·国色：方块牌当【乐不思蜀】）
+    if (as !== card.type && isDelayedTrick({ ...card, type: as }))
+      return playDelayedTrick(state, player, { ...card, type: as }, intent.targetIds);
+    if (isEquipCard(card)) return playEquip(state, player, card);
+    if (isDelayedTrick(card)) return playDelayedTrick(state, player, card, intent.targetIds);
+    if (isInstantTrick(card)) return playTrick(state, player, card, intent);
+    return err('该牌不能在出牌阶段主动使用');
+  };
+  // 「你使用或打出了本回合第 N 张牌」（沙摩柯·蒺藜）：在计数的同一处派发。
+  // ⚠️ 必须把「真正出牌」放进回调里：钩子如果发问（蒺藜就问），询问会被紧随其后的
+  //    playSha/playTrick 覆盖掉（与判定阶段那个坑同一类）。
+  let result: ApplyResult = { ok: true };
+  runHooksPausable(state, 'cardActionStarted', player, { card }, () => {
+    result = doPlay();
+  });
+  return result;
 }
 
 /**
@@ -5736,6 +5755,25 @@ function finishWuxieWindow(
 }
 
 function onRespondCard(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'respondCard' }>,
+): ApplyResult {
+  const result = onRespondCardInner(state, seatId, intent);
+  if (result.ok) {
+    // 沙摩柯·蒺藜：打出的牌同样计入「本回合使用或打出的牌数」，并派发「打出后」的时机
+    const p = getPlayer(state, seatId);
+    if (p) {
+      p.flags.cardsUsedOrPlayed += 1;
+      p.flags.actionRangeSnapshot = attackRange(state, p);
+      runHooksPausable(state, 'cardActionStarted', p, { card: intent.cardId }, () => {});
+    }
+  }
+  return result;
+}
+
+/** 响应打出的实体（外面那层负责计数与派发） */
+function onRespondCardInner(
   state: GameState,
   seatId: string,
   intent: Extract<Intent, { type: 'respondCard' }>,

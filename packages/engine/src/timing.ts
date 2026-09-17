@@ -44,6 +44,12 @@ export type Timing =
    */
   | 'othersTurnEnd'
   | 'useCard' // 使用牌时（声明使用、指定目标后）
+  /**
+   * **你使用或打出**了一张牌的那一刻（使用与打出的**唯一**公共时机，payload.card）。
+   * 沙摩柯·蒺藜挂这里——它要的是「本回合使用或打出的第 X 张牌」，而 useCard 只覆盖
+   * 部分路径（普通出杀那条就没派发），所以另开一个只在「计数」处派发的时机。
+   */
+  | 'cardActionStarted'
   | 'becomeTarget' // 成为目标时（目标可响应）
   /**
    * **一名角色**成为【杀】的目标后（派给**所有存活角色**，payload.targetId 是谁成为目标）。

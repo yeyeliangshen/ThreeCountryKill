@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
+  attackRange,
   baseDistance,
   effectiveHeroes,
   siegeRelations,
@@ -15134,5 +15135,137 @@ describe('国战 · 卞夫人（挽危 / 约俭）', () => {
     ok(act(state, B, { type: 'endPhase' }));
     expect(b.flags.handLimitBonus).toBe(0);
     expect(state.log.some((e) => e.message.includes('约俭'))).toBe(false);
+  });
+});
+
+/** 沙摩柯·蒺藜：本回合使用/打出的第 X 张牌（X＝牌生效前的攻击范围）→ 摸 X 张 */
+describe('国战 · 沙摩柯（蒺藜）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('蒺藜：无武器（范围 1）时，本回合第 1 张牌就触发，摸 1 张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'shamoke', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('蒺藜');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d1']); // 摸 1 张（范围 1）
+    // 摸完接着走原来的结算：丙出闪
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('蒺藜：武器牌自己在出它那一刻范围还是 1 → 按 X=1 触发', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'shamoke',
+        faction: 'shu',
+        hand: [mk('w1', 'weapon', 'spade', 1)],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    ok(act(state, A, { type: 'playCard', cardId: 'w1', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('蒺藜');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d1']); // 摸 1 张，不是 2 张
+    expect(a.equipment.weapon?.id).toBe('w1'); // 武器照样装上了
+  });
+
+  it('蒺藜：装上武器后，本回合第 X 张牌（X＝范围）触发摸 X 张', () => {
+    // 不写死范围：引擎里各武器的范围以 attackRange 为准（青釭剑在本引擎是 3）
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'shamoke',
+        faction: 'shu',
+        hand: ['a1', 'a2', 'a3', 'a4'].map((id) => jiu(id)),
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = {
+      id: 'w1',
+      type: 'weapon',
+      suit: 'spade',
+      rank: 1,
+      equipName: 'qinggang',
+      range: 2,
+    };
+    const x = attackRange(state, a);
+    expect(x).toBeGreaterThan(1);
+    a.hand = ['a1', 'a2', 'a3', 'a4'].slice(0, x - 1).map((id) => jiu(id));
+    a.hand.push(sha('zz'));
+    state.deck = Array.from({ length: x }, (_, i) => mk(`d${i}`, 'sha', 'club', 7 + i));
+    // 前 x-1 张（【酒】）：牌数没到 X → 不问
+    for (const id of a.hand.slice(0, x - 1).map((c) => c.id)) {
+      ok(act(state, A, { type: 'playCard', cardId: id, targetIds: [] }));
+    }
+    expect(state.log.some((e) => e.message.includes('蒺藜'))).toBe(false);
+    // 第 X 张：【杀】→ 触发，摸 X 张
+    ok(act(state, A, { type: 'playCard', cardId: 'zz', targetIds: [C] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('蒺藜');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand).toHaveLength(x);
+  });
+
+  it('蒺藜：打出（响应）也算进计数', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'shamoke', faction: 'shu', hand: [shan('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7)];
+    // 甲杀乙 → 乙打出【闪】（本回合第 1 张，范围 1）→ 蒺藜摸 1 张
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(b.flags.cardsUsedOrPlayed).toBe(1);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('蒺藜');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand.map((c) => c.id)).toEqual(['d1']);
   });
 });
