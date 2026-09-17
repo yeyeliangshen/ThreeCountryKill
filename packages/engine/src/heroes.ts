@@ -2489,6 +2489,100 @@ const JIANGWAN_FEYI: Hero = {
   ],
 };
 
+/**
+ * 陈武董袭 —— 断绁 / 奋命（君临天下·势，2013 印刷版，已核）。
+ *
+ * - 断绁：出牌阶段限一次，你可以令一名其他角色横置，若如此做，你横置。
+ *   （2022 国战加强版改成「至多 X 名其他角色，X 为你已损失的体力值且至少为 1」，未采用。）
+ * - 奋命：结束阶段开始时，若你处于连环状态，你可弃置处于连环状态的每名角色的一张牌。
+ *   （「每名角色」包含自己；从**可见的**装备/判定牌里挑，手牌只能随机抽——与挑衅同一套。）
+ */
+const CHENWU_DONGXI: Hero = {
+  id: 'chenwu_dongxi',
+  name: '陈武董袭',
+  faction: 'wu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'duanxie',
+      name: '断绁',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: false,
+      canUse: (state, player) =>
+        !player.chained &&
+        state.players.some((p) => p.alive && p.seatId !== player.seatId && !p.chained),
+      execute: (state, player, intent, api) => {
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名其他角色';
+        if (targetId === player.seatId) return '不能选择自己';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        if (target.chained) return '该角色已经处于连环状态';
+        if (player.chained) return '你已经处于连环状态';
+        api.chainPlayers([targetId], true);
+        pushLog(state, 'skill', `${player.name} 发动【断绁】，横置 ${target.name}。`);
+        api.chainPlayers([player.seatId], true);
+        pushLog(state, 'skill', `${player.name} 因【断绁】横置了自己。`);
+        return undefined;
+      },
+    },
+  ],
+  hooks: [
+    {
+      timing: 'turnEnd',
+      skillId: '奋命',
+      handler: (ctx) => {
+        if (!ctx.player.chained) return;
+        const chained = ctx.state.players.filter((p) => p.alive && p.chained);
+        if (chained.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否发动【奋命】弃置所有横置角色（共 ${chained.length} 名）的一张牌？`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            fenmingStep(st, p, chained.map((x) => x.seatId), 0, ctx.api);
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    { name: '断绁', desc: '出牌阶段限一次，你可以令一名其他角色横置，若如此做，你横置。' },
+    {
+      name: '奋命',
+      desc: '结束阶段开始时，若你处于连环状态，你可弃置处于连环状态的每名角色的一张牌。',
+    },
+  ],
+};
+
+/** 奋命：按座次把「横置的每个角色」各弃一张（一个个问，所以是一条续接链） */
+function fenmingStep(
+  state: GameState,
+  me: Player,
+  queue: string[],
+  i: number,
+  api: SkillApi,
+): void {
+  const target = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+  if (!target || !target.alive) {
+    if (i < queue.length) fenmingStep(state, me, queue, i + 1, api);
+    return;
+  }
+  pickOneOfTargetCards(state, me, target, api, '奋命', () =>
+    fenmingStep(state, me, queue, i + 1, api),
+  );
+}
+
 const XUSHENG: Hero = {
   id: 'xusheng',
   name: '徐盛',
@@ -2652,6 +2746,140 @@ const TAISHICI: Hero = {
  * ⚠️ 跳过**判定阶段**时，判定区的延时锦囊原样留着（和夏侯渊·神速一样，
  *    因为整个阶段被跳过了，牌不结算也不进弃牌堆）。
  */
+/**
+ * 李典 —— 恂恂 / 忘隙（君临天下·势，已核）。
+ *
+ * - 恂恂（**2013 印刷版**）：摸牌阶段摸牌时，你可改为观看牌堆顶的四张牌，将其中两张收入手牌，
+ *   其余以任意顺序置于牌堆底。
+ *   ⚠️ 2015 修订版把「收入手牌」改成「两张以任意顺序置于牌堆顶」——那样就不与张辽·突袭
+ *      冲突了。这里按《君临天下·势》印刷卡面写（与项目对君临天下各包的取法一致）。
+ * - 忘隙：每当你对其他角色造成 1 点伤害后，或受到其他角色造成的 1 点伤害后，若该角色存活，
+ *   你可以令你与其各摸一张牌。（两个方向、逐点都要问）
+ */
+const LIDIAN: Hero = {
+  id: 'lidian',
+  name: '李典',
+  faction: 'wei',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'drawPhase',
+      skillId: '恂恂',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.flags.skipDraw) return; // 已经被跳过摸牌了（兵粮/神速）就别再改
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【恂恂】放弃摸牌，改为观看牌堆顶四张牌？',
+          [
+            { id: 'yes', label: '发动（取其中两张，其余置牌堆底）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            // 「放弃摸牌」：把这一阶段的摸牌数改成 0
+            p.flags.skipDraw = true;
+            const top: Card[] = [];
+            for (let i = 0; i < 4; i++) {
+              const c = drawOne(st);
+              if (!c) break;
+              top.push(c);
+            }
+            if (top.length === 0) return;
+            const take = Math.min(2, top.length);
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              `【恂恂】：观看牌堆顶 ${top.length} 张，取其中 ${take} 张`,
+              top,
+              take,
+              take,
+              (st2, p2, chosen) => {
+                const gotIds = new Set(chosen.map((c) => c.id));
+                const rest = top.filter((c) => !gotIds.has(c.id));
+                for (const c of chosen) p2.hand.push(c);
+                // 其余以任意顺序置于牌堆底（这里按原序放；`unshift` 让第一张最靠底）
+                st2.deck.unshift(...rest);
+                // 取牌是私密信息：日志只记张数，不记牌名（与观星一致）
+                pushLog(
+                  st2,
+                  'skill',
+                  `${p2.name} 发动【恂恂】：取得 ${chosen.length} 张，其余 ${rest.length} 张置于牌堆底。`,
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'afterDamageDealt',
+      skillId: '忘隙',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.targetId === ctx.player.seatId) return;
+        wangxiAsk(ctx, attack.targetId, payload?.damage ?? 0);
+      },
+    },
+    {
+      timing: 'afterDamage',
+      skillId: '忘隙',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const attack = payload?.attack;
+        if (!attack?.sourceId || attack.sourceId === ctx.player.seatId) return;
+        wangxiAsk(ctx, attack.sourceId, payload?.damage ?? 0);
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '恂恂',
+      desc: '摸牌阶段摸牌时，你可改为观看牌堆顶的四张牌，将其中两张收入手牌，其余以任意顺序置于牌堆底。',
+    },
+    {
+      name: '忘隙',
+      desc: '每当你对其他角色造成1点伤害后，或受到其他角色造成的1点伤害后，若该角色存活，你可以令你与其各摸一张牌。',
+    },
+  ],
+};
+
+/** 忘隙：逐点问一次「要不要各摸一张」（造成与受到两个方向共用） */
+function wangxiAsk(ctx: HookContext, otherSeatId: string, left: number): void {
+  if (left <= 0) return;
+  const other = getPlayer(ctx.state, otherSeatId);
+  if (!other || !other.alive) return;
+  // 「若该角色存活」：注意我们这套伤害层的顺序是「伤害后钩子 → 濒死」，而官方是
+  // 「濒死结算 → 伤害后钩子」。所以这里用 hp>0 来代指「没被打进濒死」——
+  // 代价是「被打进濒死但被救回来」的人不会触发（官方会），已如实标注为简化。
+  if (other.hp <= 0) return;
+  ctx.api.askChoice(
+    ctx.state,
+    ctx.player.seatId,
+    left > 1 ? `【忘隙】：是否与 ${other.name} 各摸一张牌？（还有 ${left} 点没结算）` : `【忘隙】：是否与 ${other.name} 各摸一张牌？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'yes') {
+        const t = getPlayer(st, otherSeatId);
+        const c1 = drawOne(st);
+        if (c1) p.hand.push(c1);
+        const c2 = t ? drawOne(st) : undefined;
+        if (t && c2) t.hand.push(c2);
+        pushLog(st, 'skill', `${p.name} 发动【忘隙】，${p.name} 与 ${t?.name ?? '对方'} 各摸一张牌。`);
+      }
+      if (left > 1) wangxiAsk(ctx, otherSeatId, left - 1);
+    },
+  );
+}
+
 const ZHANGHE: Hero = {
   id: 'zhanghe',
   name: '张郃',
@@ -4328,6 +4556,7 @@ function pickOneOfTargetCards(
   target: Player,
   api: SkillApi,
   skillName = '挑衅',
+  after?: () => void,
 ): void {
   const visible: Card[] = [
     ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
@@ -4342,6 +4571,7 @@ function pickOneOfTargetCards(
   }
   if (options.length === 0) {
     pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
+    after?.();
     return;
   }
   api.askChoice(
@@ -4350,7 +4580,7 @@ function pickOneOfTargetCards(
     `【${skillName}】：弃置 ${target.name} 的一张牌`,
     options,
     (st, _p, picked) => {
-      api.discardTargetCard(target.seatId, picked === '__hand' ? undefined : picked);
+      api.discardTargetCard(target.seatId, picked === '__hand' ? undefined : picked, after);
     },
   );
 }
@@ -6205,6 +6435,7 @@ export const HEROES: Hero[] = [
   GUOJIA,
   ZHANGLIAO,
   ZHANGHE,
+  LIDIAN,
   CAOCAO,
   XUNYU,
   CAOPI,
@@ -6222,6 +6453,7 @@ export const HEROES: Hero[] = [
   DAQIAO,
   XIAOQIAO,
   XUSHENG,
+  CHENWU_DONGXI,
   JIANGWAN_FEYI,
   HETAIHOU,
   CAOHONG,

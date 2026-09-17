@@ -13322,3 +13322,248 @@ describe('国战 · 蒋钦（尚义）', () => {
     expect(again.ok).toBe(false);
   });
 });
+
+/** 李典·恂恂（摸牌阶段看四取二）/ 忘隙（造成或受到 1 点伤害后各摸一张） */
+describe('国战 · 李典（恂恂 / 忘隙）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('恂恂：放弃摸牌，看四张取两张，其余置牌堆底', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'lidian', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [
+      mk('d1', 'sha', 'club', 1),
+      mk('d2', 'sha', 'club', 2),
+      mk('d3', 'sha', 'club', 3),
+      mk('d4', 'sha', 'club', 4),
+    ];
+    ok(act(state, A, { type: 'endPhase' }));
+    // 准备阶段（国战要明置：跳过）→ 判定阶段无牌 → 摸牌阶段开始问恂恂
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('恂恂');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 看牌堆顶四张（drawOne 从末尾抽，所以顶是 d4 d3 d2 d1）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards.map((c) => c.id)).toEqual(['d4', 'd3', 'd2', 'd1']);
+      expect(state.pending.min).toBe(2);
+      expect(state.pending.max).toBe(2);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d4', 'd3'] }));
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['d3', 'd4']);
+    // 其余两张回到牌堆底（「任意顺序」——这里按取出的顺序放）
+    expect(state.deck.map((c) => c.id).sort()).toEqual(['d1', 'd2']);
+    expect(state.log.some((e) => e.message.includes('恂恂'))).toBe(true);
+  });
+
+  it('恂恂：不发动就照常摸两张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'lidian', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 1), mk('d2', 'sha', 'club', 2)];
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['d1', 'd2']);
+  });
+
+  it('忘隙：对别人造成伤害后，双方各摸一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lidian', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.title).toContain('忘隙');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d2']); // 甲摸一张
+    expect(b.hand.map((c) => c.id)).toEqual(['d1']); // 乙也摸一张
+  });
+
+  it('忘隙：受到别人伤害后也能各摸一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'lidian', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 问的是受伤的李典
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand).toHaveLength(1);
+    expect(a.hand).toHaveLength(1);
+    expect(b.hp).toBe(2); // 3 - 1
+  });
+
+  it('忘隙：对方阵亡就不问（若该角色存活）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lidian', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    passDeathSaves(state);
+    expect(state.players.find((p) => p.seatId === B)!.alive).toBe(false);
+    expect(state.log.some((e) => e.message.includes('忘隙'))).toBe(false);
+  });
+});
+
+/** 陈武董袭·断绁（横置别人也横置自己）/ 奋命（弃置所有横置角色各一张） */
+describe('国战 · 陈武董袭（断绁 / 奋命）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      chained?: boolean;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.chained = !!s.chained;
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('断绁：把别人横置，自己也横置', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'chenwu_dongxi', faction: 'wu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'duanxie', cardIds: [], targetIds: [B] }));
+    expect(b.chained).toBe(true);
+    expect(a.chained).toBe(true);
+    // 限一次
+    const again = act(state, A, { type: 'useSkill', skillId: 'duanxie', cardIds: [], targetIds: [C] });
+    expect(again.ok).toBe(false);
+  });
+
+  it('断绁：已经横置的角色不能再选', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'chenwu_dongxi', faction: 'wu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], chained: true },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const res = act(state, A, { type: 'useSkill', skillId: 'duanxie', cardIds: [], targetIds: [B] });
+    expect(res.ok).toBe(false);
+  });
+
+  it('奋命：自己横置时，弃置所有横置角色各一张牌', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'chenwu_dongxi', faction: 'wu', hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 断绁把乙横置，甲自己也横置
+    ok(act(state, A, { type: 'useSkill', skillId: 'duanxie', cardIds: [], targetIds: [B] }));
+    expect(a.chained).toBe(true);
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('奋命');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 第一个横置的是甲（座次从头数），他自己没有可弃的？—— 手里有 a1
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    expect(a.hand).toHaveLength(0);
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    // 轮到乙
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('乙');
+    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    // 注意：这一弃之后回合就结束了，乙已经开始新回合（摸了两张）——
+    // 所以只断言「乙的牌进了弃牌堆」，不去数他的手牌
+    expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
+  });
+
+  it('奋命：没横置就不问', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'chenwu_dongxi', faction: 'wu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], chained: true },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.log.some((e) => e.message.includes('奋命'))).toBe(false);
+  });
+});
