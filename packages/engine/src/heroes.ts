@@ -2853,6 +2853,134 @@ function hengzhengStep(
  * - 判定用的是技能自带判定（drawOne + 进弃牌堆），与张角·雷击 / 蔡文姬·悲歌同一档：
  *   不走 askBeforeJudge，所以鬼才/鬼道改不了它——这是引擎里既有的一处简化。
  */
+/**
+ * 凌统 —— 旋略 / 勇进（君临天下·变，已核国战文本）。
+ *
+ * - 旋略：当你失去装备区的牌后，你可以弃置一名其他角色的一张牌。
+ *   （只能选手牌或装备牌，不能动判定区；官方是「一次失去只触发一次」，
+ *     而本引擎的 equipLost 逐张派发，所以同时失去多张时会问两遍——已在注释里注明。）
+ * - 勇进：限定技，出牌阶段，你可以移动场上至多三张装备牌。
+ *
+ * 两个技能都用现成的搬运原语：弃牌走 discardTargetCard，移动走 api.moveFieldCard。
+ */
+const LINGTONG: Hero = {
+  id: 'lingtong',
+  name: '凌统',
+  faction: 'wu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'equipLost',
+      skillId: '旋略',
+      handler: (ctx) => {
+        const others = ctx.state.players.filter((x) => x.alive && x.seatId !== ctx.player.seatId);
+        if (others.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          '是否发动【旋略】弃置一名其他角色的一张牌？',
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const targets = st.players.filter((x) => x.alive && x.seatId !== p.seatId);
+            if (targets.length === 0) return;
+            ctx.api.askChoice(
+              st,
+              p.seatId,
+              '【旋略】：弃置谁的牌？',
+              targets.map((x) => ({ id: x.seatId, label: x.name })),
+              (st2, p2, targetId) => {
+                const t = getPlayer(st2, targetId);
+                if (!t) return;
+                pickOneOfTargetCards(st2, p2, t, ctx.api, '旋略', undefined, { noJudgment: true });
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  activeSkills: [
+    {
+      id: 'yongjin',
+      name: '勇进',
+      oncePerGame: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state) => {
+        const hasEquip = state.players.some(
+          (x) => x.alive && EQUIP_SLOTS.some((slot) => !!x.equipment[slot]),
+        );
+        return hasEquip && state.players.filter((x) => x.alive).length >= 2;
+      },
+      execute: (state, player, _intent, api) => {
+        pushLog(state, 'skill', `${player.name} 发动【勇进】。`);
+        yongjinStep(state, player, 0, api);
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    { name: '旋略', desc: '当你失去装备区的牌后，你可以弃置一名其他角色的一张牌。' },
+    { name: '勇进', desc: '限定技，出牌阶段，你可以移动场上至多三张装备牌。' },
+  ],
+};
+
+/** 勇进：最多搬三张装备牌（每张都要逐个问，所以是一条续接链） */
+function yongjinStep(state: GameState, me: Player, done: number, api: SkillApi): void {
+  if (done >= 3) return;
+  const entries: { card: Card; owner: Player }[] = [];
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    for (const slot of EQUIP_SLOTS) {
+      const c = p.equipment[slot];
+      if (c) entries.push({ card: c, owner: p });
+    }
+  }
+  // 只在「还有别人能接收」时才列出来——移到原地等于没动
+  const movable = entries.filter(
+    (e) => state.players.filter((x) => x.alive && x.seatId !== e.owner.seatId).length > 0,
+  );
+  if (movable.length === 0) return;
+  const options: { id: string; label: string }[] = movable.map((e) => ({
+    id: e.card.id,
+    label: `移动 ${e.owner.name} 的【${cardLabel(e.card)}】`,
+  }));
+  if (done > 0) options.push({ id: 'stop', label: '不再移动' });
+  // 主动技里的询问都要传 returnTo（技能使用者），否则整条链跑完 pending 会是 null
+  api.askChoice(
+    state,
+    me.seatId,
+    `【勇进】：移动场上一张装备牌（已移动 ${done} / 至多 3）`,
+    options,
+    (st, _p, picked) => {
+      if (picked === 'stop') return;
+      const entry = movable.find((e) => e.card.id === picked);
+      if (!entry) return;
+      const dest = st.players.filter((x) => x.alive && x.seatId !== entry.owner.seatId);
+      if (dest.length === 0) return;
+      api.askChoice(
+        st,
+        me.seatId,
+        `【勇进】：把【${cardLabel(entry.card)}】移到谁的装备区？`,
+        dest.map((x) => ({ id: x.seatId, label: x.name })),
+        (st2, _p2, toId) => {
+          api.moveFieldCard(entry.card, toId, () => yongjinStep(st2, me, done + 1, api));
+        },
+        me.seatId,
+      );
+    },
+    me.seatId,
+  );
+}
+
 const MADAI: Hero = {
   id: 'madai',
   name: '马岱',
@@ -4873,10 +5001,12 @@ function pickOneOfTargetCards(
   api: SkillApi,
   skillName = '挑衅',
   after?: () => void,
+  // 凌统·旋略只能弃手牌/装备，官方明确不能动判定区
+  opts?: { noJudgment?: boolean },
 ): void {
   const visible: Card[] = [
     ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
-    ...target.judgment,
+    ...(opts?.noJudgment ? [] : target.judgment),
   ];
   const options: { id: string; label: string }[] = visible.map((c) => ({
     id: c.id,
@@ -6754,6 +6884,7 @@ export const HEROES: Hero[] = [
   LIDIAN,
   ZANGBA,
   MADAI,
+  LINGTONG,
   DONGZHUO,
   CAOCAO,
   XUNYU,

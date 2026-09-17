@@ -13806,3 +13806,125 @@ describe('国战 · 马岱（潜袭 / 马术）', () => {
     expect(distance(state, B, D)).toBe(1);
   });
 });
+
+/** 凌统·旋略（失去装备后拆别人一张）/ 勇进（限定技：移动至多三张装备） */
+describe('国战 · 凌统（旋略 / 勇进）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      armor?: string;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      if (s.armor) {
+        p.equipment.armor = { id: `a-${s.seatId}`, type: 'armor', suit: 'club', rank: 2, equipName: s.armor };
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('旋略：失去装备区的牌后，弃别人一张牌', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lingtong',
+        faction: 'wu',
+        // 手里一张新防具：装上它会顶掉旧的八卦阵 → 失去装备区的牌 → 旋略
+        hand: [mk('newarmor', 'armor', 'spade', 3)],
+        armor: 'bagua',
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [tao('b1')], armor: 'renwang' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 装上新的防具：旧八卦阵进弃牌堆（等价于失去装备区的牌）
+    ok(act(state, A, { type: 'playCard', cardId: 'newarmor', targetIds: [] }));
+    expect(state.discard.some((c) => c.id === 'a-' + A)).toBe(true);
+    // 旋略：是否发动 → 弃谁 → 弃哪张
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('旋略');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 乙的明牌里只有装备（手牌是随机的兜底选项）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toContain('a-' + B);
+      expect(state.pending.options.map((o) => o.id)).toContain('__hand');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'a-' + B }));
+    expect(b.equipment.armor).toBeNull();
+    expect(state.discard.some((c) => c.id === 'a-' + B)).toBe(true);
+    void a;
+  });
+
+  it('勇进：依次移动场上装备牌，最多三张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lingtong', faction: 'wu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], armor: 'bagua' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'yongjin', cardIds: [], targetIds: [] }));
+    // 选要移动的装备
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('勇进');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'a-' + B }));
+    // 选目的地（不能是原主乙 → 候选是甲和丙）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id).sort()).toEqual([A, C].sort());
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(b.equipment.armor).toBeNull();
+    expect(c.equipment.armor?.id).toBe('a-' + B);
+    // 还会再问一次（至多三张）→ 这次选「不再移动」
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'stop' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.log.some((e) => e.message.includes('勇进'))).toBe(true);
+  });
+
+  it('勇进：限定技，一局只能发一次', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lingtong', faction: 'wu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], armor: 'bagua' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [], armor: 'bagua' },
+    ]);
+    ok(act(state, A, { type: 'useSkill', skillId: 'yongjin', cardIds: [], targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'a-' + C }));
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 还能继续搬 → 选「不再移动」收尾
+    if (state.pending?.kind === 'choice') ok(act(state, A, { type: 'chooseOption', optionId: 'stop' }));
+    const again = act(state, A, { type: 'useSkill', skillId: 'yongjin', cardIds: [], targetIds: [] });
+    expect(again.ok).toBe(false);
+  });
+});
