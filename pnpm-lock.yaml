@@ -130,21 +130,15 @@ importers:
 
   packages/client:
     dependencies:
-      '@sgs/engine':
+      '@sgs/ui':
         specifier: workspace:*
-        version: link:../engine
-      '@sgs/protocol':
-        specifier: workspace:*
-        version: link:../protocol
+        version: link:../ui
       react:
         specifier: ^18.3.0
         version: 18.3.1
       react-dom:
         specifier: ^18.3.0
         version: 18.3.1(react@18.3.1)
-      zustand:
-        specifier: ^4.5.0
-        version: 4.5.7(@types/react@18.3.31)(react@18.3.1)
     devDependencies:
       '@types/react':
         specifier: ^18.3.0
@@ -192,6 +186,40 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.23.13
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9
+
+  packages/ui:
+    dependencies:
+      '@sgs/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@sgs/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.0
+        version: 18.3.1(react@18.3.1)
+      zustand:
+        specifier: ^4.5.0
+        version: 4.5.7(@types/react@18.3.31)(react@18.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.0
+        version: 18.3.7(@types/react@18.3.31)
+      vite:
+        specifier: ^5.4.0
+        version: 5.4.21(@types/node@22.20.1)
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9
 
 packages:
 

@@ -1,0 +1,1654 @@
+/* 三国杀联机版 · 客户端样式（深色、移动优先） */
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+:root {
+  --bg: #0f1419;
+  --panel: #1b2330;
+  --panel-2: #243040;
+  --gold: #d4a84b;
+  --red: #d9453a;
+  --black: #2c2c2c;
+  --text: #e6e1cf;
+  --muted: #8a8270;
+  --green: #5a9b3a;
+  /* 卡牌尺寸：高度固定，宽度由高宽比推出（黄金比 1.618）。
+     想改成真实扑克的 1.4（63×88mm ≈ √2），把 --card-ratio 改成 1.4 即可。 */
+  --card-h: 92px;
+  --card-ratio: 1.618;
+  /* 桌布：羊皮纸（泛旧的暖米色，中心略亮 + 四周压暗）
+     直接落在桌布上的文字必须用 --ink，浅色字在浅底上看不清 */
+  --parch-1: #eee0c0;
+  --parch-2: #ddca9f;
+  --parch-3: #bda478;
+  --ink: #3c2c18;
+  --ink-soft: #6d5736;
+  --table-max: 1120px;
+  /* 右侧栏宽度 = 技能左轨 + （出牌记录 | 武将面板）。
+     桌面减内边距与栏间距后约 1094；侧栏 400 里主列约 334，
+     原画约 283 宽（高 400，完整不裁切） */
+  --side-w: 400px;
+  /* 卡面：外描边、内侧印刷线、牌名墨色。
+     桌布是浅色羊皮纸，牌面要比桌面更亮、描边更深才分得出来 */
+  --card-edge: #8a7048;
+  --card-inner: inset 0 0 0 1px rgba(140, 108, 64, 0.4);
+  --card-ink: #2b2620;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  /* 房间：比桌面更暗，衬托出桌布 */
+  background: #070a0d;
+  color: var(--text);
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: 15px;
+  overscroll-behavior: none;
+}
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.primary {
+  background: var(--gold);
+  color: #1a1208;
+  font-weight: 600;
+}
+.primary.big {
+  padding: 12px 24px;
+  font-size: 16px;
+}
+.ghost {
+  background: transparent;
+  border: 1px solid var(--muted);
+  color: var(--text);
+}
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* —— 桌布（羊皮纸）——
+   .app 就是那张桌子：铺满可用宽度，桌面是泛旧的羊皮纸色，
+   四周一圈金色桌沿 + 压暗的暗角。桌外的 body 是更暗的房间底色。
+   想换桌布配色，只改 --parch-1/2/3。 */
+.app {
+  max-width: var(--table-max);
+  margin: 0 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: radial-gradient(
+    ellipse 130% 95% at 50% 24%,
+    var(--parch-1) 0%,
+    var(--parch-2) 52%,
+    var(--parch-3) 100%
+  );
+  box-shadow:
+    inset 0 0 0 2px rgba(120, 88, 40, 0.45),
+    inset 0 0 140px rgba(90, 62, 22, 0.28),
+    0 0 90px rgba(0, 0, 0, 0.8);
+  border-radius: 16px;
+  overflow: hidden;
+}
+/* 视口窄于桌宽时桌子已铺满整屏，圆角只会在四个角留出小缺口，去掉更干净。
+   临界值取 --table-max 略加一点，这样只有当两侧真的露出房间底色时才用圆角。
+   （媒体查询里不能用变量，所以这里手写 1180） */
+@media (max-width: 1180px) {
+  .app {
+    border-radius: 0;
+  }
+}
+
+/* —— 进房页 —— */
+.join-page {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.join-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--panel);
+  border: 1px solid var(--panel-2);
+  border-radius: 14px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.join-card h1 {
+  margin: 0 0 4px;
+  color: var(--gold);
+  font-size: 22px;
+  text-align: center;
+}
+.join-card .sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+.join-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.join-card input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-2);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+}
+.join-card input:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+.join-card button {
+  margin-top: 6px;
+}
+
+/* —— 大厅 —— */
+.lobby {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+.lobby header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--gold);
+}
+.seats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+.seat {
+  background: var(--panel);
+  border: 1px solid var(--panel-2);
+  border-radius: 10px;
+  padding: 10px;
+  text-align: left;
+  position: relative;
+}
+.seat.mine {
+  border-color: var(--gold);
+}
+.seat.clickable {
+  cursor: pointer;
+  border-style: dashed;
+}
+.seat-no {
+  font-size: 12px;
+  color: var(--muted);
+}
+.seat-name {
+  font-weight: 600;
+  margin: 4px 0;
+}
+.host-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  background: var(--gold);
+  color: #1a1208;
+  border-radius: 4px;
+}
+.seat-hero {
+  color: var(--gold);
+  font-size: 13px;
+}
+
+/* —— 大厅（房间列表）——
+   连上服务器先看到的一屏：所有房主创建的房间。
+   卡片沿用下面 .seat 的视觉（深色面板 + 虚线圈表示可点），
+   落在羊皮纸上的标题文字要墨色，见文件末尾那组覆盖规则。 */
+.hall {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+.hall header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hall-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+.hall-me {
+  margin-right: auto;
+  font-size: 13px;
+}
+.hall-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.hall-or {
+  font-size: 13px;
+  opacity: 0.7;
+}
+.hall-code {
+  width: 150px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-2);
+  background: var(--panel);
+  color: var(--text);
+}
+.hall-empty {
+  padding: 18px 4px;
+  font-size: 14px;
+}
+.hall-rooms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.room-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-2);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.room-card.clickable {
+  cursor: pointer;
+  border-style: dashed;
+}
+.room-card.clickable:hover {
+  border-color: var(--gold);
+}
+.room-code {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gold);
+}
+.room-host {
+  font-size: 13px;
+}
+.room-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.room-status {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.room-status.waiting {
+  background: var(--green);
+  color: #10200f;
+}
+.room-status.playing {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.room-status.full {
+  background: var(--red);
+  color: #f6e8e8;
+}
+.seat-offline {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 11px;
+  color: var(--red);
+}
+.hero-pick h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.hero-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.hero-card {
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--panel-2);
+  border-radius: 10px;
+  padding: 10px;
+}
+.hero-card.picked {
+  border-color: var(--gold);
+  background: var(--panel-2);
+}
+.hero-name {
+  font-weight: 600;
+  color: var(--gold);
+}
+.hero-name small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.hero-hp {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 2px 0;
+}
+.hero-skills b {
+  color: var(--text);
+  font-size: 13px;
+}
+.lobby-foot {
+  margin-top: auto;
+  text-align: center;
+}
+
+/* —— 武将原画框 ——
+   原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
+   没有原画的武将（如中立「平民」）回退成名字占位框。 */
+.portrait {
+  position: relative;
+  border-radius: 6px;
+  background: linear-gradient(160deg, #2a3444 0%, #1a2130 100%);
+  border: 1px solid var(--panel-2);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 比例跟原画一致（1 : 1.415），所以 object-fit 不会裁掉画面。
+     宽度吃掉信息列以外的全部空间，高度由比例推出——原画完整显示。 */
+  flex: 1 1 0;
+  min-width: 0;
+  aspect-ratio: 1 / 1.415;
+}
+/* 对手卡片上的小头像 */
+.portrait.small {
+  flex: 0 0 auto;
+  width: 40px;
+  max-width: none;
+  aspect-ratio: 1 / 1.4;
+}
+.portrait-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 没原画时的名字占位：竖排，像一张卡 */
+.portrait-name {
+  writing-mode: vertical-rl;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 1px;
+  text-align: center;
+  max-height: 100%;
+  overflow: hidden;
+  padding: 4px 0;
+}
+.portrait.small .portrait-name {
+  font-size: 10px;
+  letter-spacing: 0;
+  padding: 2px 0;
+}
+/* 阵营色描边 */
+.portrait.faction-shu {
+  border-color: #d9453a;
+}
+.portrait.faction-wei {
+  border-color: #4a7fb5;
+}
+.portrait.faction-wu {
+  border-color: #5a9b3a;
+}
+.portrait.faction-qun {
+  border-color: #8a8270;
+}
+.portrait.faction-ambitionist {
+  border-color: #8e5fbf;
+}
+.portrait.faction-neutral {
+  border-color: #6b6b6b;
+}
+/* 国战暗将：原画压暗 */
+.portrait.unrevealed .portrait-photo {
+  filter: grayscale(0.85) brightness(0.5);
+}
+.portrait-dim {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* 体力：绿色勾玉，竖排叠在原画右上角。
+   原画颜色不可控，所以垫一层暗底保证勾玉看得清。 */
+.portrait-hp {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 3px;
+  border-radius: 9px;
+  background: rgba(8, 12, 8, 0.6);
+}
+.portrait-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 11px;
+  text-align: center;
+  color: #1a1208;
+  background: var(--gold);
+}
+.portrait-reveal {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 3px 0;
+  font-size: 12px;
+  border-radius: 0;
+  background: var(--gold);
+  color: #1a1208;
+  font-weight: 700;
+}
+
+/* —— 我的武将面板 ——
+   左列：国家徽章 / 竖排武将名 / 竖排血量 / 装备判定
+   右侧：原画（面板高度由原画决定，所以原画下面不留白） */
+.hero-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 8px;
+  border: 1px solid transparent;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.hero-panel.team-0 {
+  border-left: 3px solid #4a7fb5;
+}
+.hero-panel.team-1 {
+  border-left: 3px solid #b56a4a;
+}
+.hero-panel.faction-shu {
+  border-left: 3px solid #d9453a;
+}
+.hero-panel.faction-wei {
+  border-left: 3px solid #4a7fb5;
+}
+.hero-panel.faction-wu {
+  border-left: 3px solid #5a9b3a;
+}
+.hero-panel.faction-qun {
+  border-left: 3px solid #8a8270;
+}
+.hero-panel.faction-ambitionist {
+  border-left: 3px solid #8e5fbf;
+}
+.hero-panel.faction-neutral {
+  border-left: 3px solid #6b6b6b;
+}
+.hero-panel.dead {
+  opacity: 0.5;
+}
+/* 左列：上部（徽章 + 竖排名）贴顶，下部（装备判定 + 竖排血量）压到底 */
+.hero-info {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  /* stretch 才有面板的高度，底部组才能被 margin-top: auto 推到底 */
+  align-self: stretch;
+}
+.hero-info-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.hero-info-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.hi-name {
+  /* 武将名竖排 */
+  writing-mode: vertical-rl;
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 2px;
+  text-align: center;
+}
+/* 血量：竖排勾玉 */
+.hi-hp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+/* 原画：完整显示，吃掉左列以外的全部宽度；高度由比例推出 */
+.hero-portraits {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+.hero-zones {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+}
+
+/* —— 技能：面板框左侧独立的一列按钮（左轨）。
+   justify-content: flex-end 让按钮落在底部，正好与面板对齐而不是飘到记录的旁边 —— */
+.skill-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.skill-chip {
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--panel-2);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* 可以用的时候高亮成按钮的样子，点一下就发动 */
+.skill-chip.usable {
+  cursor: pointer;
+  border-color: var(--gold);
+  background: rgba(212, 168, 75, 0.14);
+  color: var(--gold);
+}
+.skill-chip.usable:hover {
+  background: rgba(212, 168, 75, 0.26);
+}
+.skill-chip.active {
+  border-color: #5a9b3a;
+  background: rgba(90, 155, 58, 0.22);
+  color: #8fd06a;
+}
+.skill-chip[aria-disabled='true'] {
+  cursor: default;
+}
+/* —— 国战暗置的技能 ——
+   暗置：虚线边 + 压暗，表示「技能还没生效，点一下预亮」。
+   预亮：实线金边，表示「时机到了引擎会问你发不发动」。
+   这两种都还得能点（预亮开关），所以不靠 aria-disabled 表达。 */
+.skill-chip.dark {
+  border-style: dashed;
+  opacity: 0.75;
+}
+.skill-chip.prelit {
+  border-style: solid;
+  border-color: var(--gold);
+  background: rgba(212, 168, 75, 0.22);
+  color: var(--gold);
+}
+
+/* —— 牌桌 ——
+   窄屏：两层容器用 display: contents "消失"，子元素直接排成单列，
+   靠 order 保证顺序是 对手 → 记录 → 武将 → 操作 → 手牌。
+   宽屏：左右两栏，左栏牌桌（对手在上、操作与手牌在下），
+   右栏上方出牌记录、下方武将面板。 */
+.game {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+/* 单列顺序只在窄屏用。放在宽屏外面会把 .side（宽屏时是横向 flex）
+   里的技能轨排到主列右边去——order 在横排里同样生效。 */
+@media (max-width: 879px) {
+  .players-row {
+    order: 1;
+  }
+  .center {
+    order: 2;
+  }
+  .hero-panel {
+    order: 3;
+  }
+  .skill-bar {
+    order: 4;
+  }
+  .prompt {
+    order: 5;
+  }
+  .hand {
+    order: 6;
+  }
+  /* 窄屏下单列：两层容器都“消失”，记录/面板回到 .game 的列里 */
+  .board,
+  .side,
+  .side-main {
+    display: contents;
+  }
+}
+
+@media (min-width: 880px) {
+  .game {
+    flex-direction: row;
+    gap: 10px;
+  }
+  .board {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+  /* 手牌压到底部：牌桌上牌就该在离自己最近的位置 */
+  .board .hand {
+    margin-top: auto;
+  }
+  .side {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    flex: 0 0 var(--side-w);
+    min-width: 0;
+  }
+  /* 右侧主列：出牌记录 + 武将面板，两者同宽 */
+  .side-main {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  /* 出牌记录：回合信息 + 日志合成一块面板，占满右上的剩余高度并自己滚动 */
+  .side-main .center {
+    flex: 1;
+    min-height: 0;
+    max-width: none;
+    margin: 0;
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .side-main .log {
+    background: transparent;
+    padding: 0;
+    min-height: 0;
+  }
+  /* 武将面板和技能栏按自身高度排在下半部分（面板高度=原画高度） */
+  .hero-panel,
+  .skill-bar {
+    flex: 0 0 auto;
+    max-width: none;
+    margin: 0;
+  }
+}
+.players-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  /* safe：内容超宽时退回左对齐，不会把开头裁掉 */
+  justify-content: safe center;
+}
+.player {
+  /* 之前是 flex: 1 0 auto，桌宽一拉开单个对手就被撑成一整条（实测 704px）。
+     固定基准宽 + 居中换行，人多了自动排到第二行。 */
+  flex: 0 1 190px;
+  min-width: 150px;
+  background: var(--panel);
+  border: 1px solid var(--panel-2);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.player.current {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+.player.targetable {
+  border-color: var(--red);
+  cursor: pointer;
+  animation: pulse 1.2s infinite;
+}
+.player.dead {
+  opacity: 0.45;
+}
+.p-top {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  text-align: left;
+}
+.p-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.p-name {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.p-name .dot {
+  color: var(--green);
+  font-size: 10px;
+}
+.p-hp {
+  display: flex;
+  gap: 2px;
+}
+/* 体力标记：勾玉。
+   用「三圆角 + 一角直角」的方块转 45° 得到泪滴/逗号形，尾巴朝下。
+   想要更精细的形状可以换成内联 SVG path。
+   颜色：绿色（空槽是暗色凹槽）。 */
+.hp-cell {
+  width: 11px;
+  height: 11px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: #2f3a28;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.hp-cell.on {
+  background: radial-gradient(circle at 34% 30%, #b9f08a 0%, #5aa832 52%, #2f6a1a 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(226, 255, 200, 0.4),
+    0 0 5px rgba(120, 200, 70, 0.6);
+}
+.p-hand {
+  font-size: 11px;
+  color: var(--muted);
+}
+.p-dead {
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--red);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(217, 69, 58, 0.4);
+  }
+}
+
+.center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 80px;
+  /* 桌宽了，日志行别跟着拉成一条长线，限制行宽并居中 */
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.turn-info {
+  text-align: center;
+  color: var(--gold);
+  font-size: 13px;
+}
+.log {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.log-line {
+  color: var(--muted);
+}
+.log-sha,
+.log-damage {
+  color: var(--red);
+}
+.log-tao,
+.log-shan {
+  color: var(--green);
+}
+
+.prompt {
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  /* 和日志区同样的行宽上限，居中 */
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.prompt-msg {
+  font-size: 13px;
+}
+.prompt-play,
+.prompt-discard {
+  background: var(--panel-2);
+}
+.prompt-respondSha,
+.prompt-respondDeath {
+  background: #3a2020;
+  border: 1px solid var(--red);
+}
+.prompt-wait {
+  background: var(--panel);
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hand {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  /* safe：牌多到放不下时退回左对齐，不会把开头裁掉 */
+  justify-content: safe center;
+  /* 上方留出悬浮时抬升的空间：滚动容器会裁掉溢出的部分，
+     不留白的话牌一提起来就被切掉顶部 */
+  padding: 20px 0 12px;
+}
+.card {
+  /* 不能让 flex 把牌拉宽，否则宽高比失真变成扁的 */
+  flex: 0 0 auto;
+  height: var(--card-h);
+  aspect-ratio: 1 / var(--card-ratio);
+  border-radius: 7px;
+  /* 纸面：比桌面更白的米色底 + 一点斜向渐变，压在羊皮纸上才看得清 */
+  background: linear-gradient(158deg, #fffdf6 0%, #fbf5e5 58%, #f3ead5 100%);
+  /* 外描边 + 内侧印刷线，模仿真卡的印刷外框 */
+  border: 2px solid var(--card-edge);
+  box-shadow:
+    var(--card-inner),
+    0 2px 5px rgba(50, 32, 12, 0.45);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 4px 7px;
+  font-weight: 600;
+  color: var(--card-ink);
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+/* 底部分类色条，一眼区分基本牌 / 锦囊 / 延时锦囊 / 装备 */
+.card::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--card-accent, transparent);
+}
+.card.cat-basic {
+  --card-accent: #9d9078;
+}
+.card.cat-trick {
+  --card-accent: #4e7fb0;
+}
+.card.cat-delayed {
+  --card-accent: #8a4ad4;
+}
+.card.cat-equip {
+  --card-accent: #bd8a2c;
+}
+.card.red {
+  color: var(--red);
+  --card-suit: #c0392b;
+}
+.card.black {
+  color: var(--black);
+  --card-suit: #2f2a24;
+}
+.card.legal {
+  border-color: var(--gold);
+}
+.card.dim {
+  /* 用降饱和 + 压暗代替纯透明，牌名还看得清，但一眼知道现在用不了 */
+  opacity: 0.55;
+  filter: grayscale(0.75) brightness(0.82);
+  cursor: default;
+}
+.card.picked {
+  border-color: var(--green);
+  transform: translateY(-6px);
+}
+/* 悬浮把牌提出来：抬升 + 轻微放大 + 阴影，并压住相邻的牌。
+   变暗（dim）的牌也要能提起来——那正是想看它效果的时候。
+   选择器带上 .hand 是为了压过下面 .card.fire-attr / .thunder-attr 的 box-shadow。 */
+.hand .card:hover {
+  transform: translateY(-14px) scale(1.04);
+  z-index: 5;
+  box-shadow:
+    var(--card-inner),
+    0 6px 14px rgba(0, 0, 0, 0.55);
+  opacity: 1;
+  filter: none;
+}
+.hand .card.picked:hover {
+  transform: translateY(-18px) scale(1.04);
+}
+/* 左上角标：点数 + 花色符号 */
+.c-idx {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  gap: 1px;
+  color: var(--card-suit, #2f2a24);
+}
+.c-rank {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+.c-suit {
+  font-size: 12px;
+  line-height: 1;
+}
+/* 牌名竖排，跟真卡一样；名字长会自动折成第二列 */
+.c-name {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.c-name > span {
+  writing-mode: vertical-rl;
+  font-size: 15px;
+  line-height: 1.02;
+  letter-spacing: 0.5px;
+  max-height: 100%;
+  overflow: hidden;
+  color: var(--card-ink);
+}
+/* 五个字的牌（雌雄双股剑、青龙偃月刀）缩小一档，避免折列 */
+.c-name > span.long {
+  font-size: 13px;
+}
+
+/* 【木牛流马】下扣置的牌：在牌上盖一个「辎」角标，和手牌区分开 */
+.card.cargo {
+  box-shadow:
+    var(--card-inner),
+    0 0 0 2px rgba(120, 90, 20, 0.55),
+    0 2px 5px rgba(50, 32, 12, 0.45);
+}
+.c-cargo {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: #7a5a14;
+  color: #fdf6e0;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 15px;
+  z-index: 2;
+}
+
+/* —— toast / overlay —— */
+.error-toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #5a1f1f;
+  color: #ffe;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  max-width: 90vw;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+}
+.overlay-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2a2a2a;
+  color: var(--gold);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 50;
+}
+.loading {
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+/* —— 房主开局控件 —— */
+.host-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.deal-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.free-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.deal-count input {
+  width: 56px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-2);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  text-align: center;
+}
+
+/* —— 选将阶段 —— */
+.draft {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+}
+.draft-title {
+  color: var(--gold);
+  font-size: 18px;
+  font-weight: 600;
+}
+.draft .hero-card {
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.draft .hero-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--gold);
+}
+
+/* —— 模式选择器 —— */
+.mode-selector {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mode-selector-title {
+  font-size: 13px;
+  color: var(--muted);
+}
+.mode-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mode-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--panel-2);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.mode-btn.active {
+  border-color: var(--gold);
+  background: var(--panel-2);
+  color: var(--gold);
+}
+.mode-btn:disabled,
+.mode-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* —— 身份/队伍徽章 —— */
+.role-badge {
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.role-lord {
+  background: var(--gold);
+  color: #1a1208;
+}
+.role-loyal {
+  background: #2e6fb5;
+  color: #fff;
+}
+.role-rebel {
+  background: var(--red);
+  color: #fff;
+}
+.role-renegade {
+  background: #6b4ab5;
+  color: #fff;
+}
+.lord-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  background: var(--gold);
+  color: #1a1208;
+  border-radius: 3px;
+}
+
+/* 2v2 队伍色：顶部细条区分 */
+.player.team-0 {
+  border-top: 3px solid #4a7fb5;
+}
+.player.team-1 {
+  border-top: 3px solid #b56a4a;
+}
+
+/* —— 国战阵营色 —— */
+.player.faction-shu {
+  border-top: 3px solid #d9453a;
+}
+.player.faction-wei {
+  border-top: 3px solid #4a7fb5;
+}
+.player.faction-wu {
+  border-top: 3px solid #5a9b3a;
+}
+.player.faction-qun {
+  border-top: 3px solid #8a8270;
+}
+.player.faction-ambitionist {
+  border-top: 3px solid #8e5fbf;
+}
+.player.faction-neutral {
+  border-top: 3px solid #6b6b6b;
+}
+.faction-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.faction-badge.shu {
+  background: #d9453a;
+  color: #fff;
+}
+.faction-badge.wei {
+  background: #4a7fb5;
+  color: #fff;
+}
+.faction-badge.wu {
+  background: #5a9b3a;
+  color: #fff;
+}
+.faction-badge.qun {
+  background: #8a8270;
+  color: #fff;
+}
+.faction-badge.ambitionist {
+  background: #8e5fbf;
+  color: #fff;
+}
+.faction-badge.neutral {
+  background: #6b6b6b;
+  color: #fff;
+}
+/* —— 国战标记（先驱 / 阴阳鱼 / 珠联璧合） —— */
+.marker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 4px;
+  color: #1a1208;
+  background: var(--gold);
+  cursor: help;
+}
+.marker-chip.mark-xianqu {
+  background: #d9a03a;
+}
+.marker-chip.mark-yinyangyu {
+  background: #7fb0d9;
+}
+.marker-chip.mark-zhulian {
+  background: #d97f9e;
+}
+.marker-chip.mark-ambitionist {
+  background: #8e5fbf;
+  color: #fff;
+}
+/* 武将牌翻面朝上 */
+.marker-chip.mark-flip {
+  background: #b06a4a;
+  color: #fff;
+}
+/* 横置（铁索连环） */
+.marker-chip.mark-chained {
+  background: #4a7fb5;
+  color: #fff;
+}
+.marker-count {
+  font-size: 9px;
+  opacity: 0.75;
+}
+.hero-card .hero-slot-tag {
+  font-size: 10px;
+  color: var(--gold);
+  font-weight: 600;
+}
+.hero-card.faction-shu {
+  border-bottom: 2px solid #d9453a;
+}
+.hero-card.faction-wei {
+  border-bottom: 2px solid #4a7fb5;
+}
+.hero-card.faction-wu {
+  border-bottom: 2px solid #5a9b3a;
+}
+.hero-card.faction-qun {
+  border-bottom: 2px solid #8a8270;
+}
+.hero-card.faction-ambitionist {
+  border-bottom: 2px solid #8e5fbf;
+}
+.hero-card.faction-neutral {
+  border-bottom: 2px solid #6b6b6b;
+}
+.reveal-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* —— 游戏结束覆盖层 —— */
+.game-over-screen {
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 40px;
+}
+.game-over-banner {
+  text-align: center;
+  margin-bottom: 16px;
+}
+.game-over-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+/* —— 装备区 —— */
+.p-equip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+}
+.equip-icon {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--text);
+  white-space: nowrap;
+}
+.equip-weapon {
+  background: #3a3020;
+  color: var(--gold);
+}
+.equip-armor {
+  background: #1e3040;
+  color: #7ab5d4;
+}
+.equip-plusMount {
+  background: #1e3a20;
+  color: #6ab56a;
+}
+.equip-minusMount {
+  background: #3a1e20;
+  color: #d47a6a;
+}
+/* 宝物（势备篇的第 5 个装备槽）：紫色，和另外四槽区分开 */
+.equip-treasure {
+  background: #2e1e3a;
+  color: #b98fd4;
+}
+
+/* —— 判定区 —— */
+.p-judge {
+  display: flex;
+  gap: 3px;
+  justify-content: center;
+}
+.judge-icon {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #2a1e3a;
+  color: #b56ad4;
+  white-space: nowrap;
+}
+
+/* —— 火杀/雷杀 —— */
+.card.fire-attr {
+  border-color: #e85a2a;
+  box-shadow:
+    var(--card-inner),
+    0 0 7px rgba(232, 90, 42, 0.55);
+}
+.card.thunder-attr {
+  border-color: #8a4ad4;
+  box-shadow:
+    var(--card-inner),
+    0 0 7px rgba(138, 74, 212, 0.55);
+}
+
+/* —— 主动技能按钮 —— */
+.skill-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+.skill-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid var(--gold);
+  background: transparent;
+  color: var(--gold);
+  border-radius: 8px;
+  font-weight: 600;
+}
+.skill-btn:hover {
+  background: var(--panel-2);
+}
+
+/* —— 技能交互模式 —— */
+.skill-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* —— 响应类提示 —— */
+.prompt-respondTrick {
+  background: #3a2a20;
+  border: 1px solid #d47a2a;
+}
+.prompt-wuxieQueue {
+  background: #2a1e3a;
+  border: 1px solid #8a4ad4;
+}
+.prompt-activeSkill {
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+}
+/* 通用「选择一项」：必须给底色，否则浅色文字压在浅色羊皮纸上看不清 */
+.prompt-choice {
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+}
+
+/* —— 这张牌有多种用法（直接使用 + 转化）——
+   同样给底色，理由和 .prompt-choice 一样 */
+.use-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+}
+
+/* —— 从一组牌里选（选牌原语） ——
+   候选牌不一定在手牌里（观星看的是牌堆顶），所以要单独铺一行。
+   同样给底色，理由和 .prompt-choice 一样。 */
+.prompt-pickCards {
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+}
+.pick-cards {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.pick-cards-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.pick-cards .card {
+  cursor: pointer;
+}
+
+/* —— 私密查看（知己知彼）：内容只有本人看得到 —— */
+.view-cards {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.view-cards .view-title {
+  font-weight: 700;
+}
+.view-cards .view-note {
+  font-size: 1.15em;
+  color: var(--gold);
+}
+.view-cards .card {
+  cursor: default;
+}
+
+/* —— 已选目标高亮 —— */
+.player.picked-target {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green);
+  animation: none;
+}
+
+/* —— 新增日志样式 —— */
+.log-equip {
+  color: var(--gold);
+}
+.log-judge,
+.log-lebu,
+.log-bingliang,
+.log-shandian {
+  color: #b56ad4;
+}
+.log-trick {
+  color: #d4a84b;
+}
+.log-skill {
+  color: #6ab5d4;
+}
+.log-reveal {
+  color: var(--green);
+}
+
+/* 悬停提示（fixed 定位，避免被 .hand / .log 这类滚动容器裁切）。
+   手牌和武将技能共用，见 components/HoverTip.tsx */
+.hover-tip {
+  position: fixed;
+  /* 多留一点距离：牌悬浮时会抬起 14px，贴太近会被压住 */
+  transform: translate(-50%, calc(-100% - 22px));
+  width: 230px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(18, 14, 10, 0.97);
+  border: 1px solid var(--gold);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-align: left;
+  white-space: pre-wrap;
+  pointer-events: none;
+  z-index: 300;
+}
+.hover-tip-name {
+  color: var(--gold);
+  font-weight: 700;
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+.hover-tip-desc {
+  color: #d8d0c0;
+}
+
+/* 声音开关（固定右上角，各界面都在） */
+.sound-ctl {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(18, 14, 10, 0.82);
+  border: 1px solid rgba(200, 168, 96, 0.4);
+}
+.sound-btn {
+  padding: 2px 6px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.sound-vol {
+  width: 72px;
+  height: 4px;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+.sound-hint {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* —— 直接落在桌布上的文字 ——
+   桌布是浅色羊皮纸，原来给深色底配的浅色字（金色 / 灰）在桌面上看不清。
+   这些位置统一改用墨色。
+
+   必须放在文件最后：这几条要和上面的 .turn-info / .lobby header /
+   .draft-title 等规则同优先级竞争，靠顺序取胜；放在前面会被它们覆盖。
+   面板里的文字不用动，那些是深色底。 */
+.lobby header,
+.hall header,
+.hall-title,
+.turn-info,
+.draft-title {
+  color: var(--ink);
+}
+.hall-me,
+.hall-or,
+.hall-empty {
+  color: var(--ink-soft);
+}
+.lobby-foot,
+.deal-count,
+.lobby-foot .hint,
+.lobby .hint {
+  color: var(--ink-soft);
+}
+
+/* —— 窄屏武将面板限宽 ——
+   原画现在会吃掉信息列以外的全部宽度，单列时面板有 600+ 宽，
+   原画会涨到 555×785 把整页撑到需要滚动，所以窄屏把面板限宽居中。
+   同样必须放在文件最后：.hero-panel 的 max-width 在前面，靠顺序取胜。 */
+@media (max-width: 879px) {
+  .hero-panel {
+    max-width: 260px;
+  }
+}

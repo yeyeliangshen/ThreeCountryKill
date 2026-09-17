@@ -2,7 +2,19 @@
 export * from './model';
 export * from './timing';
 export * from './heroes';
-export { createGame, applyIntent, type SeatSetup, type ApplyResult } from './engine';
+export * from './markers';
+export * from './distance';
+export {
+  createGame,
+  applyIntent,
+  activeHeroes,
+  canUseAsCard,
+  factionHelpers,
+  isAoyu,
+  prelitableSkills,
+  type SeatSetup,
+  type ApplyResult,
+} from './engine';
 export { toSnapshot } from './snapshot';
 export { buildPrompt } from './legal';
 export { buildDeck, shuffle, seededRng, drawOne } from './deck';

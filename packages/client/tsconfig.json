@@ -3,7 +3,10 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "noEmit": true
+    "noEmit": true,
+    // 客户端会把 @sgs/ui 的源码一并纳入本次检查，而那边用了
+    // import.meta.env / import.meta.glob，所以这里也要带上 vite 的类型
+    "types": ["vite/client"]
   },
   "include": ["src"]
 }

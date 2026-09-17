@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    // 提供 import.meta.env / import.meta.glob 的类型
+    "types": ["vite/client"]
+  },
+  "include": ["src"]
+}
