@@ -1307,12 +1307,15 @@ describe('即时锦囊', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [wuzhong('a1')] },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [wuxie('b1')] },
-      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      // 丙也留一张无懈：这样打出一张之后**抵消轮**才存在
+      // （新规则：身上没有无懈的人根本不会被问，见 openWuxieWindow 的说明）
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [wuxie('c1')] },
     ]);
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
     expect(state.pending?.kind).toBe('wuxieQueue');
+    if (state.pending?.kind === 'wuxieQueue') expect(state.pending.askQueue).toEqual([B, C]);
     ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
-    // 打出一张无懈之后**不直接结算**：还要给别人一次「再抵消这一张」的机会
+    // 打出一张无懈之后**不直接结算**：还要给持有无懈的人一次「再抵消这一张」的机会
     expect(state.pending?.kind).toBe('wuxieQueue');
     passWuxie(state);
     const a = state.players.find((p) => p.seatId === A)!;
@@ -8084,8 +8087,9 @@ describe('势备篇 · 大势力 / 小势力 与玉玺', () => {
     // 玉玺还有第③条：出牌阶段开始会先视为使用【知己知彼】，所以这里等的是那个询问
     // （摸牌阶段的加量已经结算完了，直接查手牌即可）
     expect(a.hand).toHaveLength(3); // 额定 2 + 玉玺 1
-    // 只有一个合法目标 → 直接进入无懈询问轮（不用先选人）
-    expect(state.pending?.kind).toBe('wuxieQueue');
+    // 只有一个合法目标 → 不用先选人，直接进【知己知彼】的结算
+    // （场上没人持有无懈，所以无懈窗口被整个跳过——见 openWuxieWindow）
+    expect(state.pending?.kind).toBe('choice');
   });
 
   it('玉玺：暗置时不生效（官方条件是「有明置的武将牌」）', () => {
@@ -9945,21 +9949,15 @@ describe('无懈可击 · 抵消链（无懈对无懈）', () => {
       { seatId: D, name: '丁', heroId: 'lvbu', faction: 'qun' },
     ]);
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
-    // 轮到丙：他抵消「丁」
-    while (state.pending?.kind === 'wuxieQueue') {
-      const asked = state.pending.askQueue[state.pending.askIndex]!;
-      if (asked === C && state.pending.askIndex === 1) {
-        ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
-        // 有 3 个候选（乙丙丁），所以要问一句「抵消谁」
-        expect(state.pending?.kind).toBe('choice');
-        ok(act(state, C, { type: 'chooseOption', optionId: D }));
-        break;
-      }
-      ok(act(state, asked, { type: 'pass' }));
-    }
-    passWuxie(state);
-    // 第一个要响应的是乙（丙、丁里只有丁被抵消，但队列按座次走，先问乙）
-    expect(state.pending?.kind).toBe('respondTrick');
+    // 只有丙持有无懈 → 只有他被问
+    expect(state.pending?.kind).toBe('wuxieQueue');
+    if (state.pending?.kind === 'wuxieQueue') expect(state.pending.askQueue).toEqual([C]);
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    // 有 3 个候选（乙丙丁），所以要问一句「抵消谁」
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, C, { type: 'chooseOption', optionId: D }));
+    // 丙那张已经用掉，场上再没人持有无懈 → 抵消轮也是空的，直接开始响应
+    // 第一个要响应的是乙（丁已被抵消，但队列按座次走，先问乙）
     if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(B);
     // 乙弃权 → 丙
     ok(act(state, B, { type: 'pass' }));
@@ -10095,5 +10093,356 @@ describe('无懈可击 · 抵消链（无懈对无懈）', () => {
     passWuxie(state);
     expect(state.discard.map((c) => c.id).sort()).toEqual(['a1', 'b1', 'c1']);
     expect(state.discardThisTurn.filter((c) => c.type === 'wuxie')).toHaveLength(2);
+  });
+});
+
+describe('无懈可击 · 逐目标时机（每名角色生效前各一次）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+  const hp = (state: GameState, seatId: string) =>
+    state.players.find((p) => p.seatId === seatId)!.hp;
+  /** 当前窗口在问谁 */
+  function askedNow(state: GameState): string | null {
+    const p = state.pending;
+    if (p?.kind === 'wuxieQueue') return p.askQueue[p.askIndex] ?? null;
+    return null;
+  }
+
+  it('群体锦囊：窗口出现在「上一个目标结算完之后」，所以能挑晚一点的人抵消', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'nanman', 'spade')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+      { seatId: D, name: '丁', heroId: 'lvbu', faction: 'qun', hand: [wuxie('d1')] },
+      { seatId: E, name: '戊', heroId: 'caocao', faction: 'wei' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    // 只有丁持有无懈 → 每个窗口都只问他
+    expect(askedNow(state)).toBe(D);
+    ok(act(state, D, { type: 'pass' })); // 锦囊开始前那一轮：不抵消
+    expect(askedNow(state)).toBe(D); // 乙生效前的窗口
+    ok(act(state, D, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(B);
+    ok(act(state, B, { type: 'pass' })); // 乙挨打
+    expect(hp(state, B)).toBe(3);
+    // ——关键：乙结算完之后、丙生效之前，又给了丁一次机会——
+    expect(askedNow(state)).toBe(D);
+    ok(act(state, D, { type: 'respondCard', cardId: 'd1' }));
+    expect(state.pending?.kind).toBe('choice');
+    // 候选是「还没结算完的人」：丙、丁、戊（乙已经结算过了，不能追溯抵消）
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toEqual([C, D, E]);
+    }
+    ok(act(state, D, { type: 'chooseOption', optionId: C }));
+    // 丙被抵消 → 直接跳过他，轮到丁
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(D);
+    ok(act(state, D, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(E);
+    ok(act(state, E, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('play');
+    expect(hp(state, B)).toBe(3);
+    expect(hp(state, C)).toBe(4); // 只在丙自己的窗口里被抵消，所以没挨打
+    expect(hp(state, D)).toBe(3);
+    expect(hp(state, E)).toBe(3);
+  });
+
+  it('没有无懈的人不会被问（纯提示优化，结果一样）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'nanman', 'spade')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    // 谁都没有无懈 → 整个无懈窗口不存在，直接进入响应
+    expect(state.pending?.kind).toBe('respondTrick');
+  });
+
+  it('敕令：逐目标窗口，被抵消的那个人不选', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'chiling', 'club', 3)],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei', revealed: false },
+      { seatId: C, name: '丙', heroId: 'caocao', faction: 'wei', revealed: false },
+      { seatId: D, name: '丁', heroId: 'lvbu', faction: 'qun', hand: [wuxie('d1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    ok(act(state, D, { type: 'pass' })); // 锦囊开始前
+    expect(askedNow(state)).toBe(D); // 乙生效前的窗口
+    ok(act(state, D, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'hp' }));
+    expect(hp(state, B)).toBe(3);
+    // 丙生效前再来一次 → 丁把丙抵消掉（只剩丙一个候选，不再多问「抵消谁」）
+    expect(askedNow(state)).toBe(D);
+    ok(act(state, D, { type: 'respondCard', cardId: 'd1' }));
+    // 丙被跳过 → 敕令结算完 → 回到甲的出牌阶段
+    expect(state.pending?.kind).toBe('play');
+    expect(hp(state, C)).toBe(4);
+    expect(state.players.find((p) => p.seatId === C)!.heroRevealed).toBe(false);
+  });
+
+  it('五谷丰登：每个拿牌的人之前各一次窗口', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'wugu', 'heart', 7)],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [wuxie('c1')] },
+    ]);
+    state.deck = ['d1', 'd2', 'd3'].map((id) => mk(id, 'sha', 'spade', 7));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    // 锦囊开始前：只有丙有无懈 → 问他
+    expect(askedNow(state)).toBe(C);
+    ok(act(state, C, { type: 'pass' }));
+    // 甲（使用者自己也在拿牌队列里）生效前：再来一次窗口
+    expect(askedNow(state)).toBe(C);
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'pickCards', cardIds: ['d3'] }));
+    // 轮到乙：先给他开窗口 → 丙出无懈把乙抵消
+    expect(askedNow(state)).toBe(C);
+    ok(act(state, C, { type: 'respondCard', cardId: 'c1' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, C, { type: 'chooseOption', optionId: B }));
+    // 乙被跳过，直接轮到丙拿
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'pickCards', cardIds: ['d2'] }));
+    expect(state.players.find((p) => p.seatId === B)!.hand).toHaveLength(0);
+    // 剩一张没人拿 → 进弃牌堆
+    expect(state.discard.some((c) => c.id === 'd1')).toBe(true);
+    expect(state.pending?.kind).toBe('play');
+  });
+
+  it('火烧连营：逐个目标前各一次窗口', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'huoshao', 'spade', 3)],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'caocao', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'lvbu', faction: 'qun', hand: [wuxie('d1')] },
+    ]);
+    // 下家是乙（魏），同一队列 = 乙丙
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    expect(askedNow(state)).toBe(D);
+    ok(act(state, D, { type: 'pass' })); // 锦囊开始前
+    // 乙生效前的窗口 → 丁把乙抵消掉（候选是乙丙两人，所以要问一句）
+    expect(askedNow(state)).toBe(D);
+    ok(act(state, D, { type: 'respondCard', cardId: 'd1' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, D, { type: 'chooseOption', optionId: B }));
+    expect(hp(state, B)).toBe(4);
+    // 丙生效前的窗口：丁手里没有无懈了 → 窗口直接跳过，丙挨烧
+    expect(hp(state, C)).toBe(3);
+    expect(state.pending?.kind).toBe('play');
+  });
+});
+
+describe('方天画戟 · 军争版（最后的手牌可额外指定至多两个目标）', () => {
+  const fangtian: Card = {
+    id: 'ft',
+    type: 'weapon',
+    suit: 'diamond',
+    rank: 12,
+    equipName: 'fangtian',
+    range: 4,
+  };
+
+  function jz(seats: { seatId: string; name: string; heroId: string; hand: Card[] }[]) {
+    const state = makeGameMode(seats, 'melee');
+    state.players.find((p) => p.seatId === A)!.equipment.weapon = fangtian;
+    return state;
+  }
+
+  it('这张【杀】是最后的手牌 → 可以指定三名目标，各自独立结算', () => {
+    const state = jz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C, D] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, D, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(3);
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+    expect(state.players.find((p) => p.seatId === D)!.hp).toBe(3);
+    expect(state.pending?.kind).toBe('play');
+  });
+
+  it('手里还有别的牌 → 只能指定一名目标', () => {
+    const state = jz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), tao('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }).ok).toBe(false);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+  });
+
+  it('至多额外两个：四个目标打不出来', () => {
+    const state = jz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+      { seatId: E, name: '戊', heroId: 'vanilla', hand: [] },
+    ]);
+    expect(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C, D, E] }).ok).toBe(
+      false,
+    );
+  });
+
+  it('军争版**没有**「势力各不相同」的限制（两个同势力也能一起指）', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xuchu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'caocao', hand: [] },
+      ],
+      'melee',
+    );
+    state.players.find((p) => p.seatId === A)!.equipment.weapon = fangtian;
+    // 甲是蜀、乙丙都是魏：国战版会在这里报「势力必须各不相同」，军争版不受这条约束。
+    // （顺带说明为什么军争版**不能**去读 effectiveFaction：那是国战语义，
+    //   非国战模式下武将未「明置」时它返回 null，拿它做判断毫无意义。）
+    expect(
+      effectiveFaction(
+        state,
+        state.players.find((p) => p.seatId === B)!,
+      ),
+    ).toBeNull();
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(3);
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+  });
+
+  it('一人出闪**不影响**其他目标（与国战版相反）', () => {
+    const state = jz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' })); // 乙闪掉
+    // 丙照样要挨打
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(C);
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(4);
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+  });
+
+  it('结算顺序按**座次**，不按玩家点选顺序', () => {
+    const state = jz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    // 故意逆着座次点：丁、丙、乙
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [D, C, B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(B);
+  });
+
+  it('国战版不受「最后的手牌」限制（两套规则按模式分）', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei' },
+        { seatId: B, name: '乙', heroId: 'xuchu' },
+        { seatId: C, name: '丙', heroId: 'lvbu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const [seatId, faction] of [
+      [A, 'shu'],
+      [B, 'wei'],
+      [C, 'qun'],
+    ] as const) {
+      const p = state.players.find((x) => x.seatId === seatId)!;
+      p.faction = faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.flags = emptyFlags();
+    }
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.equipment.weapon = { ...fangtian, id: 'ft2' };
+    // 手上不止一张牌，国战版照样能指定两个势力不同的目标
+    a.hand = [sha('a1'), tao('a2'), shan('a3')];
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    state.log = [];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C] }));
   });
 });

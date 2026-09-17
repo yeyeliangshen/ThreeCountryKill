@@ -92,13 +92,13 @@ function winnerText(mode: GameMode, winner: string, players: PlayerView[]): stri
 /**
  * 出牌阶段：这张牌需要选几个目标（区间，铁索连环是 1 至 2 名）。
  *
- * `fangtian` = 使用者装备着【方天画戟】：【杀】可以指定任意名（势力各不相同 /
- * 未确定势力的不限）目标，所以上限放到 99——点满后由「确认目标」按钮发出去。
+ * `shaMaxTargets` = 这张【杀】最多能指定几个目标，由 `shaMaxTargetsFor` 按
+ * 【方天画戟】的**两个版本**算好（国战版任意名 / 军争版最后一张手牌时最多 3 名）。
  */
 function targetRange(
   card: Card,
   as?: CardType,
-  fangtian?: boolean,
+  shaMaxTargets?: number,
 ): { min: number; max: number; self: boolean } {
   // 转化牌按转化后的类型算需要几个目标（大乔·国色：方块牌当【乐不思蜀】要 1 个目标）
   const type = as ?? card.type;
@@ -117,7 +117,9 @@ function targetRange(
   if (type === 'chiling') return { min: 0, max: 0, self: false };
   // 联军盛宴：点一个代表角色 = 选一个「其他势力」
   if (type === 'lianjun') return { min: 1, max: 1, self: false };
-  if (type === 'sha' && fangtian) return { min: 1, max: 99, self: false };
+  if (type === 'sha' && (shaMaxTargets ?? 1) > 1) {
+    return { min: 1, max: shaMaxTargets!, self: false };
+  }
   return { min: 1, max: 1, self: false }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
 }
 
@@ -363,19 +365,34 @@ export function Game() {
   const skillIds = prompt?.kind === 'play' ? (prompt.legalSkillIds ?? []) : [];
   // 【木牛流马】下扣置的牌「如手牌般使用或打出」，所以自己的可用牌 = 手牌 + 辎。
   // 对手的那一份快照里只有 `cargoCount`（扣置是暗信息），拿到的 cargo 是空的。
-  const hasFangtian = me.equipment.some((c) => c.equipName === 'fangtian');
   // 【丈八蛇矛】：这一轮能不能「两张手牌当【杀】」完全由服务端算（zhangbaOk）
   const zhangbaOk = prompt?.zhangbaOk === true;
   const muniuCargo = me.equipment.find((c) => c.equipName === 'muniu')?.cargo ?? [];
   const myUsableCards = [...snapshot.myHand, ...muniuCargo];
   const cargoIds = new Set(muniuCargo.map((c) => c.id));
+
+  /**
+   * 这张【杀】最多能指定几个目标——【方天画戟】**两个版本两套规则**，与引擎的
+   * `fangtianRule` 一一对应：
+   * - 国战版（势备篇）：任意名势力各不相同的角色 → 上限放到 99，点满后按「确认目标」发出去；
+   * - 军争版：只有这张【杀】是**你最后的手牌**时，才可以额外指定至多两个（共 3 名）。
+   *
+   * 「最后的手牌」只数真手牌——木牛流马扣置的牌不算（它只是「如手牌般使用」）。
+   */
+  function shaMaxTargetsFor(card: Card): number {
+    if (!me.equipment.some((c) => c.equipName === 'fangtian')) return 1;
+    if (snapshot!.mode === 'guozhan') return 99;
+    const isLastHandCard = !cargoIds.has(card.id) && snapshot!.myHand.length === 1;
+    return isLastHandCard ? 3 : 1;
+  }
+
   // 连横的合法目标由服务端下发（与具体哪张牌无关）
   const lianhengTargets = prompt?.kind === 'play' ? (prompt.lianhengTargets ?? []) : [];
   const lianhengSet = new Set(lianhengTargets);
 
   /** 已经选定用法、开始出这张牌：要目标就进选择模式，不要就直接发 */
   function beginPlay(card: Card, as?: CardType, asAttribute?: DamageAttribute) {
-    const range = targetRange(card, as, hasFangtian);
+    const range = targetRange(card, as, shaMaxTargetsFor(card));
     if (range.max === 0) {
       sendIntent({
         type: 'playCard',

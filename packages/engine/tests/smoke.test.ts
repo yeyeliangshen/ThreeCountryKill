@@ -12,20 +12,14 @@ import {
   applyIntent,
   createGame,
   getHero,
+  seededRng,
   toSnapshot,
   type GameState,
   type SeatSetup,
 } from '../src';
 
-function rng(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/** 决策与洗牌共用同一个可种子化随机源（引擎里已有 seededRng，别自己再写一份） */
+const rng = seededRng;
 
 /** 随机选一对同阵营的主副将（君主只能当主将） */
 function pickDraft(state: GameState, seatId: string): boolean {
@@ -177,10 +171,13 @@ describe('随机对局冒烟：全势备篇牌堆不卡死、不抛错', () => {
         name: `P${i}`,
         heroId: 'vanilla',
       }));
+      // 牌序也必须用**同一颗种子**洗，否则同一个 seed 每次跑出来的牌都不一样，
+      // 「种子固定 → 结果确定」就是句空话（这条断言曾经真的在整套跑时挂过）
       const state = createGame(setup, `T${seed}`, {
         mode: 'guozhan',
         shibei: true,
         freePick: true,
+        rng: rng(seed * 7919),
       });
       let steps = 0;
       // 单局步数上限：超了说明有地方在空转（正常一局几百步）

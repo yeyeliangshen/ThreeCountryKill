@@ -7,7 +7,7 @@ import {
   isWuxieLike,
 } from '@sgs/protocol';
 import type { AttackContext, GameState, Pending, Player, TrickContext } from './model';
-import { getPlayerOrThrow } from './model';
+import { getPlayer, getPlayerOrThrow } from './model';
 import {
   bigFactions,
   effectiveFaction,
@@ -619,9 +619,17 @@ function buildWuxiePrompt(state: GameState, seatId: string, ctx: TrickContext): 
   const trickName = CARD_TYPE_NAME[ctx.card.type];
   // 链上已经有前一环时，这张无懈是**抵消上一张无懈**（效果恢复），提示要说清
   const countering = !!ctx.wuxieChain && ctx.wuxieChain.count > 0;
+  // 逐目标的窗口：说清「现在轮到谁生效」，否则玩家不知道自己在拦谁
+  const currentSeat =
+    ctx.responders.length > 0
+      ? ctx.responders[ctx.responderIndex]
+      : (ctx.targetIds?.[0] ?? ctx.targetId);
+  const currentName = currentSeat ? getPlayer(state, currentSeat)?.name : undefined;
   const message = countering
     ? `是否使用【无懈可击】抵消上一张【无懈可击】？（【${trickName}】的效果将恢复）`
-    : `是否使用【无懈可击】抵消【${trickName}】对某名角色的效果？（之后别人还能再抵消这一张）`;
+    : `是否使用【无懈可击】抵消【${trickName}】对${
+        currentName ? ` ${currentName} ` : '某名角色'
+      }的效果？（之后别人还能再抵消这一张）`;
   return {
     kind: 'wuxieQueue',
     message,

@@ -1254,11 +1254,17 @@ function playSha(
   const hasZhuge = source.equipment.weapon?.equipName === 'zhuge';
   const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
   if (source.flags.shaCountThisTurn >= maxSha) return err('本回合出杀数已达上限');
-  // 【方天画戟】（势备篇·国战版）：可以指定**任意名**势力各不相同的角色，
-  // 以及任意名未确定势力（暗置）的角色。没有它就只能指定 1 名。
-  const hasFangtian = source.equipment.weapon?.equipName === 'fangtian';
+  // 【方天画戟】同名两张牌，两个模式两套效果（见 fangtianRule）
+  const rule = fangtianRule(state, source, card);
   if (targetIds.length === 0) return err('杀需指定至少 1 名目标');
-  if (!hasFangtian && targetIds.length !== 1) return err('杀需指定 1 名目标');
+  if (targetIds.length > (rule?.max ?? 1)) {
+    if (!rule) return err('杀需指定 1 名目标');
+    return err(
+      rule.max === 3
+        ? '【方天画戟】至多额外指定两个目标（共 3 名）'
+        : '【方天画戟】指定的目标数量超出限制',
+    );
+  }
   const seenTargets = new Set<string>();
   const usedFactions = new Set<string>();
   for (const targetId of targetIds) {
@@ -1272,8 +1278,8 @@ function playSha(
     // 距离校验：攻击范围 ≥ 距离（天义拼点赢则本回合无视距离）
     if (!source.flags.ignoreShaDistanceThisTurn && !canTarget(state, source.seatId, targetId))
       return err('目标超出攻击范围');
-    // 势力各不相同的约束：暗置（未确定势力）的角色不受限，明置的势力不能重复
-    if (hasFangtian) {
+    // 国战版才有「势力各不相同」的约束：暗置（未确定势力）的角色不受限，明置的势力不能重复
+    if (rule?.distinctFactions) {
       const f = effectiveFaction(state, target);
       if (f !== null) {
         if (usedFactions.has(f)) return err('【方天画戟】指定的目标势力必须各不相同');
@@ -1282,8 +1288,50 @@ function playSha(
     }
   }
 
-  startAttack(state, source, card, targetIds, asType, { asAttribute });
+  startAttack(state, source, card, targetIds, asType, {
+    asAttribute,
+    abortOnDodge: rule?.abortOnDodge,
+  });
   return { ok: true };
+}
+
+/**
+ * 把一串目标按**座次顺序**排好（从使用者的下家起绕一圈）。
+ * 只保留在场上的目标——传进来的都是校验过的，这里是防御性的。
+ */
+function sortTargetsBySeat(state: GameState, sourceSeatId: string, targetIds: string[]): string[] {
+  const order = aliveSeatsFrom(state, nextSeatAfter(state, sourceSeatId));
+  const sorted = order.filter((sid) => targetIds.includes(sid));
+  // 万一有目标不在存活座次里（理论上不会），按原顺序补在后面，别把它弄丢
+  for (const sid of targetIds) if (!sorted.includes(sid)) sorted.push(sid);
+  return sorted;
+}
+
+/**
+ * 【方天画戟】的规则——**同名两张牌，两个模式两套效果**，只按模式区分：
+ *
+ * - **国战版**（势备篇）：可以指定**任意名势力各不相同**的角色，以及任意名未确定势力
+ *   （暗置）的角色；当此【杀】被一名目标出【闪】抵消时，**对其他目标全部无效**
+ *   （`abortOnDodge`——所以它是逐个结算、一有人闪就停）。
+ * - **军争版**（身份局）：只有当这张【杀】是**你最后的手牌**时，才可以**额外**指定至多
+ *   两个目标（共 3 名）；每个目标各自独立结算，谁闪谁不闪互不影响。
+ *
+ * 返回 `null` 表示这张牌没有方天画戟的加成（只能指定 1 名目标）。
+ */
+function fangtianRule(
+  state: GameState,
+  source: Player,
+  card: Card,
+): { max: number; distinctFactions: boolean; abortOnDodge: boolean } | null {
+  if (source.equipment.weapon?.equipName !== 'fangtian') return null;
+  if (state.mode === 'guozhan') {
+    return { max: Number.POSITIVE_INFINITY, distinctFactions: true, abortOnDodge: true };
+  }
+  // 军争版：「若是你最后的手牌」看的是**使用的那一刻**——手上只有这一张杀。
+  // 注意木牛流马扣置的牌不算手牌（它只是「如手牌般使用」），所以这里只数 player.hand。
+  const isLastHandCard = source.hand.length === 1 && source.hand[0]!.id === card.id;
+  if (!isLastHandCard) return null;
+  return { max: 3, distinctFactions: false, abortOnDodge: false };
 }
 
 /**
@@ -1299,9 +1347,12 @@ function startAttack(
   card: import('@sgs/protocol').Card,
   targetIds: string[],
   asType: import('@sgs/protocol').CardType,
-  opts?: { countTowardLimit?: boolean; asAttribute?: DamageAttribute },
+  opts?: { countTowardLimit?: boolean; asAttribute?: DamageAttribute; abortOnDodge?: boolean },
 ): void {
-  const targetId = targetIds[0]!;
+  // 多目标按**座次顺序**结算：官方规则里目标是同时确定的，效果从使用者的下家起
+  // 按座次依次生效。不排一下的话，国战版「一人闪则其余无效」就变成谁点得快谁占便宜。
+  const ordered = sortTargetsBySeat(state, source.seatId, targetIds);
+  const targetId = ordered[0]!;
   const target = getPlayerOrThrow(state, targetId);
   // 【丈八蛇矛】的虚拟杀在这里收的是两张 material 手牌（见 consumeCard）
   consumeCard(state, source, card);
@@ -1327,12 +1378,14 @@ function startAttack(
     cardColor: cardColorOf(card),
     requiredShan: 1,
     // 【方天画戟】：其余目标排在这里，逐个结算
-    fangtianQueue: targetIds.slice(1),
+    fangtianQueue: ordered.slice(1),
+    // 国战版「一人闪则其余无效」；军争版各目标独立结算
+    fangtianAbortOnDodge: opts?.abortOnDodge === true,
   };
   const attr = opts?.asAttribute ?? card.attribute;
   const who =
-    targetIds.length > 1
-      ? targetIds.map((id) => getPlayerOrThrow(state, id).name).join('、')
+    ordered.length > 1
+      ? ordered.map((id) => getPlayerOrThrow(state, id).name).join('、')
       : target.name;
   // 【丈八蛇矛】：把「用哪两张牌凑的」写进日志，不然牌数对不上会让人以为是 bug
   const viaZhangba =
@@ -1610,9 +1663,10 @@ function finishAttack(state: GameState, attack: AttackContext): void {
 
   if (attack.dodged) {
     pushLog(state, 'resolve', `【杀】被闪避。`);
-    // 方天画戟：一人闪则此【杀】对**其余目标全部无效**（已经结算完的人不受影响）。
+    // 方天画戟（**国战版**）：一人闪则此【杀】对**其余目标全部无效**（已经结算完的人不受影响）。
     // 把队列清空，收尾就会直接回到出牌阶段。
-    if (attack.fangtianQueue && attack.fangtianQueue.length > 0) {
+    // 军争版没有这一条：谁闪谁不闪互不影响，所以照样往下打。
+    if (attack.fangtianAbortOnDodge && attack.fangtianQueue && attack.fangtianQueue.length > 0) {
       pushLog(
         state,
         'resolve',
@@ -2938,17 +2992,55 @@ function startTrickResolution(
     if (type === 'juedou') ctx.duelTurn = 'target';
   }
 
-  // 无懈可击询问轮
-  const sourceIdx = state.seatOrder.indexOf(player.seatId);
-  const wuxieQueue = aliveSeatsFrom(
-    state,
-    state.seatOrder[nextAliveSeat(state, sourceIdx)]!,
-  ).filter((s) => s !== player.seatId);
-  if (wuxieQueue.length > 0) {
-    state.pending = { kind: 'wuxieQueue', ctx, askQueue: wuxieQueue, askIndex: 0 };
-  } else {
-    resolveTrick(state, ctx);
+  // 时机一：锦囊开始结算前的无懈窗口
+  openWuxieWindow(state, ctx, () => resolveTrick(state, ctx));
+}
+
+/**
+ * 有人手里可能打出无懈可击吗？
+ *
+ * 「手里没有无懈就不去问他」是**纯 UX 优化、不改规则结果**：没有无懈的人在那个时机
+ * 只能弃权。同时也不泄露信息——每个人只会在自己持有无懈时才收到询问，
+ * 别人「有没有被问」他看不到；日志里也不记弃权。
+ * 群体锦囊现在每个目标前都要问一次，不做这一步会变成刷屏式点击。
+ */
+function canUseWuxie(state: GameState, player: Player): boolean {
+  return usableCardsOf(player).some(
+    (c) => isWuxieLike(c) || canUseAsCard(state, player, c, 'wuxie'),
+  );
+}
+
+/**
+ * 开一次无懈可击的询问窗口。
+ *
+ * `onDone` 是这一轮问完（没人再打无懈）之后接着做的事。窗口**永远只问持有无懈的人**，
+ * 一个都没有就当场 `onDone`（等于没有窗口，也不留 pending）。
+ *
+ * 时机顺序用「锦囊使用者的下家起、按座次」——与座次顺序一致，玩家好预期。
+ * 使用者自己不在这一轮的队列里（开一轮新窗口时他不会想抵消自己的锦囊）；
+ * 但打出无懈之后的**抵消轮**里会把他加回来（那时他需要能保住自己的锦囊，见 onRespondWuxie）。
+ */
+function openWuxieWindow(state: GameState, ctx: TrickContext, onDone: () => void): void {
+  const source = getPlayer(state, ctx.sourceId);
+  const start = source ? nextSeatAfter(state, source.seatId) : state.seatOrder[0]!;
+  const queue = aliveSeatsFrom(state, start).filter(
+    (sid) => sid !== ctx.sourceId && canUseWuxie(state, getPlayerOrThrow(state, sid)),
+  );
+  if (queue.length === 0) {
+    onDone();
+    return;
   }
+  state.pending = { kind: 'wuxieQueue', ctx, askQueue: queue, askIndex: 0, onDone };
+}
+
+/**
+ * 抵消轮（某人刚打出无懈之后）的询问队列：从他下家起，**他自己除外**。
+ * 与 `openWuxieWindow` 的区别是这里**包含锦囊使用者**——他可以用无懈保住自己的锦囊。
+ */
+function wuxieCounterQueue(state: GameState, responderSeatId: string): string[] {
+  return aliveSeatsFrom(state, nextSeatAfter(state, responderSeatId)).filter(
+    (sid) => sid !== responderSeatId && canUseWuxie(state, getPlayerOrThrow(state, sid)),
+  );
 }
 
 /**
@@ -3338,23 +3430,42 @@ function resolveYiyi(state: GameState, ctx: TrickContext): void {
         })
       : [source.seatId]
   ).filter((sid) => !negatedByWuxie(ctx, sid));
+  // 队列放进 ctx：无懈的候选要能算出「还没结算的人」（wuxieScopeCandidates 读 responders）
+  ctx.responders = queue;
+  ctx.responderIndex = 0;
   pushLog(
     state,
     'trick',
     `${source.name} 使用了【以逸待劳】，${queue.length} 名同势力角色依次摸两张牌后弃两张牌。`,
     { seat: source.seatId, action: 'yiyi' },
   );
-  yiyiStep(state, ctx.sourceId, queue, 0);
+  yiyiStep(state, ctx);
 }
 
-function yiyiStep(state: GameState, sourceId: string, queue: string[], index: number): void {
-  if (index >= queue.length) {
-    resumePlay(state, sourceId);
+/**
+ * 推进到队列里的下一个人；**每人摸牌之前**先给他开一次无懈窗口
+ * （官方时机是「目标锦囊牌生效前」，群体锦囊是逐个角色各一次）。
+ */
+function yiyiStep(state: GameState, ctx: TrickContext): void {
+  if (ctx.responderIndex >= ctx.responders.length) {
+    resumePlay(state, ctx.sourceId);
     return;
   }
-  const t = getPlayer(state, queue[index]!);
+  const t = getPlayer(state, ctx.responders[ctx.responderIndex]!);
   if (!t || !t.alive) {
-    yiyiStep(state, sourceId, queue, index + 1);
+    ctx.responderIndex++;
+    yiyiStep(state, ctx);
+    return;
+  }
+  openWuxieWindow(state, ctx, () => yiyiResolveCurrent(state, ctx));
+}
+
+/** 窗口关掉之后真正结算这一个角色（可能刚被抵消，那就跳过） */
+function yiyiResolveCurrent(state: GameState, ctx: TrickContext): void {
+  const t = getPlayer(state, ctx.responders[ctx.responderIndex]!);
+  if (!t || !t.alive || negatedByWuxie(ctx, t.seatId)) {
+    ctx.responderIndex++;
+    yiyiStep(state, ctx);
     return;
   }
   let drew = 0;
@@ -3367,7 +3478,8 @@ function yiyiStep(state: GameState, sourceId: string, queue: string[], index: nu
   const count = Math.min(2, t.hand.length);
   if (count === 0) {
     pushLog(state, 'trick', `${t.name} 因【以逸待劳】摸了 ${drew} 张牌，无牌可弃。`);
-    yiyiStep(state, sourceId, queue, index + 1);
+    ctx.responderIndex++;
+    yiyiStep(state, ctx);
     return;
   }
   state.pending = {
@@ -3383,7 +3495,8 @@ function yiyiStep(state: GameState, sourceId: string, queue: string[], index: nu
         toDiscard(st, c);
       }
       pushLog(st, 'trick', `${player.name} 因【以逸待劳】弃置了 ${picked.length} 张牌。`);
-      yiyiStep(st, sourceId, queue, index + 1);
+      ctx.responderIndex++;
+      yiyiStep(st, ctx);
     },
   };
 }
@@ -3396,6 +3509,9 @@ function yiyiStep(state: GameState, sourceId: string, queue: string[], index: nu
 function resolveWugu(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId)!;
   const pickers = aliveSeatsFrom(state, source.seatId).filter((sid) => !negatedByWuxie(ctx, sid));
+  // 队列放进 ctx：无懈的候选要能算出「还没拿牌的人」
+  ctx.responders = pickers;
+  ctx.responderIndex = 0;
   const pool: import('@sgs/protocol').Card[] = [];
   for (let i = 0; i < pickers.length; i++) {
     const c = drawOne(state);
@@ -3407,28 +3523,44 @@ function resolveWugu(state: GameState, ctx: TrickContext): void {
     `${source.name} 使用了【五谷丰登】，亮出 ${pool.length} 张牌，由 ${source.name} 起依次选取。`,
     { seat: source.seatId, action: 'wugu' },
   );
-  wuguStep(state, ctx.sourceId, pool, pickers, 0);
+  wuguStep(state, ctx, pool);
 }
 
 function wuguStep(
   state: GameState,
-  sourceId: string,
+  ctx: TrickContext,
   remaining: import('@sgs/protocol').Card[],
-  pickers: string[],
-  index: number,
 ): void {
-  if (index >= pickers.length || remaining.length === 0) {
+  if (ctx.responderIndex >= ctx.responders.length || remaining.length === 0) {
     if (remaining.length > 0) {
       pushLog(state, 'trick', `【五谷丰登】余下的 ${remaining.length} 张牌进了弃牌堆。`);
       toDiscard(state, ...remaining.slice());
       remaining.length = 0;
     }
-    resumePlay(state, sourceId);
+    resumePlay(state, ctx.sourceId);
     return;
   }
-  const p = getPlayer(state, pickers[index]!);
+  const p = getPlayer(state, ctx.responders[ctx.responderIndex]!);
   if (!p || !p.alive) {
-    wuguStep(state, sourceId, remaining, pickers, index + 1);
+    ctx.responderIndex++;
+    wuguStep(state, ctx, remaining);
+    return;
+  }
+  // 每人拿牌之前先给他开一次无懈窗口（后面的选牌能看到前面拿了什么，
+  // 所以这个时机是真的有意义——「等看清池子里还剩什么再决定无懈谁」）
+  openWuxieWindow(state, ctx, () => wuguResolveCurrent(state, ctx, remaining));
+}
+
+/** 窗口关掉之后真正让这一个角色拿牌（可能刚被抵消，那就跳过） */
+function wuguResolveCurrent(
+  state: GameState,
+  ctx: TrickContext,
+  remaining: import('@sgs/protocol').Card[],
+): void {
+  const p = getPlayer(state, ctx.responders[ctx.responderIndex]!);
+  if (!p || !p.alive || negatedByWuxie(ctx, p.seatId)) {
+    ctx.responderIndex++;
+    wuguStep(state, ctx, remaining);
     return;
   }
   state.pending = {
@@ -3446,7 +3578,8 @@ function wuguStep(
       pushLog(st, 'trick', `${player.name} 因【五谷丰登】获得了【${cardLabel(card)}】。`, {
         seat: player.seatId,
       });
-      wuguStep(st, sourceId, remaining, pickers, index + 1);
+      ctx.responderIndex++;
+      wuguStep(st, ctx, remaining);
     },
   };
 }
@@ -3513,6 +3646,19 @@ function huoShaoStep(state: GameState, ctx: TrickContext): void {
   }
   const target = getPlayer(state, ctx.responders[idx]!);
   if (!target || !target.alive) {
+    ctx.responderIndex++;
+    huoShaoStep(state, ctx);
+    return;
+  }
+  // 每人挨烧之前先给他开一次无懈窗口；被打进濒死时剩下的队列留在 ctx 里，
+  // 濒死结算完由 resumePlay 回到这里，会再开一次窗口（对还没结算的人是对的）
+  openWuxieWindow(state, ctx, () => huoShaoResolveCurrent(state, ctx));
+}
+
+/** 窗口关掉之后真正结算这一个目标（可能刚被抵消，那就跳过） */
+function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
+  const target = getPlayer(state, ctx.responders[ctx.responderIndex]!);
+  if (!target || !target.alive || negatedByWuxie(ctx, target.seatId)) {
     ctx.responderIndex++;
     huoShaoStep(state, ctx);
     return;
@@ -3601,6 +3747,18 @@ function chilingStep(state: GameState, ctx: TrickContext): void {
   }
   const target = getPlayer(state, ctx.responders[idx]!);
   if (!target || !target.alive) {
+    chilingNext(state, ctx);
+    return;
+  }
+  // 每个人做选择之前先给他开一次无懈窗口（先做选择的人会明置武将牌等，
+  // 后面的人看在眼里，所以这个时机有意义）
+  openWuxieWindow(state, ctx, () => chilingAskCurrent(state, ctx));
+}
+
+/** 窗口关掉之后真正让这一个角色做三选一（可能刚被抵消，那就跳过） */
+function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
+  const target = getPlayer(state, ctx.responders[ctx.responderIndex]!);
+  if (!target || !target.alive || negatedByWuxie(ctx, target.seatId)) {
     chilingNext(state, ctx);
     return;
   }
@@ -4132,7 +4290,28 @@ function enterTrickResponse(state: GameState, ctx: TrickContext): void {
     return;
   }
   const rId = ctx.responders[ctx.responderIndex]!;
-  const r = getPlayerOrThrow(state, rId);
+  // 时机二：**这名角色生效前**再开一次无懈窗口。
+  // 群体锦囊是逐个角色各问一次的——所以「甲先化解了，轮到我时再抵消我」这种打法成立。
+  openWuxieWindow(state, ctx, () => respondForCurrent(state, ctx, rId));
+}
+
+/**
+ * 无懈窗口关掉之后，让当前这名响应者真正开始响应。
+ *
+ * 这里要**重新判一次**是否已被抵消：窗口里可能刚有人把他抵消掉了（那就跳过他去下一个），
+ * 也可能有人抵消了那张无懈（那就照常响应）。
+ */
+function respondForCurrent(state: GameState, ctx: TrickContext, rId: string): void {
+  const r = getPlayer(state, rId);
+  if (!r || !r.alive) {
+    advanceTrick(state, ctx);
+    return;
+  }
+  if (negatedByWuxie(ctx, rId)) {
+    pushLog(state, 'resolve', `${r.name} 已被【无懈可击】抵消，不再响应。`);
+    advanceTrick(state, ctx);
+    return;
+  }
   pushLog(
     state,
     'trick',
@@ -4799,11 +4978,9 @@ function onRespondWuxie(
    * 每张无懈都要弃一张牌，所以这个循环必然收敛。
    */
   const after = (): void => {
-    const queue = aliveSeatsFrom(state, nextSeatAfter(state, responder.seatId)).filter(
-      (sid) => sid !== responder.seatId,
-    );
+    const queue = wuxieCounterQueue(state, responder.seatId);
     if (queue.length === 0) {
-      resolveTrick(state, ctx);
+      finishWuxieWindow(state, pending);
       return;
     }
     pending.askQueue = queue;
@@ -4868,11 +5045,23 @@ function onPassWuxie(
   pending: Extract<Pending, { kind: 'wuxieQueue' }>,
 ): ApplyResult {
   pending.askIndex++;
-  if (pending.askIndex >= pending.askQueue.length) {
-    // 这一轮没人再打无懈 → 按当前的抵消链结算
-    resolveTrick(state, pending.ctx);
-  }
+  if (pending.askIndex >= pending.askQueue.length) finishWuxieWindow(state, pending);
   return { ok: true };
+}
+
+/**
+ * 一轮无懈问完了（没人再打）→ 按当前的抵消链继续。
+ *
+ * `onDone` 就是「继续」的内容：锦囊开始前那一轮是「结算锦囊」，
+ * 逐目标的那些窗口是「继续结算这个目标」。没有 onDone 时按结算锦囊处理。
+ */
+function finishWuxieWindow(
+  state: GameState,
+  pending: Extract<Pending, { kind: 'wuxieQueue' }>,
+): void {
+  const next = pending.onDone;
+  if (next) next();
+  else resolveTrick(state, pending.ctx);
 }
 
 function onRespondCard(
@@ -6047,6 +6236,13 @@ export function createGame(
      * 「两名同阵营」等规则都照旧走，所以测出来的行为与真实一致。
      */
     freePick?: boolean;
+    /**
+     * 洗牌用的随机源（缺省 `Math.random`）。
+     *
+     * 测试要**可复现**就必须传它——否则只有「玩家决策」是固定种子的，
+     * 牌序仍然随运行顺序变，同一颗种子会跑出不同结果（随机冒烟测试踩过这个坑）。
+     */
+    rng?: () => number;
   },
 ): GameState {
   const mode: GameMode = opts?.mode ?? 'melee';
@@ -6091,7 +6287,7 @@ export function createGame(
   } else if (mode === 'junzheng') {
     const roleTable = JUNZHENG_ROLES[n];
     if (!roleTable) throw new Error(`军争模式需 5-8 人，当前 ${n} 人`);
-    const roles = shuffle([...roleTable]);
+    const roles = shuffle([...roleTable], opts?.rng);
     players.forEach((p, i) => {
       p.role = roles[i]!;
     });
@@ -6108,7 +6304,7 @@ export function createGame(
     // 测试用：每人拿到的「可选项」就是整个池子，想选谁选谁
     for (const s of seats) deals[s.seatId] = allIds.slice();
   } else {
-    const heroIds = shuffle(allIds);
+    const heroIds = shuffle(allIds, opts?.rng);
     let cursor = 0;
     for (const s of seats) {
       if (cursor + k > heroIds.length) {
@@ -6124,7 +6320,7 @@ export function createGame(
     mode,
     players,
     seatOrder,
-    deck: shuffle(buildDeck(mode, { shibei: opts?.shibei })),
+    deck: shuffle(buildDeck(mode, { shibei: opts?.shibei }), opts?.rng),
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
     pending: null,

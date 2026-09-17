@@ -236,6 +236,11 @@ export interface AttackContext {
    * 所以逐个结算：一人闪了，队列立刻被清空，其余目标什么也不受。
    */
   fangtianQueue?: string[];
+  /**
+   * 一人出【闪】是否令此【杀】对**其余目标全部无效**。
+   * 只有**国战版**方天画戟是这样（军争版各目标独立结算），所以由 fangtianRule 赋值。
+   */
+  fangtianAbortOnDodge?: boolean;
 }
 
 // 即时锦囊结算上下文（贯穿：打出→无懈可击询问→结算→响应）
@@ -300,8 +305,21 @@ export type Pending =
   | { kind: 'discard'; seatId: string; count: number }
   // 锦囊响应：出杀(南蛮/决斗/借刀)/出闪(万箭)/展示牌(火攻)/弃牌(火攻)
   | { kind: 'respondTrick'; responderId: string; ctx: TrickContext }
-  // 无懈可击询问轮：全体依次可打出无懈
-  | { kind: 'wuxieQueue'; ctx: TrickContext; askQueue: string[]; askIndex: number }
+  /**
+   * 无懈可击询问窗口：依次问队列里的人要不要打无懈。
+   *
+   * 这个窗口会出现**多次**——锦囊结算开始时一次，之后**每名角色生效前**再来一次
+   * （官方时机就是「目标锦囊牌生效前」，所以群体锦囊是逐个角色各一次）。
+   * `onDone` 是这一轮问完（没人再打无懈）之后接着干什么：不给就是「结算锦囊」，
+   * 逐目标的那些窗口则给一个「继续结算这个目标」的续接。
+   */
+  | {
+      kind: 'wuxieQueue';
+      ctx: TrickContext;
+      askQueue: string[];
+      askIndex: number;
+      onDone?: () => void;
+    }
   // 主动技能：出牌阶段使用主动技能（多步交互时暂停）
   | { kind: 'activeSkill'; seatId: string; skillId: string }
   /**
