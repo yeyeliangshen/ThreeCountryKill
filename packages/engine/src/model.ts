@@ -248,6 +248,14 @@ export interface Player {
    */
   nullifiedHeroId: string | null;
   /**
+   * 已被**移除**的武将牌（id 列表）。
+   *
+   * 国战「移除」：那张牌离场，角色用「士兵牌」顶上——**势力/性别/体力上限都保留**，
+   * 但**没有技能**。所以 effectiveHeroes 会滤掉它，而势力/性别那几条（读 faction 字段
+   * 与英雄的 gender）照旧。糜夫人的闺秀/存嗣、张任的穿心、董卓的暴凌都用它。
+   */
+  removedHeroIds: string[];
+  /**
    * 通过觉醒技/化身等途径「获得」的技能：从别的武将身上借来的。
    * 只记来源武将 id 与技能名，具体怎么摘见 heroes.grantedHeroes。
    */

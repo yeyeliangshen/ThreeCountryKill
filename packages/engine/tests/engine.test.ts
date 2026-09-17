@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
   baseDistance,
+  effectiveHeroes,
   canUseAsCard,
   canTarget,
   createGame,
@@ -13988,5 +13989,108 @@ describe('国战 · 马谡（散谣）', () => {
     ]);
     const res = act(state, A, { type: 'useSkill', skillId: 'sanyao', cardIds: ['a1'], targetIds: [C] });
     expect(res.ok).toBe(false);
+  });
+});
+
+/** 主将技/副将技 + 移除武将牌：拿董卓·暴凌当第一个用户 */
+describe('国战 · 主将技/副将技 与 移除武将牌（董卓·暴凌）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      hp?: number;
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = [];
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('暴凌：出牌阶段结束时移除副将、+3 上限、回 3 血并获得崩坏（只生效一次）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'dongzhuo', deputyHeroId: 'xuchu', faction: 'qun', hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 主将技：暴凌生效、横征也在（都是董卓的）
+    const ids = effectiveHeroes(state, a).map((h) => h.id);
+    expect(ids).toContain('dongzhuo');
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(a.removedHeroIds).toEqual(['xuchu']);
+    // 副将被移除、只剩董卓 + 被授予的【崩坏】
+    expect(effectiveHeroes(state, a).map((h) => h.id)).toContain('dongzhuo');
+    expect(effectiveHeroes(state, a).map((h) => h.id)).not.toContain('xuchu');
+    expect(a.maxHp).toBe(7); // 4 + 3
+    expect(a.hp).toBe(5); // 2 + 3
+    expect(a.grantedSkills.some((g) => g.skillName === '崩坏')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('暴凌'))).toBe(true);
+  });
+
+  it('董卓当副将：暴凌不生效（主将技），横征照旧', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangliao', deputyHeroId: 'dongzhuo', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 行为验证：走完出牌阶段，暴凌（主将技）不该生效——副将位不会被移除
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(a.removedHeroIds).toEqual([]);
+    expect(a.maxHp).toBe(4);
+    expect(state.log.some((e) => e.message.includes('暴凌'))).toBe(false);
+    // 而横征（不限位置）照旧：把体力压到 1、给手牌，摸牌阶段就该问它
+    const state2 = gz([
+      { seatId: A, name: '甲', heroId: 'zhangliao', deputyHeroId: 'dongzhuo', faction: 'wei', hp: 1 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a2 = state2.players.find((p) => p.seatId === A)!;
+    const b2 = state2.players.find((p) => p.seatId === B)!;
+    a2.hand = [];
+    b2.hand = [sha('b1')]; // 横征要有「有牌可拿」的其他角色才会问
+    state2.turn = { seatIndex: state2.seatOrder.indexOf(B), phase: 'play' };
+    state2.pending = { kind: 'play', seatId: B };
+    ok(act(state2, B, { type: 'endPhase' })); // 轮到甲：摸牌阶段
+    // 张辽的【突袭】和董卓的【横征】都挂在这个时机，先问突袭（张辽是主将）
+    expect(state2.pending?.kind).toBe('choice');
+    if (state2.pending?.kind === 'choice') expect(state2.pending.title).toContain('突袭');
+    ok(act(state2, A, { type: 'chooseOption', optionId: 'no' }));
+    // 紧接着问横征——它是副将董卓的技能，但横征不限位置，照常生效
+    expect(state2.pending?.kind).toBe('choice');
+    if (state2.pending?.kind === 'choice') expect(state2.pending.title).toContain('横征');
+  });
+
+  it('崩坏：获得后，结束阶段若自己不是体力最低的，就要失去体力或减上限', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'dongzhuo', deputyHeroId: 'xuchu', faction: 'qun', hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4 },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    // 出牌阶段结束 → 暴凌；弃牌阶段 → 结束阶段 → 崩坏（甲 5 血，乙 4 血 → 甲不是最低的）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('崩坏');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'maxhp' }));
+    expect(a.maxHp).toBe(6);
   });
 });

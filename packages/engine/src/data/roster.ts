@@ -51,7 +51,9 @@ export type PrimitiveId =
   | 'flip' // 武将牌翻面
   | 'move_field_card' // 移动场上的一张牌（谋断 / 巧变）
   | 'after_heal' // 回复体力后（淑慎）
-  | 'discard_ledger'; // 本回合进入弃牌堆的牌（再起）
+  | 'discard_ledger' // 本回合进入弃牌堆的牌（再起）
+  | 'remove_hero' // 移除武将牌（士兵牌顶替）
+  | 'slot_skills'; // 主将技 / 副将技
 
 export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   hook_interaction: '钩子内发起询问',
@@ -76,6 +78,8 @@ export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   flip: '翻面',
   move_field_card: '移动场上的一张牌',
   after_heal: '回复体力后时机',
+  remove_hero: '移除武将牌',
+  slot_skills: '主将技/副将技',
   discard_ledger: '弃牌堆回合账本',
 };
 
@@ -640,8 +644,8 @@ const SHI: RosterEntry[] = [
     faction: 'qun',
     pack: 'shi',
     status: 'done',
-    primitives: ['maxhp_change', 'pick_cards'],
-    note: '横征已实现（放弃摸牌，从其他每名角色区域里各拿一张）。暴凌＝主将技＋「移除副将」制度，尚未实现（连带它给的崩坏）。',
+    primitives: ['maxhp_change', 'pick_cards', 'remove_hero'],
+    note: '横征 + 暴凌（主将技、锁定技）都已实现：暴凌在出牌阶段结束时移除副将、+3 上限、回 3 血并把【崩坏】授予自己（崩坏是伪武将，notDraftable）。主将技按技能名限制（mainSlotSkills），并让它少半个阴阳鱼（mainSlotHalfYang）。',
   },
   { id: 'zhangren', name: '张任', faction: 'qun', pack: 'shi', status: 'todo' },
 ];
@@ -818,8 +822,12 @@ export const PRIMITIVES_DONE: PrimitiveId[] = [
   //   Hero.lockedFields）+ effectiveHeroes 屏蔽 + api.nullifyNonLockedSkills。
   //   注意：还没有武将在用 skill_nullify（新国战铁骑、左慈的文本都待核对）。
   //
-  // maxhp_change：**引擎侧就绪但没有武将验证**——SkillApi.changeMaxHp 已实现，
-  //   等董卓·崩坏 / 袁术那批接上。所以它不在上面这份已完成的清单里。
+  // maxhp_change：董卓·崩坏已接上（changeMaxHp + 崩坏伪武将），可以算了。
+  'maxhp_change',
+  // remove_hero / slot_skills（第十批）：移除武将牌（Player.removedHeroIds +
+  //   effectiveHeroes 过滤 + api.removeHeroCard）与主将技/副将技
+  //   （Hero.mainSlotSkills/deputySlotSkills + collectTimingHooks 过滤 + mainSlotHalfYang）。
+  //   第一个用户是董卓·暴凌（连带崩坏）。
   // 已转换（可挂起）的时机：afterDamage / afterDamageDealt / becomeTarget /
   //                          turnStart / judgePhase / drawPhase / playPhase / turnEnd
   // 尚未转换：useCard / nearDeath / beforeResolve / afterResolve / afterUse / discardPhase / death

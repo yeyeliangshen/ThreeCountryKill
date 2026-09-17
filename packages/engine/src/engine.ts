@@ -489,7 +489,22 @@ function collectTimingHooks(
   sync: boolean,
 ): HookRegistration[] {
   const heroes = activeHeroes(state, player);
-  const hooks = heroes.flatMap((hero) => hero.hooks?.filter((h) => h.timing === timing) ?? []);
+  const hooks = heroes.flatMap((hero) => {
+    // 主将技 / 副将技：只有那张武将牌在对应位置时，这些**技能**才生效
+    // （同一武将的其它技能不受影响；非国战没有副将位，所以主将技恒生效）
+    const mainOk =
+      state.mode !== 'guozhan' || player.heroId === hero.id || !hero.mainSlotSkills;
+    const deputyOk =
+      state.mode !== 'guozhan' || player.deputyHeroId === hero.id || !hero.deputySlotSkills;
+    return (
+      hero.hooks?.filter((h) => {
+        if (h.timing !== timing) return false;
+        if (h.skillId && hero.mainSlotSkills?.includes(h.skillId) && !mainOk) return false;
+        if (h.skillId && hero.deputySlotSkills?.includes(h.skillId) && !deputyOk) return false;
+        return true;
+      }) ?? []
+    );
+  });
   hooks.push(...prelitHooks(state, player, timing, sync));
   hooks.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
   return hooks;
@@ -919,6 +934,18 @@ function enterPlayPhase(state: GameState, player: Player): void {
 
 /** 进入弃牌阶段：检查手牌上限 */
 function goToDiscardPhase(state: GameState, player: Player): void {
+  // 「出牌阶段结束时」（董卓·暴凌）：只有这个阶段**真的发生过**才发——
+  // 被乐不思蜀或巧变整个跳过的不算（那时 skipPlay 是 true）。
+  if (state.turn.phase === 'play' && !player.flags.skipPlay) {
+    const rest = (): void => beginDiscardPhasePart(state, player);
+    runHooksPausable(state, 'playPhaseEnd', player, undefined, rest);
+    return;
+  }
+  beginDiscardPhasePart(state, player);
+}
+
+/** 弃牌阶段的实体部分（出牌阶段结束的钩子跑完之后进这里） */
+function beginDiscardPhasePart(state: GameState, player: Player): void {
   state.turn.phase = 'discard';
   // 走可挂起版本：张郃·巧变要在这里问「是否弃一张牌跳过弃牌阶段」
   runHooksPausable(state, 'discardPhase', player, undefined, () => {
@@ -6369,6 +6396,23 @@ function makeSkillApi(
       if (old) fireEquipLost(state, target, old, done);
       else done();
     },
+    removeHeroCard: (seatId, heroId) => {
+      const owner = getPlayer(state, seatId);
+      const hero = owner ? getHeroForMode(heroId, state.mode) : undefined;
+      if (!owner || !hero) return;
+      if (owner.removedHeroIds.includes(heroId)) return;
+      owner.removedHeroIds.push(heroId);
+      pushLog(state, 'skill', `${owner.name} 移除了武将牌【${hero.name}】（用士兵牌顶替）。`, {
+        seat: owner.seatId,
+        action: 'skill',
+      });
+      // 闺秀那种「移除此武将牌后回复 1 点体力」：由移除这个动作直接结算
+      // （牌已经离场，它的技能不可能再作为钩子被收集到）
+      if (hero.healOwnerOnRemoval) {
+        const healed = healAndTrigger(state, owner, 1);
+        pushLog(state, 'skill', `${owner.name} 因【闺秀】回复 ${healed} 点体力。`);
+      }
+    },
     privateView: (viewerSeatId, title, content, opts) => {
       const viewer = getPlayer(state, viewerSeatId);
       if (!viewer) {
@@ -6955,6 +6999,7 @@ export function createGame(
     chained: false,
     usedOncePerGame: {},
     prelitSkills: [],
+    removedHeroIds: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],
@@ -7073,7 +7118,10 @@ function finishDraft(state: GameState): void {
         // 官方规则：体力上限 = 两将体力之和 ÷ 2，向下取整。
         // 珠联璧合不再直接加体力上限——它改为在双将首次明置时发一个标记，
         // 见 onHeroRevealed。
-        p.maxHp = Math.floor((main.maxHp + deputy.maxHp) / 2);
+        // 主将技若写着「此武将牌减少半个阴阳鱼」（邓艾·急袭、董卓·暴凌），
+        // 那张牌贡献的阴阳鱼少 0.5 ——本引擎的体力是阴阳鱼×2 的口径，所以是 -1。
+        const mainHp = main.maxHp - (main.mainSlotHalfYang ? 1 : 0);
+        p.maxHp = Math.floor((mainHp + deputy.maxHp) / 2);
       } else {
         p.maxHp = main?.maxHp ?? 4;
       }

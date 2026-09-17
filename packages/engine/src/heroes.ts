@@ -264,6 +264,31 @@ export interface Hero {
    */
   xingleBasicDiscard?: boolean;
   /**
+   * 只作为「被授予的技能」存在的伪武将（崩坏、勇决…）：不进选将池，
+   * 只能通过 api.grantSkill 挂到别人身上。
+   */
+  notDraftable?: boolean;
+  /**
+   * **主将技**：这些技能只有这张武将牌在**主将**位时才生效。
+   *
+   * ⚠️ 限制是按**技能**算的，不是按武将牌算的——同一个武将的其它技能不受影响
+   *    （董卓：暴凌是主将技，横征哪个位置都能用）。钩子在 collectTimingHooks 里过滤；
+   *    字段型技能（canUseAs 那类）暂时只覆盖钩子，用到时再补。
+   */
+  mainSlotSkills?: string[];
+  /** 副将技：这些技能只有这张武将牌在**副将**位时才生效（邓艾·资粮、孙策·魂殇）。 */
+  deputySlotSkills?: string[];
+  /**
+   * 主将技的代价：此武将牌**减少半个阴阳鱼**（本引擎体力是阴阳鱼×2 的口径，所以 -1）。
+   * 只在它处于主将位时算，且由 finishDraft 读。
+   */
+  mainSlotHalfYang?: boolean;
+  /**
+   * 闺秀那类：这张武将牌**被移除**时，其拥有者回复 1 点体力。
+   * （移除是「那张牌离场」，所以这条效果由移除原语直接结算，不靠钩子。）
+   */
+  healOwnerOnRemoval?: boolean;
+  /**
    * 祝融·巨象的后半句（锁定技）：**其他角色**使用的【南蛮入侵】结算结束后，你获得之。
    * 由 engine 在南蛮结算完（enterTrickResponse 的出口）读——只在牌还躺在弃牌堆里时给
    * （被曹操·奸雄那类收走就不给了）。
@@ -3121,6 +3146,49 @@ const MADAI: Hero = {
   ],
 };
 
+/**
+ * 【崩坏】（伪武将，只作为「被授予的技能」存在）。
+ * 董卓·暴凌把自己变成「大董卓」时获得它。
+ */
+const BENGSHUAI: Hero = {
+  id: 'bengshuai',
+  name: '崩坏',
+  faction: 'neutral',
+  maxHp: 1,
+  notDraftable: true,
+  hooks: [
+    {
+      timing: 'turnEnd',
+      skillId: '崩坏',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const alive = ctx.state.players.filter((x) => x.alive);
+        const lowest = Math.min(...alive.map((x) => x.hp));
+        if (me.hp <= lowest) return; // 体力值最小的角色之一 → 不触发
+        const options: { id: string; label: string }[] = [];
+        options.push({ id: 'hp', label: '失去 1 点体力' });
+        if (me.maxHp > 1) options.push({ id: 'maxhp', label: '减 1 点体力上限' });
+        ctx.api.askChoice(ctx.state, me.seatId, '【崩坏】：选择一项', options, (st, p, picked) => {
+          if (picked === 'maxhp') {
+            ctx.api.changeMaxHp(p, -1);
+            pushLog(st, 'skill', `${p.name} 的【崩坏】生效：减 1 点体力上限。`);
+            return;
+          }
+          ctx.api.loseHp(p, 1);
+          pushLog(st, 'skill', `${p.name} 的【崩坏】生效：失去 1 点体力。`);
+        });
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '崩坏',
+      desc: '锁定技，结束阶段，若你不是体力值最小的角色，你失去1点体力或减1点体力上限。',
+    },
+  ],
+};
+
 const DONGZHUO: Hero = {
   id: 'dongzhuo',
   name: '董卓',
@@ -3129,7 +3197,30 @@ const DONGZHUO: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 暴凌：主将技（只它受限，横征不受影响）；并且让它少半个阴阳鱼（-1 体力上限）
+  mainSlotSkills: ['暴凌'],
+  mainSlotHalfYang: true,
   hooks: [
+    {
+      timing: 'playPhaseEnd',
+      skillId: '暴凌',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.usedOncePerGame.baling) return; // 已经用过了（发动后失去暴凌）
+        if (!me.deputyHeroId) return;
+        me.usedOncePerGame.baling = true;
+        ctx.api.removeHeroCard(me.seatId, me.deputyHeroId);
+        ctx.api.changeMaxHp(me, 3);
+        const healed = ctx.api.heal(me, 3);
+        ctx.api.grantSkill('bengshuai', '崩坏');
+        pushLog(
+          ctx.state,
+          'skill',
+          `${me.name} 的【暴凌】生效：移除副将，体力上限 +3、回复 ${healed} 点体力并获得【崩坏】。`,
+        );
+      },
+    },
     {
       timing: 'drawPhase',
       skillId: '横征',
@@ -3172,7 +3263,7 @@ const DONGZHUO: Hero = {
     },
     {
       name: '暴凌',
-      desc: '主将技，锁定技，出牌阶段结束时，移除你的副将，然后你加3点体力上限并回复3点体力，失去【暴凌】并获得【崩坏】。（移除副将的制度未实现，暂时不可用）',
+      desc: '主将技，锁定技，出牌阶段结束时，移除你的副将，然后你加3点体力上限并回复3点体力，失去【暴凌】并获得【崩坏】。',
     },
   ],
 };
@@ -6957,6 +7048,7 @@ export const HEROES: Hero[] = [
   MADAI,
   LINGTONG,
   MASU,
+  BENGSHUAI,
   DONGZHUO,
   CAOCAO,
   XUNYU,
@@ -7016,7 +7108,8 @@ export function getHero(id: string | null | undefined): Hero | undefined {
  * 不要再直接遍历 HEROES——否则加了国战专属武将就会漏进其它模式。
  */
 export function poolForMode(mode: GameMode): Hero[] {
-  return HEROES.filter((h) => !h.modes || h.modes.includes(mode));
+  // notDraftable：只作为「被授予的技能」存在的伪武将（崩坏、勇决…），不进选将池
+  return HEROES.filter((h) => !h.notDraftable && (!h.modes || h.modes.includes(mode)));
 }
 
 /**
@@ -7191,6 +7284,11 @@ export function grantedHeroes(state: GameState, p: Player): Hero[] {
  */
 export function effectiveHeroes(state: GameState, p: Player): Hero[] {
   let heroes = [...revealedHeroes(state.mode, p), ...grantedHeroes(state, p)];
+  // 国战「移除」：那张牌离场、用士兵牌顶替，**没有技能**（势力/性别/体力上限保留）
+  if (p.removedHeroIds.length > 0) {
+    heroes = heroes.filter((h) => !p.removedHeroIds.includes(h.id));
+  }
+  // （主将技/副将技的过滤在 collectTimingHooks 里按技能做——见 Hero.mainSlotSkills）
   // 蔡文姬·断肠：被点名的那张武将牌**技能全失**（势力/性别照旧，所以它还在
   // selectable 的名单里、只是没有技能）。暗置时被点名也照样算——将来明置也不会有技能。
   if (p.nullifiedHeroId) heroes = heroes.filter((h) => h.id !== p.nullifiedHeroId);
