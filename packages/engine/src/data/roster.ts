@@ -82,6 +82,7 @@ export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   after_heal: '回复体力后时机',
   remove_hero: '移除武将牌',
   change_deputy: '变更副将',
+  siege_formation: '阵法技（队列/围攻）',
   slot_skills: '主将技/副将技',
   discard_ledger: '弃牌堆回合账本',
 };
