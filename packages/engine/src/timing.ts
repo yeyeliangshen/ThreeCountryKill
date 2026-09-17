@@ -51,6 +51,17 @@ export type Timing =
   | 'anyDamaged'
   | 'afterDamageDealt' // 造成伤害后（派发给**伤害来源**：狂骨这类「你造成的伤害」技能）
   | 'nearDeath' // 濒死
+  /**
+   * **其他角色**进入濒死状态（派给**除濒死者外**的所有存活角色，
+   * payload: { attack, dyingId }）。田丰·随势挂这里——`nearDeath` 只发给濒死者本人。
+   */
+  | 'otherNearDeath'
+  /**
+   * **其他角色**的弃牌阶段结束时（派给除该角色外的所有存活角色，
+   * payload: { discardingSeatId, cards }，cards 是他这个弃牌阶段弃置的牌）。
+   * 张昭张纮·固政挂这里。`discardPhaseEnd` 只发给回合玩家本人。
+   */
+  | 'othersDiscardPhaseEnd'
   | 'kill' // 你**杀死**了一名角色（派发给凶手，payload.victimId）——曹丕·行殇
   | 'afterHeal' // 回复体力后（派发给回复者，payload.amount 是**实际**回复量）——甘夫人·淑慎
   | 'death'; // 死亡
@@ -152,6 +163,14 @@ export interface SkillApi {
    * after 在结算完成后调用。
    */
   discardCard: (ownerSeatId: string, card: Card, after?: () => void) => void;
+  /**
+   * 把一张**手牌**放进别人的装备区（张昭张纮·直谏）。
+   *
+   * 与 `moveFieldCard` 的区别：那张牌**还不在场上**（在某人手里），
+   * 所以不能靠「找到它在哪」来移动。目标同栏位原有的牌会进弃牌堆，
+   * 并触发他「失去装备区里的牌」的技能（枭姬那类）。
+   */
+  giveEquipTo: (card: Card, toSeatId: string, after?: () => void) => void;
   /**
    * 把当前【杀】的目标改成另一名角色（大乔·流离、小乔·天香那类）。
    * **只能在 becomeTarget 的钩子里调用**——引擎会据此对新目标重新走一遍

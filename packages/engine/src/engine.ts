@@ -366,7 +366,10 @@ export function canUseAsCard(
     const skillName = conversionSkillName(
       unrevealedHeroes(state.mode, player).find((h) => heroCanUseAs(h, card, type, state, player))!,
     );
-    if (skillName && player.prelitSkills.includes(skillName)) return true;
+    // 用转化技必须先明置那张武将牌，所以被祸水封锁时这条也用不了
+    if (skillName && player.prelitSkills.includes(skillName) && canRevealNow(state, player)) {
+      return true;
+    }
   }
   if (isAoyu(state) && type === 'sha' && card.type === 'tao') return true;
   return false;
@@ -903,8 +906,17 @@ function beginDiscard(state: GameState, player: Player): void {
  * 钩子是可挂起的——再起要连问好几个人，所以得等整条链跑完才能 `endTurn`，
  * 否则会在询问还没答完时就把回合交出去。
  */
-function runDiscardPhaseEnd(state: GameState, player: Player): void {
-  runHooksPausable(state, 'discardPhaseEnd', player, {}, () => endTurn(state));
+function runDiscardPhaseEnd(state: GameState, player: Player, discarded: Card[] = []): void {
+  runHooksPausable(state, 'discardPhaseEnd', player, {}, () => {
+    // 「其他角色的弃牌阶段结束时」（张昭张纮·固政）：带上他这阶段弃掉的牌
+    runAllPlayersHooks(
+      state,
+      'othersDiscardPhaseEnd',
+      { discardingSeatId: player.seatId, cards: discarded },
+      () => endTurn(state),
+      player.seatId,
+    );
+  });
 }
 
 /** 判定阶段：逐张处理判定区延时锦囊 */
@@ -2092,7 +2104,26 @@ function runAnyDamagedHooks(
   damage: number,
   after: () => void,
 ): void {
-  const list = alivePlayers(state).map((p) => p.seatId);
+  runAllPlayersHooks(state, 'anyDamaged', { attack, damage, victimId: victim.seatId }, after);
+}
+
+/**
+ * 把某个时机派发给**所有存活角色**（逐个跑，每个都可能挂起）。
+ *
+ * 「当**某名角色**××时」这类技能（悲歌 / 随势 / 固政）收不到引擎只发给当事人的时机
+ * （anyDamaged / otherNearDeath / othersDiscardPhaseEnd），统一走这里补发。
+ * `exceptSeatId` 用来排除当事人本人（随势不算濒死者自己）。
+ */
+function runAllPlayersHooks(
+  state: GameState,
+  timing: Timing,
+  payload: unknown,
+  after: () => void,
+  exceptSeatId?: string,
+): void {
+  const list = alivePlayers(state)
+    .map((p) => p.seatId)
+    .filter((sid) => sid !== exceptSeatId);
   const step = (i: number): void => {
     if (i >= list.length) {
       after();
@@ -2103,9 +2134,7 @@ function runAnyDamagedHooks(
       step(i + 1);
       return;
     }
-    runHooksPausable(state, 'anyDamaged', p, { attack, damage, victimId: victim.seatId }, () =>
-      step(i + 1),
-    );
+    runHooksPausable(state, timing, p, payload, () => step(i + 1));
   };
   step(0);
 }
@@ -2420,14 +2449,26 @@ function enterNearDeath(state: GameState, attack: AttackContext): void {
   const dying = getPlayerOrThrow(state, attack.targetId);
   // nearDeath 可挂起：涅槃这类技能要在濒死时询问，然后把人救回来
   runHooksPausable(state, 'nearDeath', dying, { attack }, () => {
-    if (dying.hp > 0) {
-      // 被技能救回来了（涅槃）：不建濒死队列，把控制权还回去
-      pushLog(state, 'nearDeath', `${dying.name} 脱离了濒死状态。`);
-      resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
-      return;
-    }
-    enterDeathQueue(state, dying, attack.sourceId);
+    // 别人也想知道「有人进濒死了」（田丰·随势）：派给除濒死者外的所有人
+    runAllPlayersHooks(
+      state,
+      'otherNearDeath',
+      { attack, dyingId: dying.seatId },
+      () => afterNearDeath(state, attack, dying),
+      dying.seatId,
+    );
   });
+}
+
+/** nearDeath（本人）+ otherNearDeath（旁人）都跑完了，接着走原来的濒死处理 */
+function afterNearDeath(state: GameState, attack: AttackContext, dying: Player): void {
+  if (dying.hp > 0) {
+    // 被技能救回来了（涅槃/不屈）：不建濒死队列，把控制权还回去
+    pushLog(state, 'nearDeath', `${dying.name} 脱离了濒死状态。`);
+    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    return;
+  }
+  enterDeathQueue(state, dying, attack.sourceId);
 }
 
 /** 建立濒死求桃队列（完杀在这里生效）。killerId 供阵亡后的「杀死角色后」技能用 */
@@ -4587,6 +4628,9 @@ function takeRespondedSha(
   if ('error' in resolved) return resolved.error;
   const card = resolved.card;
   if (card.type !== 'sha' && !canUseAsCard(state, responder, card, 'sha')) return '需打出【杀】';
+  // 用转化技就得明置提供它的武将。这条以前只在「被【杀】指定后出闪」那条路上做了，
+  // 于是南蛮/决斗/借刀/离间里用武圣、龙胆打出的【杀】不会亮将。
+  revealForConversion(state, responder, card, 'sha');
   consumeCard(state, responder, card);
   return card;
 }
@@ -4927,6 +4971,8 @@ function respondWanjianShan(
   if (!card) return err('你没有这张牌');
   if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
     return err('万箭齐发需打出【闪】');
+  // 靠转化技出的这张【闪】要明置（甄姬·倾国 / 赵云·龙胆）
+  revealForConversion(state, responder, card, 'shan');
   takeUsableCard(responder, card.id);
   toDiscard(state, card);
   pushLog(state, 'trick', `${responder.name} 打出了【闪】。`, {
@@ -5638,6 +5684,7 @@ function onRespondFactionCall(
   const card = resolved.card;
   if (card.type !== pending.needType && !canUseAsCard(state, helper, card, pending.needType))
     return err(`只能打出【${CARD_TYPE_NAME[pending.needType]}】`);
+  revealForConversion(state, helper, card, pending.needType);
   consumeCard(state, helper, card);
   pending.onCard(state, helper, card);
   return { ok: true };
@@ -5767,7 +5814,7 @@ function onDiscard(
   if (intent.cardIds.length > 0) player.flags.discardedInDiscardPhase = true;
   pushLog(state, 'discard', `${player.name} 弃了 ${intent.cardIds.length} 张牌。`);
   // 礼让这类「你的牌因弃置而进弃牌堆」的时机；之后再推进弃牌阶段结束
-  fireCardDiscarded(state, player, thrown, () => runDiscardPhaseEnd(state, player));
+  fireCardDiscarded(state, player, thrown, () => runDiscardPhaseEnd(state, player, thrown));
   return { ok: true };
 }
 
@@ -5782,7 +5829,14 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
   // 顺带明置）。准备阶段的询问会正常给「明置主将/副将/全部」，这个意图是同一时机内的
   // 补充入口（选过「暂不明置」之后又改主意）。引擎里准备阶段与判定阶段同属 'judgment'。
   const isMyTurn = state.seatOrder[state.turn.seatIndex] === seatId;
-  if (!isMyTurn || state.turn.phase !== 'judgment')
+  // 通常只有**准备阶段**能主动明置（出牌阶段只能靠发动技能顺带明置）；例外是带
+  // canRevealInPlayPhase 的武将（邹氏·祸水：「出牌阶段，你可以明置此武将牌」）。
+  const playPhaseReveal =
+    state.turn.phase === 'play' &&
+    [getHero(player.heroId), getHero(player.deputyHeroId)].some(
+      (h) => h?.canRevealInPlayPhase === true,
+    );
+  if (!isMyTurn || (state.turn.phase !== 'judgment' && !playPhaseReveal))
     return err('只能在你的准备阶段明置武将牌（其余时机要发动技能才能明置）');
   if (intent.heroId !== player.heroId && intent.heroId !== player.deputyHeroId)
     return err('该武将不是你的武将');
@@ -5803,8 +5857,31 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
  * 亮将后要跑 `onHeroRevealed`（先驱 / 阴阳鱼 / 珠联璧合的发放都挂在那里），
  * 所以**不要**直接改 heroRevealed 字段。
  */
+/**
+ * 此刻这个人能不能明置武将牌。
+ *
+ * 唯一的封锁来自**邹氏·祸水**：「你的回合内，其他角色不能明置其武将牌」。
+ * 所以明置的两条路都要问它：
+ * - `revealHeroCard` —— 真的去明置（主动亮将、准备阶段询问、发动技能顺带明置）；
+ * - `canUseAsCard` 的暗置分支 —— 暗置的人想用转化技就得先明置，被封锁时就用不了。
+ */
+function canRevealNow(state: GameState, player: Player): boolean {
+  const turnSeatId = state.seatOrder[state.turn.seatIndex];
+  if (!turnSeatId || turnSeatId === player.seatId) return true;
+  const turnPlayer = getPlayer(state, turnSeatId);
+  if (!turnPlayer || !turnPlayer.alive) return true;
+  return !activeHeroes(state, turnPlayer).some((h) => h.blocksOthersReveal);
+}
+
 function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
   if (state.mode !== 'guozhan') return false;
+  // 邹氏·祸水：**她的回合内，其他角色不能明置武将牌**
+  if (!canRevealNow(state, player)) {
+    pushLog(state, 'reveal', `【祸水】生效：当前回合内，其他角色不能明置武将牌。`, {
+      seat: player.seatId,
+    });
+    return false;
+  }
   const mainHero = getHero(player.heroId);
   const deputyHero = getHero(player.deputyHeroId);
   const isLordPair = !!mainHero?.isLord || !!deputyHero?.isLord;
@@ -5983,6 +6060,21 @@ function makeSkillApi(
     },
     redirectAttack: (newTargetSeatId) => {
       if (attackBox) attackBox.redirectTo = newTargetSeatId;
+    },
+    giveEquipTo: (card, toSeatId, after) => {
+      const target = getPlayer(state, toSeatId);
+      const slot = card.type as (typeof EQUIP_SLOTS)[number];
+      if (!target || !target.alive || !EQUIP_SLOTS.includes(slot)) {
+        after?.();
+        return;
+      }
+      const old = target.equipment[slot];
+      target.equipment[slot] = card;
+      const done = (): void => after?.();
+      // 旧装备被顶掉 = 目标失去装备区的一张牌（枭姬那类）
+      if (old) toDiscard(state, old);
+      if (old) fireEquipLost(state, target, old, done);
+      else done();
     },
     discardCard: (ownerSeatId, card, after) => {
       const owner = getPlayer(state, ownerSeatId);

@@ -243,6 +243,16 @@ export interface Hero {
    */
   nanmanDamageSource?: boolean;
   /**
+   * 邹氏·祸水（锁定技的一部分）：你的回合内，其他角色不能明置武将牌。
+   * 由 engine 的 canRevealNow 拦（「真的去明置」与「暗置时用转化技」两条路都问它）。
+   */
+  blocksOthersReveal?: boolean;
+  /**
+   * 邹氏·祸水的前半句：**出牌阶段**也可以明置这张武将牌
+   * （通常只有准备阶段能主动明置，见 engine 的 onRevealHero）。
+   */
+  canRevealInPlayPhase?: boolean;
+  /**
    * 孔融·名士（锁定技）：当你受到伤害时，若伤害来源**有暗置的武将牌**，
    * 此伤害 -1。由 engine 的 finalizeDamage 在所有伤害点上统一读。
    */
@@ -285,7 +295,11 @@ export type FieldSkill =
   /** 丁奉·短兵：你使用【杀】可以**多选择一名距离为 1** 的角色为目标 */
   | 'shaExtraTargetAtRange1'
   /** 孔融·名士：伤害来源**有暗置的武将牌**时，你受到的伤害 -1 */
-  | 'reduceDamageFromHiddenSource';
+  | 'reduceDamageFromHiddenSource'
+  /** 邹氏·祸水：你的回合内，其他角色不能明置武将牌 */
+  | 'blocksOthersReveal'
+  /** 邹氏·祸水：出牌阶段也可以明置这张武将牌 */
+  | 'canRevealInPlayPhase';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -305,6 +319,8 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'nanmanDamageSource',
   'shaExtraTargetAtRange1',
   'reduceDamageFromHiddenSource',
+  'blocksOthersReveal',
+  'canRevealInPlayPhase',
 ];
 
 const GUANYU: Hero = {
@@ -4315,6 +4331,279 @@ const YANLIANG_WENCHOU: Hero = {
   ],
 };
 
+// —— 国战标准版·吴 / 群（第五批）——
+
+const ZHANGZHAO_ZHANGHONG: Hero = {
+  id: 'zhangzhao_zhanghong',
+  name: '张昭张纮',
+  faction: 'wu',
+  // 国战牌面 1.5 阴阳鱼 → 身份局口径 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      // 直谏：出牌阶段，你可以将手牌中的一张装备牌置于一名其他角色的装备区里，
+      // 然后摸一张牌。注意是**手牌里的装备牌**（不能拿别人装备区、也不能拿自己装备区的）。
+      id: 'zhijian',
+      name: '直谏',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) =>
+        player.hand.some((c) => isEquipCard(c)) &&
+        state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      execute: (state, player, intent, api) => {
+        const cardId = intent.cardIds?.[0];
+        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        if (!card) return '请选择一张手牌里的装备牌';
+        if (!isEquipCard(card)) return '【直谏】只能给装备牌';
+        const targetId = intent.targetIds[0];
+        const target = targetId ? getPlayer(state, targetId) : undefined;
+        if (!target || !target.alive || target.seatId === player.seatId) return '目标无效';
+        // 从手牌置入对方装备区（同栏位顶替 → 旧装备进弃牌堆）
+        removeCard(player.hand, card.id);
+        api.giveEquipTo(card, target.seatId);
+        const drawn = drawOne(state);
+        if (drawn) player.hand.push(drawn);
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【直谏】，把【${cardLabel(card)}】置于 ${target.name} 的装备区，然后摸了一张牌。`,
+          { seat: player.seatId, action: 'equip' },
+        );
+        return undefined;
+      },
+    },
+  ],
+  hooks: [
+    {
+      // 固政：其他角色的弃牌阶段结束时，你可以将该角色此阶段弃置的**一张手牌**
+      // 交给该角色，然后你可以获得其余此阶段弃置的牌。
+      timing: 'othersDiscardPhaseEnd',
+      skillId: '固政',
+      handler: (ctx) => {
+        const payload = ctx.payload as { discardingSeatId?: string; cards?: Card[] } | undefined;
+        const other = payload?.discardingSeatId
+          ? getPlayer(ctx.state, payload.discardingSeatId)
+          : undefined;
+        const cards = payload?.cards ?? [];
+        if (!other || !other.alive || cards.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `【固政】：${other.name} 弃了 ${cards.length} 张牌，是否发动？`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动（还他一张，其余归你）' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askPickCards(
+              st,
+              ctx.player.seatId,
+              `【固政】：选择一张还给 ${other.name}（其余归你）`,
+              cards,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const back = chosen[0];
+                const rest = cards.filter((c) => c.id !== back?.id);
+                if (back) {
+                  // 从弃牌堆取出交还本人
+                  const i = st2.discard.findIndex((c) => c.id === back.id);
+                  if (i >= 0) st2.discard.splice(i, 1);
+                  other.hand.push(back);
+                }
+                for (const c of rest) {
+                  const i = st2.discard.findIndex((x) => x.id === c.id);
+                  if (i < 0) continue;
+                  st2.discard.splice(i, 1);
+                  p2.hand.push(c);
+                }
+                pushLog(
+                  st2,
+                  'skill',
+                  `${p2.name} 发动【固政】：${other.name} 收回 ${
+                    back ? `【${cardLabel(back)}】` : '0 张'
+                  }，其余 ${rest.length} 张归 ${p2.name}。`,
+                  { seat: p2.seatId, action: 'gain' },
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '直谏',
+      desc: '出牌阶段，你可以将手牌中的一张装备牌置于一名其他角色的装备区里，然后摸一张牌。',
+    },
+    {
+      name: '固政',
+      desc: '其他角色的弃牌阶段结束时，你可以将该角色此阶段弃置的一张手牌交给该角色，然后你可以获得其余此阶段弃置的牌。',
+    },
+  ],
+};
+
+const TIANFENG: Hero = {
+  id: 'tianfeng',
+  name: '田丰',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      // 死谏：当你失去最后的手牌时，你可以弃置一名其他角色的一张牌。
+      // handEmptied 是「你失去最后一张手牌」的时机（连营用的那个）。
+      timing: 'handEmptied',
+      skillId: '死谏',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+        if (others.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【死谏】？（弃置一名其他角色的一张牌）',
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askChoice(
+              st,
+              me.seatId,
+              '【死谏】：弃置谁的牌？',
+              others
+                .filter((p) => p.hand.length > 0 || EQUIP_SLOTS.some((s) => p.equipment[s]))
+                .map((p) => ({ id: p.seatId, label: p.name })),
+              (st2, _p2, targetSeatId) => {
+                const target = getPlayer(st2, targetSeatId);
+                if (!target) return;
+                const pool = [
+                  ...target.hand,
+                  ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
+                ];
+                if (pool.length === 0) return;
+                // 手牌随机不看内容（与猛进/过河拆桥同一口径）
+                const card = pool[Math.floor(Math.random() * pool.length)]!;
+                const fromHand = target.hand.some((c) => c.id === card.id);
+                pushLog(
+                  st2,
+                  'skill',
+                  fromHand
+                    ? `${me.name} 发动【死谏】，弃置了 ${target.name} 的一张手牌。`
+                    : `${me.name} 发动【死谏】，弃置了 ${target.name} 的【${cardLabel(card)}】。`,
+                  { seat: me.seatId, action: 'discard' },
+                );
+                ctx.api.discardCard(target.seatId, card);
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      // 随势（锁定技）：当一名**其他**角色进入濒死状态时，若其体力上限与你相同，你摸一张牌。
+      // otherNearDeath 是给「旁人」的濒死通知（nearDeath 只发给濒死者本人）。
+      timing: 'otherNearDeath',
+      skillId: '随势',
+      locked: true,
+      handler: (ctx) => {
+        const dyingId = (ctx.payload as { dyingId?: string } | undefined)?.dyingId;
+        const dying = dyingId ? getPlayer(ctx.state, dyingId) : undefined;
+        if (!dying || dying.seatId === ctx.player.seatId) return;
+        if (dying.maxHp !== ctx.player.maxHp) return;
+        const c = drawOne(ctx.state);
+        if (c) ctx.player.hand.push(c);
+        pushLog(
+          ctx.state,
+          'skill',
+          `${ctx.player.name} 的【随势】生效（${dying.name} 与其体力上限同为 ${dying.maxHp}），摸一张牌。`,
+          { seat: ctx.player.seatId, action: 'draw' },
+        );
+      },
+    },
+  ],
+  skills: [
+    { name: '死谏', desc: '当你失去最后的手牌时，你可以弃置一名其他角色的一张牌。' },
+    {
+      name: '随势',
+      desc: '锁定技，当一名其他角色进入濒死状态时，若其体力上限与你相同，你摸一张牌。',
+    },
+  ],
+};
+
+const ZOUSHI: Hero = {
+  id: 'zoushi',
+  name: '邹氏',
+  faction: 'qun',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  modes: ['guozhan'],
+  // 祸水：出牌阶段你可以明置此武将牌；**你的回合内，其他角色不能明置其武将牌**。
+  // 后半句是锁定效果，由 engine 的 revealHeroCard（所有明置的唯一入口）拦。
+  blocksOthersReveal: true,
+  canRevealInPlayPhase: true,
+  lockedFields: ['blocksOthersReveal'],
+  skillFields: { 祸水: ['blocksOthersReveal', 'canRevealInPlayPhase'] },
+  activeSkills: [
+    {
+      // 倾城：出牌阶段限一次，你可以弃置一张装备牌，然后令一名其他角色将其武将牌叠置（翻面）。
+      id: 'qingcheng',
+      name: '倾城',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) =>
+        player.hand.some((c) => isEquipCard(c)) &&
+        state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      execute: (state, player, intent, api) => {
+        const cardId = intent.cardIds?.[0];
+        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        if (!card) return '请选择一张要弃置的装备牌';
+        if (!isEquipCard(card)) return '【倾城】只能弃置装备牌';
+        const targetId = intent.targetIds[0];
+        const target = targetId ? getPlayer(state, targetId) : undefined;
+        if (!target || !target.alive || target.seatId === player.seatId) return '目标无效';
+        api.discardCard(player.seatId, card, () => {
+          target.flipped = !target.flipped;
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 发动【倾城】，弃置【${cardLabel(card)}】：${target.name} ${
+              target.flipped ? '武将牌叠置（翻面）' : '武将牌翻回正面'
+            }。`,
+            { seat: player.seatId, action: 'skill' },
+          );
+        });
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '祸水',
+      desc: '出牌阶段，你可以明置此武将牌；你的回合内，其他角色不能明置其武将牌。',
+    },
+    {
+      name: '倾城',
+      desc: '出牌阶段限一次，你可以弃置一张装备牌，然后令一名其他角色将其武将牌叠置。',
+    },
+  ],
+};
+
 export const HEROES: Hero[] = [
   GUANYU,
   ZHANGFEI,
@@ -4371,6 +4660,9 @@ export const HEROES: Hero[] = [
   KONGRONG,
   CAIWENJI,
   YANLIANG_WENCHOU,
+  ZHANGZHAO_ZHANGHONG,
+  TIANFENG,
+  ZOUSHI,
   VANILLA,
 ];
 
