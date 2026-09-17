@@ -748,9 +748,8 @@ const QUAN: RosterEntry[] = [
     name: '崔琰毛玠',
     faction: 'wei',
     pack: 'quan',
-    status: 'partial',
+    status: 'done',
     primitives: ['pick_cards', 'virtual_trick'],
-    missing: ['征辟/奉迎 的完整流程测试（实现已落地，钩子确实会在出牌阶段开始时发问，但两条完整流程还没测通）'],
     note: '取 **2019 修订版**（2023 国战典藏版口径）：征辟①「未确定势力角色→你对其使用牌无距离和次数限制」（新标记 distanceLimitlessToSeat：distance() 放行 + playSha 跳过次数限制，目标明置后惰性失效）；②交换牌；奉迎＝限定技，所有手牌当【挟天子以令诸侯】（不带大势力校验），然后同势力角色摸至手牌上限。三版差异（2018 初版「视为与你势力相同」、2021 版奉迎改成额外回合）写在代码注释里。',
   },
   {

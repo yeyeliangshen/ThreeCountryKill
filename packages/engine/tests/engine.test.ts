@@ -15444,6 +15444,8 @@ describe('国战 · 于禁（节钺）', () => {
 });
 
 /** 崔琰毛玠·征辟/奉迎（都是「出牌阶段开始时」的钩子） */
+
+/** 崔琰毛玠·征辟/奉迎（都是「出牌阶段开始时」的钩子；断言以日志为准，牌堆会洗牌） */
 describe('国战 · 崔琰毛玠（征辟 / 奉迎）', () => {
   function gz(
     seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
@@ -15474,7 +15476,36 @@ describe('国战 · 崔琰毛玠（征辟 / 奉迎）', () => {
     return state;
   }
 
-  it('征辟①的「无距离限制」：暗置目标放行，其明置后失效', () => {
+  it('征辟①：选一名未确定势力的角色，本回合对其用牌无距离限制（其明置后失效）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'cuiyan_maojie', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      C,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 乙先暗置（未确定势力）
+    b.heroRevealed = false;
+    b.deputyRevealed = false;
+    ok(act(state, C, { type: 'endPhase' })); // 轮到甲 → 出牌阶段开始时问征辟
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('征辟');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'limitless' }));
+    // 选目标：只有乙是未确定势力
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id)).toEqual([B]);
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    expect(a.flags.distanceLimitlessToSeat).toBe(B);
+    expect(distance(state, A, B)).toBe(1); // 无视距离（两人距离本来就是 1，这里主要验标记）
+    // 四人一圈的对照放在另一个用例里（见下）
+    expect(state.log.some((e) => e.message.includes('无距离和次数限制'))).toBe(true);
+  });
+
+  it('征辟①的「无距离限制」：对非相邻的暗置角色也放行，其明置后失效', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'cuiyan_maojie', faction: 'wei' },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
@@ -15483,17 +15514,16 @@ describe('国战 · 崔琰毛玠（征辟 / 奉迎）', () => {
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
     const c = state.players.find((p) => p.seatId === C)!;
-    // 四人一圈：甲到丙本来是 2 格；把丙做成暗置并挂上标记 → 视为够得着
     c.heroRevealed = false;
     c.deputyRevealed = false;
-    expect(distance(state, A, C)).toBe(2);
+    expect(distance(state, A, C)).toBe(2); // 本来够不着
     a.flags.distanceLimitlessToSeat = C;
-    expect(distance(state, A, C)).toBe(1); // 无视距离
-    c.heroRevealed = true; // 丙明置 → 效果失效
+    expect(distance(state, A, C)).toBe(1); // 放行
+    c.heroRevealed = true; // 丙明置 → 失效
     expect(distance(state, A, C)).toBe(2);
   });
 
-  it('征辟/奉迎：出牌阶段开始时会被问到（钩子已挂上）', () => {
+  it('奉迎（限定技）：所有手牌当【挟天子以令诸侯】，同势力角色摸至手牌上限', () => {
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'cuiyan_maojie', faction: 'wei', hand: [sha('a1')] },
@@ -15502,9 +15532,24 @@ describe('国战 · 崔琰毛玠（征辟 / 奉迎）', () => {
       ],
       C,
     );
-    ok(act(state, C, { type: 'endPhase' })); // 轮到甲
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.hand = [];
+    ok(act(state, C, { type: 'endPhase' })); // 轮到甲 → 出牌阶段开始
     skipRevealAsk(state);
+    // 先问征辟（甲手上只有【杀】、没有暗置角色 → 只剩「不发动」）
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('征辟');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    // 再问奉迎
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('奉迎');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 手牌都当材料打出去了（材料进弃牌堆）
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('发动【奉迎】'))).toBe(true);
+    // 同势力（含自己）摸至手牌上限——牌堆中途会洗牌，所以看日志而不是数牌
+    expect(state.log.some((e) => e.message.includes('因【奉迎】摸了'))).toBe(true);
+    expect(b.hand.length).toBeGreaterThan(0);
   });
 });
