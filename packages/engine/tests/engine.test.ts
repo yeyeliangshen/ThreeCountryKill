@@ -14094,3 +14094,134 @@ describe('国战 · 主将技/副将技 与 移除武将牌（董卓·暴凌）'
     expect(a.maxHp).toBe(6);
   });
 });
+
+/** 糜夫人·闺秀/存嗣（都走「移除武将牌」那套）+ 张任·穿心 */
+describe('国战 · 糜夫人（闺秀 / 存嗣）与张任（穿心）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('存嗣：移除自己的武将牌，把【勇决】给队友（队友摸两张）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mifuren', deputyHeroId: 'guanyu', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8), mk('d3', 'sha', 'club', 9)];
+    ok(act(state, A, { type: 'useSkill', skillId: 'cunsi', cardIds: [], targetIds: [B] }));
+    expect(a.removedHeroIds).toEqual(['mifuren']);
+    expect(effectiveHeroes(state, a).map((h) => h.id)).toEqual(['guanyu']); // 副将还在
+    expect(b.grantedSkills.some((g) => g.skillName === '勇决')).toBe(true);
+    expect(b.hand).toHaveLength(2); // 摸两张
+  });
+
+  it('存嗣：给自己就不摸牌（但一样移除）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mifuren', deputyHeroId: 'guanyu', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'cunsi', cardIds: [], targetIds: [A] }));
+    expect(a.removedHeroIds).toEqual(['mifuren']);
+    expect(a.grantedSkills.some((g) => g.skillName === '勇决')).toBe(true);
+    expect(a.hand).toHaveLength(0);
+  });
+
+  it('闺秀：明置时摸两张（移除时回血由移除动作结算）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mifuren', deputyHeroId: 'guanyu', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 先把他做成暗置，再明置
+    a.heroRevealed = false;
+    a.deputyRevealed = true;
+    a.hand = [];
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
+    // 主动明置只有准备阶段能点（引擎里准备阶段＝judgment 阶段）
+    state.turn.phase = 'judgment';
+    ok(act(state, A, { type: 'revealHero', heroId: 'mifuren' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('闺秀');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand).toHaveLength(2);
+  });
+
+  it('勇决：同势力角色的第一张牌是【杀】，结算后持有者可以拿走', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'mifuren', deputyHeroId: 'guanyu', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 先把勇决给乙（用存嗣）
+    ok(act(state, A, { type: 'useSkill', skillId: 'cunsi', cardIds: [], targetIds: [B] }));
+    expect(b.grantedSkills.some((g) => g.skillName === '勇决')).toBe(true);
+    // 换乙的回合：乙出【杀】打丙
+    state.turn = { seatIndex: state.seatOrder.indexOf(B), phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    b.flags.usedCardsInPlayPhase = [];
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    // 【杀】结算完 → 勇决（持有者是乙自己，和乙势力相同）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('勇决');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand.some((c) => c.id === 'b1')).toBe(true); // 把那张杀拿回来了
+  });
+
+  it('张任·穿心：对异势力角色造成伤害时，可改为让他弃装掉血或移除副将', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangren', faction: 'qun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 给乙一件**武器**（别给八卦阵——那会在伤害之前自动闪避，就走不到穿心了）
+    b.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'club', rank: 2, equipName: 'qinggang', range: 2 };
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 造成伤害时穿心
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 由乙二选一：①弃装备区所有牌 + 失去 1 点体力 ②移除副将
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'remove' }));
+    expect(b.removedHeroIds).toEqual(['guanyu']);
+    expect(b.hp).toBe(4); // 伤害被防止了
+  });
+});

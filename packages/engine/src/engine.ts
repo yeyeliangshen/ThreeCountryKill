@@ -2011,6 +2011,20 @@ function afterAttackSettled(state: GameState, attack: AttackContext): void {
     });
     return;
   }
+  // 「你的【杀】结算完之后」（糜夫人给别人的【勇决】）：派给使用者，
+  // 钩子跑完才继续（技能驱动的连环出杀排在它后面）。
+  const settleSource = getPlayer(state, attack.sourceId);
+  if (settleSource && settleSource.alive) {
+    runHooksPausable(state, 'attackSettled', settleSource, { attack }, () => {
+      afterAttackSettledTail(state, attack);
+    });
+    return;
+  }
+  afterAttackSettledTail(state, attack);
+}
+
+/** 【杀】结算的真正收尾（attackSettled 钩子之后） */
+function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
   // 技能驱动的连环出杀（贾诩·乱武）在这里接着往下走；普通出杀回到出牌阶段
   if (attack.afterSettled) {
     const after = attack.afterSettled;
@@ -2281,18 +2295,30 @@ function damageStep(
   // 取消通道是 `flags.damagePrevented`（钩子没有返回值）——派发前清、派发后读，
   // 读到就整条伤害作废：不扣血、不跑伤害后钩子、不进濒死。护心镜那层照旧在其后。
   target.flags.damagePrevented = false;
-  runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
-    const prevented = target.flags.damagePrevented;
-    target.flags.damagePrevented = false;
-    if (prevented) {
-      apply(dmg, true);
-      return;
-    }
-    withHuxinjing(state, attack, dmg, (hxPrevented) => {
-      if (!hxPrevented) target.hp -= dmg;
-      apply(dmg, hxPrevented);
+  const finishDamage = (): void => {
+    runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
+      const prevented = target.flags.damagePrevented;
+      target.flags.damagePrevented = false;
+      if (prevented) {
+        apply(dmg, true);
+        return;
+      }
+      withHuxinjing(state, attack, dmg, (hxPrevented) => {
+        if (!hxPrevented) target.hp -= dmg;
+        apply(dmg, hxPrevented);
+      });
     });
-  });
+  };
+  // 先给**来源**一个机会（张任·穿心那种「防止自己造成的伤害」），再走目标那边
+  const dmgSource =
+    attack.sourceId && attack.sourceId !== target.seatId
+      ? getPlayer(state, attack.sourceId)
+      : undefined;
+  if (dmgSource && dmgSource.alive) {
+    runHooksPausable(state, 'damageCaused', dmgSource, { attack, damage: dmg }, finishDamage);
+    return;
+  }
+  finishDamage();
 }
 
 /**
@@ -6226,7 +6252,11 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
   } else {
     return false;
   }
-  if (changed) onHeroRevealed(state, player);
+  if (changed) {
+    onHeroRevealed(state, player);
+    // 「当你明置此武将牌后」（糜夫人·闺秀）：把 payload 交给钩子，技能自己判断是不是自己那张
+    runHooksPausable(state, 'heroRevealed', player, { heroId: hero.id }, () => {});
+  }
   return changed;
 }
 
@@ -6629,8 +6659,13 @@ function makeSkillApi(
         },
       );
     },
-    grantSkill: (heroId, skillName) => {
-      const actor = opts?.actor ? getPlayer(state, opts.actor) : undefined;
+    grantSkill: (heroId, skillName, toSeatId) => {
+      // 默认给技能使用者（姜维·志继给自己）；传了 toSeatId 就给那个人（糜夫人·存嗣给目标）
+      const actor = toSeatId
+        ? getPlayer(state, toSeatId)
+        : opts?.actor
+          ? getPlayer(state, opts.actor)
+          : undefined;
       if (!actor) return;
       if (actor.grantedSkills.some((g) => g.heroId === heroId && g.skillName === skillName)) {
         return; // 已经有了，别重复挂

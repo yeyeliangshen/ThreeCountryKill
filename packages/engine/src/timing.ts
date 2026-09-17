@@ -95,6 +95,22 @@ export type Timing =
    * 张昭张纮·固政挂这里。`discardPhaseEnd` 只发给回合玩家本人。
    */
   | 'othersDiscardPhaseEnd'
+  /**
+   * **你**（作为来源）即将对别人造成伤害时（派给**来源**，payload { attack, damage }）。
+   * 和目标那一侧的 `damageDealt` 是同一时刻、两个视角：张任·穿心要「防止自己造成的伤害」，
+   * 所以得在来源这边问。设上 `目标.flags.damagePrevented` 即可取消这次伤害。
+   */
+  | 'damageCaused'
+  /**
+   * **你**的【杀】整个结算完之后（派给**使用者**，payload.attack）。
+   * 糜夫人·存嗣给的【勇决】挂这里（「此【杀】结算后你可以获得之」）。
+   */
+  | 'attackSettled'
+  /**
+   * **你**的武将牌被明置后（派给该玩家，payload.heroId）。
+   * 糜夫人·闺秀挂这里（「当你明置此武将牌后，你可以摸两张牌」）。
+   */
+  | 'heroRevealed'
   | 'kill' // 你**杀死**了一名角色（派发给凶手，payload.victimId）——曹丕·行殇
   | 'afterHeal' // 回复体力后（派发给回复者，payload.amount 是**实际**回复量）——甘夫人·淑慎
   | 'death'; // 死亡
@@ -286,7 +302,8 @@ export interface SkillApi {
    * 摘出对应的钩子（按 HookRegistration.skillId）、主动技（按名字）、
    * 字段（按 Hero.skillFields）挂到该玩家身上，之后 `activeHeroes` 就会带上它。
    */
-  grantSkill: (heroId: string, skillName: string) => void;
+  /** 授予技能：默认给技能使用者，传 toSeatId 就给那个人（糜夫人·存嗣把勇决给队友） */
+  grantSkill: (heroId: string, skillName: string, toSeatId?: string) => void;
   /**
    * 令某角色执行一次「军令」（董昭·劝进那类）。
    *

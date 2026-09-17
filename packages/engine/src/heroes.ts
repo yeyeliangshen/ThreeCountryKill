@@ -3189,6 +3189,247 @@ const BENGSHUAI: Hero = {
   ],
 };
 
+/**
+ * 【勇决】（伪武将，只作为被授予的技能存在）：糜夫人·存嗣把它交给一名角色。
+ * 「当你于出牌阶段使用的第一张牌为【杀】且此【杀】结算结束后，若你与你势力相同的
+ *  一名角色拥有【勇决】…」——官方把它写成持有者的技能，所以这里挂在 attackSettled 上：
+ *  看**使用者**这一回合出牌阶段用过的牌（本引擎有 usedCardsInPlayPhase），
+ *  第一张就是这张【杀】、且使用者与持有者势力相同 → 持有者可以获得这张【杀】。
+ */
+const YONGJUE: Hero = {
+  id: 'yongjue',
+  name: '勇决',
+  faction: 'neutral',
+  maxHp: 1,
+  notDraftable: true,
+  hooks: [
+    {
+      timing: 'attackSettled',
+      skillId: '勇决',
+      handler: (ctx) => {
+        const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+        if (!attack) return;
+        const source = getPlayer(ctx.state, attack.sourceId);
+        if (!source || !source.alive) return;
+        // 「于其出牌阶段使用的第一张牌」——本引擎在 useCard 时记牌，长度 1 就说明是首张
+        const used = source.flags.usedCardsInPlayPhase;
+        if (used.length !== 1) return;
+        if (used[0]!.kind !== 'basic') return;
+        if (!sameKnownFaction(ctx.state, source, ctx.player)) return;
+        const idx = ctx.state.discard.findIndex((c) => c.id === attack.cardId);
+        if (idx < 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否发动【勇决】获得 ${source.name} 结算完的【杀】？`,
+          [
+            { id: 'yes', label: '获得这张【杀】' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.giveDiscardedTo([{ id: attack.cardId } as Card], p.seatId, '勇决');
+            void st;
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '勇决',
+      desc: '当一名与你势力相同的角色于其出牌阶段使用的第一张牌为【杀】且此【杀】结算结束后，你可以获得之。',
+    },
+  ],
+};
+
+/**
+ * 糜夫人 —— 闺秀 / 存嗣（君临天下·势，已核文本）。
+ *
+ * - 闺秀：当你明置此武将牌后，你可以摸两张牌；当你移除此武将牌后，你可以回复 1 点体力。
+ * - 存嗣：出牌阶段，你可以移除此武将牌并令一名角色获得【勇决】；
+ *   若其不为你，其摸两张牌。
+ *
+ * 两条都用「移除武将牌」那套地基（removedHeroIds / removeHeroCard / healOwnerOnRemoval），
+ * 明置那半走新时机 heroRevealed，【勇决】的触发走新时机 attackSettled。
+ */
+/**
+ * 张任 —— 穿心 / 锋矢（君临天下·势，已核国战文本）。
+ *
+ * - 穿心：当你于出牌阶段内使用【杀】或【决斗】对目标角色造成伤害时，若其与你势力不同
+ *   且有副将，你可以防止此伤害。若如此做，该角色选择一项：①弃置装备区里的所有牌，
+ *   若如此做，其失去 1 点体力；②移除副将。
+ * - 锋矢：阵法技（围攻关系）→ **尚未实现**（等阵法技系统）。
+ *
+ * 实现：穿心挂在 `damageDealt`（伤害结算前的可挂起时机，也是引擎里唯一能「取消这次伤害」
+ * 的通道——把 flags.damagePrevented 设上就行）。
+ */
+const ZHANGREN: Hero = {
+  id: 'zhangren',
+  name: '张任',
+  faction: 'qun',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      // 「造成伤害时」——挂在**来源**这一侧（damageDealt 是目标那一侧）
+      timing: 'damageCaused',
+      skillId: '穿心',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.sourceId !== ctx.player.seatId) return;
+        if (attack.asType !== 'sha' && attack.asType !== 'juedou') return;
+        if (ctx.state.turn.phase !== 'play') return; // 「于出牌阶段内」
+        const victim = getPlayer(ctx.state, attack.targetId);
+        if (!victim || !victim.alive || victim.seatId === ctx.player.seatId) return;
+        const mine = effectiveFaction(ctx.state, ctx.player);
+        const theirs = effectiveFaction(ctx.state, victim);
+        if (!mine || mine === theirs) return; // 「与你势力不同」
+        if (!victim.deputyHeroId || victim.removedHeroIds.includes(victim.deputyHeroId)) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否对 ${victim.name} 发动【穿心】防止此伤害？`,
+          [
+            { id: 'yes', label: '发动（其弃装备掉血，或移除副将）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const t = getPlayer(st, victim.seatId);
+            if (!t) return;
+            // 防止这次伤害：damageStep 会在钩子跑完之后读这个标记
+            t.flags.damagePrevented = true;
+            pushLog(st, 'skill', `${ctx.player.name} 发动【穿心】，防止此伤害。`);
+            const equips = EQUIP_SLOTS.map((slot) => t.equipment[slot]).filter(Boolean) as Card[];
+            const options: { id: string; label: string }[] = [];
+            options.push({
+              id: 'remove',
+              label: '移除副将',
+            });
+            options.unshift({
+              id: 'discard',
+              label: equips.length > 0 ? '弃置装备区所有牌，然后失去 1 点体力' : '失去 1 点体力（没有装备可弃）',
+            });
+            ctx.api.askChoice(
+              st,
+              t.seatId,
+              `【穿心】：选择一项`,
+              options,
+              (st2, t2, choice) => {
+                if (choice === 'remove') {
+                  if (t2.deputyHeroId) ctx.api.removeHeroCard(t2.seatId, t2.deputyHeroId);
+                  return;
+                }
+                for (const slot of EQUIP_SLOTS) {
+                  const c = t2.equipment[slot];
+                  if (c) ctx.api.discardCard(t2.seatId, c);
+                }
+                ctx.api.loseHp(t2, 1);
+                pushLog(st2, 'skill', `${t2.name} 因【穿心】失去 1 点体力。`);
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '穿心',
+      desc: '当你于出牌阶段内使用【杀】或【决斗】对目标角色造成伤害时，若其与你势力不同且有副将，你可以防止此伤害。若如此做，该角色选择一项：1.弃置装备区里的所有牌，若如此做，其失去1点体力；2.移除副将。',
+    },
+    { name: '锋矢', desc: '阵法技，在同一个围攻关系中……（阵法系统未实现，暂时不可用）' },
+  ],
+};
+
+const MIFUREN: Hero = {
+  id: 'mifuren',
+  name: '糜夫人',
+  faction: 'shu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  modes: ['guozhan'],
+  healOwnerOnRemoval: true,
+  hooks: [
+    {
+      timing: 'heroRevealed',
+      skillId: '闺秀',
+      handler: (ctx) => {
+        const heroId = (ctx.payload as { heroId?: string } | undefined)?.heroId;
+        if (heroId !== 'mifuren') return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          '是否发动【闺秀】摸两张牌？',
+          [
+            { id: 'yes', label: '摸两张牌' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            let got = 0;
+            for (let i = 0; i < 2; i++) {
+              const c = drawOne(st);
+              if (!c) break;
+              p.hand.push(c);
+              got++;
+            }
+            pushLog(st, 'skill', `${p.name} 发动【闺秀】，摸了 ${got} 张牌。`);
+          },
+        );
+      },
+    },
+  ],
+  activeSkills: [
+    {
+      id: 'cunsi',
+      name: '存嗣',
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: false,
+      canUse: (state, player) =>
+        !player.removedHeroIds.includes('mifuren') && state.players.some((x) => x.alive),
+      execute: (state, player, intent, api) => {
+        if (player.removedHeroIds.includes('mifuren')) return '【存嗣】已经用过了（武将牌已移除）';
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名角色';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        pushLog(state, 'skill', `${player.name} 发动【存嗣】。`);
+        api.removeHeroCard(player.seatId, 'mifuren');
+        api.grantSkill('yongjue', '勇决', targetId);
+        pushLog(state, 'skill', `${target.name} 获得了技能【勇决】。`, { seat: target.seatId });
+        if (target.seatId !== player.seatId) {
+          let got = 0;
+          for (let i = 0; i < 2; i++) {
+            const c = drawOne(state);
+            if (!c) break;
+            target.hand.push(c);
+            got++;
+          }
+          pushLog(state, 'skill', `${target.name} 因【存嗣】摸了 ${got} 张牌。`);
+        }
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '闺秀',
+      desc: '当你明置此武将牌后，你可以摸两张牌；当你移除此武将牌后，你可以回复1点体力。',
+    },
+    {
+      name: '存嗣',
+      desc: '出牌阶段，你可以移除此武将牌并令一名角色获得【勇决】，若其不为你，其摸两张牌。',
+    },
+  ],
+};
+
 const DONGZHUO: Hero = {
   id: 'dongzhuo',
   name: '董卓',
@@ -7070,6 +7311,9 @@ export const HEROES: Hero[] = [
   CHENWU_DONGXI,
   JIANGWAN_FEYI,
   HETAIHOU,
+  MIFUREN,
+  ZHANGREN,
+  YONGJUE,
   CAOHONG,
   JIANGQIN,
   TAISHICI,
