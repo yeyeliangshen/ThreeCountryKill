@@ -7023,15 +7023,21 @@ function makeSkillApi(
           return;
         }
         runDamagedHooks(state, target, attack, dmg, () => {
+          // after 跑完之后：只有**没留下 pending** 才把出牌阶段还回去。
+          // 否则 after 里的询问会被 resumePlay 直接覆盖掉（凶算就是这样：
+          // 它要在伤害结算后问「重置哪个限定技」）。
+          const tail = (): void => {
+            after?.();
+            if (state.pending === null && resumeTo) resumePlay(state, resumeTo);
+          };
           if (target.hp <= 0) {
             enterNearDeath(state, attack);
             // 进濒死也要接后续（天香就是「先伤害、后摸牌」）：濒死求桃走的是
             // 续接队列，after 里的步骤会排在它后面。
             after?.();
-          } else {
-            after?.();
-            if (resumeTo) resumePlay(state, resumeTo);
+            return;
           }
+          tail();
         });
       });
     },

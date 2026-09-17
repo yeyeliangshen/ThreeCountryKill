@@ -3615,6 +3615,135 @@ const MADAI: Hero = {
  * 引擎在 onPlayCard/onRespondCard 里记了 `flags.actionRangeSnapshot` 就是干这个的
  * （装备牌的生效会把范围改掉，快照留的是改之前的值）。
  */
+/**
+ * 李傕郭汜 —— 凶算（君临天下·变，已核；**国战只有这一个技能**）。
+ *
+ * ⚠️ 【亦算】不是国战李傕郭汜的技能（那是身份/SP 单体李傕的），别混。国战双将的技能只有凶算。
+ *
+ * 凶算：限定技，出牌阶段，你可以弃置一张手牌并选择与你势力相同的一名角色，对其造成 1 点伤害，
+ * 然后你摸三张牌。若其有已发动的限定技，你选择其一个限定技，此结束阶段视为此限定技未发动过。
+ *
+ * 实现：「视为未发动」＝在本回合结束时把那名角色 `usedOncePerGame` 里的那条删掉。
+ * 所以先把被点名的技能 id 记在被点名角色身上（flags.limitedToReset），
+ * 到李傕郭汜自己的结束阶段（turnEnd，锁定技式、不问）统一清掉。
+ */
+const LIJUE_GUOSI: Hero = {
+  id: 'lijue_guosi',
+  name: '李傕郭汜',
+  faction: 'qun',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'xiongsuan',
+      name: '凶算',
+      oncePerGame: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) =>
+        player.hand.length > 0 &&
+        state.players.some((p) => p.alive && sameKnownFaction(state, player, p)),
+      execute: (state, player, intent, api) => {
+        const cardId = intent.cardIds?.[0];
+        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        if (!card) return '请弃置一张手牌';
+        const targetId = intent.targetIds[0];
+        if (!targetId) return '请选择一名与你势力相同的角色';
+        const target = getPlayer(state, targetId);
+        if (!target || !target.alive) return '目标无效';
+        if (!sameKnownFaction(state, player, target)) return '只能选择与你势力相同的角色';
+        removeCard(player.hand, card.id);
+        toDiscard(state, card);
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【凶算】，弃置【${cardLabel(card)}】，对 ${target.name} 造成 1 点伤害。`,
+        );
+        api.dealDamage(target, 1, player.seatId, undefined, () => {
+          let got = 0;
+          for (let i = 0; i < 3; i++) {
+            const c = drawOne(state);
+            if (!c) break;
+            player.hand.push(c);
+            got++;
+          }
+          pushLog(state, 'skill', `${player.name} 因【凶算】摸了 ${got} 张牌。`);
+          // 已发动的限定技。
+          // ① 主动技形式的限定技：按 id 找得到中文名；
+          // ② 钩子形式的限定技（涅槃/暴凌/志继…）：用好者自己写的 key（都是拼音 id，
+          //    如 'niepan'），找不到中文名就直接拿 key 当标签——这一点如实记在注释里。
+          const used: { id: string; name: string }[] = [];
+          for (const hero of effectiveHeroes(state, target)) {
+            for (const sk of hero.activeSkills ?? []) {
+              if (!sk.oncePerGame) continue;
+              if (target.usedOncePerGame[sk.id]) used.push({ id: sk.id, name: sk.name });
+            }
+          }
+          for (const [key, on] of Object.entries(target.usedOncePerGame)) {
+            if (!on) continue;
+            if (used.some((u) => u.id === key)) continue;
+            used.push({ id: key, name: key });
+          }
+          if (used.length === 0) return;
+          api.askChoice(
+            state,
+            player.seatId,
+            `【凶算】：选择 ${target.name} 一个已发动的限定技（本回合结束时视为未发动）`,
+            used.map((u) => ({ id: u.id, label: u.name })),
+            (st, _p, skillId) => {
+              const t = getPlayer(st, target.seatId);
+              if (!t) return;
+              t.flags.limitedToReset.push(skillId);
+              const name = used.find((u) => u.id === skillId)?.name ?? skillId;
+              pushLog(
+                st,
+                'skill',
+                `${t.name} 的限定技【${name}】将在本回合结束时视为未发动。`,
+                { seat: t.seatId },
+              );
+            },
+            player.seatId,
+          );
+        });
+        return undefined;
+      },
+    },
+  ],
+  hooks: [
+    {
+      timing: 'turnEnd',
+      skillId: '凶算',
+      locked: true,
+      handler: (ctx) => {
+        // 本回合结束时，「凶算」点过名的限定技一律视为未发动过
+        for (const p of ctx.state.players) {
+          if (p.flags.limitedToReset.length === 0) continue;
+          for (const skillId of p.flags.limitedToReset) {
+            delete p.usedOncePerGame[skillId];
+          }
+          pushLog(
+            ctx.state,
+            'skill',
+            `${p.name} 的限定技（${p.flags.limitedToReset.length} 个）视为未发动过。`,
+            { seat: p.seatId },
+          );
+          p.flags.limitedToReset = [];
+        }
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '凶算',
+      desc: '限定技，出牌阶段，你可以弃置一张手牌并选择与你势力相同的一名角色，对其造成1点伤害，然后你摸三张牌。若其有已发动的限定技，你选择其一个限定技，此结束阶段视为此限定技未发动过。',
+    },
+  ],
+};
+
 const SHAMOKE: Hero = {
   id: 'shamoke',
   name: '沙摩柯',
@@ -8890,6 +9019,7 @@ export const HEROES: Hero[] = [
   ZUOCI,
   BIANFUREN,
   SHAMOKE,
+  LIJUE_GUOSI,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

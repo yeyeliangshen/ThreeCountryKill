@@ -731,7 +731,15 @@ const BIAN: RosterEntry[] = [
     primitives: ['virtual_trick', 'hook_interaction'],
     note: '取**2019 典藏版**国战文本的「役鬼 + 汲魂」（2017 印刷版是「化身 + 新生」，两者是完全不同的两套技能，未采用）。魂牌堆 Player.hun（存武将 id，暗置→用时随机移去并亮出牌面，势力决定目标限制）；汲魂的「濒死结算结束后存活」用新时机 nearDeathResolved。',
   },
-  { id: 'lijue_guosi', name: '李傕郭汜', faction: 'qun', pack: 'bian', status: 'todo' },
+    {
+    id: 'lijue_guosi',
+    name: '李傕郭汜',
+    faction: 'qun',
+    pack: 'bian',
+    status: 'done',
+    primitives: ['limited_skill', 'hook_interaction'],
+    note: '国战李傕郭汜**只有【凶算】一个技能**（亦算是身份/SP 单体李傕的，不在这里）。凶算＝限定技：弃一张手牌、对同势力角色造成 1 点伤害、摸三张；若其有已发动的限定技，点一个，本回合结束时视为未发动（flags.limitedToReset + turnEnd 里清理）。钩子形式的限定技（涅槃等）没中文名可查，选项标签直接用作者写的 key。',
+  },
 ];
 
 const QUAN: RosterEntry[] = [

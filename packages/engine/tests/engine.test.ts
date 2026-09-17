@@ -15269,3 +15269,86 @@ describe('国战 · 沙摩柯（蒺藜）', () => {
     expect(b.hand.map((c) => c.id)).toEqual(['d1']);
   });
 });
+
+/** 李傕郭汜·凶算（限定技：弃一张手牌打同势力 1 点，摸三张，可重置其一个已发限定技） */
+describe('国战 · 李傕郭汜（凶算）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('凶算：弃一张手牌，对同势力角色造成 1 点伤害并摸三张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lijue_guosi', faction: 'qun', hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'qun' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8), mk('d3', 'sha', 'club', 9)];
+    ok(act(state, A, { type: 'useSkill', skillId: 'xiongsuan', cardIds: ['a1'], targetIds: [B] }));
+    expect(b.hp).toBe(3); // 1 点伤害
+    expect(a.hand).toHaveLength(3); // 摸了三张
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    // 限定技：一局一次
+    const again = act(state, A, { type: 'useSkill', skillId: 'xiongsuan', cardIds: [], targetIds: [B] });
+    expect(again.ok).toBe(false);
+  });
+
+  it('凶算：目标有已发动的限定技 → 可以点一个，本回合结束时视为未发动', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lijue_guosi', faction: 'qun', hand: [tao('a1')] },
+      // 乙是庞统（涅槃是限定技）
+      { seatId: B, name: '乙', heroId: 'pangtong', faction: 'qun' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.usedOncePerGame.niepan = true; // 假设涅槃已经发动过
+    ok(act(state, A, { type: 'useSkill', skillId: 'xiongsuan', cardIds: ['a1'], targetIds: [B] }));
+    // 问选哪个限定技
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶算');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'niepan' }));
+    expect(b.flags.limitedToReset).toEqual(['niepan']);
+    expect(b.usedOncePerGame.niepan).toBe(true); // 现在还没重置
+    // 甲结束回合 → 本回合结束时重置
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.usedOncePerGame.niepan).toBeUndefined();
+    expect(state.log.some((e) => e.message.includes('视为未发动过'))).toBe(true);
+  });
+
+  it('凶算：目标没有已发动的限定技时不问', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'lijue_guosi', faction: 'qun', hand: [tao('a1')] },
+      { seatId: B, name: '乙', heroId: 'pangtong', faction: 'qun' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'xiongsuan', cardIds: ['a1'], targetIds: [B] }));
+    // 没有限定技要选 → 直接结束，回到出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    void a;
+  });
+});
