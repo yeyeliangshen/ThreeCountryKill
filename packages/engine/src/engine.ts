@@ -6426,6 +6426,51 @@ function makeSkillApi(
       if (old) fireEquipLost(state, target, old, done);
       else done();
     },
+    changeDeputyHero: (seatId) => {
+      const owner = getPlayer(state, seatId);
+      if (!owner || !owner.deputyHeroId) return;
+      const mainHero = getHeroForMode(owner.heroId, state.mode);
+      if (!mainHero) return;
+      // 官方：从**未加入游戏的武将牌堆**里连续亮将，直到亮出与主将势力相同者
+      let picked: string | null = null;
+      const revealed: string[] = [];
+      while (state.heroPool.length > 0) {
+        const id = state.heroPool.shift()!;
+        const hero = getHeroForMode(id, state.mode);
+        revealed.push(hero?.name ?? id);
+        if (hero && hero.faction === mainHero.faction) {
+          picked = id;
+          break;
+        }
+      }
+      pushLog(
+        state,
+        'skill',
+        `${owner.name} 变更副将：连续亮出 ${revealed.join('、')}。`,
+        { seat: owner.seatId, action: 'skill' },
+      );
+      if (!picked) {
+        pushLog(state, 'skill', `武将牌堆已空，${owner.name} 的副将维持不变。`);
+        return;
+      }
+      const oldId = owner.deputyHeroId;
+      owner.deputyHeroId = picked;
+      // 新副将入场是**暗置**的（要重新明置）
+      owner.deputyRevealed = false;
+      // 体力上限按新副将重算（移除不影响上限，但变更是换人，官方按新的算）
+      const newDeputy = getHeroForMode(picked, state.mode);
+      if (newDeputy) {
+        const mainHp = mainHero.maxHp - (mainHero.mainSlotHalfYang ? 1 : 0);
+        owner.maxHp = Math.floor((mainHp + newDeputy.maxHp) / 2);
+        if (owner.hp > owner.maxHp) owner.hp = owner.maxHp;
+      }
+      pushLog(
+        state,
+        'skill',
+        `${owner.name} 的副将变更为【${getHeroForMode(picked, state.mode)?.name ?? picked}】（暗置），原副将【${getHeroForMode(oldId, state.mode)?.name ?? oldId}】离场。`,
+        { seat: owner.seatId },
+      );
+    },
     removeHeroCard: (seatId, heroId) => {
       const owner = getPlayer(state, seatId);
       const hero = owner ? getHeroForMode(heroId, state.mode) : undefined;
@@ -7097,6 +7142,7 @@ export function createGame(
     ongoingChain: null,
     damagedThisTurn: [],
     killedThisTurn: [],
+    heroPool: [],
     discardThisTurn: [],
     xianquSeat: null,
     resumeQueue: [],
@@ -7194,6 +7240,15 @@ function finishDraft(state: GameState): void {
         }
       }
     }
+  }
+  // 变包的「变更副将」要从未加入游戏的武将牌堆里连续亮将——在这里先把剩下的存下来
+  {
+    const dealt = new Set<string>();
+    const deals = state.draft?.deals ?? {};
+    for (const list of Object.values(deals)) for (const id of list as string[]) dealt.add(id);
+    state.heroPool = poolForMode('guozhan')
+      .map((h) => h.id)
+      .filter((id) => !dealt.has(id));
   }
   state.draft = null;
   // 初始手牌：每人 4 张（首回合玩家随后再摸 2，见 startTurn）

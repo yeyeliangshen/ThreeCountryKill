@@ -14225,3 +14225,102 @@ describe('国战 · 糜夫人（闺秀 / 存嗣）与张任（穿心）', () => 
     expect(b.hp).toBe(4); // 伤害被防止了
   });
 });
+
+/** 变更副将（变包招牌）+ 马谡·制蛮 */
+describe('国战 · 变更副将 与 马谡·制蛮', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
+    pool: string[] = [],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.heroPool = pool;
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
+    state.log = [];
+    return state;
+  }
+
+  it('制蛮：防止伤害、获得其装备区一张牌，同势力时其可变更副将', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'masu', faction: 'shu', hand: [sha('a1')] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'zhangfei',
+          deputyHeroId: 'guan yu'.replace(' ', ''),
+          faction: 'shu',
+        },
+      ],
+      ['guanyu', 'zhangliao', 'xuchu'],
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'spade', rank: 3, equipName: 'qinggang', range: 2 };
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 造成伤害时制蛮
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 挑要拿的牌（只有装备区的武器）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'w1' }));
+    expect(b.equipment.weapon).toBeNull();
+    expect(state.players.find((p) => p.seatId === A)!.hand.some((c) => c.id === 'w1')).toBe(true);
+    expect(b.hp).toBe(4); // 伤害被防止
+    // 同势力 → 乙可以变更副将
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 牌堆里第一个蜀将是关羽（本来就是他的副将）→ 会一直亮到第一个蜀将
+    expect(state.log.some((e) => e.message.includes('变更副将'))).toBe(true);
+    expect(state.heroPool.length).toBeLessThan(3);
+  });
+
+  it('变更副将：连亮直到与主将势力相同，新副将暗置', () => {
+    const state = gz(
+      [
+        // 红桃【杀】——别被仁王盾挡了（那样就走不到造成伤害那一步）
+        { seatId: A, name: '甲', heroId: 'masu', faction: 'shu', hand: [sha('a1', 'heart')] },
+        { seatId: B, name: '乙', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu' },
+      ],
+      // 牌堆：先两个魏将（亮出但势力不符），最后才是蜀将黄忠
+      ['zhangliao', 'xuchu', 'huangzhong'],
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.equipment.armor = { id: 'arm1', type: 'armor', suit: 'club', rank: 2, equipName: 'renwang' };
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'arm1' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.deputyHeroId).toBe('huangzhong'); // 连续亮到蜀将为止
+    expect(b.deputyRevealed).toBe(false); // 新副将暗置
+    expect(state.heroPool).toHaveLength(0); // 三个都亮掉了
+    expect(state.log.some((e) => e.message.includes('张辽、许褚、黄忠'))).toBe(true);
+  });
+});

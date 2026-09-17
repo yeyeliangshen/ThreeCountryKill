@@ -53,7 +53,8 @@ export type PrimitiveId =
   | 'after_heal' // 回复体力后（淑慎）
   | 'discard_ledger' // 本回合进入弃牌堆的牌（再起）
   | 'remove_hero' // 移除武将牌（士兵牌顶替）
-  | 'slot_skills'; // 主将技 / 副将技
+  | 'slot_skills' // 主将技 / 副将技
+  | 'change_deputy'; // 变更副将（变包）
 
 export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   hook_interaction: '钩子内发起询问',
@@ -79,6 +80,7 @@ export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   move_field_card: '移动场上的一张牌',
   after_heal: '回复体力后时机',
   remove_hero: '移除武将牌',
+  change_deputy: '变更副将',
   slot_skills: '主将技/副将技',
   discard_ledger: '弃牌堆回合账本',
 };
@@ -674,10 +676,9 @@ const BIAN: RosterEntry[] = [
     name: '马谡',
     faction: 'shu',
     pack: 'bian',
-    status: 'partial',
+    status: 'done',
     primitives: ['pick_cards'],
-    missing: ['制蛮（要「变更副将」机制，变包引入的那套）'],
-    note: '散谣已实现（印刷版：弃一张牌，对体力值最大的角色造成 1 点伤害）。制蛮依赖变更副将，尚未实现。',
+    note: '散谣 + 制蛮 都已实现：制蛮挂在新时机 damageCaused（来源视角），防止伤害后获得其装备/判定区一张牌，同势力时其可以变更副将（变包机制：从残留武将牌堆连亮到与主将同势力）。',
   },
   { id: 'shamoke', name: '沙摩柯', faction: 'shu', pack: 'bian', status: 'todo' },
   {
@@ -833,6 +834,7 @@ export const PRIMITIVES_DONE: PrimitiveId[] = [
   //
   // maxhp_change：董卓·崩坏已接上（changeMaxHp + 崩坏伪武将），可以算了。
   'maxhp_change',
+  'change_deputy', // 变更副将：残留武将牌堆 + 连亮到同势力 + 替换副将（马谡·制蛮）
   // remove_hero / slot_skills（第十批）：移除武将牌（Player.removedHeroIds +
   //   effectiveHeroes 过滤 + api.removeHeroCard）与主将技/副将技
   //   （Hero.mainSlotSkills/deputySlotSkills + collectTimingHooks 过滤 + mainSlotHalfYang）。

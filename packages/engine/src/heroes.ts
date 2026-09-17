@@ -2908,6 +2908,75 @@ const MASU: Hero = {
   maxHp: 3,
   gender: 'male',
   modes: ['guozhan'],
+  hooks: [
+    {
+      // 「当你对其他角色造成伤害时」——来源视角（damageCaused）
+      timing: 'damageCaused',
+      skillId: '制蛮',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.sourceId !== ctx.player.seatId) return;
+        const victim = getPlayer(ctx.state, attack.targetId);
+        if (!victim || !victim.alive || victim.seatId === ctx.player.seatId) return;
+        const zoneCards: Card[] = [
+          ...(EQUIP_SLOTS.map((slot) => victim.equipment[slot]).filter(Boolean) as Card[]),
+          ...victim.judgment,
+        ];
+        if (zoneCards.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          ctx.player.seatId,
+          `是否对 ${victim.name} 发动【制蛮】防止此伤害，改为获得其一张牌？`,
+          [
+            { id: 'yes', label: '发动（防止伤害，获得其装备/判定区一张牌）' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const t = getPlayer(st, victim.seatId);
+            if (!t) return;
+            t.flags.damagePrevented = true;
+            pushLog(st, 'skill', `${ctx.player.name} 发动【制蛮】，防止此伤害。`);
+            const cards = [
+              ...(EQUIP_SLOTS.map((slot) => t.equipment[slot]).filter(Boolean) as Card[]),
+              ...t.judgment,
+            ];
+            if (cards.length === 0) return;
+            ctx.api.askChoice(
+              st,
+              ctx.player.seatId,
+              `【制蛮】：获得 ${t.name} 的哪张牌？`,
+              cards.map((c) => ({ id: c.id, label: `获得其【${cardLabel(c)}】` })),
+              (st2, p2, cardId) => {
+                const card = cards.find((c) => c.id === cardId);
+                if (!card) return;
+                ctx.api.transferCard(t.seatId, card, p2.seatId, () => {
+                  // 同势力的话，**其**可以变更副将（可选）
+                  const t2 = getPlayer(st2, t.seatId);
+                  if (!t2 || !t2.deputyHeroId) return;
+                  if (!sameKnownFaction(st2, p2, t2)) return;
+                  ctx.api.askChoice(
+                    st2,
+                    t2.seatId,
+                    '【制蛮】：是否变更副将？',
+                    [
+                      { id: 'yes', label: '变更副将' },
+                      { id: 'no', label: '不变更' },
+                    ],
+                    (st3, t3, choice) => {
+                      if (choice !== 'yes') return;
+                      ctx.api.changeDeputyHero(t3.seatId);
+                    },
+                  );
+                });
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
   activeSkills: [
     {
       id: 'sanyao',
@@ -2954,7 +3023,7 @@ const MASU: Hero = {
     },
     {
       name: '制蛮',
-      desc: '当你对其他角色造成伤害时，你可以防止此伤害，然后获得其装备区或判定区里的一张牌。然后若该角色与你势力相同，其可以变更副将。（变更副将的机制未实现，暂时不可用）',
+      desc: '当你对其他角色造成伤害时，你可以防止此伤害，然后获得其装备区或判定区里的一张牌。然后若该角色与你势力相同，其可以变更副将。',
     },
   ],
 };

@@ -517,6 +517,11 @@ export interface GameState {
    */
   killedThisTurn: string[];
   /**
+   * 「未加入游戏的武将牌堆」：选将结束后剩下的武将 id（变包的**变更副将**从这堆里
+   * 连续亮将，直到亮出与主将势力相同者）。
+   */
+  heroPool: string[];
+  /**
    * 本回合**进入过弃牌堆**的所有牌（孟获·再起的 X = 其中红桃牌的数量）。
    *
    * 只有 `toDiscard()` 会写这个账本——**不要直接 `state.discard.push(...)`**，
