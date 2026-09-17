@@ -16,6 +16,7 @@ import {
   heroShaLimit,
   heroBlocksBeingTarget,
   heroIgnoresTrickDistance,
+  suitSeenAs,
   unrevealedHeroes,
   type ActiveSkill,
   type Hero,
@@ -564,7 +565,10 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
         legalCardIds = player.hand.map((c) => c.id);
       } else {
         message = `【火攻】：弃一张${ctx.revealedSuit === 'heart' || ctx.revealedSuit === 'diamond' ? '红色' : '黑色'}${ctx.revealedSuit}花色手牌，或弃权`;
-        legalCardIds = player.hand.filter((c) => c.suit === ctx.revealedSuit).map((c) => c.id);
+        // 按**出牌人**的口径比花色（小乔·红颜：她的黑桃视为红桃）
+        legalCardIds = player.hand
+          .filter((c) => suitSeenAs(state, player, c) === ctx.revealedSuit)
+          .map((c) => c.id);
       }
       break;
     case 'jiedao':

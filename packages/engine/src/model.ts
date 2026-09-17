@@ -80,6 +80,13 @@ export interface PlayerFlags {
   /** 跳过弃牌阶段（张郃·巧变） */
   skipDiscard: boolean;
   /**
+   * 「本次伤害已被防止」——`damageDealt` 钩子唯一的**取消通道**。
+   *
+   * 钩子只能设标记（没有返回值），所以 damageStep 在派发前清、派发后读，
+   * 读到就整条伤害作废（不扣血、不跑伤害后钩子、不进濒死）。小乔·天香用它。
+   */
+  damagePrevented: boolean;
+  /**
    * 跳过判定阶段（夏侯渊·神速）。
    * 注意是**整个判定阶段跳过**，所以判定区的延时锦囊会原样留着、下回合再判。
    */
@@ -145,6 +152,7 @@ export function emptyFlags(): PlayerFlags {
     skipPlay: false,
     skipDraw: false,
     skipDiscard: false,
+    damagePrevented: false,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,

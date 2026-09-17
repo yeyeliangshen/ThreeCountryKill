@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
   baseDistance,
+  canUseAsCard,
   canTarget,
   createGame,
   buildDeck,
@@ -11777,5 +11778,410 @@ describe('国战标准版 · 张郃（巧变：跳过阶段）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('巧变');
     ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
     expect(state.log.some((e) => e.message.includes('巧变'))).toBe(false);
+  });
+});
+
+/**
+ * 小乔（天香 / 红颜）。
+ *
+ * 天香在国战是 2018 版（防止伤害 + 二选一）、身份局是原版（转移伤害），
+ * 所以同一个技能名两处都要测。红颜（黑桃视为红桃）横跨好几层：
+ * 判定、八卦阵、仁王盾、火攻、转化技。
+ */
+describe('国战标准版 · 小乔（天香 / 红颜）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+      armor?: string;
+      deputyHeroId?: string;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      const deputy = s.deputyHeroId ? getHero(s.deputyHeroId) : undefined;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? null;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown && !!deputy;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      if (s.armor) {
+        p.equipment.armor = {
+          id: `armor-${s.seatId}`,
+          type: 'armor',
+          suit: 'club',
+          rank: 2,
+          equipName: s.armor,
+        };
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('天香①：令其受到来源造成的 1 点伤害，然后摸 X 张（X 为其已损失体力，至多 5）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', faction: 'wu', hand: [tao('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hp: 3 },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck = [mk('d1', 'sha', 'club', 9), mk('d2', 'sha', 'club', 10)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 挨 1 点，进天香
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('天香');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 代价：一张红桃手牌——两张都能弃（黑桃那张靠红颜算红桃）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards')
+      expect(state.pending.cards.map((x) => x.id).sort()).toEqual(['b1', 'b2']);
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'damage' }));
+    // 关键：小乔自己**没有**掉血，弃掉的牌进了弃牌堆
+    expect(b.hp).toBe(3);
+    expect(state.discard.some((x) => x.id === 'b1')).toBe(true);
+    // 丙：先挨 1 点（3 → 2），然后按已损失体力摸 2 张
+    expect(c.hp).toBe(2);
+    expect(c.hand).toHaveLength(2);
+  });
+
+  it('天香②：令其失去 1 点体力，然后其获得你弃置的牌（黑桃手牌靠红颜当红桃用）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xiaoqiao',
+        faction: 'wu',
+        hand: [mk('b1', 'sha', 'spade', 7)],
+      },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 黑桃手牌也能当红桃弃
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards')
+      expect(state.pending.cards.map((x) => x.id)).toEqual(['b1']);
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'loseHp' }));
+    expect(b.hp).toBe(3);
+    expect(c.hp).toBe(3); // 失去体力，不是伤害
+    expect(c.hand.map((x) => x.id)).toEqual(['b1']); // 获得了小乔弃置的牌
+    expect(state.discard.some((x) => x.id === 'b1')).toBe(false);
+  });
+
+  it('天香：不发动则正常进濒死求桃', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', faction: 'wu', hand: [tao('b1')], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('天香');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+  });
+
+  it('红颜：黑桃判定牌视为红桃，闪电劈不中', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    b.judgment.push(shandian('sd0'));
+    state.deck = [mk('j1', 'sha', 'spade', 5)]; // 黑桃 5：一般会挨 3 点雷电
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.hp).toBe(b.maxHp);
+    // 不触发 → 闪电移到下家判定区
+    expect(c.judgment.some((x) => x.id === 'sd0')).toBe(true);
+  });
+
+  it('红颜：黑桃判定牌视为红桃，乐不思蜀无效', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('lb0'));
+    state.deck = [mk('j1', 'sha', 'spade', 5)];
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(b.flags.skipPlay).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('红颜：她的黑桃【杀】能破仁王盾，别人的黑【杀】照样被挡', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', armor: 'renwang' },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'xiaoqiao',
+          faction: 'wu',
+          hand: [mk('b1', 'sha', 'spade', 7)],
+        },
+        { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', armor: 'renwang' },
+      ],
+      B,
+    );
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    // 小乔用黑桃杀打装备仁王盾的甲 → 杀属于她，黑桃视为红桃 → 仁王盾不生效
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, A, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+    // 反过来：丙用黑桃杀打**装备仁王盾的甲** → 杀是丙的（没有红颜），仍是黑杀 → 被挡
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    c.hand = [mk('c2', 'sha', 'spade', 8)];
+    ok(act(state, B, { type: 'endPhase' })); // 轮到丙
+    expect(state.pending).toEqual({ kind: 'play', seatId: C });
+    const hpBefore = a.hp; // 甲前面已经挨过小乔那一刀，这里只要求「又没掉血」
+    ok(act(state, C, { type: 'playCard', cardId: 'c2', targetIds: [A] }));
+    expect(a.hp).toBe(hpBefore);
+    expect(state.log.some((e) => e.message.includes('仁王盾'))).toBe(true);
+  });
+
+  it('红颜：八卦阵的判定牌也按她的口径（黑桃视为红桃 → 必定闪避）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', faction: 'wu', armor: 'bagua' },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'sha', 'spade', 3)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(b.hp).toBe(b.maxHp);
+    expect(state.log.some((e) => e.message.includes('八卦阵'))).toBe(true);
+  });
+
+  it('红颜 + 火攻：对她火攻时她亮黑桃，发动者要弃红桃', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'huogong', 'heart', 3), tao('a2'), mk('a3', 'sha', 'spade', 4)],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xiaoqiao',
+        faction: 'wu',
+        hand: [mk('b1', 'sha', 'spade', 7)],
+      },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' })); // 亮一张黑桃
+    expect(state.pending?.kind).toBe('respondTrick');
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(A);
+    // 黑桃视为红桃 → 只有【桃】配得上
+    expect(toSnapshot(state, A).prompt?.legalCardIds).toEqual(['a2']);
+    expect(act(state, A, { type: 'respondCard', cardId: 'a3' }).ok).toBe(false);
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    // 1 点火属性伤害打在小乔身上 → 先问她天香
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('天香');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(2); // 1 点火属性伤害
+  });
+
+  it('红颜 + 火攻：别人亮黑桃时她配不上，亮红桃时她的黑桃配得上', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [mk('a1', 'sha', 'spade', 6), tao('a2')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xiaoqiao',
+        faction: 'wu',
+        hand: [mk('b1', 'sha', 'spade', 7), mk('b9', 'huogong', 'heart', 9)],
+      },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ], B);
+    // 甲亮黑桃 → 小乔手上没有「黑桃」（她的黑桃算红桃）→ 配不上
+    ok(act(state, B, { type: 'playCard', cardId: 'b9', targetIds: [A] }));
+    passWuxie(state);
+    ok(act(state, A, { type: 'respondCard', cardId: 'a1' }));
+    expect(toSnapshot(state, B).prompt?.legalCardIds).toEqual([]);
+    ok(act(state, B, { type: 'pass' })); // 配不上只能弃权
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(4);
+  });
+
+  it('红颜 + 转化技：她的黑桃不再是黑色/方块（甘宁·奇袭、大乔·国色）', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'xiaoqiao',
+          deputyHeroId: 'ganning',
+          faction: 'wu',
+          hand: [mk('a1', 'sha', 'spade', 7), mk('a2', 'sha', 'club', 8)],
+        },
+        { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [sha('b1')] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 奇袭＝黑色牌当过河拆桥：梅花仍然算黑色，黑桃被红颜变成红色 → 不能转化
+    expect(canUseAsCard(state, a, mk('x1', 'sha', 'club', 8), 'guohe')).toBe(true);
+    expect(canUseAsCard(state, a, mk('x2', 'sha', 'spade', 7), 'guohe')).toBe(false);
+  });
+
+  it('红颜 + 转化技：大乔·国色要方块，她的黑桃当不了', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'xiaoqiao',
+          deputyHeroId: 'daqiao',
+          faction: 'wu',
+          hand: [mk('a1', 'sha', 'spade', 7), mk('a2', 'sha', 'diamond', 8)],
+        },
+        { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [sha('b1')] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(canUseAsCard(state, a, mk('x1', 'sha', 'diamond', 8), 'lebu')).toBe(true);
+    expect(canUseAsCard(state, a, mk('x2', 'sha', 'spade', 7), 'lebu')).toBe(false);
+  });
+
+  it('身份局（非国战）：天香是原版——转移同一份伤害，然后目标摸 X 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hp: 2, hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    state.deck = [mk('d1', 'sha', 'club', 9), mk('d2', 'sha', 'club', 10)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('天香');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 原版没有二选一：直接把伤害搬过去，然后按已损失体力摸牌
+    expect(b.hp).toBe(3);
+    expect(c.hp).toBe(1);
+    expect(c.hand).toHaveLength(3); // 已损失 3 点（4 血上限）
+  });
+
+  it('国战：暗置的小乔在闪电伤害时被问「是否明置并发动天香」（预亮）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu' },
+      { seatId: B, name: '乙', heroId: 'xiaoqiao', faction: 'wu', revealed: false },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.hand = [tao('b1')];
+    b.prelitSkills = ['天香'];
+    b.judgment.push(shandian('sd0'));
+    state.deck = [mk('j1', 'sha', 'spade', 5)];
+    ok(act(state, A, { type: 'endPhase' }));
+    // 准备阶段：先问要不要明置（选「暂不明置」——一明置红颜就生效，闪电反而劈不中了）
+    skipRevealAsk(state);
+    // 暗置时红颜不生效 → 闪电判定就是黑桃 → 中招；这时被问要不要明置并发动天香
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('天香');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.heroRevealed).toBe(true); // 明置了
+    // 明置之后才是天香自己的「是否发动」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('天香');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'loseHp' }));
+    expect(b.hp).toBe(b.maxHp); // 闪电的 3 点伤害被防止
+  });
+});
+
+/** 「出牌阶段，你可明置此武将牌」是按**张**算的（小乔·红颜 / 邹氏·祸水） */
+describe('国战 · 出牌阶段明置（按武将牌判）', () => {
+  it('小乔的那张能亮，同一玩家的大乔那张不能', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'xiaoqiao' },
+        { seatId: B, name: '乙', heroId: 'zhangfei' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const fac: Record<string, Faction> = { [A]: 'wu', [B]: 'shu' };
+    const ids: Record<string, string> = { [A]: 'xiaoqiao', [B]: 'zhangfei' };
+    for (const seat of [A, B]) {
+      const p = state.players.find((x) => x.seatId === seat)!;
+      p.heroId = ids[seat]!;
+      p.faction = fac[seat]!;
+      p.heroRevealed = false;
+      p.deputyRevealed = false;
+      p.maxHp = 3;
+      p.hp = 3;
+      p.flags = emptyFlags();
+    }
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.deputyHeroId = 'daqiao'; // 小乔 + 大乔（双吴）
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    state.log = [];
+    // 出牌阶段：小乔那张写着「出牌阶段，你可明置此武将牌」→ 能亮
+    ok(act(state, A, { type: 'revealHero', heroId: 'xiaoqiao' }));
+    expect(a.heroRevealed).toBe(true);
+    // 大乔那张没写这句话 → 出牌阶段亮不了
+    const bad = act(state, A, { type: 'revealHero', heroId: 'daqiao' });
+    expect(bad.ok).toBe(false);
+    expect(a.deputyRevealed).toBe(false);
   });
 });

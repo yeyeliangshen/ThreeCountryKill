@@ -859,8 +859,16 @@ export function Game() {
 
   // —— 武将面板：原画 + 体力勾玉 + 技能名 ——
   // 亮将：只有**准备阶段开始时**能主动明置（引擎的判定阶段＝准备阶段+判定阶段），
-  // 其余时机想明置只能靠发动技能。所以按钮只在准备阶段露出来。
-  const canRevealNow = myTurn && snapshot.turn.phase === 'judgment' && !skillMode && !selected;
+  // 其余时机想明置只能靠发动技能。所以按钮默认只在准备阶段露出来；
+  // 例外是武将牌自己写着「出牌阶段，你可明置此武将牌」的（小乔·红颜、邹氏·祸水），
+  // 那两条按**张**判——只有写了这句话的那张牌能在出牌阶段亮。
+  const phase = snapshot.turn.phase;
+  const canRevealSlot = (hero: typeof myHero): boolean =>
+    myTurn &&
+    !skillMode &&
+    !selected &&
+    (phase === 'judgment' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
+  const canRevealNow = canRevealSlot(myHero);
   // 铁索连环可以把「自己」选成目标：这时自己的武将面板整体可点
   const canPickSelf =
     !!selected &&
@@ -878,7 +886,7 @@ export function Game() {
           hidden: !me.heroRevealed,
           slotLabel: '主将',
           onReveal:
-            canRevealNow && !me.heroRevealed && me.heroId
+            canRevealSlot(myHero) && !me.heroRevealed && me.heroId
               ? () => revealHero(me.heroId!)
               : undefined,
         },
@@ -889,7 +897,7 @@ export function Game() {
           hidden: !me.deputyRevealed,
           slotLabel: '副将',
           onReveal:
-            canRevealNow && !me.deputyRevealed && me.deputyHeroId
+            canRevealSlot(myDeputyHero) && !me.deputyRevealed && me.deputyHeroId
               ? () => revealHero(me.deputyHeroId!)
               : undefined,
         },

@@ -1,7 +1,7 @@
 // 装备牌特效 —— 与 engine 分离的纯查询/判定辅助，便于单测
 import { isRed, type Card } from '@sgs/protocol';
 import { getPlayer, pushLog, type AttackContext, type GameState, type Player } from './model';
-import { EQUIP_SLOTS, effectiveHeroes, type ActiveSkill, type SkillApi } from './heroes';
+import { EQUIP_SLOTS, cardAsSeenBy, effectiveHeroes, type ActiveSkill, type SkillApi } from './heroes';
 
 /** 攻击方武器是否无视目标防具（青釭剑） */
 export function ignoresArmor(source: Player | undefined): boolean {
@@ -48,7 +48,9 @@ export function tryBaguaDodge(state: GameState, attack: AttackContext): boolean 
   const judge = state.deck.pop();
   if (!judge) return false;
   state.discard.push(judge);
-  const red = isRed(judge);
+  // 判定是**八卦阵持有者**做的（「谁判定，判定牌就属于谁」）——
+  // 小乔的黑桃判定牌视为红桃，所以她的八卦阵必定成功。
+  const red = isRed(cardAsSeenBy(state, target, judge));
   return red;
 }
 

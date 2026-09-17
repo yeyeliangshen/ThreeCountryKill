@@ -1,4 +1,5 @@
 import {
+  cardColor,
   cardLabel,
   FIRE_TRICKS,
   isBasicCard,
@@ -15,6 +16,7 @@ import type {
   GameMode,
   Intent,
   RoleId,
+  Suit,
 } from '@sgs/protocol';
 import type { HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player } from './model';
@@ -102,6 +104,9 @@ export interface HeroVariant {
   handLimit?: Hero['handLimit'];
   lockedFields?: Hero['lockedFields'];
   skillFields?: Hero['skillFields'];
+  /** 国战版的「出牌阶段可明置此武将牌」（邹氏·祸水、小乔·红颜） */
+  canRevealInPlayPhase?: Hero['canRevealInPlayPhase'];
+  spadeAsHeart?: Hero['spadeAsHeart'];
 }
 
 export interface Hero {
@@ -250,8 +255,20 @@ export interface Hero {
   /**
    * 邹氏·祸水的前半句：**出牌阶段**也可以明置这张武将牌
    * （通常只有准备阶段能主动明置，见 engine 的 onRevealHero）。
+   * 小乔·红颜也是同一句（国战文本里写着「出牌阶段，你可明置此武将牌」）。
    */
   canRevealInPlayPhase?: boolean;
+  /**
+   * 小乔·红颜（锁定技）：你的黑桃牌视为红桃牌。
+   *
+   * 「你的牌」按官方口径包括：你的手牌、你装备区的牌、**由你进行的判定**的判定牌
+   * （「谁判定，判定牌就属于谁」——所以鬼才/鬼道换上去的牌也算你的；反过来，
+   * 马超·铁骑、夏侯惇·刚烈那种技能拥有者做判定，判定牌是他们的，红颜不生效）。
+   *
+   * 实现是 `cardAsSeenBy()` 一处：转换技合法性（canUseAs）、判定、火攻、
+   * 装备区颜色判定（仁王盾/八卦阵）、丈八凑出来的【杀】颜色都过它。
+   */
+  spadeAsHeart?: boolean;
   /**
    * 孔融·名士（锁定技）：当你受到伤害时，若伤害来源**有暗置的武将牌**，
    * 此伤害 -1。由 engine 的 finalizeDamage 在所有伤害点上统一读。
@@ -299,7 +316,9 @@ export type FieldSkill =
   /** 邹氏·祸水：你的回合内，其他角色不能明置武将牌 */
   | 'blocksOthersReveal'
   /** 邹氏·祸水：出牌阶段也可以明置这张武将牌 */
-  | 'canRevealInPlayPhase';
+  | 'canRevealInPlayPhase'
+  /** 小乔·红颜：你的黑桃牌视为红桃牌 */
+  | 'spadeAsHeart';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -321,6 +340,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'reduceDamageFromHiddenSource',
   'blocksOthersReveal',
   'canRevealInPlayPhase',
+  'spadeAsHeart',
 ];
 
 const GUANYU: Hero = {
@@ -616,7 +636,8 @@ function luoshen(state: GameState, player: Player, guozhan: boolean): void {
   for (;;) {
     const j = drawOne(state);
     if (!j) break;
-    if (isRed(j)) {
+    // 判定由甄姬自己做（「谁判定，判定牌就属于谁」）——红颜那类也要按她的口径看
+    if (isRed(cardAsSeenBy(state, player, j))) {
       toDiscard(state, j);
       pushLog(
         state,
@@ -836,7 +857,9 @@ const XIAHOUDUN: Hero = {
           `${ctx.player.name} 发动【刚烈】，判定牌：${cardLabel(judgeCard)}。`,
         );
         toDiscard(ctx.state, judgeCard);
-        if (judgeCard.suit === 'heart') {
+        // 判定的**所属**是发动技能的人（夏侯惇），不是被刚烈的目标——
+        // 官方口径：铁骑/刚烈这类「技能拥有者判定」的判定牌不受小乔·红颜影响。
+        if (cardAsSeenBy(ctx.state, ctx.player, judgeCard).suit === 'heart') {
           pushLog(ctx.state, 'skill', '判定为红桃，【刚烈】无效。');
           return;
         }
@@ -1746,6 +1769,221 @@ const DAQIAO: Hero = {
       desc: '当你成为【杀】的目标时，你可以弃置一张牌，将此【杀】转移给你攻击范围内的一名其他角色。',
     },
   ],
+};
+
+/** 天香可用的牌：红桃手牌（红颜在场时，黑桃手牌也算红桃） */
+function tianxiangHearts(state: GameState, me: Player): Card[] {
+  return me.hand.filter((c) => suitSeenAs(state, me, c) === 'heart');
+}
+
+/**
+ * 天香（**新国战 2018 版**，已核文本）：当你受到伤害时，你可以弃置一张红桃手牌，
+ * 防止此伤害并选择一名其他角色，若如此做，你选择一项：
+ *   ①令其受到伤害来源对其造成的 1 点伤害，然后摸 X 张牌（X 为其已损失体力值且至多 5）；
+ *   ②令其失去 1 点体力，然后其获得你弃置的牌。
+ *
+ * 实现要点：
+ * - 「防止此伤害」走 `damageDealt` 钩子的取消通道：钩子只能设
+ *   `flags.damagePrevented`，引擎在钩子跑完之后读它（见 engine 的 damageStep）。
+ * - ①的伤害是**新的一次 1 点伤害**（原文是先「防止」再「令其受到」），所以不带原伤害的属性；
+ *   来源沿用原来源，且**来源不存在时不给这个选项**（闪电那类没有来源，无法令其受到来源的伤害）。
+ * - X 是「然后」摸的，所以按伤害**之后**的已损失体力算（「至多 5」是国战版的封顶）。
+ * - 代价与效果一起在最后落地：中途反悔不付代价，与引擎里其它「先问清楚再动手」的技能一致。
+ */
+function tianxiangGuozhan(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { damage?: number; attack?: AttackContext } | undefined;
+  const attack = payload?.attack;
+  const hearts = tianxiangHearts(state, me);
+  const others = state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+  if (hearts.length === 0 || others.length === 0) return; // 付不出代价 / 没有别人可选
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `是否发动【天香】弃置一张红桃手牌，防止这 ${payload?.damage ?? 1} 点伤害？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        '【天香】：弃置一张红桃手牌',
+        hearts,
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const card = chosen[0];
+          if (!card) return;
+          ctx.api.askChoice(
+            st2,
+            p2.seatId,
+            '【天香】：选择一名其他角色',
+            others.map((o) => ({ id: o.seatId, label: o.name })),
+            (st3, p3, targetId) => {
+              const target = getPlayer(st3, targetId);
+              if (!target) return;
+              const src = attack?.sourceId ? getPlayer(st3, attack.sourceId) : undefined;
+              const options: { id: string; label: string }[] = [];
+              if (src) {
+                options.push({
+                  id: 'damage',
+                  label: `令 ${target.name} 受到 ${src.name} 造成的 1 点伤害，然后其摸 X 张牌（X 为其已损失体力值，至多 5）`,
+                });
+              }
+              options.push({
+                id: 'loseHp',
+                label: `令 ${target.name} 失去 1 点体力，然后其获得你弃置的【${cardLabel(card)}】`,
+              });
+              ctx.api.askChoice(st3, p3.seatId, '【天香】：选择一项', options, (st4, p4, option) => {
+                p4.flags.damagePrevented = true;
+                ctx.api.discardCard(p4.seatId, card, () => {
+                  pushLog(
+                    st4,
+                    'skill',
+                    `${p4.name} 发动【天香】，弃置【${cardLabel(card)}】防止此伤害。`,
+                  );
+                  if (option === 'damage' && src) {
+                    ctx.api.dealDamage(target, 1, src.seatId, undefined, () => {
+                      const x = Math.min(5, Math.max(0, target.maxHp - target.hp));
+                      if (x > 0 && target.alive) {
+                        for (let i = 0; i < x; i++) {
+                          const c = drawOne(st4);
+                          if (c) target.hand.push(c);
+                        }
+                        pushLog(st4, 'skill', `${target.name} 因【天香】摸了 ${x} 张牌。`);
+                      }
+                    });
+                    return;
+                  }
+                  // ②失去体力（不是伤害：没有来源、不触发卖血技，但会进濒死）
+                  ctx.api.loseHp(target, 1, () => ctx.api.giveDiscardedTo([card], target.seatId, '天香'));
+                });
+              });
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
+/**
+ * 天香（**身份局/军争原版**）：当你受到伤害时，你可以弃置一张红桃手牌，
+ * 将此伤害转移给一名其他角色，然后该角色摸 X 张牌（X 为该角色已损失的体力值）。
+ *
+ * 与国战版的区别：这里是真的**转移**同一份伤害（属性跟着走），没有二选一。
+ */
+function tianxiangClassic(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { damage?: number; attack?: AttackContext } | undefined;
+  const attack = payload?.attack;
+  const hearts = tianxiangHearts(state, me);
+  const others = state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+  if (hearts.length === 0 || others.length === 0) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `是否发动【天香】弃置一张红桃手牌，将此伤害转移给一名其他角色？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        '【天香】：弃置一张红桃手牌',
+        hearts,
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const card = chosen[0];
+          if (!card) return;
+          ctx.api.askChoice(
+            st2,
+            p2.seatId,
+            '【天香】：把此伤害转移给谁？',
+            others.map((o) => ({ id: o.seatId, label: o.name })),
+            (st3, p3, targetId) => {
+              const target = getPlayer(st3, targetId);
+              if (!target) return;
+              p3.flags.damagePrevented = true;
+              ctx.api.discardCard(p3.seatId, card, () => {
+                pushLog(
+                  st3,
+                  'skill',
+                  `${p3.name} 发动【天香】，弃置【${cardLabel(card)}】，把伤害转移给 ${target.name}。`,
+                );
+                ctx.api.dealDamage(
+                  target,
+                  payload?.damage ?? 1,
+                  attack?.sourceId ?? '',
+                  attack?.attribute,
+                  () => {
+                    const x = Math.max(0, target.maxHp - target.hp);
+                    if (x > 0 && target.alive) {
+                      for (let i = 0; i < x; i++) {
+                        const c = drawOne(st3);
+                        if (c) target.hand.push(c);
+                      }
+                      pushLog(st3, 'skill', `${target.name} 因【天香】摸了 ${x} 张牌。`);
+                    }
+                  },
+                );
+              });
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
+/**
+ * 小乔 —— 天香 / 红颜。
+ *
+ * ⚠️ 两个模式的**天香不是同一个技能**：国战 2018 版改成了「防止此伤害 + 二选一」，
+ *    身份局/军争还是原来的「转移伤害」；红颜在国战里多一句「出牌阶段，你可明置此武将牌」。
+ *    所以身份局版写在顶层、国战版写在 `guozhan` 覆盖块里（取将一律走 getHeroForMode）。
+ *
+ * 红颜的「黑桃视为红桃」是**全局口径**（手牌/装备/她自己进行的判定），
+ * 由 `cardAsSeenBy()` 一处提供，engine/equip/legal 都在用。
+ */
+const XIAOQIAO: Hero = {
+  id: 'xiaoqiao',
+  name: '小乔',
+  faction: 'wu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  spadeAsHeart: true,
+  lockedFields: ['spadeAsHeart'],
+  skillFields: { 红颜: ['spadeAsHeart', 'canRevealInPlayPhase'] },
+  hooks: [{ timing: 'damageDealt', skillId: '天香', handler: (ctx) => tianxiangClassic(ctx) }],
+  skills: [
+    {
+      name: '天香',
+      desc: '当你受到伤害时，你可以弃置一张红桃手牌，将此伤害转移给一名其他角色，然后该角色摸 X 张牌（X 为该角色已损失的体力值）。',
+    },
+    { name: '红颜', desc: '锁定技，你的黑桃牌均视为红桃牌。' },
+  ],
+  guozhan: {
+    canRevealInPlayPhase: true,
+    hooks: [{ timing: 'damageDealt', skillId: '天香', handler: (ctx) => tianxiangGuozhan(ctx) }],
+    skills: [
+      {
+        name: '天香',
+        desc: '当你受到伤害时，你可以弃置一张红桃手牌，防止此伤害并选择一名其他角色，若如此做，你选择一项：1.令其受到伤害来源对其造成的1点伤害，然后摸X张牌（X为其已损失体力值且至多5）；2.令其失去1点体力，然后其获得你弃置的牌。',
+      },
+      { name: '红颜', desc: '出牌阶段，你可明置此武将牌；你的黑桃牌视为红桃牌。' },
+    ],
+  },
 };
 
 const TAISHICI: Hero = {
@@ -4279,7 +4517,8 @@ const CAIWENJI: Hero = {
                 );
                 toDiscard(st2, judgeCard);
                 const source = attack.sourceId ? getPlayer(st2, attack.sourceId) : undefined;
-                switch (judgeCard.suit) {
+                // 判定是**受伤者**做的（「谁判定，判定牌就属于谁」）
+                switch (cardAsSeenBy(st2, victim, judgeCard).suit) {
                   case 'heart': {
                     const healed = ctx.api.heal(victim, 1);
                     pushLog(st2, 'skill', `【悲歌】红桃：${victim.name} 回复 ${healed} 点体力。`);
@@ -4842,7 +5081,9 @@ const ZHANGJIAO: Hero = {
                   `${me.name} 发动【雷击】，${target.name} 判定：${cardLabel(judgeCard)}。`,
                   { seat: me.seatId, action: 'skill' },
                 );
-                if (judgeCard.suit !== 'spade') {
+                // 判定由**被指定的角色**做（官方：张角雷击指定的被判定者）——
+                // 小乔的黑桃判定牌视为红桃，所以雷击劈不中她。
+                if (cardAsSeenBy(st2, target, judgeCard).suit !== 'spade') {
                   pushLog(st2, 'skill', `判定不是黑桃，【雷击】无效。`);
                   return;
                 }
@@ -5059,6 +5300,7 @@ export const HEROES: Hero[] = [
   GANNING,
   HUANGGAI,
   DAQIAO,
+  XIAOQIAO,
   TAISHICI,
   LVMENG,
   LUSU,
@@ -5277,12 +5519,50 @@ export function effectiveHeroes(state: GameState, p: Player): Hero[] {
   return heroes.map(nullifyHero);
 }
 
+/**
+ * 这张牌「对某个角色而言」长什么样（只有花色/颜色会被改写，id 与实体不变）。
+ *
+ * 目前唯一的来源是小乔·红颜（锁定技，你的黑桃牌视为红桃牌）。官方对「你的牌」的
+ * 界定：你的手牌、你装备区的牌、**由你进行的判定**的判定牌——「谁判定，判定牌
+ * 就属于谁」，所以鬼才/鬼道换上来的牌也算她的；而马超·铁骑、夏侯惇·刚烈那种
+ * 「技能拥有者判定」的判定牌不算（那些牌的主人是不带红颜的那个人，天然不受影响）。
+ *
+ * 暗置的小乔不生效——`effectiveHeroes` 已经把暗置武将滤掉了。
+ */
+export function cardAsSeenBy(state: GameState | undefined, owner: Player | undefined, card: Card): Card {
+  if (!state || !owner) return card;
+  if (card.suit !== 'spade') return card;
+  if (!effectiveHeroes(state, owner).some((h) => h.spadeAsHeart === true)) return card;
+  // 红桃 + 红色一起改：读 suit 的地方（判定/火攻/仁王盾颜色）两样都会用到
+  return { ...card, suit: 'heart', color: 'red' };
+}
+
+/** 这张牌对某个角色而言的花色（红颜：黑桃 → 红桃） */
+export function suitSeenAs(state: GameState | undefined, owner: Player | undefined, card: Card): Suit {
+  return cardAsSeenBy(state, owner, card).suit;
+}
+
+/** 这张牌对某个角色而言的颜色（红颜：黑桃 → 红桃 → 红色） */
+export function colorSeenAs(
+  state: GameState | undefined,
+  owner: Player | undefined,
+  card: Card,
+): 'red' | 'black' | null {
+  return cardColor(cardAsSeenBy(state, owner, card));
+}
+
 /** 取武将每回合杀数上限，缺省 1 */
 export function heroShaLimit(hero: Hero): number {
   return hero.shaLimit?.() ?? 1;
 }
 
-/** 取武将可否把 card 当 type 用 */
+/**
+ * 取武将可否把 card 当 type 用。
+ *
+ * 传进去的是**对这名玩家而言**的牌面（小乔·红颜：她的黑桃视为红桃），
+ * 所以武圣（红色）、奇袭/断粮（黑色）、国色（方块）这些按花色写的转化技
+ * 自动按红颜的口径判——一处收口，避免每个 canUseAs 自己记得转换。
+ */
 export function heroCanUseAs(
   hero: Hero,
   card: Card,
@@ -5290,7 +5570,8 @@ export function heroCanUseAs(
   state?: GameState,
   player?: Player,
 ): boolean {
-  return hero.canUseAs?.(card, type, state, player) ?? false;
+  const seen = player ? cardAsSeenBy(state, player, card) : card;
+  return hero.canUseAs?.(seen, type, state, player) ?? false;
 }
 
 /** 取该武将参与【决斗】时、对手每次需打出的【杀】数（吕布·无双 = 2），缺省 1 */

@@ -46,7 +46,12 @@ export type Timing =
   | 'cardDiscarded'
   | 'equipLost' // 失去装备区里的一张牌后（枭姬）
   | 'handEmptied' // 失去最后一张手牌后（连营）
-  | 'damageDealt' // 受到伤害时（扣血前）
+  /**
+   * 受到伤害时（扣血前）。**可挂起**，也是唯一能**取消**伤害的时机：
+   * 钩子里设 `flags.damagePrevented = true`，引擎在钩子跑完之后读到就整条伤害作废
+   * （不扣血、不跑伤害后钩子、不进濒死）。小乔·天香用它。
+   */
+  | 'damageDealt'
   | 'afterDamage' // 受到伤害后（派发给**受伤者**：反馈、刚烈、奸雄）
   /**
    * **一名角色**受到伤害后（派发给**所有存活角色**，payload.victimId 是谁受伤）。
@@ -94,14 +99,24 @@ export interface EquipLostPayload {
  */
 export interface SkillApi {
   /** 造成伤害（触发伤害钩子 + 濒死检查） */
+  /**
+   * 造成伤害（走完整伤害层：减伤 → 防止 → 扣血 → 伤害后钩子 → 濒死）。
+   *
+   * `after` 是「这次伤害**结算完**之后」的续接。伤害结算里可能挂起询问
+   * （护心镜、卖血技、濒死求桃），所以**必须**用 after 来接后续步骤，
+   * 不能在调用之后直接往下写——那样会在伤害真的落地之前就执行。
+   * 小乔·天香要「先伤害、后摸 X 张牌」，靠的就是它。
+   */
   dealDamage: (
     target: Player,
     damage: number,
     sourceId: string,
     attribute?: DamageAttribute,
+    after?: () => void,
   ) => void;
   /** 失去体力（不触发伤害钩子，但触发濒死检查） */
-  loseHp: (target: Player, amount: number) => void;
+  /** 失去体力（不是伤害：没有来源、不触发卖血技，但会进濒死）。`after` 同上。 */
+  loseHp: (target: Player, amount: number, after?: () => void) => void;
   /**
    * 回复体力（上限夹取，并触发「回复体力后」的技能）。
    * 返回**实际**回复量；再经过 `afterHeal` 时对方拿到的也是这个数。
@@ -200,7 +215,8 @@ export interface SkillApi {
    * 把**刚进弃牌堆**的几张牌交给某个角色（孔融·礼让）。
    * 按 id 从弃牌堆里取出来塞进目标手牌；找不到的（已经被别人拿走了）跳过。
    */
-  giveDiscardedTo: (cards: Card[], targetSeatId: string) => void;
+  /** 把刚进弃牌堆的牌交给某人（孔融·礼让 / 小乔·天香）。skillName 只影响日志文案。 */
+  giveDiscardedTo: (cards: Card[], targetSeatId: string, skillName?: string) => void;
   /** 交换两名角色的全部手牌（鲁肃·缔盟） */
   swapHands: (seatA: string, seatB: string) => void;
   /**

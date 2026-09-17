@@ -79,6 +79,9 @@ import {
   factionAliveCount,
   skillNameForField,
   unrevealedHeroes,
+  cardAsSeenBy,
+  suitSeenAs,
+  colorSeenAs,
   huangtianFor,
   ROLE_NAME,
   type ActiveSkill,
@@ -223,14 +226,15 @@ function takeUsableCard(player: Player, cardId: string): Card | null {
  *   所以只留 0；花色同理，`color` 才是可信的那一项。
  * - `materials` 记住两张**实体牌**：计价（`consumeCard`）与界面显示都要用。
  */
-export function virtualShaFrom(cards: Card[]): Card {
+export function virtualShaFrom(cards: Card[], state?: GameState, owner?: Player): Card {
   return {
     id: `virtual-sha-${cards.map((c) => c.id).join('-')}`,
     type: 'sha',
     suit: 'spade',
     rank: 0,
     virtual: true,
-    color: zhangbaShaColor(cards),
+    // 颜色按**使用者**的口径算：小乔·红颜时她的两张黑桃凑出来的是红杀（不是黑杀）
+    color: zhangbaShaColor(cards.map((c) => cardAsSeenBy(state, owner, c))),
     materials: cards.slice(),
   };
 }
@@ -276,7 +280,7 @@ function resolveUsedCard(
   }
   // 官方文本是「**两张**手牌」，多一张少一张都不行
   if (materials.length !== 2) return { error: '【丈八蛇矛】需要正好两张手牌' };
-  return { card: virtualShaFrom(materials) };
+  return { card: virtualShaFrom(materials, state, player) };
 }
 
 /**
@@ -436,8 +440,9 @@ function markCardUsed(state: GameState, timing: Timing, player: Player, payload?
       ? 'basic'
       : 'trick';
   player.flags.usedCardsInPlayPhase.push({
-    suit: card.suit,
-    color: isRed(card) ? 'red' : 'black',
+    // 红颜：小乔用掉的黑桃要按红桃记账，否则克己（颜色不同）与谋断（四种花色）会算错
+    suit: suitSeenAs(state, player, card),
+    color: colorSeenAs(state, player, card) === 'red' ? 'red' : 'black',
     kind,
   });
 }
@@ -558,8 +563,9 @@ function runHooks(state: GameState, timing: Timing, player: Player, payload?: un
 //
 // 已转换（runHooksPausable）：turnStart / playPhase / discardPhase / discardPhaseEnd /
 //   turnEnd / othersTurnEnd / drawPhase / drawPhaseEnd / judgePhase / becomeTarget /
-//   afterDamage / afterDamageDealt / afterHeal / equipLost / handEmptied / nearDeath / kill
-// 仍是同步（runHooks）：useCard / beforeResolve / afterResolve / damageDealt / death
+//   damageDealt / afterDamage / afterDamageDealt / afterHeal / equipLost / handEmptied /
+//   nearDeath / kill
+// 仍是同步（runHooks）：useCard / beforeResolve / afterResolve / death
 //   —— 预亮技能落在这些时机上时无法询问，只能「预亮即发动」（见 autoRevealHook）。
 
 /** 把「被询问打断的后续」压进队列；等 pending 空了由 drainResume 执行 */
@@ -795,9 +801,15 @@ function startJudgmentPhase(state: GameState, player: Player): void {
   });
 }
 
-/** 判定阶段结束：闪电伤害可能导致濒死，否则继续到摸牌阶段 */
+/**
+ * 判定阶段结束：继续到摸牌阶段。
+ *
+ * ⚠️ 这里以前还要补一次「hp<=0 → 进濒死」，因为闪电的伤害是就地扣血的；
+ *    现在闪电走统一伤害层，濒死由那条链自己处理，这个补偿留着会**重复求桃**
+ *    （除非死亡流程已经建好了队列——`pending` 非空就是那种情况）。
+ */
 function afterJudgmentPhase(state: GameState, player: Player): void {
-  if (player.hp <= 0) {
+  if (player.hp <= 0 && state.pending === null) {
     enterNearDeath(state, {
       sourceId: player.seatId,
       cardId: '',
@@ -972,8 +984,11 @@ function judgmentStep(state: GameState, player: Player, judgments: Card[], index
     `${player.name} 判定：${cardLabel(judgeCard)}（${CARD_TYPE_NAME[trick.type]}）。`,
   );
   askBeforeJudge(state, trick, judgeCard, player.seatId, (finalCard, gainer) => {
-    resolveJudgment(state, player, trick, finalCard, gainer);
-    judgmentStep(state, player, judgments, index + 1);
+    // 「继续下一张判定」交给 resolveJudgment 在**结算完之后**调：闪电的伤害是可挂起的
+    // （小乔·天香就在那里发问），同步往下跑会把询问的 pending 覆盖掉。
+    resolveJudgment(state, player, trick, finalCard, gainer, () =>
+      judgmentStep(state, player, judgments, index + 1),
+    );
   });
 }
 
@@ -1076,11 +1091,16 @@ function resolveJudgment(
   trick: Card,
   judgeCard: Card,
   gainer: Player | undefined,
+  after: () => void,
 ): void {
+  // 判定牌**属于判定者**（官方：「谁判定，判定牌就属于谁」），所以花色按对他的口径看——
+  // 小乔·红颜：她的黑桃判定牌视为红桃（闪电劈不中她、乐不思蜀判黑桃也不中）。
+  // 鬼才/鬼道换上来的牌同样算她的（改判者只是提供了牌，判定还是她做的）。
+  const seen = cardAsSeenBy(state, player, judgeCard);
   switch (trick.type) {
     case 'lebu':
       // 乐不思蜀：非红桃 → 跳过出牌阶段
-      if (judgeCard.suit !== 'heart') {
+      if (seen.suit !== 'heart') {
         player.flags.skipPlay = true;
         pushLog(state, 'lebu', `${player.name} 被【乐不思蜀】影响，将跳过出牌阶段。`);
       } else {
@@ -1090,7 +1110,7 @@ function resolveJudgment(
       break;
     case 'bingliang':
       // 兵粮寸断：非梅花 → 跳过摸牌阶段
-      if (judgeCard.suit !== 'club') {
+      if (seen.suit !== 'club') {
         player.flags.skipDraw = true;
         pushLog(state, 'bingliang', `${player.name} 被【兵粮寸断】影响，将跳过摸牌阶段。`);
       } else {
@@ -1100,23 +1120,51 @@ function resolveJudgment(
       break;
     case 'shandian': {
       // 闪电：黑桃2-9 → 3点雷电伤害+弃闪电；否则 → 移到下家判定区
-      if (judgeCard.suit === 'spade' && judgeCard.rank >= 2 && judgeCard.rank <= 9) {
+      // 小乔·红颜：她的黑桃判定牌视为红桃 → 永远劈不中（官方 FAQ 明确过这一条）
+      if (seen.suit === 'spade' && judgeCard.rank >= 2 && judgeCard.rank <= 9) {
         pushLog(
           state,
           'shandian',
           `${player.name} 的【闪电】判定为黑桃${judgeCard.rank}，受到3点雷电伤害！`,
         );
         toDiscard(state, trick);
-        player.hp -= 3;
-        // 自伤：来源就是自己，所以没有 afterDamageDealt。
-        // 这里的 afterDamage 不支持挂起（闪电伤害无来源，触发不了会询问的技能）。
-        runHooks(state, 'damageDealt', player, { damage: 3, attribute: 'thunder' });
-        runHooks(state, 'afterDamage', player, { damage: 3, attribute: 'thunder' });
-        pushLog(
-          state,
-          'damage',
-          `${player.name} 受到 3 点雷电伤害，剩余 ${Math.max(0, player.hp)} 体力。`,
-        );
+        // 判定牌先归位（天妒/进弃牌堆）**再**结算伤害：伤害那一层是可挂起的
+        // （小乔·天香就在这儿发问），挂起后本函数剩下的代码不会再执行，
+        // 归位留在后面就会把这张牌弄丢。
+        disposeJudgeCard(state, judgeCard, gainer);
+        // 闪电的伤害**无来源**（自伤），但照样走统一伤害层：天香、名士、
+        // 白银狮子、护心镜、伤害后钩子都按同一条规则处理。
+        const shandianAttack: AttackContext = {
+          sourceId: player.seatId,
+          cardId: trick.id,
+          asType: 'shandian',
+          targetId: player.seatId,
+          damage: 3,
+          dodged: false,
+          attribute: 'thunder',
+        };
+        damageStep(state, player, shandianAttack, 3, (dmg, prevented) => {
+          if (prevented) {
+            // 伤害被防止（天香）→ 人没事，判定阶段照常往下走
+            after();
+            return;
+          }
+          pushLog(
+            state,
+            'damage',
+            `${player.name} 受到 ${dmg} 点雷电伤害，剩余 ${Math.max(0, player.hp)} 体力。`,
+          );
+          runDamagedHooks(state, player, shandianAttack, dmg, () => {
+            // 濒死/阵亡由死亡流程接管，判定阶段不再继续（原实现也是这样分流的：
+            // 人没了就不该再摸牌出牌，回合交给死亡流程收尾）
+            if (player.hp <= 0) {
+              enterNearDeath(state, shandianAttack);
+              return;
+            }
+            after();
+          });
+        });
+        return; // 判定牌已归位，剩下的判定由 after 接着跑
       } else {
         // 不触发 → 移到下家判定区
         const nextIdx = nextAliveSeat(state, state.seatOrder.indexOf(player.seatId));
@@ -1139,6 +1187,15 @@ function resolveJudgment(
       break;
   }
   // 天妒：判定牌被某个技能收走了，就不进弃牌堆
+  disposeJudgeCard(state, judgeCard, gainer);
+  after();
+}
+
+/** 判定牌归位：天妒（被收走）或进弃牌堆。哨兵值是「已经归位过了」 */
+const DISPOSED: Card = { id: '__disposed', type: 'sha', suit: 'spade', rank: 0 };
+
+function disposeJudgeCard(state: GameState, judgeCard: Card, gainer: Player | undefined): void {
+  if (judgeCard === DISPOSED) return;
   if (gainer) {
     gainer.hand.push(judgeCard);
     pushLog(state, 'skill', `${gainer.name} 获得了判定牌【${cardLabel(judgeCard)}】。`);
@@ -1458,7 +1515,9 @@ function startAttack(
     dodged: false,
     // 朱雀羽扇改的是属性，不是牌面本身
     attribute: opts?.asAttribute ?? card.attribute,
-    cardColor: cardColorOf(card),
+    // 颜色按**使用者**的口径看：小乔·红颜把她的黑桃【杀】变成红桃，
+    // 于是她的黑桃杀能破【仁王盾】（官方 FAQ：仁王盾是否生效看杀属于谁）
+    cardColor: colorSeenAs(state, source, card),
     requiredShan: 1,
     // 【方天画戟】：其余目标排在这里，逐个结算
     fangtianQueue: ordered.slice(1),
@@ -2002,7 +2061,8 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
   }
   // 伤害数值的最后一道修正（孔融·名士 -1 / 白银狮子防止多余）交给 damageStep 里的
   // finalizeDamage 统一做，这里不再单独夹一次（否则白银狮子会被夹两次）。
-  runHooks(state, 'damageDealt', target, { attack, damage: total });
+  // ⚠️ 「受到伤害时」的钩子也**只在 damageStep 里派发一次**——这里以前还多发了一次，
+  //    同步钩子看不出问题，改成可挂起之后就会问两遍（小乔·天香）。
 
   /** 真正扣血 + 收尾（afterDamage / 铁索蔓延 / 濒死） */
   const applyDamage = (dmg: number, prevented: boolean): void => {
@@ -2064,10 +2124,21 @@ function damageStep(
   apply: (dmg: number, prevented: boolean) => void,
 ): void {
   const dmg = finalizeDamage(state, target, attack, rawDamage);
-  runHooks(state, 'damageDealt', target, { damage: dmg, attack });
-  withHuxinjing(state, attack, dmg, (prevented) => {
-    if (!prevented) target.hp -= dmg;
-    apply(dmg, prevented);
+  // 「当你受到伤害时」可挂起：小乔·天香要在这时弃牌、选人、二选一。
+  // 取消通道是 `flags.damagePrevented`（钩子没有返回值）——派发前清、派发后读，
+  // 读到就整条伤害作废：不扣血、不跑伤害后钩子、不进濒死。护心镜那层照旧在其后。
+  target.flags.damagePrevented = false;
+  runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
+    const prevented = target.flags.damagePrevented;
+    target.flags.damagePrevented = false;
+    if (prevented) {
+      apply(dmg, true);
+      return;
+    }
+    withHuxinjing(state, attack, dmg, (hxPrevented) => {
+      if (!hxPrevented) target.hp -= dmg;
+      apply(dmg, hxPrevented);
+    });
   });
 }
 
@@ -4767,17 +4838,21 @@ function respondHuogongCard(
 
   if (!ctx.revealedSuit) {
     // 阶段一：目标展示手牌（牌不弃，留在手中）
+    // 展示的是**他的**牌，所以花色按他的口径（小乔·红颜：黑桃算红桃）——
+    // 官方 FAQ：对小乔火攻，她亮黑桃，发动者要弃的是红桃。
     pushLog(state, 'trick', `${responder.name} 展示了【${cardLabel(card)}】。`);
     state.pending = {
       kind: 'respondTrick',
       responderId: ctx.sourceId,
-      ctx: { ...ctx, revealedSuit: card.suit },
+      ctx: { ...ctx, revealedSuit: suitSeenAs(state, responder, card) },
     };
     return { ok: true };
   }
 
   // 阶段二：来源弃同花色牌 → 造成 1 点火属性伤害
-  if (card.suit !== ctx.revealedSuit) return err('花色不符');
+  // 这里弃的是**来源的**牌，同样按他的口径（反过来：小乔手里没有黑桃，
+  // 别人亮黑桃时她永远配不上——官方 FAQ 明确过）
+  if (suitSeenAs(state, responder, card) !== ctx.revealedSuit) return err('花色不符');
   removeCard(responder.hand, card.id);
   toDiscard(state, card);
   pushLog(state, 'trick', `${responder.name} 弃置了【${cardLabel(card)}】。`);
@@ -4885,7 +4960,7 @@ function resolvePlayedSha(
     damage: 1,
     dodged: false,
     attribute: card.attribute,
-    cardColor: cardColorOf(card),
+    cardColor: colorSeenAs(state, source, card),
     requiredShan: 1,
   };
   pushLog(state, log.kind, log.text);
@@ -5864,21 +5939,19 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
   // 顺带明置）。准备阶段的询问会正常给「明置主将/副将/全部」，这个意图是同一时机内的
   // 补充入口（选过「暂不明置」之后又改主意）。引擎里准备阶段与判定阶段同属 'judgment'。
   const isMyTurn = state.seatOrder[state.turn.seatIndex] === seatId;
-  // 通常只有**准备阶段**能主动明置（出牌阶段只能靠发动技能顺带明置）；例外是带
-  // canRevealInPlayPhase 的武将（邹氏·祸水：「出牌阶段，你可以明置此武将牌」）。
-  const playPhaseReveal =
-    state.turn.phase === 'play' &&
-    [getHero(player.heroId), getHero(player.deputyHeroId)].some(
-      (h) => h?.canRevealInPlayPhase === true,
-    );
-  if (!isMyTurn || (state.turn.phase !== 'judgment' && !playPhaseReveal))
-    return err('只能在你的准备阶段明置武将牌（其余时机要发动技能才能明置）');
   if (intent.heroId !== player.heroId && intent.heroId !== player.deputyHeroId)
     return err('该武将不是你的武将');
-  const mainHero = getHero(player.heroId);
-  const deputyHero = getHero(player.deputyHeroId);
+  // 按模式取将：国战的小乔多一句「出牌阶段，你可明置此武将牌」（身份局没有暗置这回事）
+  const mainHero = getHeroForMode(player.heroId, state.mode);
+  const deputyHero = getHeroForMode(player.deputyHeroId, state.mode);
   const target = intent.heroId === player.heroId ? mainHero : deputyHero;
   if (!target) return err('找不到该武将');
+  // 通常只有**准备阶段**能主动明置（出牌阶段只能靠发动技能顺带明置）；例外写在
+  // **那张武将牌本身**的文本里——「出牌阶段，你可明置此武将牌」
+  // （小乔·红颜、邹氏·祸水），所以按要亮的那张牌判，而不是按「你有没有这样的牌」。
+  const playPhaseReveal = state.turn.phase === 'play' && target.canRevealInPlayPhase === true;
+  if (!isMyTurn || (state.turn.phase !== 'judgment' && !playPhaseReveal))
+    return err('只能在你的准备阶段明置武将牌（其余时机要发动技能才能明置）');
   if (!revealHeroCard(state, player, target)) return err('该武将已经亮出');
   return { ok: true };
 }
@@ -6338,7 +6411,7 @@ function makeSkillApi(
       if (!p) return;
       goToDiscardPhase(state, p);
     },
-    giveDiscardedTo: (cards, targetSeatId) => {
+    giveDiscardedTo: (cards, targetSeatId, skillName) => {
       const target = getPlayer(state, targetSeatId);
       if (!target) return;
       const got: string[] = [];
@@ -6350,7 +6423,7 @@ function makeSkillApi(
         got.push(cardLabel(c));
       }
       if (got.length > 0) {
-        pushLog(state, 'skill', `${target.name} 因【礼让】获得了 ${got.join('、')}。`, {
+        pushLog(state, 'skill', `${target.name} 因【${skillName ?? '礼让'}】获得了 ${got.join('、')}。`, {
           seat: target.seatId,
           action: 'gain',
         });
@@ -6401,7 +6474,7 @@ function makeSkillApi(
       to.hand.push(card);
       done();
     },
-    dealDamage: (target, damage, sourceId, attribute) => {
+    dealDamage: (target, damage, sourceId, attribute, after) => {
       const attack: AttackContext = {
         sourceId,
         cardId: '',
@@ -6420,20 +6493,25 @@ function makeSkillApi(
           );
         }
         if (prevented) {
+          after?.();
           if (resumeTo) resumePlay(state, resumeTo);
           return;
         }
         runDamagedHooks(state, target, attack, dmg, () => {
           if (target.hp <= 0) {
             enterNearDeath(state, attack);
-          } else if (resumeTo) {
-            resumePlay(state, resumeTo);
+            // 进濒死也要接后续（天香就是「先伤害、后摸牌」）：濒死求桃走的是
+            // 续接队列，after 里的步骤会排在它后面。
+            after?.();
+          } else {
+            after?.();
+            if (resumeTo) resumePlay(state, resumeTo);
           }
         });
       });
     },
     heal: (target, amount) => healAndTrigger(state, target, amount),
-    loseHp: (target, amount) => {
+    loseHp: (target, amount, after) => {
       target.hp -= amount;
       pushLog(
         state,
@@ -6450,6 +6528,7 @@ function makeSkillApi(
           dodged: false,
         });
       }
+      after?.();
     },
     changeMaxHp: (target, delta) => {
       const before = target.maxHp;
