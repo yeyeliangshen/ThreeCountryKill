@@ -343,6 +343,29 @@ button:disabled {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
 }
+/* 一个发到的「格子」：武将牌 +（君主将/标准版）切换按钮 */
+.hero-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hero-cell .hero-card {
+  flex: 1;
+}
+/* 君主将 ↔ 标准版：发到的格子可以在两版之间换（引擎侧由 LORD_VARIANTS 放行） */
+.hero-swap {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--gold);
+  background: transparent;
+  color: var(--gold);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hero-swap:hover {
+  background: var(--panel-2);
+}
 .hero-card {
   text-align: left;
   background: var(--panel);

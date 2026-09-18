@@ -25,6 +25,7 @@ import {
 } from '@sgs/protocol';
 import {
   getHero,
+  lordVariantOf,
   getHeroForMode,
   heroCanUseAs,
   ROLE_NAME,
@@ -304,6 +305,24 @@ export function Game() {
   const [pickedHero, setPickedHero] = useState<string | null>(null);
   // 国战选将：主将 + 副将
   const [mainPick, setMainPick] = useState<string | null>(null);
+  /**
+   * 国战选将：每个发到的格子显示哪一版（君主将 / 标准版）。
+   *
+   * 官方国战里君主将「替换」同名标准武将登场——但你发到的是随机的，所以线上通行做法是
+   * 「发到了标准版就等于也拿到了君主版」。这里就是那个开关：键＝发到的原 id、值＝当前显示
+   * 的版本（缺省就是原 id）。引擎那边由 lords.ts 的 LORD_VARIANTS 放行（pickHero 校验）。
+   */
+  const [heroSwap, setHeroSwap] = useState<Record<string, string>>({});
+  const shownHeroId = (dealtId: string) => heroSwap[dealtId] ?? dealtId;
+  /** 在这个格子上换成另一版（君主 ↔ 标准），已选中的话跟着换 */
+  function swapHeroVersion(dealtId: string) {
+    const cur = shownHeroId(dealtId);
+    const next = lordVariantOf(cur);
+    if (!next) return;
+    setHeroSwap((prev) => ({ ...prev, [dealtId]: next }));
+    if (mainPick === cur) setMainPick(next);
+    if (deputyPick === cur) setDeputyPick(next);
+  }
   const [deputyPick, setDeputyPick] = useState<string | null>(null);
   // 主动技能交互模式
   const [skillMode, setSkillMode] = useState<{
@@ -688,29 +707,42 @@ export function Game() {
           {options.length > 0 ? (
             <>
               <div className="hero-list">
-                {options.map((id) => {
+                {options.map((dealtId) => {
+                  const id = shownHeroId(dealtId);
                   const h = getHero(id);
                   if (!h) return null;
                   const isMain = mainPick === id;
                   const isDeputy = deputyPick === id;
+                  const variantId = lordVariantOf(id);
+                  const variant = variantId ? getHero(variantId) : undefined;
                   return (
-                    <button
-                      key={id}
-                      className={`hero-card faction-${h.faction} ${isMain || isDeputy ? 'picked' : ''}`}
-                      onClick={() => pickGuozhanHero(id)}
-                    >
-                      <div className="hero-name">{h.name}</div>
-                      <div className="hero-hp">体力 {h.maxHp}</div>
-                      <div className="hero-skills">
-                        {h.skills.map((sk) => (
-                          <div key={sk.name}>
-                            <b>{sk.name}</b>
-                          </div>
-                        ))}
-                      </div>
-                      {isMain && <div className="hero-slot-tag">主将</div>}
-                      {isDeputy && <div className="hero-slot-tag">副将</div>}
-                    </button>
+                    <div key={dealtId} className="hero-cell">
+                      <button
+                        className={`hero-card faction-${h.faction} ${isMain || isDeputy ? 'picked' : ''}`}
+                        onClick={() => pickGuozhanHero(id)}
+                      >
+                        <div className="hero-name">{h.name}</div>
+                        <div className="hero-hp">体力 {h.maxHp}</div>
+                        <div className="hero-skills">
+                          {h.skills.map((sk) => (
+                            <div key={sk.name}>
+                              <b>{sk.name}</b>
+                            </div>
+                          ))}
+                        </div>
+                        {isMain && <div className="hero-slot-tag">主将</div>}
+                        {isDeputy && <div className="hero-slot-tag">副将</div>}
+                      </button>
+                      {variant && (
+                        <button
+                          className="hero-swap"
+                          onClick={() => swapHeroVersion(dealtId)}
+                          title={`换成 ${variant.name}`}
+                        >
+                          {variant.isLord ? '👑 换成君主将' : '换成标准版'}
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>

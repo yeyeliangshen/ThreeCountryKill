@@ -90,6 +90,7 @@ import {
   huangtianFor,
   xuanhuoFor,
   hasYuxi,
+  draftAllowsHero,
   factionGrantedActiveSkills,
   knownFactionCount,
   sameKnownFaction,
@@ -8620,13 +8621,14 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
   if (!draft) return err('当前不在选将阶段');
   if (!draft.pendingSeats.includes(seatId)) return err('你已经选过将了');
   const options = draft.deals[seatId];
-  if (!options || !options.includes(intent.heroId)) return err('该武将不在你发到的将中');
+  // 「发到了曹操就等于也拿到了君曹操，反之亦然」——见 heroes.ts 的 LORD_VARIANTS
+  if (!options || !draftAllowsHero(options, intent.heroId)) return err('该武将不在你发到的将中');
   const player = getPlayerOrThrow(state, seatId);
 
   if (state.mode === 'guozhan') {
     const deputyId = intent.deputyHeroId;
     if (!deputyId) return err('国战需选 2 位武将（主将 + 副将）');
-    if (!options.includes(deputyId)) return err('副将不在你发到的将中');
+    if (!draftAllowsHero(options, deputyId)) return err('副将不在你发到的将中');
     if (deputyId === intent.heroId) return err('主将与副将不能相同');
     const mainHero = getHero(intent.heroId);
     const deputyHero = getHero(deputyId);

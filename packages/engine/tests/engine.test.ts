@@ -18684,6 +18684,32 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.players.find((p) => p.seatId === 'A')!.heroId).toBe('juncaocao');
   });
 
+  it('君主将 ↔ 标准版：发到哪一版都等于两版都能选（国战）', () => {
+    // ① 发到标准版【曹操】→ 可以直接选君主版【君曹操】当主将
+    const s1 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
+    ok(act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'xiahoudun' }));
+    expect(s1.players.find((p) => p.seatId === 'A')!.heroId).toBe('juncaocao');
+
+    // ② 反过来：发到【君曹操】→ 也可以选标准版【曹操】
+    const s2 = gzDeal({ A: ['juncaocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
+    ok(act(s2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xiahoudun' }));
+    expect(s2.players.find((p) => p.seatId === 'A')!.heroId).toBe('caocao');
+
+    // ③ 副将位同样可以换成「标准版」（发到君曹操 → 副将用曹操）
+    const s3 = gzDeal({ A: ['juncaocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
+    ok(act(s3, 'A', { type: 'pickHero', heroId: 'xiahoudun', deputyHeroId: 'caocao' }));
+
+    // ④ 换过去也仍然守规矩：君主将只能作主将
+    const s4 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
+    const bad = act(s4, 'A', { type: 'pickHero', heroId: 'xiahoudun', deputyHeroId: 'juncaocao' });
+    expect(bad.ok).toBe(false);
+
+    // ⑤ 没有对应版本的武将不能凭空选出来（发到曹操 ≠ 能选君刘备）
+    const s5 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
+    const bad2 = act(s5, 'A', { type: 'pickHero', heroId: 'junliubei', deputyHeroId: 'xiahoudun' });
+    expect(bad2.ok).toBe(false);
+  });
+
   it('君主将与同势力**所有**武将珠联璧合（不限于官方组合表）', () => {
     // 君曹操 + 曹操：官方组合表里没有这一对，但君主与同势力全员珠联璧合
     // （标记在选将结束时统一发放，所以两家都要选完）

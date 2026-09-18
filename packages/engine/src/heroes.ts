@@ -12070,6 +12070,42 @@ export function revealedHeroes(
  * **国战与军争的同名技能不一样**，所以引擎判定技能、界面展示技能说明时
  * 都必须用这个函数；直接 getHero() 会拿到身份局版本。
  */
+/**
+ * 「君主将 ↔ 标准版」的对应表（国战选将时两者可以互换）。
+ *
+ * 官方国战里君主将是**替换**同名标准武将登场的，而发将又是随机的——所以线上通行做法是：
+ * 你发到了标准版，就等于你也拿到了对应的君主版（反之亦然），选将时随便用哪一个。
+ * 键与值互为对应，从哪一边查都行。
+ *
+ * ⚠️ 只有这四对：每位君主对应一位同势力的标准武将。
+ */
+const LORD_VARIANTS: Record<string, string> = {
+  caocao: 'juncaocao',
+  juncaocao: 'caocao',
+  liubei: 'junliubei',
+  junliubei: 'liubei',
+  sunquan: 'junsunquan',
+  junsunquan: 'sunquan',
+  yuanshao: 'junyuanshao',
+  junyuanshao: 'yuanshao',
+};
+
+/** 这张武将牌可以换成的另一版（君主版 / 标准版）；没有对应版本时返回 undefined */
+export function lordVariantOf(heroId: string | null | undefined): string | undefined {
+  if (!heroId) return undefined;
+  return LORD_VARIANTS[heroId];
+}
+
+/**
+ * 选将时这个 id 能不能被选：发到的将本身，或者它与发到的将**互为君主/标准版**。
+ * 引擎的 pickHero 校验与界面上的「换成君主将 / 换成标准版」按钮都用它。
+ */
+export function draftAllowsHero(options: readonly string[], heroId: string): boolean {
+  if (options.includes(heroId)) return true;
+  const variant = lordVariantOf(heroId);
+  return !!variant && options.includes(variant);
+}
+
 export function getHeroForMode(id: string | null | undefined, mode: GameMode): Hero | undefined {
   const base = getHero(id);
   if (!base) return undefined;
