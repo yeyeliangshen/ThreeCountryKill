@@ -11,6 +11,19 @@ import { Room } from './room';
 
 const PORT = Number(process.env.PORT ?? 8080);
 
+/**
+ * 离线座位保留多久（毫秒）。默认 10 分钟，可用 `IDLE_SEAT_MS` 覆盖；
+ * 设成 0（或负数/乱填）＝关掉这个回收机制，离线座位一直留着。
+ */
+function readMs(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+const IDLE_SEAT_MS = readMs('IDLE_SEAT_MS', 10 * 60 * 1000);
+/** 多久扫一遍（毫秒），默认 30 秒，可用 `IDLE_SWEEP_MS` 覆盖 */
+const IDLE_SWEEP_MS = Math.max(1000, readMs('IDLE_SWEEP_MS', 30_000));
+
 // 前端静态资源目录：相对源文件定位（packages/server/src → ../../client/dist），
 // 不依赖运行时 cwd；可用 STATIC_DIR 环境变量覆盖。
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -121,6 +134,27 @@ function send(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
+/**
+ * 定期回收「离开太久」的座位：离线超过 `IDLE_SEAT_MS` 就等同本人离开——
+ * 座位释放（房主照常移交），房间里没人了就删房。本人再回来走的是「新登录」那条路
+ * （昵称认不到旧座位 → 坐空位）；对局中被收回的位置变成**可接替的空位**。
+ */
+function sweepIdleSeats(): void {
+  if (!(IDLE_SEAT_MS > 0)) return;
+  for (const room of [...rooms.values()]) {
+    const { changed, emptied } = room.releaseIdle(IDLE_SEAT_MS);
+    if (emptied) {
+      destroyRoom(room, '房间里没人了，房间已关闭。');
+      continue;
+    }
+    if (changed) {
+      room.broadcastLobby();
+      broadcastHall();
+    }
+  }
+}
+setInterval(sweepIdleSeats, IDLE_SWEEP_MS).unref();
+
 const httpServer = http.createServer(serveStatic);
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -128,6 +162,11 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   const hasStatic = fs.existsSync(path.join(STATIC_DIR, 'index.html'));
   console.log(`[三国杀] 服务端已启动：http://0.0.0.0:${PORT}`);
   console.log(`[三国杀] 本机访问：http://localhost:${PORT}`);
+  console.log(
+    IDLE_SEAT_MS > 0
+      ? `[三国杀] 离线座位保留 ${Math.round(IDLE_SEAT_MS / 1000)} 秒（每 ${Math.round(IDLE_SWEEP_MS / 1000)} 秒扫一次；IDLE_SEAT_MS=0 可关掉）`
+      : '[三国杀] 离线座位回收已关闭（IDLE_SEAT_MS=0）',
+  );
   console.log(
     hasStatic
       ? `[三国杀] 前端静态托管：${STATIC_DIR}`

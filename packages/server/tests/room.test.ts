@@ -147,6 +147,83 @@ describe('Room · 一个昵称＝一个用户', () => {
   });
 });
 
+describe('Room · 离开太久回收座位', () => {
+  it('离线超过时限 → 座位收回，房间人少了', () => {
+    const room = newRoom();
+    const wsB = fakeWs();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', wsB, '乙');
+    room.disconnect(wsB);
+    // 把断开时刻往回拨 6 分钟
+    room.seats[1]!.disconnectedAt = Date.now() - 6 * 60 * 1000;
+    const res = room.releaseIdle(5 * 60 * 1000);
+    expect(res).toEqual({ changed: true, emptied: false });
+    expect(room.seatViews().find((s) => s.seatId === '2')!.name).toBeNull();
+    expect(room.summary().players).toBe(1);
+  });
+
+  it('没超过时限的不动它；在线的不动它', () => {
+    const room = newRoom();
+    const wsB = fakeWs(), wsC = fakeWs();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', wsB, '乙');
+    room.claimSeat('3', wsC, '丙');
+    room.disconnect(wsB);
+    room.seats[1]!.disconnectedAt = Date.now() - 60 * 1000; // 才 1 分钟
+    const res = room.releaseIdle(5 * 60 * 1000);
+    expect(res.changed).toBe(false);
+    expect(room.summary().players).toBe(3);
+  });
+
+  it('所有人都被收回 → emptied（调用方据此删房）', () => {
+    const room = newRoom();
+    const ws = fakeWs();
+    room.claimSeat('1', ws, '甲');
+    room.disconnect(ws);
+    room.seats[0]!.disconnectedAt = Date.now() - 60 * 60 * 1000;
+    expect(room.releaseIdle(60 * 1000)).toEqual({ changed: true, emptied: true });
+  });
+
+  it('被收回的是房主 → 房主移交给还占着座位的人', () => {
+    const room = newRoom();
+    const wsA = fakeWs();
+    room.claimSeat('1', wsA, '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    room.disconnect(wsA);
+    room.seats[0]!.disconnectedAt = Date.now() - 60 * 60 * 1000;
+    room.releaseIdle(60 * 1000);
+    expect(room.hostSeatId).toBe('2');
+  });
+
+  it('对局中被收回的位子变成「可接替的空位」，别人能进', () => {
+    const room = newRoom();
+    const wsA = fakeWs();
+    room.claimSeat('1', wsA, '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    room.started = true;
+    // 只关心「谁在游戏里」这件事，给个最小的假 state；不调 disconnect（那会去序列化快照）
+    room.game = { players: [{ seatId: '1' }, { seatId: '2' }] } as never;
+    room.seats[0]!.connected = false;
+    room.seats[0]!.ws = null;
+    room.seats[0]!.disconnectedAt = Date.now() - 60 * 60 * 1000;
+    room.releaseIdle(60 * 1000);
+    expect(room.abandonedSeats().map((s) => s.seatId)).toEqual(['1']);
+    expect(room.canJoin(undefined, '丙')).toEqual({ ok: true }); // 丙可以进来接替那一位
+    expect(room.canJoin(undefined, '乙')).toEqual({ ok: false, error: '该房间已开局，无法加入' });
+  });
+
+  it('未开局的房间里，收回后回来就是「新登录」：坐空位', () => {
+    const room = newRoom();
+    const wsA = fakeWs();
+    room.claimSeat('1', wsA, '甲');
+    room.disconnect(wsA);
+    room.seats[0]!.disconnectedAt = Date.now() - 60 * 60 * 1000;
+    room.releaseIdle(60 * 1000);
+    expect(room.findByName('甲')).toBeNull(); // 认不到旧座位了
+    expect(room.findEmpty()!.seatId).toBe('1'); // 空位就是刚才那个
+  });
+});
+
 describe('Room · 换座', () => {
   it('换到别的空座位时会释放原座位（不会一人占两位）', () => {
     const room = newRoom();

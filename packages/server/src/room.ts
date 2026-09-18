@@ -40,6 +40,8 @@ export interface SeatEntry {
   connected: boolean;
   heroId: string | null;
   ws: WebSocket | null;
+  /** 断线时刻（毫秒）；在线时为 null。用来判「离开太久、该把座位收回了」 */
+  disconnectedAt: number | null;
 }
 
 export class Room {
@@ -65,6 +67,7 @@ export class Room {
       connected: false,
       heroId: null,
       ws: null,
+      disconnectedAt: null,
     }));
   }
 
@@ -137,11 +140,13 @@ export class Room {
       // 重连：保留原 name / heroId / isHost
       seat.connected = true;
       seat.ws = ws;
+      seat.disconnectedAt = null;
     } else {
       // 新落座
       seat.name = name;
       seat.connected = true;
       seat.ws = ws;
+      seat.disconnectedAt = null;
     }
     // 房主：新房里第一个落座的人（＝建房者），或刚换座过来的房主
     if (this.hostSeatId === null || keepHost) {
@@ -179,11 +184,50 @@ export class Room {
     seat.ws = null;
     seat.heroId = null;
     seat.isHost = false;
+    seat.disconnectedAt = null;
     if (wasHost) {
       this.hostSeatId = null;
       const next = this.seats.find((s) => s.name !== null);
       if (next) this.setHost(next.seatId);
     }
+  }
+
+  /**
+   * 把「离开太久」的座位收回（等同本人点了「离开房间」）：离线超过 `timeoutMs` 就释放。
+   *
+   * 为什么不一直留着：座位是稀缺资源——一个离线幽灵会占着位子不让别人坐，
+   * 还会拖着一整个房间（含对局状态）留在内存与大厅列表里。
+   * 收回之后，本人再回来走的就是「新登录」那条路（昵称认不到旧座位 → 坐空位）。
+   *
+   * 对局中的座位被收回时，这一位就变成**可接替的空位**（见 `abandonedSeats`）：
+   * 否则整局会永远卡在一个再也不会行动的幽灵身上。
+   *
+   * 返回：`changed` 有没有座位被收回（要重播 lobby）、`emptied` 是不是空了（调用方删房）。
+   */
+  releaseIdle(
+    timeoutMs: number,
+    now = Date.now(),
+  ): { changed: boolean; emptied: boolean } {
+    let changed = false;
+    for (const s of this.seats) {
+      if (s.name === null || s.connected) continue;
+      const since = s.disconnectedAt ?? now;
+      if (now - since <= timeoutMs) continue;
+      pushIdleLog(this, s);
+      this.releaseSeat(s.seatId);
+      changed = true;
+    }
+    return { changed, emptied: this.isEmpty() };
+  }
+
+  /**
+   * 对局中「座位空着、但游戏里还有这个人」的位置——可以让人**接替**打下去。
+   * 判据两条：room 里没人占，且这局是在开局时把他算进去的。
+   */
+  abandonedSeats(): SeatEntry[] {
+    if (!this.started || !this.game) return [];
+    const inGame = new Set(this.game.players.map((p) => p.seatId));
+    return this.seats.filter((s) => s.name === null && inGame.has(s.seatId));
   }
 
   /** 房间里还有没有人**占着座位**（离线也算占着）——空了就该删房 */
@@ -205,6 +249,10 @@ export class Room {
         ? this.findByName(name)
         : undefined;
     if (seat && seat.name !== null && !seat.connected) return { ok: true };
+    // 开局后**空出来的位子**（本人离线太久被收回、或一直没人坐）可以接替：
+    // 那一位在游戏里是有人的，不让人接替的话整局就永远停在那儿了。
+    if (seat ? this.abandonedSeats().some((s) => s.seatId === seat.seatId) : this.abandonedSeats().length > 0)
+      return { ok: true };
     return { ok: false, error: '该房间已开局，无法加入' };
   }
 
@@ -364,9 +412,18 @@ export class Room {
       if (s.ws === ws) {
         s.connected = false;
         s.ws = null;
+        s.disconnectedAt = Date.now();
       }
     }
     if (this.started) this.broadcastSnapshots();
     else this.broadcastLobby();
   }
+}
+
+/** 收回「离开太久」的座位时记一笔（服务端日志，方便运维看谁被清了） */
+function pushIdleLog(room: Room, seat: SeatEntry): void {
+  console.log(
+    `[三国杀] 房间 ${room.roomCode}：${seat.name} 离线太久，座位 ${seat.seatId} 已收回` +
+      (room.started ? '（这一局变成可接替的空位）' : ''),
+  );
 }
