@@ -17216,3 +17216,158 @@ describe('国战 · 严白虎（雉盗 / 寄篱）', () => {
     void b;
   });
 });
+
+/** 徐庶·诛害 / 举荐（不臣篇·上，蜀，2 阴阳鱼→4；取 2021 线下实体卡口径） */
+describe('国战 · 徐庶（诛害 / 举荐）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      deputyHeroId?: string;
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      if (s.deputyHeroId) p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('诛害：别人回合结束时，若他这回合造成过伤害，可以对他出一张【杀】（无距离限制）', () => {
+    const state = gz(
+      [
+        // 甲这回合打了丙（造成过伤害）；乙是徐庶
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xushu', faction: 'shu', hand: [sha('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [], hp: 3 },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 甲先杀丙一刀（造成过伤害）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    // 甲结束回合 → 徐庶收到诛害的询问
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('诛害');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 【杀】打向甲（距离本来够，这里主要验流程走通）
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, A, { type: 'pass' })); // 甲不出闪
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('诛害'))).toBe(true);
+    void b;
+  });
+
+  it('诛害：该角色本回合没造成过伤害 → 不询问', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'xushu', faction: 'shu', hand: [sha('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.log.some((e) => e.message.includes('诛害'))).toBe(false);
+    // 甲的下家是乙 → 乙的回合开始（判定的明置询问已跳过）
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('play');
+  });
+
+  it('举荐：结束阶段弃一张非基本牌，令同势力角色二选一，然后其可变更副将', () => {
+    const state = gz(
+      [
+        // 甲是徐庶，手里一张非基本牌（武器）+ 一张基本牌
+        {
+          seatId: A,
+          name: '甲',
+          // 举荐是**副将技**，所以徐庶得放在副将位（主将用白板）
+          heroId: 'vanilla',
+          deputyHeroId: 'xushu',
+          faction: 'shu',
+          hand: [wpn('a1'), mk('a2', 'tao', 'heart')],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 2 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' })); // 出牌阶段结束 → 弃牌（2 张不超上限）→ 结束阶段
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('举荐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 弃一张非基本牌：只有那把武器
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    // 选一名同势力角色（甲自己与乙都是蜀）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('举荐');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 乙二选一：回复 1 点体力
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'heal' }));
+    expect(b.hp).toBe(3);
+    // 然后乙可以变更一次副将
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('变更');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.log.some((e) => e.message.includes('举荐'))).toBe(true);
+    // 控制权交到下家（乙的回合）
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('play');
+  });
+
+  it('举荐：手里没有非基本牌时不询问', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          deputyHeroId: 'xushu',
+          faction: 'shu',
+          hand: [mk('a1', 'shan', 'heart')],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.log.some((e) => e.message.includes('举荐'))).toBe(false);
+  });
+});

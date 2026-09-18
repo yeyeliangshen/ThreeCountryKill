@@ -840,7 +840,9 @@ const BUCHEN: RosterEntry[] = [
     name: '徐庶',
     faction: 'shu',
     pack: 'buchen',
-    status: 'verify',
+    status: 'done',
+    primitives: ['pick_cards', 'slot_skills', 'change_deputy'],
+    note: '诛害 + 举荐（不臣篇·上，蜀，国战牌面 2 阴阳鱼 → 4，称号·难为完臣；珠联璧合 赵云/卧龙诸葛亮）。取 **2021 线下实体卡**口径——三版并存，这一版两个技能都能完整实现：诛害＝其他角色的结束阶段，若该角色本回合造成过伤害，则你可以对其使用一张【杀】（挂 othersTurnEnd，payload.turnSeatId 就是那个结束回合的人；「造成过伤害」读 flags.dealtDamageThisTurn，即生息那套公共登记，自伤不算；使用走 api.useShaOn，它不查距离，正好满足「无距离限制」）；举荐＝副将技（deputySlotSkills + deputySlotHalfYang），结束阶段弃一张非基本牌令一名同势力角色二选一（摸两张/回 1 血），然后其可变更一次副将。⚠️ 未采用的另两版：移动版 2021 的诛害多了「无视防具 + 用闪后弃牌」、副将换成【荐才】（要轮数计数与「获知武将牌」的信息通道）；2023 典藏版两个技能都换掉了（谦策 + 举荐②）。',
   },
   {
     id: 'wujing',

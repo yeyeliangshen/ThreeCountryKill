@@ -4756,6 +4756,207 @@ function weidiTargets(state: GameState, player: Player): Player[] {
  *   计数记在 `flags.damageCountKey/damageCount`（键＝`回合座位:阶段名`，所以不用给每个阶段
  *   转换点加重置代码）。第 2 次直接 `flags.damagePrevented = true` 并移除这张武将牌。
  */
+/**
+ * 徐庶 —— 诛害 / 举荐（不臣篇·上，蜀，**2 阴阳鱼 → 4**，称号·难为完臣；已核）。
+ *
+ * 取 **2021 线下实体卡**口径（三版并存，这一版的两个技能都能完整实现）：
+ * - 诛害：其他角色的结束阶段，若该角色本回合造成过伤害，则你可以对其使用一张【杀】。
+ * - 举荐（副将技）：你计算体力上限时减少 1 个单独的阴阳鱼。结束阶段，你可弃置一张非基本牌
+ *   并令一名与你势力相同的角色选择一项：1.摸两张牌；2.回复 1 点体力。然后其可变更一次副将。
+ *
+ * ⚠️ 版本差异（另两版未采用，写在这里备查）：
+ * - **移动版 2021**：诛害多了「若其本回合对与你势力相同的角色造成过伤害，则此【杀】无视其防具、
+ *   且其用【闪】响应后须弃一张牌」；副将是【荐才】（明置时/每轮开始时获知 X 名未登场的同势力
+ *   武将，X＝轮数×3；同势力角色受到不小于其体力值的伤害时可防止之并变更副将，小势力时优先从
+ *   获知的武将里选）——需要「轮数」计数与「获知武将牌」的信息通道，本引擎暂不具备。
+ * - **2023 典藏版**：两个技能都换掉了（谦策：同势力角色使用锦囊指定目标后，可令目标中的大势力
+ *   角色不能响应此牌；举荐②：同势力角色进入濒死时，令其回复体力至 1 点，然后你变更副将）。
+ *
+ * 实现要点：
+ * - 诛害挂 `othersTurnEnd`（派给**非**回合玩家，payload.turnSeatId 就是那个结束回合的人）；
+ *   「本回合造成过伤害」读 `flags.dealtDamageThisTurn`（蒋琬费祎·生息那套公共登记，自伤不算）。
+ *   使用走 `api.useShaOn`——它只做「用一张实体牌使用【杀】」的完整结算、**不查距离**，
+ *   正好满足「无距离限制」。
+ * - 举荐是「结束阶段」= 徐庶自己的 `turnEnd`；三步询问（弃牌 → 选同势力角色 → 二选一 →
+ *   是否变更副将）都走钩子里的 askChoice/askPickCards（不传 returnTo，引擎的续接队列会接住）。
+ */
+const XUSHU: Hero = {
+  id: 'xushu',
+  name: '徐庶',
+  faction: 'shu',
+  // 国战牌面 2 阴阳鱼 → 4（走副将位时举荐再减 1）
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 珠联璧合（国战徐庶）：赵云、卧龙诸葛亮
+  combos: ['zhaoyun', 'wolong'],
+  deputySlotSkills: ['举荐'],
+  deputySlotHalfYang: true,
+  hooks: [
+    {
+      timing: 'othersTurnEnd',
+      skillId: '诛害',
+      handler: (ctx) => {
+        const payload = ctx.payload as { turnSeatId?: string } | undefined;
+        const endingId = payload?.turnSeatId;
+        const me = ctx.player;
+        if (!endingId || endingId === me.seatId) return; // 只对**别人**的结束阶段
+        const ending = getPlayer(ctx.state, endingId);
+        if (!ending || !ending.alive) return;
+        if (!ending.flags.dealtDamageThisTurn) return; // 「若该角色本回合造成过伤害」
+        if (!me.hand.some((c) => c.type === 'sha')) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【诛害】，对 ${ending.name} 使用一张【杀】？（无距离限制）`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            pushLog(st, 'skill', `${p.name} 发动【诛害】，对 ${ending.name} 使用一张【杀】。`);
+            const shaCards = p.hand.filter((c) => c.type === 'sha');
+            if (shaCards.length === 0) return;
+            const use = (card: Card): void => {
+              ctx.api.useShaOn(p.seatId, ending.seatId, card, { logKind: 'skill' });
+            };
+            if (shaCards.length === 1) {
+              use(shaCards[0]!);
+              return;
+            }
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【诛害】：选择要使用的【杀】',
+              shaCards,
+              1,
+              1,
+              (_st2, _p2, chosen) => {
+                const c = chosen[0];
+                if (c) use(c);
+              },
+            );
+          },
+        );
+      },
+    },
+    {
+      timing: 'turnEnd',
+      skillId: '举荐',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const nonBasic = me.hand.filter((c) => !isBasicCard(c));
+        if (nonBasic.length === 0) return;
+        const mine = effectiveFaction(ctx.state, me);
+        if (!mine) return;
+        const mates = ctx.state.players.filter(
+          (p) => p.alive && effectiveFaction(ctx.state, p) === mine,
+        );
+        if (mates.length === 0) return;
+        const pickTarget = (): void => {
+          const choose = (target: Player): void => {
+            ctx.api.askChoice(
+              ctx.state,
+              target.seatId,
+              `【举荐】${me.name} 令你选择一项`,
+              [
+                { id: 'draw', label: '摸两张牌' },
+                { id: 'heal', label: '回复 1 点体力' },
+              ],
+              (st2, p2, picked2) => {
+                if (picked2 === 'draw') {
+                  for (let i = 0; i < 2; i++) {
+                    const c = drawOne(st2);
+                    if (c) p2.hand.push(c);
+                  }
+                  pushLog(st2, 'skill', `${p2.name} 因【举荐】摸了 2 张牌。`);
+                } else {
+                  const healed = ctx.api.heal(p2, 1);
+                  pushLog(st2, 'skill', `${p2.name} 因【举荐】回复 ${healed} 点体力。`);
+                }
+                // 然后其可变更一次副将
+                ctx.api.askChoice(
+                  st2,
+                  p2.seatId,
+                  '【举荐】：是否变更一次副将？',
+                  [
+                    { id: 'yes', label: '变更副将' },
+                    { id: 'no', label: '不变更' },
+                  ],
+                  (st3, p3, picked3) => {
+                    if (picked3 !== 'yes') return;
+                    pushLog(st3, 'skill', `${p3.name} 因【举荐】变更副将。`);
+                    ctx.api.changeDeputyHero(p3.seatId);
+                  },
+                );
+              },
+            );
+          };
+          if (mates.length === 1) {
+            choose(mates[0]!);
+            return;
+          }
+          ctx.api.askChoice(
+            ctx.state,
+            me.seatId,
+            '【举荐】：令哪名与你势力相同的角色选择？',
+            mates.map((p) => ({ id: p.seatId, label: p.name })),
+            (_st, _p, id) => {
+              const t = getPlayer(ctx.state, id);
+              if (t) choose(t);
+            },
+          );
+        };
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【举荐】？（弃置一张非基本牌，令一名同势力角色二选一）',
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const pool = p.hand.filter((c) => !isBasicCard(c));
+            if (pool.length === 0) return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【举荐】：弃置一张非基本牌',
+              pool,
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                ctx.api.discardCard(p2.seatId, card, () => {
+                  pushLog(
+                    st2,
+                    'skill',
+                    `${p2.name} 发动【举荐】，弃置了一张非基本牌。`,
+                  );
+                  pickTarget();
+                });
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '诛害',
+      desc: '其他角色的结束阶段，若该角色本回合造成过伤害，则你可以对其使用一张【杀】。',
+    },
+    {
+      name: '举荐',
+      desc: '副将技，你计算体力上限时减少 1 个单独的阴阳鱼。结束阶段，你可弃置一张非基本牌并令一名与你势力相同的角色选择一项：1.摸两张牌；2.回复 1 点体力。然后其可变更一次副将。',
+    },
+  ],
+};
+
 const YANBAIHU: Hero = {
   id: 'yanbaihu',
   name: '严白虎',
@@ -10727,6 +10928,7 @@ export const HEROES: Hero[] = [
   YUANSHU,
   WUJING,
   YANBAIHU,
+  XUSHU,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
