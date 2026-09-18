@@ -7374,6 +7374,23 @@ const LIDIAN: Hero = {
         wangxiAsk(ctx, attack.sourceId, payload?.damage ?? 0);
       },
     },
+    {
+      // 「被打进濒死」的那一半：濒死结算完了才知道对方到底活没活下来（官方口径是
+      // 濒死结算在前、伤害后时机在后；本引擎相反，所以用这条时机把待办接上）。
+      timing: 'nearDeathResolved',
+      skillId: '忘隙',
+      handler: (ctx) => {
+        const payload = ctx.payload as { dyingSeatId?: string; alive?: boolean } | undefined;
+        const seatId = payload?.dyingSeatId;
+        if (!seatId) return;
+        const list = ctx.player.flags.wangxiPending;
+        const idx = list.findIndex((x) => x.seatId === seatId);
+        if (idx < 0) return;
+        const [pending] = list.splice(idx, 1);
+        if (!pending || !payload?.alive) return; // 没活下来 → 官方也不触发
+        wangxiAskNow(ctx, pending.seatId, pending.left);
+      },
+    },
   ],
   skills: [
     {
@@ -7392,10 +7409,23 @@ function wangxiAsk(ctx: HookContext, otherSeatId: string, left: number): void {
   if (left <= 0) return;
   const other = getPlayer(ctx.state, otherSeatId);
   if (!other || !other.alive) return;
-  // 「若该角色存活」：注意我们这套伤害层的顺序是「伤害后钩子 → 濒死」，而官方是
-  // 「濒死结算 → 伤害后钩子」。所以这里用 hp>0 来代指「没被打进濒死」——
-  // 代价是「被打进濒死但被救回来」的人不会触发（官方会），已如实标注为简化。
-  if (other.hp <= 0) return;
+  // 「若该角色存活」：本引擎伤害层的顺序是「伤害后钩子 → 濒死」，官方是「濒死结算 → 伤害后钩子」。
+  // 所以**被打进濒死**（hp ≤ 0）的情况不能现在判——记一笔待办，等 nearDeathResolved
+  // （濒死结算完、知道活没活下来）再问。这样「救回来了照样触发」和官方一致。
+  if (other.hp <= 0) {
+    if (!ctx.player.flags.wangxiPending.some((x) => x.seatId === otherSeatId)) {
+      ctx.player.flags.wangxiPending.push({ seatId: otherSeatId, left });
+    }
+    return;
+  }
+  wangxiAskNow(ctx, otherSeatId, left);
+}
+
+/** 忘隙的询问本体（调用方已经确认对方存活） */
+function wangxiAskNow(ctx: HookContext, otherSeatId: string, left: number): void {
+  if (left <= 0) return;
+  const other = getPlayer(ctx.state, otherSeatId);
+  if (!other || !other.alive || other.hp <= 0) return;
   ctx.api.askChoice(
     ctx.state,
     ctx.player.seatId,

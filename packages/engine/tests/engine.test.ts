@@ -17974,3 +17974,100 @@ describe('国战 · 袁术·伪帝（从牌堆摸牌的归因）', () => {
     expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('weidi');
   });
 });
+
+/** 李典·忘隙：「若该角色存活」——被打进濒死、又被救回来的照样触发（官方顺序） */
+describe('国战 · 李典·忘隙（濒死救回也算存活）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('把对方打进濒死、再被救回来 → 忘隙照样触发（各摸一张）', () => {
+    const state = gz(
+      [
+        // 甲＝李典（忘隙）。手里：【杀】打乙、【桃】救乙
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'lidian',
+          faction: 'wei',
+          hand: [sha('a1'), mk('a2', 'tao', 'heart', 1)],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'shan', 'spade', 1), mk('d2', 'shan', 'club', 2)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力 0 → 濒死
+    expect(state.pending?.kind).toBe('respondDeath');
+    // 求桃轮询：乙自己 → 丙 → 甲
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲用桃救回
+    expect(b.hp).toBe(1);
+    // 救回来了 → 忘隙的询问在濒死结算之后才弹
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.title).toContain('忘隙');
+    }
+    const handBefore = a.hand.length;
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.length).toBe(handBefore + 1);
+    // 乙原本 0 张手牌，忘隙的「双方各摸一张」给他补到 1 张
+    expect(b.hand.length).toBe(1);
+  });
+
+  it('打进濒死且没人救 → 不触发忘隙', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'lidian', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === B)!.alive).toBe(false);
+    expect(state.log.some((e) => e.message.includes('忘隙'))).toBe(false);
+  });
+});

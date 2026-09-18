@@ -177,6 +177,11 @@ export interface PlayerFlags {
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
+   * 李典·忘隙的待办：伤害把对方打进了濒死，得等**濒死结算完**才知道他活没活下来
+   * （本引擎伤害层顺序是「伤害后钩子→濒死」，官方相反）。nearDeathResolved 时按 seatId 取出来处理。
+   */
+  wangxiPending: { seatId: string; left: number }[];
+  /**
    * 凌统·旋略：「同一次失去装备」的事件编号——官方口径是一次失去只触发一次，
    * 而 equipLost 是**逐张**派发的（枭姬要每张都触发）。靠 payload.eventId 去重。
    */
@@ -254,6 +259,7 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayColor: null,
     cannotHealThisTurn: false,
     revealRewarded: false,
+    wangxiPending: [],
     xuanlveEventId: -1,
     queueSizeBeforeTrick: null,
     cardTargetOnlySeat: null,
