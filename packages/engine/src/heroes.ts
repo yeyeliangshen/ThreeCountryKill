@@ -115,6 +115,7 @@ export interface HeroVariant {
   /** 国战版的「出牌阶段可明置此武将牌」（邹氏·祸水、小乔·红颜） */
   canRevealInPlayPhase?: Hero['canRevealInPlayPhase'];
   spadeAsHeart?: Hero['spadeAsHeart'];
+  virtualYuxi?: Hero['virtualYuxi'];
 }
 
 export interface Hero {
@@ -334,6 +335,13 @@ export interface Hero {
    */
   spadeAsHeart?: boolean;
   /**
+   * 袁术·庸肆（锁定技）：**若场上没有【玉玺】**，你视为装备着【玉玺】。
+   *
+   * 两处消费方都走 `hasYuxi()`（equip.ts 的摸牌加成 + engine 的出牌阶段开始时视为使用
+   * 【知己知彼】），所以只要把判定收在那一个函数里，玉玺的条款就只需实现一次。
+   */
+  virtualYuxi?: boolean;
+  /**
    * 孔融·名士（锁定技）：当你受到伤害时，若伤害来源**有暗置的武将牌**，
    * 此伤害 -1。由 engine 的 finalizeDamage 在所有伤害点上统一读。
    */
@@ -394,7 +402,9 @@ export type FieldSkill =
   /** 邓艾·屯田：距离 -X（X 为「田」的数量） */
   | 'distanceMinusPerTian'
   /** 小乔·红颜：你的黑桃牌视为红桃牌 */
-  | 'spadeAsHeart';
+  | 'spadeAsHeart'
+  /** 袁术·庸肆：场上没有实体【玉玺】时视为装备着【玉玺】 */
+  | 'virtualYuxi';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -418,6 +428,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'blocksOthersReveal',
   'canRevealInPlayPhase',
   'spadeAsHeart',
+  'virtualYuxi',
   'gainsUsedNanman',
   'xingleBasicDiscard',
   'grantsFeiyingToQueue',
@@ -4539,6 +4550,146 @@ const LIJUE_GUOSI: Hero = {
  *   payload 里的 `sourceId` 就是「本次伤害来源」。没有来源（闪电那种）时无从执行军令，直接跳过。
  *   「每回合限一次」用 `flags.skillUsedThisTurn['补益']`（随吴国太自己的回合重置）。
  */
+/**
+ * 袁术 —— 庸肆 / 伪帝（君临天下·权，群，**2 阴阳鱼 → 4**；文本按三国杀官网现行文本，已核）。
+ *
+ * 庸肆：锁定技，若场上没有【玉玺】，你视为装备着【玉玺】。当你成为【知己知彼】的目标时，
+ *       你展示所有手牌。
+ * 伪帝：出牌阶段限一次，你可以令一名本回合从牌堆获得过牌的其他角色执行一次「军令」，
+ *       若其不执行，你获得其所有手牌并交给其等量张牌。
+ *
+ * 实现要点 / 读法：
+ * - 虚拟玉玺用字段 `virtualYuxi`，两处消费方（摸牌阶段多摸一张、出牌阶段开始时视为使用
+ *   【知己知彼】）都走 `heroes.hasYuxi`：**真的装**了，或者「庸肆 + 场上没有任何实体玉玺」。
+ *   所以别人拿到实体玉玺时，袁术的虚拟玉玺就没了（官方写的是「若场上没有【玉玺】」）。
+ * - 「成为【知己知彼】的目标时展示手牌」挂 `othersBecomeTarget`：单目标锦囊在
+ *   `startTrickResolution` 里给**所有存活角色**（含目标本人）派发这个时机，所以袁术收得到
+ *   自己那一条（按 payload.targetId 认人）；时机在无懈可击窗口之前，正好是「成为目标时」。
+ *   「展示所有手牌」按本引擎的惯例写成一条**日志**（火攻、智愚都是这么表示公开亮牌的）。
+ * - 伪帝的目标必须「本回合**从牌堆**获得过牌」：账本在 `state.gainedFromDeckThisTurn`
+ *   （在 drawOne 里盖戳、随回合清空），判定时反过来查该角色的手牌/装备区里有没有这些牌。
+ *   2019 修订版写的是「其他角色」（2018 初版可以对自己发动），本实现按 2019 版。
+ * - 不执行军令的惩罚「你获得其所有手牌并交给其等量张牌」分两步：先把他的手牌全拿过来，
+ *   再由袁术挑**等量**张还回去（还的时候可以还手牌或装备区的牌——官方 FAQ 明确过，
+ *   所以还牌走 `api.transferCard`，丢装备会触发枭姬那类技能）。
+ */
+const YUANSHU: Hero = {
+  id: 'yuanshu',
+  name: '袁术',
+  faction: 'qun',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  lockedFields: ['virtualYuxi'],
+  skillFields: { 庸肆: ['virtualYuxi'] },
+  virtualYuxi: true,
+  hooks: [
+    {
+      timing: 'othersBecomeTarget',
+      skillId: '庸肆',
+      locked: true,
+      handler: (ctx) => {
+        const payload = ctx.payload as { targetId?: string; card?: Card } | undefined;
+        if (payload?.targetId !== ctx.player.seatId) return; // 只看自己成为目标的那一次
+        if (payload.card?.type !== 'zhibi') return;
+        const me = ctx.player;
+        const shown = me.hand.map((c) => cardLabel(c)).join('、') || '（无）';
+        pushLog(ctx.state, 'skill', `${me.name} 的【庸肆】：成为【知己知彼】的目标，展示手牌 ${shown}。`, {
+          seat: me.seatId,
+        });
+      },
+    },
+  ],
+  activeSkills: [
+    {
+      id: 'weidi',
+      name: '伪帝',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 1,
+      needsCards: false,
+      canUse: (state, player) => weidiTargets(state, player).length > 0,
+      execute: (state, player, intent, api) => {
+        const targetId = intent.targetIds[0];
+        const target = targetId ? getPlayer(state, targetId) : undefined;
+        if (!target || !weidiTargets(state, player).some((t) => t.seatId === target.seatId)) {
+          return '只能选一名本回合从牌堆获得过牌的其他角色';
+        }
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【伪帝】，令 ${target.name} 执行一次「军令」。`,
+        );
+        api.armyOrder(player.seatId, target.seatId, (st, executed) => {
+          if (executed) return;
+          const t = getPlayer(st, target.seatId);
+          const me = getPlayer(st, player.seatId);
+          if (!t || !me || !t.alive) return;
+          const n = t.hand.length;
+          if (n === 0) return;
+          // 第一步：获得其**所有**手牌（走直接搬运：这不是「获得他人的牌」的响应时机，
+          // 伪帝是惩罚结算，没有可以插进来的时机）
+          for (const c of t.hand.slice()) {
+            removeCard(t.hand, c.id);
+            me.hand.push(c);
+          }
+          pushLog(st, 'skill', `${me.name} 获得 ${t.name} 的所有手牌（${n} 张）。`);
+          // 第二步：交给其等量张牌（袁术自己挑，可以是手牌或装备区的牌）
+          const pool = handAndEquipOf(me);
+          const need = Math.min(n, pool.length);
+          if (need === 0) return;
+          api.askPickCards(
+            st,
+            me.seatId,
+            `【伪帝】：交给 ${t.name} ${need} 张牌`,
+            pool,
+            need,
+            need,
+            (st2, _p2, chosen) => {
+              const giveStep = (i: number): void => {
+                const c = chosen[i];
+                if (!c) {
+                  pushLog(st2, 'skill', `${me.name} 交给 ${t.name} ${chosen.length} 张牌（伪帝）。`);
+                  return;
+                }
+                // 走 transferCard：还装备区的牌会触发枭姬那类「失去装备」的技能
+                api.transferCard(me.seatId, c, t.seatId, () => giveStep(i + 1));
+              };
+              giveStep(0);
+            },
+            { returnTo: player.seatId },
+          );
+        });
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '庸肆',
+      desc: '锁定技，若场上没有【玉玺】，你视为装备着【玉玺】。当你成为【知己知彼】的目标时，你展示所有手牌。',
+    },
+    {
+      name: '伪帝',
+      desc: '出牌阶段限一次，你可以令一名本回合从牌堆获得过牌的其他角色执行一次「军令」，若其不执行，你获得其所有手牌并交给其等量张牌。',
+    },
+  ],
+};
+
+/** 伪帝能点名的人：本回合从牌堆获得过牌的其他存活角色 */
+function weidiTargets(state: GameState, player: Player): Player[] {
+  const marked = state.gainedFromDeckThisTurn;
+  if (marked.length === 0) return [];
+  const holds = (p: Player): boolean => {
+    const all = [...p.hand, ...EQUIP_SLOTS.map((s) => p.equipment[s]).filter((c): c is Card => !!c)];
+    return all.some((c) => marked.includes(c.id));
+  };
+  return state.players.filter(
+    (p) => p.alive && p.seatId !== player.seatId && holds(p),
+  );
+}
+
 const WUGUOTAI: Hero = {
   id: 'wuguotai',
   name: '吴国太',
@@ -10225,6 +10376,7 @@ export const HEROES: Hero[] = [
   LUKANG,
   ZHANGXIU,
   WUGUOTAI,
+  YUANSHU,
   YONGJUE,
   CAOHONG,
   JIANGQIN,
@@ -10451,6 +10603,20 @@ export function effectiveHeroes(state: GameState, p: Player): Hero[] {
   if (p.nullifiedHeroId) heroes = heroes.filter((h) => h.id !== p.nullifiedHeroId);
   if (!p.flags.nonLockedSkillsDisabled) return heroes;
   return heroes.map(nullifyHero);
+}
+
+/**
+ * 这个角色「算不算装备着【玉玺】」——真的装在宝物栏，或者是袁术·庸肆给的虚拟玉玺。
+ *
+ * 庸肆：锁定技，**若场上没有【玉玺】**，你视为装备着【玉玺】。
+ * 「场上没有」按字面理解成「任何角色的装备区里都没有实体玉玺」——所以别人拿到玉玺时，
+ * 庸肆的虚拟玉玺就没了（袁术明置与否由 effectiveHeroes 决定：暗置时没有技能）。
+ * 【玉玺】的两条效果（摸牌阶段多摸一张、出牌阶段开始时视为使用【知己知彼】）都读这个函数。
+ */
+export function hasYuxi(state: GameState, player: Player): boolean {
+  if (player.equipment.treasure?.equipName === 'yuxi') return true;
+  if (!effectiveHeroes(state, player).some((h) => h.virtualYuxi === true)) return false;
+  return !state.players.some((p) => p.equipment.treasure?.equipName === 'yuxi');
 }
 
 /**

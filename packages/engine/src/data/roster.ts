@@ -55,7 +55,8 @@ export type PrimitiveId =
   | 'remove_hero' // 移除武将牌（士兵牌顶替）
   | 'slot_skills' // 主将技 / 副将技
   | 'change_deputy' // 变更副将（变包）
-  | 'siege_formation'; // 阵法技（队列 / 围攻关系）
+  | 'siege_formation' // 阵法技（队列 / 围攻关系）
+  | 'virtual_equip'; // 虚拟装备（视为装备着某张装备牌）
 
 export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   hook_interaction: '钩子内发起询问',
@@ -85,6 +86,7 @@ export const PRIMITIVE_NAME: Record<PrimitiveId, string> = {
   siege_formation: '阵法技（队列/围攻）',
   slot_skills: '主将技/副将技',
   discard_ledger: '弃牌堆回合账本',
+  virtual_equip: '虚拟装备（视为装备着）',
 };
 
 /**
@@ -802,8 +804,9 @@ const QUAN: RosterEntry[] = [
     name: '袁术',
     faction: 'qun',
     pack: 'quan',
-    status: 'todo',
-    primitives: ['maxhp_change'],
+    status: 'done',
+    primitives: ['army_order', 'pick_cards', 'virtual_equip'],
+    note: '庸肆 + 伪帝（君临天下·权，群，国战牌面 2 阴阳鱼 → 4；文本按三国杀官网现行文本）。庸肆的「视为装备着【玉玺】」做成字段 virtualYuxi + heroes.hasYuxi：真装了，或者「庸肆 + 场上任何人的装备区里都没有实体玉玺」——【玉玺】的两条效果（摸牌阶段多摸一张 / 出牌阶段开始时视为使用【知己知彼】）都改成读这一个函数，所以条款只实现一次。「成为【知己知彼】的目标时展示所有手牌」挂 othersBecomeTarget（单目标锦囊给所有存活角色派发、含目标本人，按 payload.targetId 认人；时机在无懈窗口之前，正是「成为目标时」），展示按本引擎惯例写成一条日志（火攻/智愚同）。伪帝按 2019 修订版的「**其他**角色」（2018 初版可对自己发动）；「本回合从牌堆获得过牌」的账本＝ state.gainedFromDeckThisTurn（在 drawOne 里盖戳、随回合清空，重洗后摸到的也算——比意图快照准）；不执行的惩罚＝先拿光其手牌、再由袁术挑等量张还回去（还装备区的牌走 api.transferCard 会触发枭姬那类）。已知偏差：本回合摸到的牌被别人（顺手牵羊那类）拿走时，新持有者也会被算作「从牌堆获得过牌」——账本记的是牌不是人。',
   },
   {
     id: 'zhangxiu',
@@ -896,6 +899,10 @@ export const PRIMITIVES_DONE: PrimitiveId[] = [
   // maxhp_change：董卓·崩坏已接上（changeMaxHp + 崩坏伪武将），可以算了。
   'maxhp_change',
   'change_deputy', // 变更副将：残留武将牌堆 + 连亮到同势力 + 替换副将（马谡·制蛮）
+  // virtual_equip：虚拟装备。第一个用户是袁术·庸肆「若场上没有【玉玺】你视为装备着【玉玺】」
+  //   （heroes.hasYuxi，两处消费方——摸牌阶段多摸一张、出牌阶段开始时视为使用【知己知彼】
+  //   ——共用它）。更早的同类做法是卧龙诸葛亮·八阵的 hasBaguaAlways（只服务防具栏）。
+  'virtual_equip',
   // remove_hero / slot_skills（第十批）：移除武将牌（Player.removedHeroIds +
   //   effectiveHeroes 过滤 + api.removeHeroCard）与主将技/副将技
   //   （Hero.mainSlotSkills/deputySlotSkills + collectTimingHooks 过滤 + mainSlotHalfYang）。

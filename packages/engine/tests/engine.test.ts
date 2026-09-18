@@ -16580,3 +16580,189 @@ describe('国战 · 吴国太（甘露 / 补益）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });
+
+/** 袁术·庸肆 / 伪帝（君临天下·权，群，2 阴阳鱼→4） */
+describe('国战 · 袁术（庸肆 / 伪帝）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  const yuxi = (id: string): Card => ({
+    id,
+    type: 'treasure',
+    suit: 'club',
+    rank: 1,
+    equipName: 'yuxi',
+  });
+
+  it('庸肆①：场上没有实体玉玺时视为装备着【玉玺】——摸牌阶段多摸一张', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'yuanshu', faction: 'qun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 摸牌阶段
+    skipRevealAsk(state);
+    // 额定 2 张 + 玉玺 1 张 = 3 张
+    expect(b.hand.length).toBe(3);
+
+    // 对照组：实体【玉玺】出现在别人装备区 → 虚拟玉玺失效，只摸 2 张
+    const state2 = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [], equip: [yuxi('y1')] },
+      { seatId: B, name: '乙', heroId: 'yuanshu', faction: 'qun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ]);
+    const b2 = state2.players.find((p) => p.seatId === B)!;
+    ok(act(state2, A, { type: 'endPhase' }));
+    skipRevealAsk(state2);
+    expect(b2.hand.length).toBe(2);
+  });
+
+  it('庸肆①：出牌阶段开始时视为使用【知己知彼】（走完整锦囊流程）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'yuanshu', faction: 'qun', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [tao('c1')] },
+      ],
+      A,
+    );
+    // 甲的回合结束 → 乙的判定/摸牌，进**出牌阶段开始时**触发玉玺的「视为使用知己知彼」
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('知己知彼');
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    passWuxie(state); // 锦囊流程：无懈可击窗口
+    // 知己知彼自己还要问「看手牌还是看暗置武将牌」
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, B, { type: 'chooseOption', optionId: 'hand' }));
+    }
+    if (state.pending?.kind === 'viewCards') ok(act(state, B, { type: 'ack' }));
+    expect(state.log.some((e) => e.message.includes('知己知彼'))).toBe(true);
+  });
+
+  it('庸肆②：成为【知己知彼】的目标时展示所有手牌', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [mk('a1', 'zhibi', 'spade')] },
+        { seatId: B, name: '乙', heroId: 'yuanshu', faction: 'qun', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 展示手牌的日志（公开信息，按本引擎惯例写成日志）
+    expect(
+      state.log.some((e) => e.message.includes('庸肆') && e.message.includes('展示手牌')),
+    ).toBe(true);
+  });
+
+  it('伪帝：令本回合从牌堆获得过牌的角色执行军令，不执行则换走他的手牌', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'yuanshu', faction: 'qun', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 甲先结束回合让乙摸牌（乙就「本回合从牌堆获得过牌」了），再回到甲
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.gainedFromDeckThisTurn.length).toBeGreaterThan(0);
+    expect(b.hand.length).toBeGreaterThan(0);
+    // 乙没在甲回合摸过牌 → 现在伪帝还点不到他（账本随回合清空）
+    expect(toSnapshot(state, B).prompt).not.toBeNull();
+  });
+
+  it('伪帝：目标本回合摸过牌才能点，不执行军令就把手牌全换一遍', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'yuanshu', faction: 'qun', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [tao('b1'), tao('b2')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 手动把「本回合从牌堆摸到的牌」记成乙手里的 b1（等价于乙本回合摸过牌）
+    state.gainedFromDeckThisTurn = ['b1'];
+    expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('weidi');
+    ok(act(state, A, { type: 'useSkill', skillId: 'weidi', cardIds: [], targetIds: [B] }));
+    // 军令：甲（发起者）挑一条 → 乙决定是否执行
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('军令');
+    ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 不执行 → 换手牌
+    // 乙的 2 张手牌到了甲手里，甲要从自己手牌+装备里挑 2 张还回去
+    expect(b.hand.length).toBe(0);
+    expect(a.hand.length).toBe(3); // 原有 1 张 + 拿来的 2 张
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['b1', 'b2'] }));
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['b1', 'b2']);
+    expect(a.hand.map((c) => c.id)).toEqual(['a1']);
+    expect(state.log.some((e) => e.message.includes('伪帝'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('伪帝：本回合没摸过牌的角色不能被点名', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'yuanshu', faction: 'qun', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    // 没有任何人本回合从牌堆摸过牌 → 伪帝用不了
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('weidi');
+    fail(act(state, A, { type: 'useSkill', skillId: 'weidi', cardIds: [], targetIds: [B] }));
+  });
+});

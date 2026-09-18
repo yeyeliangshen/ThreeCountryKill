@@ -1,7 +1,14 @@
 // 装备牌特效 —— 与 engine 分离的纯查询/判定辅助，便于单测
 import { isRed, type Card } from '@sgs/protocol';
 import { getPlayer, pushLog, type AttackContext, type GameState, type Player } from './model';
-import { EQUIP_SLOTS, cardAsSeenBy, effectiveHeroes, type ActiveSkill, type SkillApi } from './heroes';
+import {
+  EQUIP_SLOTS,
+  cardAsSeenBy,
+  effectiveHeroes,
+  hasYuxi,
+  type ActiveSkill,
+  type SkillApi,
+} from './heroes';
 
 /** 攻击方武器是否无视目标防具（青釭剑） */
 export function ignoresArmor(source: Player | undefined): boolean {
@@ -85,7 +92,8 @@ export function damageBonus(state: GameState, attack: AttackContext): number {
  * OL 2026 版把原第①条「你所属势力成为唯一的大势力」移除了，这里按两条款实现。
  */
 export function equipExtraDraw(state: GameState, player: Player): number {
-  if (player.equipment.treasure?.equipName !== 'yuxi') return 0;
+  // 「装备着玉玺」也包含袁术·庸肆给的**虚拟**玉玺（判定收在 heroes.hasYuxi 里）
+  if (!hasYuxi(state, player)) return 0;
   if (state.mode === 'guozhan' && !player.heroRevealed && !player.deputyRevealed) return 0;
   return 1;
 }

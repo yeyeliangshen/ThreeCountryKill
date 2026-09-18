@@ -84,6 +84,7 @@ import {
   colorSeenAs,
   huangtianFor,
   xuanhuoFor,
+  hasYuxi,
   ROLE_NAME,
   type ActiveSkill,
   type Hero,
@@ -795,6 +796,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.damagedThisTurn = [];
   // 「本回合杀死过角色的人」同理（戚乱是在每个回合结束时检查的）
   state.killedThisTurn = [];
+  // 「本回合从牌堆摸到过的牌」也只在**本回合**内有效（袁术·伪帝）
+  state.gainedFromDeckThisTurn = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
   state.discardThisTurn = [];
   // 武将牌翻面朝上：跳过这一个回合，翻回正面（据守/放逐的代价）
@@ -4918,7 +4921,8 @@ function askYuxiZhibi(state: GameState, player: Player, after: () => void): void
     after();
     return;
   }
-  if (player.equipment.treasure?.equipName !== 'yuxi') {
+  // 「装备着玉玺」也包含袁术·庸肆给的虚拟玉玺（判定收在 heroes.hasYuxi 里）
+  if (!hasYuxi(state, player)) {
     after();
     return;
   }
@@ -7547,6 +7551,7 @@ export function createGame(
     ongoingChain: null,
     damagedThisTurn: [],
     killedThisTurn: [],
+    gainedFromDeckThisTurn: [],
     heroPool: [],
     discardThisTurn: [],
     xianquSeat: null,

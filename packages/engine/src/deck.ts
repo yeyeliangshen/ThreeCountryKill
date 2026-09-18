@@ -372,5 +372,9 @@ export function drawOne(state: GameState): Card | null {
     state.deck = shuffle(state.discard);
     state.discard = [];
   }
-  return state.deck.pop() ?? null;
+  const card = state.deck.pop() ?? null;
+  // 「本回合从牌堆获得过牌」的账本（袁术·伪帝）。重洗之后摸到的牌也该算——它们此刻确实
+  // 是从牌堆来的，所以在这里盖戳比「意图前后快照」准（快照法会漏掉重洗那一批）。
+  if (card) state.gainedFromDeckThisTurn.push(card.id);
+  return card;
 }
