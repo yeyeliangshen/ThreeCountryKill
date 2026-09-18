@@ -532,6 +532,11 @@ function markDamaged(state: GameState, timing: Timing, player: Player, payload?:
   // 正好就是「谁造成的」那个视角。自伤不派发这个时机，所以自伤不算（已在注释里说明）。
   if (timing === 'afterDamageDealt') {
     player.flags.dealtDamageThisTurn = true;
+    // 本轮伤害账本（君主·励众）：按**来源**累加，一轮走完清空（见 afterTurnEnd 的回合交替处）
+    const dmg = (payload as { damage?: number } | undefined)?.damage ?? 0;
+    if (dmg > 0) {
+      state.damageThisRound[player.seatId] = (state.damageThisRound[player.seatId] ?? 0) + dmg;
+    }
     return;
   }
   // 「你于本回合内杀死过角色吗」（何太后·戚乱）
@@ -1638,7 +1643,34 @@ function afterTurnEnd(state: GameState): void {
     }
     return;
   }
+  // 「一轮」走完的标志：下一个回合的座次比当前**靠前**（正常推进只会往后跳，
+  // 跳过已阵亡者也是往后；绕回首位才会变小）。君主·励众在「每轮结束时」结算，
+  // 所以在这里先派发 roundEnd，再清账本、开新回合。
+  if (next < state.turn.seatIndex) {
+    dispatchRoundEnd(state, () => {
+      state.damageThisRound = {};
+      startTurn(state, next);
+    });
+    return;
+  }
   startTurn(state, next);
+}
+
+/**
+ * 派发「一轮结束」的钩子（依次问每个存活角色，允许钩子挂起）。
+ * 只在这里被调用：回合交替检测到座次绕回首位时（见 afterTurnEnd）。
+ */
+function dispatchRoundEnd(state: GameState, after: () => void): void {
+  const players = state.players.filter((p) => p.alive);
+  const step = (i: number): void => {
+    const p = players[i];
+    if (!p) {
+      after();
+      return;
+    }
+    runHooksPausable(state, 'roundEnd', p, {}, () => step(i + 1));
+  };
+  step(0);
 }
 
 /** 回到某玩家的出牌阶段（伤害结算后恢复来源回合） */
@@ -8277,6 +8309,7 @@ export function createGame(
     xianquSeat: null,
     resumeQueue: [],
     judgmentInFlight: null,
+    damageThisRound: {},
     extraTurns: [],
   };
   pushLog(state, 'start', '游戏开始，随机发将。');

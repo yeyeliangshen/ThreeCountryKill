@@ -22,7 +22,8 @@ import type {
 } from '@sgs/protocol';
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
-import {drawOne, lordEquipFeilong } from './deck';
+import { addMarker } from './markers';
+import { drawOne, lordEquipFeilong } from './deck';
 import { attackRange, canTarget, distance } from './distance';
 
 import {
@@ -1002,7 +1003,7 @@ function ganglieEffect(ctx: HookContext, source: Player): void {
       label: `弃置${discardsNum === 2 ? '两' : '一'}张手牌`,
     });
   }
-        ctx.api.askChoice(
+  ctx.api.askChoice(
     ctx.state,
     source.seatId,
     `${holder.name} 对你发动了【刚烈】：请选择一项`,
@@ -2063,31 +2064,39 @@ function tianxiangGuozhan(ctx: HookContext): void {
                 id: 'loseHp',
                 label: `令 ${target.name} 失去 1 点体力，然后其获得你弃置的【${cardLabel(card)}】`,
               });
-              ctx.api.askChoice(st3, p3.seatId, '【天香】：选择一项', options, (st4, p4, option) => {
-                p4.flags.damagePrevented = true;
-                ctx.api.discardCard(p4.seatId, card, () => {
-                  pushLog(
-                    st4,
-                    'skill',
-                    `${p4.name} 发动【天香】，弃置【${cardLabel(card)}】防止此伤害。`,
-                  );
-                  if (option === 'damage' && src) {
-                    ctx.api.dealDamage(target, 1, src.seatId, undefined, () => {
-                      const x = Math.min(5, Math.max(0, target.maxHp - target.hp));
-                      if (x > 0 && target.alive) {
-                        for (let i = 0; i < x; i++) {
-                          const c = drawOne(st4);
-                          if (c) target.hand.push(c);
+              ctx.api.askChoice(
+                st3,
+                p3.seatId,
+                '【天香】：选择一项',
+                options,
+                (st4, p4, option) => {
+                  p4.flags.damagePrevented = true;
+                  ctx.api.discardCard(p4.seatId, card, () => {
+                    pushLog(
+                      st4,
+                      'skill',
+                      `${p4.name} 发动【天香】，弃置【${cardLabel(card)}】防止此伤害。`,
+                    );
+                    if (option === 'damage' && src) {
+                      ctx.api.dealDamage(target, 1, src.seatId, undefined, () => {
+                        const x = Math.min(5, Math.max(0, target.maxHp - target.hp));
+                        if (x > 0 && target.alive) {
+                          for (let i = 0; i < x; i++) {
+                            const c = drawOne(st4);
+                            if (c) target.hand.push(c);
+                          }
+                          pushLog(st4, 'skill', `${target.name} 因【天香】摸了 ${x} 张牌。`);
                         }
-                        pushLog(st4, 'skill', `${target.name} 因【天香】摸了 ${x} 张牌。`);
-                      }
-                    });
-                    return;
-                  }
-                  // ②失去体力（不是伤害：没有来源、不触发卖血技，但会进濒死）
-                  ctx.api.loseHp(target, 1, () => ctx.api.giveDiscardedTo([card], target.seatId, '天香'));
-                });
-              });
+                      });
+                      return;
+                    }
+                    // ②失去体力（不是伤害：没有来源、不触发卖血技，但会进濒死）
+                    ctx.api.loseHp(target, 1, () =>
+                      ctx.api.giveDiscardedTo([card], target.seatId, '天香'),
+                    );
+                  });
+                },
+              );
             },
           );
         },
@@ -2375,12 +2384,10 @@ const JIANGQIN: Hero = {
         const mine = besiegingTarget(ctx.state, ctx.player);
         if (mine !== victim.seatId) return;
         attack.requiredShan = Math.max(attack.requiredShan ?? 1, 2);
-        pushLog(
-          ctx.state,
-          'skill',
-          `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`,
-          { seat: ctx.player.seatId, action: 'skill' },
-        );
+        pushLog(ctx.state, 'skill', `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`, {
+          seat: ctx.player.seatId,
+          action: 'skill',
+        });
       },
     },
   ],
@@ -2392,8 +2399,7 @@ const JIANGQIN: Hero = {
       minTargets: 1,
       maxTargets: 1,
       needsCards: false,
-      canUse: (state, player) =>
-        state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      canUse: (state, player) => state.players.some((p) => p.alive && p.seatId !== player.seatId),
       execute: (state, player, intent, api) => {
         const targetId = intent.targetIds[0];
         if (!targetId) return '请选择一名其他角色';
@@ -2563,9 +2569,7 @@ const CAOHONG: Hero = {
                       const near = getPlayer(st3, toId)!.alive
                         ? st3.players.filter(
                             (x) =>
-                              x.alive &&
-                              distance(st3, toId, x.seatId) === 1 &&
-                              x.seatId !== toId,
+                              x.alive && distance(st3, toId, x.seatId) === 1 && x.seatId !== toId,
                           )
                         : [];
                       if (near.length === 0) return;
@@ -2629,7 +2633,10 @@ const HETAIHOU: Hero = {
           ctx.player.seatId,
           `是否对 ${target.name} 发动【鸩毒】？`,
           [
-            { id: 'yes', label: `发动（弃一张手牌，${target.name} 视为使用【酒】，你对其造成 1 点伤害）` },
+            {
+              id: 'yes',
+              label: `发动（弃一张手牌，${target.name} 视为使用【酒】，你对其造成 1 点伤害）`,
+            },
             { id: 'no', label: '不发动' },
           ],
           (st, p, picked) => {
@@ -2644,11 +2651,7 @@ const HETAIHOU: Hero = {
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
-                pushLog(
-                  st2,
-                  'skill',
-                  `${p2.name} 发动【鸩毒】，弃置【${cardLabel(card)}】。`,
-                );
+                pushLog(st2, 'skill', `${p2.name} 发动【鸩毒】，弃置【${cardLabel(card)}】。`);
                 ctx.api.discardCard(p2.seatId, card, () => {
                   const t = getPlayer(st2, turnSeatId);
                   if (!t || !t.alive) return;
@@ -2852,7 +2855,13 @@ const CHENWU_DONGXI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            fenmingStep(st, p, chained.map((x) => x.seatId), 0, ctx.api);
+            fenmingStep(
+              st,
+              p,
+              chained.map((x) => x.seatId),
+              0,
+              ctx.api,
+            );
           },
         );
       },
@@ -2908,12 +2917,10 @@ const XUSHENG: Hero = {
         const mine = besiegingTarget(ctx.state, ctx.player);
         if (mine !== victim.seatId) return;
         attack.requiredShan = Math.max(attack.requiredShan ?? 1, 2);
-        pushLog(
-          ctx.state,
-          'skill',
-          `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`,
-          { seat: ctx.player.seatId, action: 'skill' },
-        );
+        pushLog(ctx.state, 'skill', `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`, {
+          seat: ctx.player.seatId,
+          action: 'skill',
+        });
       },
     },
     {
@@ -3306,11 +3313,7 @@ const DENGAI: Hero = {
             const t = getPlayer(st, victim.seatId);
             if (!t) return;
             t.hand.push(card);
-            pushLog(
-              st,
-              'skill',
-              `${p.name} 发动【资粮】，把一张「田」交给 ${t.name}。`,
-            );
+            pushLog(st, 'skill', `${p.name} 发动【资粮】，把一张「田」交给 ${t.name}。`);
           },
         );
       },
@@ -3405,8 +3408,7 @@ const JUN_LIUBEI: Hero = lordHero(
         minTargets: 0,
         maxTargets: 0,
         needsCards: true, // 弃置一张牌作为代价（点手牌）
-        canUse: (state, player) =>
-          !lordEquipOnField(state, 'feilong') && player.hand.length > 0,
+        canUse: (state, player) => !lordEquipOnField(state, 'feilong') && player.hand.length > 0,
         execute: (state, player, intent, api) => {
           const ids = intent.cardIds ?? [];
           if (ids.length !== 1) return '请弃置一张牌作为代价';
@@ -3420,6 +3422,37 @@ const JUN_LIUBEI: Hero = lordHero(
           );
           // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）
           api.giveEquipTo(lordEquipFeilong(), player.seatId);
+        },
+      },
+    ],
+    hooks: [
+      {
+        // 官方原文（移动版 WIKI）：「锁定技，每轮结束时，你令与你势力相同的角色中本轮造成过伤害
+        // 且造成伤害值最多的角色各获得 1 枚『先驱』标记。」
+        // 「轮」＝座次从首位走到末位再绕回（引擎在回合交替处派发 roundEnd，见 afterTurnEnd）。
+        timing: 'roundEnd',
+        skillId: '励众',
+        locked: true,
+        handler: (ctx) => {
+          const me = ctx.player;
+          const myFaction = effectiveFaction(ctx.state, me);
+          if (!myFaction) return;
+          const peers = ctx.state.players.filter(
+            (p) => p.alive && effectiveFaction(ctx.state, p) === myFaction,
+          );
+          const dealtOf = (p: Player): number => ctx.state.damageThisRound[p.seatId] ?? 0;
+          const most = Math.max(0, ...peers.map(dealtOf));
+          if (most <= 0) return; // 本轮谁都没造成伤害 → 不发作
+          const winners = peers.filter((p) => dealtOf(p) === most);
+          for (const p of winners) {
+            addMarker(p, 'xianqu');
+            pushLog(
+              ctx.state,
+              'marker',
+              `【励众】：${p.name} 本轮造成了 ${most} 点伤害（同势力最多），获得【先驱】。`,
+              { seat: p.seatId },
+            );
+          }
         },
       },
     ],
@@ -3710,7 +3743,9 @@ const MADAI: Hero = {
       handler: (ctx) => {
         const targets = ctx.state.players.filter(
           (x) =>
-            x.alive && x.seatId !== ctx.player.seatId && distance(ctx.state, ctx.player.seatId, x.seatId) === 1,
+            x.alive &&
+            x.seatId !== ctx.player.seatId &&
+            distance(ctx.state, ctx.player.seatId, x.seatId) === 1,
         );
         if (targets.length === 0) return;
         ctx.api.askChoice(
@@ -3945,78 +3980,75 @@ const CUIYAN_MAOJIE: Hero = {
         const basics = me.hand.filter((c) => isBasicCard(c));
         const options: { id: string; label: string }[] = [];
         if (hiddenOthers.length > 0) {
-          options.push({ id: 'limitless', label: '①令一名未确定势力的角色：本回合你对其用牌无距离和次数限制' });
+          options.push({
+            id: 'limitless',
+            label: '①令一名未确定势力的角色：本回合你对其用牌无距离和次数限制',
+          });
         }
         if (shownOthers.length > 0 && basics.length > 0) {
           options.push({ id: 'swap', label: '②与一名已明置的角色交换牌（你给一张基本牌）' });
         }
         options.push({ id: 'no', label: '不发动' });
-        ctx.api.askChoice(
-          ctx.state,
-          me.seatId,
-          '是否发动【征辟】？',
-          options,
-          (st, p, picked) => {
-            if (picked === 'no') return;
-            if (picked === 'limitless') {
-              ctx.api.askChoice(
-                st,
-                p.seatId,
-                '【征辟①】：选择一名未确定势力的角色',
-                hiddenOthers.map((x) => ({ id: x.seatId, label: x.name })),
-                (st2, p2, targetId) => {
-                  p2.flags.distanceLimitlessToSeat = targetId;
-                  pushLog(
-                    st2,
-                    'skill',
-                    `${p2.name} 发动【征辟】：本回合对 ${getPlayer(st2, targetId)?.name ?? '对方'} 使用牌无距离和次数限制。`,
-                  );
-                },
-                p.seatId,
-              );
-              return;
-            }
-            // ②交换：先挑一张基本牌，再挑一名已明置的角色
-            const basicsNow = p.hand.filter((c) => isBasicCard(c));
-            if (basicsNow.length === 0) return;
-            ctx.api.askPickCards(
+        ctx.api.askChoice(ctx.state, me.seatId, '是否发动【征辟】？', options, (st, p, picked) => {
+          if (picked === 'no') return;
+          if (picked === 'limitless') {
+            ctx.api.askChoice(
               st,
               p.seatId,
-              '【征辟②】：选择要交出的基本牌',
-              basicsNow,
-              1,
-              1,
-              (st2, p2, chosen) => {
-                const card = chosen[0];
-                if (!card) return;
-                const shown = st2.players.filter(
-                  (x) => x.alive && x.seatId !== p2.seatId && !!effectiveFaction(st2, x),
-                );
-                if (shown.length === 0) return;
-                ctx.api.askChoice(
+              '【征辟①】：选择一名未确定势力的角色',
+              hiddenOthers.map((x) => ({ id: x.seatId, label: x.name })),
+              (st2, p2, targetId) => {
+                p2.flags.distanceLimitlessToSeat = targetId;
+                pushLog(
                   st2,
-                  p2.seatId,
-                  '【征辟②】：交给谁？',
-                  shown.map((x) => ({ id: x.seatId, label: x.name })),
-                  (st3, p3, targetId) => {
-                    const target = getPlayer(st3, targetId);
-                    if (!target) return;
-                    removeCard(p3.hand, card.id);
-                    target.hand.push(card);
-                    pushLog(
-                      st3,
-                      'skill',
-                      `${p3.name} 发动【征辟】，把【${cardLabel(card)}】交给 ${target.name}。`,
-                    );
-                    caoyanSwapBack(st3, p3, target, ctx.api);
-                  },
-                  p2.seatId,
+                  'skill',
+                  `${p2.name} 发动【征辟】：本回合对 ${getPlayer(st2, targetId)?.name ?? '对方'} 使用牌无距离和次数限制。`,
                 );
               },
-              { returnTo: p.seatId },
+              p.seatId,
             );
-          },
-        );
+            return;
+          }
+          // ②交换：先挑一张基本牌，再挑一名已明置的角色
+          const basicsNow = p.hand.filter((c) => isBasicCard(c));
+          if (basicsNow.length === 0) return;
+          ctx.api.askPickCards(
+            st,
+            p.seatId,
+            '【征辟②】：选择要交出的基本牌',
+            basicsNow,
+            1,
+            1,
+            (st2, p2, chosen) => {
+              const card = chosen[0];
+              if (!card) return;
+              const shown = st2.players.filter(
+                (x) => x.alive && x.seatId !== p2.seatId && !!effectiveFaction(st2, x),
+              );
+              if (shown.length === 0) return;
+              ctx.api.askChoice(
+                st2,
+                p2.seatId,
+                '【征辟②】：交给谁？',
+                shown.map((x) => ({ id: x.seatId, label: x.name })),
+                (st3, p3, targetId) => {
+                  const target = getPlayer(st3, targetId);
+                  if (!target) return;
+                  removeCard(p3.hand, card.id);
+                  target.hand.push(card);
+                  pushLog(
+                    st3,
+                    'skill',
+                    `${p3.name} 发动【征辟】，把【${cardLabel(card)}】交给 ${target.name}。`,
+                  );
+                  caoyanSwapBack(st3, p3, target, ctx.api);
+                },
+                p2.seatId,
+              );
+            },
+            { returnTo: p.seatId },
+          );
+        });
       },
     },
     {
@@ -4083,12 +4115,7 @@ const CUIYAN_MAOJIE: Hero = {
 };
 
 /** 征辟②的回礼：由**对方**选择交一张非基本牌，或两张基本牌 */
-function caoyanSwapBack(
-  state: GameState,
-  me: Player,
-  target: Player,
-  api: SkillApi,
-): void {
+function caoyanSwapBack(state: GameState, me: Player, target: Player, api: SkillApi): void {
   const nonBasics = target.hand.filter((c) => !isBasicCard(c));
   const basics = target.hand.filter((c) => isBasicCard(c));
   const options: { id: string; label: string }[] = [];
@@ -4118,12 +4145,9 @@ function caoyanSwapBack(
             removeCard(t2.hand, c.id);
             me.hand.push(c);
           }
-          pushLog(
-            st2,
-            'skill',
-            `${t2.name} 交给 ${me.name} ${chosen.length} 张牌。`,
-            { seat: t2.seatId },
-          );
+          pushLog(st2, 'skill', `${t2.name} 交给 ${me.name} ${chosen.length} 张牌。`, {
+            seat: t2.seatId,
+          });
         },
         { returnTo: t.seatId },
       );
@@ -4436,11 +4460,7 @@ const XUANHUO: ActiveSkill = {
           const pick = XUANHUO_SKILLS.find((o) => o.name === name);
           if (!pick) return;
           api.grantTempSkill(pick.heroId, pick.name, p.seatId);
-          pushLog(
-            st,
-            'skill',
-            `${p.name} 因【眩惑】获得【${pick.name}】，直到回合结束。`,
-          );
+          pushLog(st, 'skill', `${p.name} 因【眩惑】获得【${pick.name}】，直到回合结束。`);
         },
         player.seatId,
       );
@@ -4675,12 +4695,9 @@ const LIJUE_GUOSI: Hero = {
               if (!t) return;
               t.flags.limitedToReset.push(skillId);
               const name = used.find((u) => u.id === skillId)?.name ?? skillId;
-              pushLog(
-                st,
-                'skill',
-                `${t.name} 的限定技【${name}】将在本回合结束时视为未发动。`,
-                { seat: t.seatId },
-              );
+              pushLog(st, 'skill', `${t.name} 的限定技【${name}】将在本回合结束时视为未发动。`, {
+                seat: t.seatId,
+              });
             },
             player.seatId,
           );
@@ -4823,9 +4840,14 @@ const YUANSHU: Hero = {
         if (payload.card?.type !== 'zhibi') return;
         const me = ctx.player;
         const shown = me.hand.map((c) => cardLabel(c)).join('、') || '（无）';
-        pushLog(ctx.state, 'skill', `${me.name} 的【庸肆】：成为【知己知彼】的目标，展示手牌 ${shown}。`, {
-          seat: me.seatId,
-        });
+        pushLog(
+          ctx.state,
+          'skill',
+          `${me.name} 的【庸肆】：成为【知己知彼】的目标，展示手牌 ${shown}。`,
+          {
+            seat: me.seatId,
+          },
+        );
       },
     },
   ],
@@ -4878,7 +4900,11 @@ const YUANSHU: Hero = {
               const giveStep = (i: number): void => {
                 const c = chosen[i];
                 if (!c) {
-                  pushLog(st2, 'skill', `${me.name} 交给 ${t.name} ${chosen.length} 张牌（伪帝）。`);
+                  pushLog(
+                    st2,
+                    'skill',
+                    `${me.name} 交给 ${t.name} ${chosen.length} 张牌（伪帝）。`,
+                  );
                   return;
                 }
                 // 走 transferCard：还装备区的牌会触发枭姬那类「失去装备」的技能
@@ -4912,7 +4938,10 @@ function weidiTargets(state: GameState, player: Player): Player[] {
   // 「本回合从牌堆获得过牌」＝他手上还拿着**他自己摸到**的牌。用归因表而不是「本回合抽出的
   // 牌 id 列表」：后者会把「摸到之后被顺手牵羊拿走」的新持有者也算进来（账本记牌不记人）。
   const holds = (p: Player): boolean => {
-    const all = [...p.hand, ...EQUIP_SLOTS.map((s) => p.equipment[s]).filter((c): c is Card => !!c)];
+    const all = [
+      ...p.hand,
+      ...EQUIP_SLOTS.map((s) => p.equipment[s]).filter((c): c is Card => !!c),
+    ];
     return all.some((c) => owners[c.id] === p.seatId);
   };
   return state.players.filter((p) => p.alive && p.seatId !== player.seatId && holds(p));
@@ -5138,11 +5167,7 @@ const XUSHU: Hero = {
                 const card = chosen[0];
                 if (!card) return;
                 ctx.api.discardCard(p2.seatId, card, () => {
-                  pushLog(
-                    st2,
-                    'skill',
-                    `${p2.name} 发动【举荐】，弃置了一张非基本牌。`,
-                  );
+                  pushLog(st2, 'skill', `${p2.name} 发动【举荐】，弃置了一张非基本牌。`);
                   pickTarget();
                 });
               },
@@ -5243,8 +5268,7 @@ const YANBAIHU: Hero = {
       locked: true,
       handler: (ctx) => {
         const payload = ctx.payload as
-          | { targetId?: string; card?: Card; trickCtx?: TrickContext }
-          | undefined;
+          { targetId?: string; card?: Card; trickCtx?: TrickContext } | undefined;
         if (payload?.targetId !== ctx.player.seatId) return;
         const card = payload.card;
         const tctx = payload.trickCtx;
@@ -5379,11 +5403,15 @@ const WUJING: Hero = {
         );
         // 记下「用之前」的队列大小，结算完再比（afterUse 里读）
         player.flags.queueSizeBeforeTrick = formationQueue(state, player).length;
-        api.castVirtualTrick(player.seatId, {
-          type: 'tiaohu',
-          suit: material.suit,
-          rank: material.rank,
-        }, targets);
+        api.castVirtualTrick(
+          player.seatId,
+          {
+            type: 'tiaohu',
+            suit: material.suit,
+            rank: material.rank,
+          },
+          targets,
+        );
         return undefined;
       },
     },
@@ -5466,8 +5494,7 @@ const WUGUOTAI: Hero = {
       skillId: '补益',
       handler: (ctx) => {
         const payload = ctx.payload as
-          | { dyingSeatId?: string; alive?: boolean; sourceId?: string }
-          | undefined;
+          { dyingSeatId?: string; alive?: boolean; sourceId?: string } | undefined;
         const me = ctx.player;
         if (!payload?.alive || !payload.dyingSeatId || !payload.sourceId) return;
         if (me.flags.skillUsedThisTurn['补益']) return; // 每回合限一次
@@ -5521,11 +5548,7 @@ const WUGUOTAI: Hero = {
         const [a, b] = [intent.targetIds[0]!, intent.targetIds[1]!];
         pushLog(state, 'skill', `${player.name} 发动【甘露】。`);
         api.swapEquipAreas(a, b, () => {
-          pushLog(
-            state,
-            'skill',
-            `${player.name} 交换了装备区里的牌（甘露）。`,
-          );
+          pushLog(state, 'skill', `${player.name} 交换了装备区里的牌（甘露）。`);
         });
         return undefined;
       },
@@ -5551,8 +5574,7 @@ const WUGUOTAI: Hero = {
 function ganluPairs(state: GameState, player: Player): Set<string>[] {
   const lost = player.maxHp - player.hp;
   const alive = state.players.filter((p) => p.alive);
-  const count = (p: Player): number =>
-    EQUIP_SLOTS.filter((s) => !!p.equipment[s]).length;
+  const count = (p: Player): number => EQUIP_SLOTS.filter((s) => !!p.equipment[s]).length;
   const out: Set<string>[] = [];
   for (let i = 0; i < alive.length; i++) {
     for (let j = i + 1; j < alive.length; j++) {
@@ -5902,8 +5924,7 @@ const BIANFUREN: Hero = {
       skillId: '挽危',
       handler: (ctx) => {
         const payload = ctx.payload as
-          | { targetId?: string; card?: Card; trickCtx?: TrickContext }
-          | undefined;
+          { targetId?: string; card?: Card; trickCtx?: TrickContext } | undefined;
         if (payload?.targetId !== ctx.player.seatId) return;
         const type = payload?.card?.type;
         if (type !== 'guohe' && type !== 'shunshou') return;
@@ -5996,12 +6017,10 @@ const ZUOCI: Hero = {
           me.hun.push(id);
           got++;
         }
-        pushLog(
-          ctx.state,
-          'skill',
-          `${me.name} 发动【役鬼】：扣置 ${got} 张武将牌作为「魂」。`,
-          { seat: me.seatId, action: 'skill' },
-        );
+        pushLog(ctx.state, 'skill', `${me.name} 发动【役鬼】：扣置 ${got} 张武将牌作为「魂」。`, {
+          seat: me.seatId,
+          action: 'skill',
+        });
       },
     },
     {
@@ -6032,12 +6051,10 @@ const ZUOCI: Hero = {
         const id = ctx.state.heroPool.shift();
         if (!id) return;
         ctx.player.hun.push(id);
-        pushLog(
-          ctx.state,
-          'skill',
-          `${ctx.player.name} 因【汲魂】扣置一张武将牌作为「魂」。`,
-          { seat: ctx.player.seatId, action: 'gain' },
-        );
+        pushLog(ctx.state, 'skill', `${ctx.player.name} 因【汲魂】扣置一张武将牌作为「魂」。`, {
+          seat: ctx.player.seatId,
+          action: 'gain',
+        });
       },
     },
   ],
@@ -6048,8 +6065,7 @@ const ZUOCI: Hero = {
       minTargets: 0,
       maxTargets: 0,
       needsCards: false,
-      canUse: (state, player) =>
-        player.hun.length > 0 && hunOptions(state, player).length > 0,
+      canUse: (state, player) => player.hun.length > 0 && hunOptions(state, player).length > 0,
       execute: (state, player, _intent, api) => {
         const options = hunOptions(state, player);
         if (options.length === 0) return '当前没有可以这样使用的牌';
@@ -6172,7 +6188,12 @@ function hunOptions(state: GameState, player: Player): { id: string; label: stri
 }
 
 /** 势力限制：目标的势力与「魂」牌相同，或者**未确定势力** */
-function hunFactionOk(state: GameState, target: Player, _player: Player, faction: Faction | null): boolean {
+function hunFactionOk(
+  state: GameState,
+  target: Player,
+  _player: Player,
+  faction: Faction | null,
+): boolean {
   const tf = effectiveFaction(state, target);
   if (!tf) return true; // 未确定势力 → 可以
   if (!faction) return true;
@@ -6364,7 +6385,10 @@ function diaoduStep(
   const mine = effectiveFaction(state, p);
   const mates = state.seatOrder
     .map((id) => getPlayer(state, id))
-    .filter((x): x is Player => !!x && x.alive && x.seatId !== p.seatId && effectiveFaction(state, x) === mine);
+    .filter(
+      (x): x is Player =>
+        !!x && x.alive && x.seatId !== p.seatId && effectiveFaction(state, x) === mine,
+    );
   const options: { id: string; label: string }[] = [];
   for (const c of p.hand.filter((c) => isEquipCard(c))) {
     options.push({ id: `use:${c.id}`, label: `使用【${cardLabel(c)}】` });
@@ -6535,12 +6559,9 @@ const SUNCE: Hero = {
             const after =
               picked === 'plus' ? Math.min(13, card.rank + 3) : Math.max(1, card.rank - 3);
             ctx.api.setPindianRank(after);
-            pushLog(
-              st,
-              'skill',
-              `${p.name} 发动【鹰扬】，其拼点牌点数 ${card.rank} → ${after}。`,
-              { seat: p.seatId },
-            );
+            pushLog(st, 'skill', `${p.name} 发动【鹰扬】，其拼点牌点数 ${card.rank} → ${after}。`, {
+              seat: p.seatId,
+            });
           },
         );
       },
@@ -6742,17 +6763,14 @@ function qiceOptions(state: GameState, player: Player): { id: string; label: str
 function qiceTargets(state: GameState, player: Player, type: TrickType): Player[] {
   const alive = state.players.filter((p) => p.alive);
   const others = alive.filter((p) => p.seatId !== player.seatId);
-  const legal = (p: Player): boolean =>
-    !heroBlocksBeingTarget(state, p, cardOfType(type), player);
+  const legal = (p: Player): boolean => !heroBlocksBeingTarget(state, p, cardOfType(type), player);
   switch (type) {
     case 'tiesuo':
     case 'taoyuan':
     case 'wugu':
       return alive.filter(legal);
     case 'shunshou':
-      return others.filter(
-        (p) => distance(state, player.seatId, p.seatId) <= 1 && legal(p),
-      );
+      return others.filter((p) => distance(state, player.seatId, p.seatId) <= 1 && legal(p));
     case 'guohe':
     case 'huogong':
     case 'juedou':
@@ -6868,9 +6886,10 @@ const YUJI: Hero = {
         const me = ctx.player;
         const suits = new Set(me.qianhuan.map((c) => c.suit));
         // 「与你武将牌上牌花色均不同的牌」——手牌或装备区里挑
-        const pool = [...me.hand, ...(EQUIP_SLOTS.map((slot) => me.equipment[slot]).filter(Boolean) as Card[])].filter(
-          (c) => !suits.has(c.suit),
-        );
+        const pool = [
+          ...me.hand,
+          ...(EQUIP_SLOTS.map((slot) => me.equipment[slot]).filter(Boolean) as Card[]),
+        ].filter((c) => !suits.has(c.suit));
         if (pool.length === 0) return;
         ctx.api.askChoice(
           ctx.state,
@@ -6882,11 +6901,13 @@ const YUJI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            const cards = p.hand.filter((c) => !suits.has(c.suit)).concat(
-              (EQUIP_SLOTS.map((slot) => p.equipment[slot]).filter(Boolean) as Card[]).filter(
-                (c) => !suits.has(c.suit),
-              ),
-            );
+            const cards = p.hand
+              .filter((c) => !suits.has(c.suit))
+              .concat(
+                (EQUIP_SLOTS.map((slot) => p.equipment[slot]).filter(Boolean) as Card[]).filter(
+                  (c) => !suits.has(c.suit),
+                ),
+              );
             if (cards.length === 0) return;
             ctx.api.askPickCards(
               st,
@@ -7183,26 +7204,23 @@ const ZHANGREN: Hero = {
             });
             options.unshift({
               id: 'discard',
-              label: equips.length > 0 ? '弃置装备区所有牌，然后失去 1 点体力' : '失去 1 点体力（没有装备可弃）',
+              label:
+                equips.length > 0
+                  ? '弃置装备区所有牌，然后失去 1 点体力'
+                  : '失去 1 点体力（没有装备可弃）',
             });
-            ctx.api.askChoice(
-              st,
-              t.seatId,
-              `【穿心】：选择一项`,
-              options,
-              (st2, t2, choice) => {
-                if (choice === 'remove') {
-                  if (t2.deputyHeroId) ctx.api.removeHeroCard(t2.seatId, t2.deputyHeroId);
-                  return;
-                }
-                for (const slot of EQUIP_SLOTS) {
-                  const c = t2.equipment[slot];
-                  if (c) ctx.api.discardCard(t2.seatId, c);
-                }
-                ctx.api.loseHp(t2, 1);
-                pushLog(st2, 'skill', `${t2.name} 因【穿心】失去 1 点体力。`);
-              },
-            );
+            ctx.api.askChoice(st, t.seatId, `【穿心】：选择一项`, options, (st2, t2, choice) => {
+              if (choice === 'remove') {
+                if (t2.deputyHeroId) ctx.api.removeHeroCard(t2.seatId, t2.deputyHeroId);
+                return;
+              }
+              for (const slot of EQUIP_SLOTS) {
+                const c = t2.equipment[slot];
+                if (c) ctx.api.discardCard(t2.seatId, c);
+              }
+              ctx.api.loseHp(t2, 1);
+              pushLog(st2, 'skill', `${t2.name} 因【穿心】失去 1 点体力。`);
+            });
           },
         );
       },
@@ -7365,7 +7383,13 @@ const DONGZHUO: Hero = {
             if (picked !== 'yes') return;
             p.flags.skipDraw = true; // 放弃摸牌
             pushLog(st, 'skill', `${p.name} 发动【横征】，放弃摸牌。`);
-            hengzhengStep(st, p, others.map((x) => x.seatId), 0, ctx.api);
+            hengzhengStep(
+              st,
+              p,
+              others.map((x) => x.seatId),
+              0,
+              ctx.api,
+            );
           },
         );
       },
@@ -7413,9 +7437,7 @@ const ZANGBA: Hero = {
       timing: 'othersDiscardPhaseEnd',
       skillId: '横江',
       handler: (ctx) => {
-        const payload = ctx.payload as
-          | { discardingSeatId?: string; cards?: Card[] }
-          | undefined;
+        const payload = ctx.payload as { discardingSeatId?: string; cards?: Card[] } | undefined;
         const who = payload?.discardingSeatId;
         if (!who) return;
         // 本回合没对他用过横江就别触发
@@ -7465,11 +7487,7 @@ function hengjiangAsk(ctx: HookContext, left?: number): void {
         if (t) {
           t.flags.handLimitBonus -= 1;
           p.flags.hengjiangTarget = t.seatId;
-          pushLog(
-            st,
-            'skill',
-            `${p.name} 发动【横江】，${t.name} 本回合手牌上限 -1。`,
-          );
+          pushLog(st, 'skill', `${p.name} 发动【横江】，${t.name} 本回合手牌上限 -1。`);
         }
       }
       if (times > 1) hengjiangAsk(ctx, times - 1);
@@ -7612,7 +7630,9 @@ function wangxiAskNow(ctx: HookContext, otherSeatId: string, left: number): void
   ctx.api.askChoice(
     ctx.state,
     ctx.player.seatId,
-    left > 1 ? `【忘隙】：是否与 ${other.name} 各摸一张牌？（还有 ${left} 点没结算）` : `【忘隙】：是否与 ${other.name} 各摸一张牌？`,
+    left > 1
+      ? `【忘隙】：是否与 ${other.name} 各摸一张牌？（还有 ${left} 点没结算）`
+      : `【忘隙】：是否与 ${other.name} 各摸一张牌？`,
     [
       { id: 'yes', label: '发动' },
       { id: 'no', label: '不发动' },
@@ -7624,7 +7644,11 @@ function wangxiAskNow(ctx: HookContext, otherSeatId: string, left: number): void
         if (c1) p.hand.push(c1);
         const c2 = t ? drawOne(st) : undefined;
         if (t && c2) t.hand.push(c2);
-        pushLog(st, 'skill', `${p.name} 发动【忘隙】，${p.name} 与 ${t?.name ?? '对方'} 各摸一张牌。`);
+        pushLog(
+          st,
+          'skill',
+          `${p.name} 发动【忘隙】，${p.name} 与 ${t?.name ?? '对方'} 各摸一张牌。`,
+        );
       }
       if (left > 1) wangxiAsk(ctx, otherSeatId, left - 1);
     },
@@ -8010,7 +8034,9 @@ function luanwuStep(
     }
   }
   // 最近的里面还得够得着（【杀】本身有攻击范围限制）
-  const inRange = nearest.filter((o) => attackRange(state, me) >= distance(state, me.seatId, o.seatId));
+  const inRange = nearest.filter(
+    (o) => attackRange(state, me) >= distance(state, me.seatId, o.seatId),
+  );
   const canSha = inRange.length > 0 && usableShaCards(state, me).length > 0;
 
   const options: { id: string; label: string }[] = [];
@@ -8023,53 +8049,60 @@ function luanwuStep(
   options.push({ id: 'hp', label: '失去 1 点体力' });
 
   // returnTo 传**贾诩**：整条链跑完后要把出牌阶段还给他（技能是在他的出牌阶段里用的）
-  api.askChoice(state, me.seatId, `【乱武】（${jia.name}）：选择一项`, options, (st, p, picked) => {
-    if (picked !== 'sha' || !canSha) {
-      api.loseHp(p, 1, next);
-      return;
-    }
-    const useOn = (card: Card, victim: Player): void => {
-      pushLog(st, 'skill', `${p.name} 因【乱武】对 ${victim.name} 使用了【杀】。`);
-      api.useShaOn(p.seatId, victim.seatId, card, {
-        after: () => luanwuStep(st, jia, queue, i + 1, api),
-      });
-    };
-    api.askPickCards(
-      st,
-      p.seatId,
-      '【乱武】：选择一张【杀】',
-      usableShaCards(st, p),
-      1,
-      1,
-      (st2, p2, chosen) => {
-        const card = chosen[0];
-        if (!card) {
-          next();
-          return;
-        }
-        if (inRange.length === 1) {
-          useOn(card, inRange[0]!);
-          return;
-        }
-        api.askChoice(
-          st2,
-          p2.seatId,
-          '【乱武】：选择【杀】的目标',
-          inRange.map((o) => ({ id: o.seatId, label: o.name })),
-          (st3, _p2, targetId) => {
-            const victim = getPlayer(st3, targetId);
-            if (!victim) {
-              next();
-              return;
-            }
-            useOn(card, victim);
-          },
-          jia.seatId,
-        );
-      },
-      { returnTo: jia.seatId },
-    );
-  }, jia.seatId);
+  api.askChoice(
+    state,
+    me.seatId,
+    `【乱武】（${jia.name}）：选择一项`,
+    options,
+    (st, p, picked) => {
+      if (picked !== 'sha' || !canSha) {
+        api.loseHp(p, 1, next);
+        return;
+      }
+      const useOn = (card: Card, victim: Player): void => {
+        pushLog(st, 'skill', `${p.name} 因【乱武】对 ${victim.name} 使用了【杀】。`);
+        api.useShaOn(p.seatId, victim.seatId, card, {
+          after: () => luanwuStep(st, jia, queue, i + 1, api),
+        });
+      };
+      api.askPickCards(
+        st,
+        p.seatId,
+        '【乱武】：选择一张【杀】',
+        usableShaCards(st, p),
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const card = chosen[0];
+          if (!card) {
+            next();
+            return;
+          }
+          if (inRange.length === 1) {
+            useOn(card, inRange[0]!);
+            return;
+          }
+          api.askChoice(
+            st2,
+            p2.seatId,
+            '【乱武】：选择【杀】的目标',
+            inRange.map((o) => ({ id: o.seatId, label: o.name })),
+            (st3, _p2, targetId) => {
+              const victim = getPlayer(st3, targetId);
+              if (!victim) {
+                next();
+                return;
+              }
+              useOn(card, victim);
+            },
+            jia.seatId,
+          );
+        },
+        { returnTo: jia.seatId },
+      );
+    },
+    jia.seatId,
+  );
 }
 
 const JIAXU: Hero = {
@@ -8100,8 +8133,7 @@ const JIAXU: Hero = {
       minTargets: 0,
       maxTargets: 0,
       needsCards: false,
-      canUse: (state, player) =>
-        state.players.some((p) => p.alive && p.seatId !== player.seatId),
+      canUse: (state, player) => state.players.some((p) => p.alive && p.seatId !== player.seatId),
       execute: (state, player, _intent, api) => {
         // 从贾诩的下家起、按座次排出所有存活的其他角色（heroes.ts 拿不到引擎的
         // aliveSeatsFrom，就地算一份）
@@ -9296,7 +9328,9 @@ const DONGZHAO: Hero = {
  */
 function usableShaCards(state: GameState, p: Player): Card[] {
   return p.hand.filter(
-    (c) => c.type === 'sha' || effectiveHeroes(state, p).some((h) => heroCanUseAs(h, c, 'sha', state, p)),
+    (c) =>
+      c.type === 'sha' ||
+      effectiveHeroes(state, p).some((h) => heroCanUseAs(h, c, 'sha', state, p)),
   );
 }
 
@@ -9400,11 +9434,7 @@ const JIANGWEI: Hero = {
                 (st2, t2, chosen) => {
                   const card = chosen[0];
                   if (!card) return;
-                  pushLog(
-                    st2,
-                    'skill',
-                    `${t2.name} 因【挑衅】对 ${player.name} 使用了【杀】。`,
-                  );
+                  pushLog(st2, 'skill', `${t2.name} 因【挑衅】对 ${player.name} 使用了【杀】。`);
                   api.useShaOn(t2.seatId, player.seatId, card);
                 },
                 { returnTo: t.seatId },
@@ -10422,7 +10452,11 @@ const CAIWENJI: Hero = {
                     switch (cardAsSeenBy(st2, victim, judgeCard).suit) {
                       case 'heart': {
                         const healed = ctx.api.heal(victim, 1);
-                        pushLog(st2, 'skill', `【悲歌】红桃：${victim.name} 回复 ${healed} 点体力。`);
+                        pushLog(
+                          st2,
+                          'skill',
+                          `【悲歌】红桃：${victim.name} 回复 ${healed} 点体力。`,
+                        );
                         break;
                       }
                       case 'diamond': {
@@ -10451,7 +10485,11 @@ const CAIWENJI: Hero = {
                           picks.push(pool2[Math.floor(st2.rng() * pool2.length)]!);
                         }
                         if (picks.length > 0) ctx.api.discardCards(source.seatId, picks);
-                        pushLog(st2, 'skill', `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`);
+                        pushLog(
+                          st2,
+                          'skill',
+                          `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`,
+                        );
                         break;
                       }
                       case 'spade': {
@@ -11498,7 +11536,11 @@ export function hasYuxi(state: GameState, player: Player): boolean {
  *
  * 暗置的小乔不生效——`effectiveHeroes` 已经把暗置武将滤掉了。
  */
-export function cardAsSeenBy(state: GameState | undefined, owner: Player | undefined, card: Card): Card {
+export function cardAsSeenBy(
+  state: GameState | undefined,
+  owner: Player | undefined,
+  card: Card,
+): Card {
   if (!state || !owner) return card;
   if (card.suit !== 'spade') return card;
   if (!effectiveHeroes(state, owner).some((h) => h.spadeAsHeart === true)) return card;
@@ -11507,7 +11549,11 @@ export function cardAsSeenBy(state: GameState | undefined, owner: Player | undef
 }
 
 /** 这张牌对某个角色而言的花色（红颜：黑桃 → 红桃） */
-export function suitSeenAs(state: GameState | undefined, owner: Player | undefined, card: Card): Suit {
+export function suitSeenAs(
+  state: GameState | undefined,
+  owner: Player | undefined,
+  card: Card,
+): Suit {
   return cardAsSeenBy(state, owner, card).suit;
 }
 

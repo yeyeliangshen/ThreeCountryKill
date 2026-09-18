@@ -18770,6 +18770,76 @@ describe('国战 · 君主将（特性）', () => {
     expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
   });
 
+  it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
+    // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junliubei' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'caocao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    const b = state.players.find((p) => p.seatId === 'B')!;
+    const c = state.players.find((p) => p.seatId === 'C')!;
+    const setup = (p: typeof a, heroId: string, faction: 'shu' | 'wei', hand: Card[]) => {
+      p.heroId = heroId;
+      p.faction = faction;
+      p.heroRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = hand.slice();
+      p.flags = emptyFlags();
+    };
+    setup(a, 'junliubei', 'shu', []);
+    setup(b, 'guanyu', 'shu', [mk('b1', 'jiu', 'spade', 1), mk('b2', 'sha', 'spade', 7)]);
+    setup(c, 'caocao', 'wei', [mk('c1', 'jiu', 'spade', 2), mk('c2', 'sha', 'club', 8)]);
+    state.turn = { seatIndex: state.seatOrder.indexOf('A'), phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+
+    ok(act(state, 'A', { type: 'endPhase' })); // 甲：伤害 0
+    // 乙：喝酒再杀丙 → 造成 2 点
+    moveTo(state, 'B');
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b1' }));
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b2', targetIds: ['C'] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, 'C', { type: 'pass' }));
+    ok(act(state, 'B', { type: 'endPhase' }));
+    // 丙：喝酒再杀乙 → 只造成 1 点（乙满血时 2 点会打死人，这里给乙留 1 血：先手可惜——
+    // 简化：丙打乙 1 点即可，够验证「同势力里最多」）
+    moveTo(state, 'C');
+    ok(act(state, 'C', { type: 'playCard', cardId: 'c2', targetIds: ['B'] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, 'B', { type: 'pass' }));
+    ok(act(state, 'C', { type: 'endPhase' }));
+    // 丙被【奸雄】把那把杀收了回来、又摸了两张 → 手牌超上限，先过弃牌阶段
+    let guard = 0;
+    while (state.pending?.kind === 'discard' && guard++ < 5) {
+      const hand = toSnapshot(state, 'C').myHand;
+      ok(
+        act(state, 'C', {
+          type: 'discard',
+          cardIds: hand.slice(0, state.pending.count).map((c) => c.id),
+        }),
+      );
+    } // 丙回合结束 → 座次绕回甲 = 一轮结束
+
+    // 蜀势力本轮最多的是乙（2 点）→ 得【先驱】；甲 0 点、丙是魏势力 → 都没有
+    expect(b.markers.xianqu).toBe(1);
+    expect(a.markers.xianqu).toBeUndefined();
+    expect(c.markers.xianqu).toBeUndefined();
+    // 账本随轮清空
+    expect(state.damageThisRound).toEqual({});
+  });
+
+  /** 把回合直接摆到某人的出牌阶段（跳过阶段推进，仅测试用） */
+  function moveTo(state: ReturnType<typeof createGame>, seatId: string) {
+    state.turn = { seatIndex: state.seatOrder.indexOf(seatId), phase: 'play' };
+    state.pending = { kind: 'play', seatId };
+  }
+
   it('飞龙夺凤：每回合首次用【杀】造成伤害后，可获得其一张手牌', () => {
     const { state, a, b } = junbeiGame(
       [mk('a1', 'sha', 'spade', 5), mk('a2', 'sha', 'club', 7)],
