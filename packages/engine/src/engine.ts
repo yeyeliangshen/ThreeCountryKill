@@ -83,6 +83,7 @@ import {
   suitSeenAs,
   colorSeenAs,
   huangtianFor,
+  xuanhuoFor,
   ROLE_NAME,
   type ActiveSkill,
   type Hero,
@@ -6246,7 +6247,15 @@ function respondDeathSave(
   );
   // 濒死被救回也算「回复体力」（甘夫人·淑慎）。这里刻意不走 healAndTrigger：
   // 濒死时体力 ≤0，回复量不该被体力上限夹取（原来就是 Math.max(hp,0) + heal）。
-  runHooksPausable(state, 'afterHeal', dying, { amount: heal }, () => {});
+  // taoSaverId 给法正·恩怨①用（「其他角色对你使用【桃】时，其摸一张牌」）。
+  // 与【救援】同一口径：只认**实体【桃】**，转化出来的桃（急救那种红牌当桃）与酒当桃不算。
+  runHooksPausable(
+    state,
+    'afterHeal',
+    dying,
+    { amount: heal, taoSaverId: card.type === 'tao' && saver.seatId !== dying.seatId ? saver.seatId : undefined },
+    () => {},
+  );
   // 救活，回到伤害来源出牌阶段
   resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
   return { ok: true };
@@ -7150,6 +7159,8 @@ function onUseSkill(
   if (!skill) skill = equipActiveSkills(state, player).find((s) => s.id === intent.skillId);
   // 别人的势力技（黄天：群势力角色把【闪】/【闪电】交给明置的张角）
   if (!skill) skill = huangtianFor(state, player).find((s) => s.id === intent.skillId);
+  // 别人的反向技（眩惑：同势力角色交给明置的法正一张手牌，换一个临时技能）
+  if (!skill) skill = xuanhuoFor(state, player).find((s) => s.id === intent.skillId);
   if (!skill) return err('你没有这个技能');
   // 检查可用性
   if (!skill.canUse(state, player)) return err('该技能当前不可使用');

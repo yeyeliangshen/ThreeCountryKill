@@ -20,7 +20,7 @@ import type {
   Suit,
   TrickType,
 } from '@sgs/protocol';
-import type { HookContext, HookRegistration, SkillApi, Timing } from './timing';
+import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
 import { drawOne } from './deck';
 import { attackRange, canTarget, distance } from './distance';
@@ -61,6 +61,12 @@ export interface SkillCardCtx {
 export interface ActiveSkill {
   id: string;
   name: string;
+  /**
+   * 技能说明。只有**借来的**主动技需要写（黄天、眩惑）——
+   * 一般的主动技说明由 legal.skillDescFor 从自己武将牌的 skills[] 里查，
+   * 而借来的技能不在使用者的武将牌上，查不到。
+   */
+  desc?: string;
   /** 限 1 次/回合 */
   oncePerTurn?: boolean;
   /**
@@ -425,12 +431,16 @@ const ZHANGFEI: Hero = {
   shaLimit: () => Infinity,
   lockedFields: ['shaLimit'],
   combos: ['guanyu'],
+  // 眩惑能把「咆哮」借给别人，所以字段要登记进 skillFields（grantedHeroes 靠它摘字段）
+  skillFields: { 咆哮: ['shaLimit'] },
   skills: [{ name: '咆哮', desc: '出牌阶段，你可以使用任意数量的【杀】。' }],
   // 国战（新国战）：咆哮追加「出牌阶段使用了第二张【杀】后，摸一张牌」
   guozhan: {
     hooks: [
       {
         timing: 'useCard',
+        skillId: '咆哮',
+        locked: true,
         handler: (ctx) => {
           const payload = ctx.payload as { attack?: AttackContext } | undefined;
           if (payload?.attack?.asType !== 'sha') return;
@@ -545,6 +555,7 @@ const HUANGZHONG: Hero = {
     hooks: [
       {
         timing: 'useCard',
+        skillId: '烈弓',
         handler: (ctx) => {
           const payload = ctx.payload as { attack?: AttackContext } | undefined;
           if (payload?.attack?.asType !== 'sha') return;
@@ -3969,6 +3980,287 @@ const YUJIN: Hero = {
     },
   ],
 };
+
+/**
+ * 法正 —— 恩怨 / 眩惑（君临天下·权，取 **2019 修订版**＝三国杀官网现行文本，已核）。
+ *
+ * - 恩怨（锁定技）
+ *   ① 当其他角色对你使用【桃】时，其摸一张牌。
+ *   ② 当你受到伤害后，伤害来源选择交给你一张手牌或失去 1 点体力。
+ *   ⚠️ 2018 初版的①是「当你获得一名其他角色至少两张牌后，该角色摸一张牌」，2019 修订版
+ *      换成了「对你用桃的人摸一张牌」——本实现取 2019 版（官网现行文本）。
+ *   ①只可能发生在**濒死求桃**时（【桃】平时只能对自己使用），所以引擎在救援收尾处把它
+ *      放进 afterHeal 的 payload.taoSaverId 里派发。与【孙权·救援】同一口径：**只认实体
+ *      【桃】**，红牌当桃（华佗·急救）与酒当桃不算——它俩在引擎里是「转化/替代」，连救援
+ *      的加成也吃不到（详见 engine.respondDeathSave 的注释）。
+ *   ②是**强制**的（锁定技，没得选「不发动」）。来源没手牌可交时只剩「失去 1 点体力」一条路，
+ *      这种情况直接结算、不弹一个只有单项的询问。
+ *
+ * - 眩惑：与你势力相同的**其他**角色的出牌阶段限一次，其可以交给你一张手牌并弃置一张牌，
+ *   然后其本回合获得「武圣」「咆哮」「龙胆」「铁骑」「烈弓」「狂骨」之一
+ *   （不能选择场上已有的技能）。
+ *   与【黄天】一样是**反向**技能（由别人发动、好处给别人），所以挂在外部技能表上
+ *   （legal 的可选技能表 + engine.onUseSkill 的查找），不在法正自己的技能表里。
+ *   - 「场上已有」按**明置武将牌上写着这个技能**算（含别人借到的技能——那是公开信息），
+ *     暗置武将的技能不算：国战里暗置的武将牌本来就没有技能。六个全在场上时用不了。
+ *   - 六个技能都是**国战版**（getHeroForMode 取的那张牌），所以借来的「烈弓」按国战条件判、
+ *     「咆哮」带上「第二张杀摸一张」那一句。
+ *   - 发动者自己必须是**已确定势力**的角色（effectiveFaction 非空）——暗将没有势力，
+ *     「与你势力相同」无从谈起。官方 2018 初版给王平·将略专门写了「未确定势力的角色可以
+ *     在此时明置武将牌」，说明常规情况下未确定势力者不参与这类结算（黄天同一口径）。
+ */
+const FAZHENG: Hero = {
+  id: 'fazheng',
+  name: '法正',
+  faction: 'shu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      // 恩怨①：别人用【桃】把你从濒死救回来 → 他摸一张牌
+      timing: 'afterHeal',
+      skillId: '恩怨',
+      locked: true,
+      handler: (ctx) => {
+        const payload = ctx.payload as HealPayload | undefined;
+        const saverId = payload?.taoSaverId;
+        if (!saverId) return;
+        const saver = getPlayer(ctx.state, saverId);
+        if (!saver) return;
+        const c = drawOne(ctx.state);
+        if (!c) return;
+        saver.hand.push(c);
+        pushLog(ctx.state, 'skill', `${saver.name} 因【恩怨】摸了 1 张牌。`);
+      },
+    },
+    {
+      // 恩怨②：受到伤害后，来源「交给你一张手牌」或「失去 1 点体力」——由**来源**选
+      timing: 'afterDamage',
+      skillId: '恩怨',
+      locked: true,
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const sourceId = payload?.attack?.sourceId;
+        if (!payload?.damage || !sourceId || sourceId === ctx.player.seatId) return;
+        const source = getPlayer(ctx.state, sourceId);
+        if (!source) return;
+        const me = ctx.player;
+        const makeLoseHp = (st: GameState, who: Player): void => {
+          pushLog(st, 'skill', `${who.name} 因【恩怨】失去 1 点体力。`);
+          ctx.api.loseHp(who, 1);
+        };
+        if (source.hand.length === 0) {
+          makeLoseHp(ctx.state, source); // 没手牌可交，只剩这一条
+          return;
+        }
+        ctx.api.askChoice(
+          ctx.state,
+          source.seatId,
+          `【恩怨】：交给 ${me.name} 一张手牌，或失去 1 点体力`,
+          [
+            { id: 'give', label: `交给 ${me.name} 一张手牌` },
+            { id: 'lose', label: '失去 1 点体力' },
+          ],
+          (st, p, picked) => {
+            if (picked === 'lose') {
+              makeLoseHp(st, p);
+              return;
+            }
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              `【恩怨】：选择交给 ${me.name} 的一张手牌`,
+              p.hand.slice(),
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                ctx.api.transferCard(p2.seatId, card, me.seatId, () => {
+                  pushLog(st2, 'skill', `${p2.name} 因【恩怨】交给 ${me.name} 一张手牌。`);
+                });
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '恩怨',
+      desc: '锁定技，当其他角色对你使用【桃】时，其摸一张牌。当你受到伤害后，伤害来源选择交给你一张手牌或失去1点体力。',
+    },
+  ],
+};
+
+/** 眩惑能选的六个技能（都是**国战版**，所以借谁就用谁那张牌上的版本） */
+const XUANHUO_SKILLS: { heroId: string; name: string }[] = [
+  { heroId: 'guanyu', name: '武圣' },
+  { heroId: 'zhangfei', name: '咆哮' },
+  { heroId: 'zhaoyun', name: '龙胆' },
+  { heroId: 'machao', name: '铁骑' },
+  { heroId: 'huangzhong', name: '烈弓' },
+  { heroId: 'weiyan', name: '狂骨' },
+];
+
+/** 这张（可能是合成/借来的）武将牌上有没有这个技能 */
+function heroHasSkill(h: Hero, name: string): boolean {
+  if (h.skills?.some((s) => s.name === name)) return true;
+  if (h.hooks?.some((hk) => hk.skillId === name)) return true;
+  if (h.activeSkills?.some((s) => s.name === name)) return true;
+  if (h.skillFields?.[name]) return true;
+  return false;
+}
+
+/** 这个技能在场上吗（只看**活着**的角色的**明置**武将牌 + 已授予的技能） */
+function skillOnField(state: GameState, name: string): boolean {
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    for (const h of effectiveHeroes(state, p)) if (heroHasSkill(h, name)) return true;
+  }
+  return false;
+}
+
+/** 眩惑此刻能选的技能：六个里场上还没有的那些 */
+function xuanhuoChoices(state: GameState): { heroId: string; name: string }[] {
+  return XUANHUO_SKILLS.filter((s) => !skillOnField(state, s.name));
+}
+
+/** 眩惑要交给谁：场上与你势力相同的、明置的、活着的法正（不含自己） */
+function xuanhuoDonors(state: GameState, player: Player): Player[] {
+  const mine = effectiveFaction(state, player);
+  if (!mine) return []; // 暗将没有势力
+  return state.players.filter(
+    (p) =>
+      p.alive &&
+      p.seatId !== player.seatId &&
+      effectiveFaction(state, p) === mine &&
+      effectiveHeroes(state, p).some((h) => h.id === 'fazheng'),
+  );
+}
+
+/**
+ * 眩惑（法正·反向技能，见 FAZHENG 的注释）。
+ *
+ * 三步：交一张手牌给法正 → 弃一张牌（手牌或装备区）→ 选一个技能借到回合结束。
+ * 材料不足 / 六个技能全在场时**不能发动**（canUse 直接拦掉），
+ * 免得发动到一半才发现没得选。
+ */
+const XUANHUO: ActiveSkill = {
+  id: 'xuanhuo',
+  name: '眩惑',
+  desc: '出牌阶段限一次，你可以交给一名明置的法正一张手牌并弃置一张牌，然后你本回合获得「武圣」「咆哮」「龙胆」「铁骑」「烈弓」「狂骨」之一（不能选择场上已有的技能）。',
+  oncePerTurn: true,
+  minTargets: 0,
+  maxTargets: 0,
+  needsCards: false,
+  canUse: (state, player) =>
+    xuanhuoDonors(state, player).length > 0 &&
+    player.hand.length >= 1 &&
+    handAndEquipOf(player).length >= 2 &&
+    xuanhuoChoices(state).length > 0,
+  execute: (state, player, _intent, api) => {
+    const donors = xuanhuoDonors(state, player);
+    if (donors.length === 0) return '场上没有与你势力相同的明置法正';
+    if (player.hand.length === 0) return '眩惑要交给法正一张手牌';
+    if (handAndEquipOf(player).length < 2) return '眩惑还要再弃置一张牌';
+    if (xuanhuoChoices(state).length === 0) return '那六个技能场上都已经有了';
+
+    // 第三步：从「场上还没有的」里挑一个，借到回合结束
+    const chooseSkill = (): void => {
+      const choices = xuanhuoChoices(state);
+      if (choices.length === 0) return;
+      api.askChoice(
+        state,
+        player.seatId,
+        '【眩惑】：获得以下技能之一（直到回合结束）',
+        choices.map((o) => ({ id: o.name, label: o.name })),
+        (st, p, name) => {
+          const pick = XUANHUO_SKILLS.find((o) => o.name === name);
+          if (!pick) return;
+          api.grantTempSkill(pick.heroId, pick.name, p.seatId);
+          pushLog(
+            st,
+            'skill',
+            `${p.name} 因【眩惑】获得【${pick.name}】，直到回合结束。`,
+          );
+        },
+        player.seatId,
+      );
+    };
+
+    // 第二步：弃一张牌（手牌或装备区——装备牌被弃会触发那类技能，走 api.discardCard）
+    const discardStep = (): void => {
+      api.askPickCards(
+        state,
+        player.seatId,
+        '【眩惑】：弃置一张牌',
+        handAndEquipOf(player),
+        1,
+        1,
+        (st, p, chosen) => {
+          const card = chosen[0];
+          if (!card) {
+            chooseSkill();
+            return;
+          }
+          api.discardCard(p.seatId, card, () => {
+            pushLog(st, 'skill', `${p.name} 发动【眩惑】，弃置了一张牌。`);
+            chooseSkill();
+          });
+        },
+        { returnTo: player.seatId },
+      );
+    };
+
+    // 第一步：交一张**手牌**给法正
+    const giveStep = (donor: Player): void => {
+      api.askPickCards(
+        state,
+        player.seatId,
+        `【眩惑】：选择交给 ${donor.name} 的一张手牌`,
+        player.hand.slice(),
+        1,
+        1,
+        (st, p, chosen) => {
+          const card = chosen[0];
+          if (!card) return;
+          // 走 transferCard 而不是自己 splice：统一由它处理「牌的去向」与日志时机
+          api.transferCard(p.seatId, card, donor.seatId, () => {
+            pushLog(st, 'skill', `${p.name} 发动【眩惑】，交给 ${donor.name} 一张手牌。`);
+            discardStep();
+          });
+        },
+        { returnTo: player.seatId },
+      );
+    };
+
+    if (donors.length === 1) {
+      giveStep(donors[0]!);
+      return undefined;
+    }
+    api.askChoice(
+      state,
+      player.seatId,
+      '【眩惑】：交给哪位法正？',
+      donors.map((p) => ({ id: p.seatId, label: p.name })),
+      (_st, _p, targetSeatId) => {
+        const t = donors.find((p) => p.seatId === targetSeatId);
+        if (t) giveStep(t);
+      },
+      player.seatId,
+    );
+    return undefined;
+  },
+};
+
+/** 法正能让别人用眩惑吗（给 engine / legal 的技能表用） */
+export function xuanhuoFor(state: GameState, player: Player): ActiveSkill[] {
+  return XUANHUO.canUse(state, player) ? [XUANHUO] : [];
+}
 
 const LIJUE_GUOSI: Hero = {
   id: 'lijue_guosi',
@@ -9048,6 +9340,7 @@ function huangtianCards(player: Player): Card[] {
 const HUANGTIAN: ActiveSkill = {
   id: 'huangtian',
   name: '黄天',
+  desc: '出牌阶段，你可以将一张【闪】或【闪电】交给一名明置的张角。',
   minTargets: 0,
   maxTargets: 0,
   needsCards: true,
@@ -9382,6 +9675,7 @@ export const HEROES: Hero[] = [
   LIJUE_GUOSI,
   YUJIN,
   CUIYAN_MAOJIE,
+  FAZHENG,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

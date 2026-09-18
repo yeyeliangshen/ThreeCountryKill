@@ -15634,3 +15634,263 @@ describe('国战 · 孙策·魂殇（临时授予技能）', () => {
     expect(state.log.some((e) => e.message.includes('魂殇'))).toBe(false);
   });
 });
+
+/** 法正·恩怨 / 眩惑（君临天下·权，取 2019 修订版＝官网现行文本） */
+describe('国战 · 法正（恩怨 / 眩惑）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('恩怨②：受到伤害后，伤害来源交给法正一张手牌', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'fazheng', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 法正不出闪 → 受到 1 点伤害
+    // 恩怨②问的是**来源**（锁定技，没有「不发动」这一项）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.title).toContain('恩怨');
+      expect(state.pending.options.map((o) => o.id)).toEqual(['give', 'lose']);
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'give' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    expect(a.hand.length).toBe(0);
+    expect(b.hand.map((c) => c.id)).toEqual(['a2']);
+    expect(state.log.some((e) => e.message.includes('因【恩怨】交给'))).toBe(true);
+  });
+
+  it('恩怨②：来源选择失去 1 点体力（有手牌也可以不交）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'fazheng', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'lose' }));
+    expect(a.hp).toBe(3);
+    expect(b.hand.length).toBe(0);
+    expect(state.log.some((e) => e.message.includes('因【恩怨】失去 1 点体力'))).toBe(true);
+    // 结算完回到甲的出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('恩怨②：来源没有手牌时直接失去 1 点体力（不弹只有一项的询问）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'fazheng', faction: 'shu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(a.hp).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.log.some((e) => e.message.includes('因【恩怨】失去 1 点体力'))).toBe(true);
+  });
+
+  it('恩怨①：其他角色用【桃】把法正救回来，该角色摸一张牌', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1'), tao('a2')] },
+      { seatId: B, name: '乙', heroId: 'fazheng', faction: 'shu', hand: [], hp: 1 },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力降到 0 → 濒死
+    // 恩怨②先问甲（受伤后）——这里选失去 1 点体力走掉
+    ok(act(state, A, { type: 'chooseOption', optionId: 'lose' }));
+    expect(a.hp).toBe(3);
+    // 濒死求桃轮询：从乙起 → [B, A]
+    expect(state.pending?.kind).toBe('respondDeath');
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    // 乙回到 1 点体力；甲用完桃后手牌为空，因【恩怨】摸 1 张
+    expect(b.hp).toBe(1);
+    expect(a.hand.length).toBe(1);
+    expect(state.log.some((e) => e.message.includes('因【恩怨】摸了 1 张牌'))).toBe(true);
+  });
+
+  it('恩怨①：法正自己吃桃回血不触发（只认「其他角色对你使用【桃】」）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'fazheng', faction: 'shu', hand: [tao('a1')], hp: 2 },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    expect(a.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('因【恩怨】'))).toBe(false);
+  });
+
+  it('眩惑：交给法正一张手牌并弃一张，然后获得一个技能到回合结束', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'fazheng', faction: 'shu', hand: [] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          faction: 'shu',
+          hand: [mk('b1', 'tao', 'heart'), mk('b2', 'shan', 'diamond'), mk('b3', 'tao', 'heart')],
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      B,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 反向技能：出牌阶段的可选技能表里有它的是**同势力的乙**，不是法正自己
+    expect(toSnapshot(state, B).prompt?.legalSkillIds).toContain('xuanhuo');
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('xuanhuo');
+    ok(act(state, B, { type: 'useSkill', skillId: 'xuanhuo', cardIds: [], targetIds: [] }));
+    // 第一步：交一张手牌给法正
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(a.hand.map((c) => c.id)).toEqual(['b1']);
+    // 第二步：弃一张牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b2'] }));
+    expect(state.discard.some((c) => c.id === 'b2')).toBe(true);
+    // 第三步：六个里选一个
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toEqual([
+        '武圣',
+        '咆哮',
+        '龙胆',
+        '铁骑',
+        '烈弓',
+        '狂骨',
+      ]);
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: '武圣' }));
+    expect(b.tempGrantedSkills).toEqual([{ heroId: 'guanyu', skillName: '武圣' }]);
+    // 武圣真的生效：红牌（这张桃）现在可以当【杀】用
+    expect(canUseAsCard(state, b, mk('x', 'tao', 'heart'), 'sha')).toBe(true);
+    expect(b.hand.map((c) => c.id)).toEqual(['b3']);
+    // 限一次
+    fail(act(state, B, { type: 'useSkill', skillId: 'xuanhuo', cardIds: [], targetIds: [] }));
+  });
+
+  it('眩惑：「场上已经有」的技能不能选（明置的关羽把武圣占了）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'fazheng', faction: 'shu', hand: [] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          faction: 'shu',
+          hand: [mk('b1', 'tao', 'heart'), mk('b2', 'tao', 'heart')],
+        },
+        { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [] },
+      ],
+      B,
+    );
+    ok(act(state, B, { type: 'useSkill', skillId: 'xuanhuo', cardIds: [], targetIds: [] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b2'] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).not.toContain('武圣');
+      expect(state.pending.options.map((o) => o.id)).toContain('咆哮');
+    }
+  });
+
+  it('眩惑：暗置武将的技能不算「场上已有」', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'fazheng', faction: 'shu', hand: [] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          faction: 'shu',
+          hand: [mk('b1', 'tao', 'heart'), mk('b2', 'tao', 'heart')],
+        },
+        // 丙是关羽但**暗置**——暗置的武将牌没有技能，所以武圣仍然可选
+        { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu', hand: [], revealed: false },
+      ],
+      B,
+    );
+    ok(act(state, B, { type: 'useSkill', skillId: 'xuanhuo', cardIds: [], targetIds: [] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b2'] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).toContain('武圣');
+    }
+  });
+
+  it('眩惑：异势力角色与暗将都没有这条技能', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'fazheng', faction: 'shu', hand: [] },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [mk('b1', 'tao', 'heart'), mk('b2', 'tao', 'heart')],
+        },
+        {
+          seatId: C,
+          name: '丙',
+          heroId: 'vanilla',
+          faction: 'shu',
+          hand: [mk('c1', 'tao', 'heart'), mk('c2', 'tao', 'heart')],
+          revealed: false,
+        },
+      ],
+      B,
+    );
+    expect(toSnapshot(state, B).prompt?.legalSkillIds ?? []).not.toContain('xuanhuo');
+    // 丙是同势力但**暗置**（没有确定势力）→ 也不能眩惑
+    state.turn = { seatIndex: state.seatOrder.indexOf(C), phase: 'play' };
+    state.pending = { kind: 'play', seatId: C };
+    expect(toSnapshot(state, C).prompt?.legalSkillIds ?? []).not.toContain('xuanhuo');
+  });
+});

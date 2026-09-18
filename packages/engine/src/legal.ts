@@ -23,7 +23,7 @@ import {
 } from './heroes';
 import { MARKER_DESC, MARKER_SKILL_PREFIX, markerActiveSkills } from './markers';
 import { equipActiveSkills } from './equip';
-import { huangtianFor } from './heroes';
+import { huangtianFor, xuanhuoFor } from './heroes';
 import {
   activeHeroes,
   canUseAsCard,
@@ -355,6 +355,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     ...equipActiveSkills(state, player),
     // 黄天（张角·群势力技）：**别人**的出牌阶段多出来的一条操作
     ...huangtianFor(state, player),
+    // 眩惑（法正·反向技）：同势力角色的出牌阶段多出来的一条操作
+    ...xuanhuoFor(state, player),
   ];
   for (const skill of skills) {
     if (
@@ -417,6 +419,8 @@ function respondCandidates(state: GameState, player: Player, need: CardType): st
  * 界面不再自己配对——那份配对逻辑只留在这里一处。
  */
 function skillDescFor(heroes: Hero[], skill: ActiveSkill): string {
+  // 技能自带说明的优先（借来的技能——黄天/眩惑——不在使用者自己的武将牌上，查不到）
+  if (skill.desc) return skill.desc;
   for (const h of heroes) {
     const s = h.skills.find((x) => x.name === skill.name);
     if (s) return s.desc;
