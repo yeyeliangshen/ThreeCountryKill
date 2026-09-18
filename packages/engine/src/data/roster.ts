@@ -875,10 +875,9 @@ const BUCHEN: RosterEntry[] = [
  * 判定者不再一律是技能使用者：**雷击由张角指定的那名角色判定、悲歌由受伤者判定**（都按官方原文），
  * 所以「谁能收这张判定牌」也跟着变。
  *
- * 唯一的例外是**马超·铁骑**：它挂在 `useCard` 上，而 useCard 是同步分发的时机——判定要经过的
- * 「判定牌生效前」里鬼才/鬼道会**发问**，同步时机上发问会被后续流程静默覆盖（本引擎的老坑，
- * 见 docs/guozhan-roster.md 里那条）。所以铁骑仍是裸判定、鬼才改不了它；等 useCard 转成
- * 可挂起版本再一并解决。
+ * 马超·铁骑也在这条路上（它挂在 `useCard` 上）——以前 useCard 是同步分发的时机，判定里鬼才
+ * 一发问就会被覆盖，所以只能裸判定；后来 `useCard` 转成**可挂起**（见 docs §5.34）之后就一并接上了。
+ * 现在 roster 里**没有**「改不了判定的技能」了。
  */
 export const GUOZHAN_ROSTER: RosterEntry[] = [
   ...STANDARD_WEI,
@@ -956,7 +955,8 @@ export const PRIMITIVES_DONE: PrimitiveId[] = [
   //   第一个用户是董卓·暴凌（连带崩坏）。
   // 已转换（可挂起）的时机：afterDamage / afterDamageDealt / becomeTarget /
   //                          turnStart / judgePhase / drawPhase / playPhase / turnEnd
-  // 尚未转换：useCard / nearDeath / beforeResolve / afterResolve / afterUse / discardPhase / death
+  // 尚未转换：nearDeath / beforeResolve / afterResolve / discardPhase / death
+  //   （useCard 已转换：见 docs/guozhan-roster.md §5.34；afterUse 目前只在【调虎离山】那条路派发）
   //
   // 另外，上轮已具备的能力（不在这张待办表里的原语）：
   // 目标过滤（空城/谦逊/帷幕）、奇才距离、完杀、体力上限取整、

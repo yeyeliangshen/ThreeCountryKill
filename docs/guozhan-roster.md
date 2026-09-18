@@ -133,7 +133,8 @@ pending 会被这行直接覆盖，玩家看不到询问——表面上像技能
 
 **已转换（可挂起）的时机**：`afterDamage`、`afterDamageDealt`、`becomeTarget`、
 `turnStart`、`judgePhase`、`drawPhase`、`playPhase`、`turnEnd`。
-**尚未转换**：`useCard`、`nearDeath`、`beforeResolve`、`afterResolve`、`afterUse`、`discardPhase`、`death`。
+**尚未转换**：`nearDeath`、`beforeResolve`、`afterResolve`、`discardPhase`、`death`
+（`useCard` 已于 §5.34 转换；`afterUse` 目前只在【调虎离山】那条路派发）。
 
 **想用「钩子内询问」的新技能必须挂在已转换的时机上**，否则询问会被静默吞掉。
 新增时机时同步更新 `roster.ts` 的 `PRIMITIVES_DONE` 注释与本节。
@@ -503,7 +504,7 @@ pending 会被这行直接覆盖，玩家看不到询问——表面上像技能
 | 意图 | `{type:'prelightSkill', skillName}`，再发一次即取消 |
 | 钩子分发 | `collectTimingHooks()` = 已明置武将的钩子 + 暗置武将里**已预亮**技能的钩子；没预亮的不进列表，所以不会产生任何询问 |
 | 询问 | 可挂起的时机：先问「是否明置【X】并发动？」，确认后 `revealHeroCard()` 再跑原钩子 |
-| 同步时机 | `useCard / beforeResolve / afterResolve / damageDealt / death` 挂不起询问 → **预亮即视为决定发动**（`autoRevealHook`）。这是唯一的降级点，写在代码注释里 |
+| 同步时机 | `beforeResolve / afterResolve / death` 挂不起询问 → **预亮即视为决定发动**（`autoRevealHook`）。这是唯一的降级点，写在代码注释里（`useCard` 已改成可挂起，见 §5.34） |
 | 主动技 | 暗置武将的主动技也进 `legalSkillIds`；点击 = 明置 + 发动（点击本身就是玩家的决定） |
 | 转化技 | 暗置 + 预亮过 → `canUseAsCard` 返回 true，真正打出去时 `revealForConversion` 明置 |
 | 界面 | 技能按钮三态：`.dark`（虚线，可点=预亮）、`.prelit`（实线金边）、正常。可预亮名单随**本人快照**下发（不是出牌提示），所以**别人的回合里也能预亮** |
@@ -1261,6 +1262,29 @@ WebSearch 的配额在上一轮用尽后恢复了，用它拿到了**国战口�
 
 测试：把对方打进濒死 → 用桃救回 → 忘隙的询问在濒死结算**之后**弹出、双方各摸一张；
 对照组：没人救、真的阵亡 → 不触发。
+
+### 5.34 `useCard` 转成可挂起时机 —— 铁骑的判定也能被鬼才改判了
+
+「时机可挂起」这件事一直在按需推进（原因是钩子里发问会被后续流程静默覆盖）。这次轮到
+`useCard`（**九个**派发点：实体杀 / 技能驱动的实体杀 / 桃 / 酒 / 装备 / 延时锦囊两条 /
+即时锦囊 / 虚拟锦囊）。
+
+- 改法就是那套固定手法：`runHooks` → `runHooksPausable`，并把**后续步骤挪进回调**——
+  杀是 `becomeTargetFor`、锦囊是 `startTrickResolution`、桃/酒/装备/延时锦囊是空回调
+  （它们本来就在钩子之后就结束了）。
+- 顺手补了一处漏登记：可挂起路径（`runHooksFrom`）原本没有调 `markCardUsed`，而它和同步路径
+  （`runHooks`）是两套。转换之后「本回合出牌阶段用过的牌」账本（吕蒙·克己 / 谋断）与
+  「指定过其他势力」（卞夫人·约俭）都会走这条路，漏了就会被静默清空——四个既有测试立刻抓住了它
+  （这正是「转换时机时先跑全套测试」的价值）。注意只在**链条第一次**进入时登记（`from === 0`），
+  续接时会再进这个函数。
+- **马超·铁骑**随之接回统一的 `api.judge`：判定经过「判定牌生效前」，鬼才/鬼道可以改判、
+  天妒可以收牌。至此 roster 里**没有改不了判定的技能**了。
+  （验证方式：把 `src` 暂存起来跑那条新测试，旧引擎下确实失败——这次没有靠推测下结论。）
+- 一个诚实的更正：我原以为孙策·激昂的询问也会被吞，实测**转换前后都通过**（引擎在成为目标那条
+  路上本来就有「发现已有 pending 就续接」的保护）。两条激昂（使用侧 / 成为目标侧）仍然写进测试，
+  当作这次改造最该盯的回归面。
+- 仍未转换：`nearDeath` / `beforeResolve` / `afterResolve` / `discardPhase` / `death`
+  （`afterUse` 目前只在【调虎离山】那条路派发）。
 
 ## 6. 批次表
 

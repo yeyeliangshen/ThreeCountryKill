@@ -744,6 +744,10 @@ function runHooksFrom(
   attackBox?: AttackBox,
 ): void {
   markDamaged(state, timing, player, payload);
+  // 「本回合出牌阶段用过的牌」（克己/谋断）与「指定过其他势力」（约俭）也在这里登记——
+  // ⚠️ 只在**链条第一次**进入时记（from === 0）：这是个可挂起的时机，续接时会再进本函数，
+  //    重复登记会让账本里同一张牌出现多次。
+  if (from === 0) markCardUsed(state, timing, player, payload);
   for (let k = from; k < hooks.length; k++) {
     const res = hooks[k]!.handler({
       state,
@@ -1702,10 +1706,14 @@ function startAttack(
     `${source.name} 对 ${who} 使用了${opts?.asAttribute ? '火' : ''}【杀】${viaZhangba}。`,
     { seat: source.seatId, action: attr ? `sha-${attr}` : 'sha' },
   );
-  runHooks(state, 'useCard', source, { attack, card });
-  // 成为【杀】目标**不会**自动亮将（国战规则里没有这个时机）。暗置的玩家要用
-  // 【倾国】【龙胆】这类转化技，得事先预亮——用出去的那一刻才明置（revealForConversion）。
-  becomeTargetFor(state, target, attack);
+  // useCard 是**可挂起**的时机：钩子可能发问（孙策·激昂那次「是否摸一张」、马超·铁骑的
+  // 技能判定现在也会经过「判定牌生效前」让鬼才发问），所以后续步骤必须放进回调里，
+  // 否则询问会被紧随其后的成为目标/结算覆盖掉（本引擎的老坑）。
+  runHooksPausable(state, 'useCard', source, { attack, card }, () => {
+    // 成为【杀】目标**不会**自动亮将（国战规则里没有这个时机）。暗置的玩家要用
+    // 【倾国】【龙胆】这类转化技，得事先预亮——用出去的那一刻才明置（revealForConversion）。
+    becomeTargetFor(state, target, attack);
+  });
 }
 
 /**
@@ -3628,7 +3636,7 @@ function playTao(
     seat: player.seatId,
     action: 'tao',
   });
-  runHooks(state, 'useCard', player, { card });
+  runHooksPausable(state, 'useCard', player, { card }, () => {});
   // 严白虎·寄篱：自己对自己用的**红色**基本牌也是「唯一目标」→ 此牌结算两次
   // （自己出牌阶段用【桃】回 2 点；【酒】那种靠标记生效的牌，重跑一次不叠加，
   //   见 Hero 注释里记的已知简化）
@@ -3669,7 +3677,7 @@ function playJiu(
     seat: player.seatId,
     action: 'jiu',
   });
-  runHooks(state, 'useCard', player, { card });
+  runHooksPausable(state, 'useCard', player, { card }, () => {});
   return { ok: true };
 }
 
@@ -3698,7 +3706,7 @@ function playEquip(
         `${player.name} 的【七星宝刀】弃置了装备区与判定区其他 ${swept.length} 张牌。`,
       );
     }
-    runHooks(state, 'useCard', player, { card });
+    runHooksPausable(state, 'useCard', player, { card }, () => {});
   };
   // 旧装备被顶掉 = 失去装备区的一张牌（枭姬）
   if (old) {
@@ -3729,7 +3737,7 @@ function playDelayedTrick(
       seat: player.seatId,
       action: 'shandian',
     });
-    runHooks(state, 'useCard', player, { card });
+    runHooksPausable(state, 'useCard', player, { card }, () => {});
     return { ok: true };
   }
   // 乐不思蜀 / 兵粮寸断：目标为其他存活玩家，距离≤1
@@ -3754,7 +3762,7 @@ function playDelayedTrick(
     `${player.name} 将【${CARD_TYPE_NAME[type]}】置于 ${target.name} 的判定区。`,
     { seat: player.seatId, action: type },
   );
-  runHooks(state, 'useCard', player, { card });
+  runHooksPausable(state, 'useCard', player, { card }, () => {});
   return { ok: true };
 }
 
@@ -3887,9 +3895,9 @@ function playTrick(
     action: type,
   });
   // 载荷带上目标：卞夫人·约俭要判断「本回合有没有指定过其他势力的角色」
-  runHooks(state, 'useCard', player, { card, targetIds: intent.targetIds });
-
-  startTrickResolution(state, player, card, intent.targetIds, intent.targetCardId);
+  runHooksPausable(state, 'useCard', player, { card, targetIds: intent.targetIds }, () => {
+    startTrickResolution(state, player, card, intent.targetIds, intent.targetCardId);
+  });
   return { ok: true };
 }
 
@@ -5696,8 +5704,9 @@ function resolvePlayedSha(
     afterSettled: after,
   };
   pushLog(state, log.kind, log.text);
-  runHooks(state, 'useCard', source, { attack, card });
-  becomeTargetFor(state, target, attack);
+  runHooksPausable(state, 'useCard', source, { attack, card }, () => {
+    becomeTargetFor(state, target, attack);
+  });
 }
 
 function passJiedao(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
@@ -7461,8 +7470,9 @@ function makeSkillApi(
         seat: source.seatId,
         action: spec.type,
       });
-      runHooks(state, 'useCard', source, { card });
-      startTrickResolution(state, source, card, targetIds ?? [], undefined);
+      runHooksPausable(state, 'useCard', source, { card }, () => {
+        startTrickResolution(state, source, card, targetIds ?? [], undefined);
+      });
     },
     moveFieldCard: (card, toSeatId, after) => {
       const target = getPlayer(state, toSeatId);

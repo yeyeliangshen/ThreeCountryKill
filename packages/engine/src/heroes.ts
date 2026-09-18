@@ -529,12 +529,9 @@ const MACHAO: Hero = {
   maxHp: 4,
   gender: 'male',
   // 铁骑：使用【杀】指定目标后，翻判定牌→红色则不可闪避。
-  //
-  // ⚠️ 这里**仍然是裸判定**（没走 api.judge）：铁骑挂在 `useCard` 上，而 useCard 是
-  // **同步分发**的时机——判定要经过「判定牌生效前」，鬼才/鬼道在那里会发问，同步时机上
-  // 发问会被后续流程静默覆盖（本引擎的老坑）。所以「鬼才改不了铁骑的判定」是本引擎已知的
-  // 一处简化，等 useCard 转成可挂起版本再一并解决；其余技能判定（刚烈/屯田/潜袭/悲歌/
-  // 恪守/雷击）都已经走 api.judge 了。
+  // 走统一的技能判定（api.judge）：鬼才/鬼道可以改判、天妒可以收走判定牌。
+  // 这要归功于 `useCard` 已经转成**可挂起**的时机——以前它是同步分发的，
+  // 判定里鬼才一发问就会被随后的成为目标/结算覆盖掉（当时只能裸判定，注释里记过）。
   hooks: [
     {
       timing: 'useCard',
@@ -542,18 +539,13 @@ const MACHAO: Hero = {
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext } | undefined;
         if (payload?.attack?.asType !== 'sha') return;
-        const judgeCard = drawOne(ctx.state);
-        if (!judgeCard) return;
-        pushLog(
-          ctx.state,
-          'skill',
-          `${ctx.player.name} 发动【铁骑】，判定牌：${cardLabel(judgeCard)}。`,
-        );
-        toDiscard(ctx.state, judgeCard);
-        if (isRed(judgeCard)) {
-          payload.attack.requiredShan = Infinity;
-          pushLog(ctx.state, 'skill', `判定为红色，此【杀】不可闪避！`);
-        }
+        ctx.api.judge('铁骑', (judgeCard) => {
+          if (!judgeCard) return;
+          if (isRed(judgeCard)) {
+            payload.attack!.requiredShan = Infinity;
+            pushLog(ctx.state, 'skill', `【铁骑】判定为红色，此【杀】不可闪避！`);
+          }
+        });
       },
     },
   ],

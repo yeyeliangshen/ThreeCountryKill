@@ -18071,3 +18071,131 @@ describe('国战 · 李典·忘隙（濒死救回也算存活）', () => {
     expect(state.log.some((e) => e.message.includes('忘隙'))).toBe(false);
   });
 });
+
+/**
+ * useCard 转成可挂起之后：铁骑的判定也能被鬼才改判了。
+ *
+ * 顺带把两侧的激昂（使用 / 成为目标）也锁进测试——它在切换前后都是好的，但这两条路正好
+ * 覆盖「useCard 上的技能发问」与「成为目标时发问」，是这次改造最该盯住的两条回归面。
+ */
+describe('国战 · useCard 可挂起（铁骑改判 / 激昂发问）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      deputyHeroId?: string;
+    }[],
+    actor?: string,
+    deck: Card[] = [],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      if (s.deputyHeroId) p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.deck = deck.slice();
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('鬼才可以改【铁骑】的判定（红桃被换成黑牌 → 不再是不可闪避）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'machao', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [shan('b1')] },
+        // 丙＝司马懿（鬼才）
+        {
+          seatId: C,
+          name: '丙',
+          heroId: 'simayi',
+          faction: 'wei',
+          hand: [mk('c1', 'sha', 'spade', 7)],
+        },
+      ],
+      A,
+      // 判定牌是红桃（原样生效的话这刀不可闪避）
+      [mk('j1', 'tao', 'heart', 3)],
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(C);
+      expect(state.pending.title).toContain('鬼才');
+    }
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, C, { type: 'pickCards', cardIds: ['c1'] }));
+    // 换成黑桃 → 铁骑无效 → 乙照常出闪
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(b.hp).toBe(b.maxHp);
+    expect(state.log.some((e) => e.message.includes('替换判定牌'))).toBe(true);
+  });
+
+  it('孙策·激昂（使用侧）：红杀指定目标后先问「是否摸一张」，再轮到对方出闪', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'sunce', faction: 'wu', hand: [sha('a1', 'heart')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+      [mk('d1', 'tao', 'heart', 1), mk('d2', 'tao', 'heart', 2)],
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const handBefore = a.hand.length;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // 激昂先问（用的是红杀）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.title).toContain('激昂');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 摸了一张；然后才轮到乙出闪
+    expect(a.hand.length).toBe(handBefore - 1 + 1);
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('孙策·激昂（成为目标侧）：被打红色杀时也能问', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1', 'heart')] },
+        // 乙＝孙策 + 郭嘉？不必：激昂本来就属孙策，这里只验「成为目标」这一侧
+        { seatId: B, name: '乙', heroId: 'sunce', faction: 'wu', hand: [] },
+      ],
+      A,
+      [mk('d1', 'tao', 'heart', 1), mk('d2', 'tao', 'heart', 2)],
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('激昂');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand.length).toBe(1);
+  });
+});
