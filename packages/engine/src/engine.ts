@@ -1188,7 +1188,9 @@ function askBeforeJudge(
       .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
     for (const hk of hooks) list.push({ player: p, hook: hk });
   }
-  judgeHookStep(state, list, 0, trick, judgeCard, judgedId, undefined, onDone);
+  judgeHookStep(state, list, 0, trick, judgeCard, judgedId, undefined, onDone, {
+    dead: false,
+  });
 }
 /**
  * 判定过程中钩子可以写入的决定。
@@ -1198,6 +1200,15 @@ function askBeforeJudge(
 interface JudgeBox {
   replacement?: Card;
   gainer?: Player;
+  /**
+   * 这条判定链还活着吗（`askBeforeJudge` 建、链跑完时置 dead）。
+   *
+   * 为什么要它：钩子「先问玩家再决定」是**跨步**的，等玩家的回答回来时，这条判定链
+   * 有可能已经结束了（例如那一步棋局已经翻篇、或者链被另一条询问挤掉）。
+   * 这时钩子打出的那张手牌**无家可归**——以前它就这么没了（模糊测试的缺席守望器抓到：
+   * 一张牌离开手牌后永远没回到任何区域）。有家才写盒子，没家就进弃牌堆。
+   */
+  chain?: { dead: boolean };
 }
 
 /**
@@ -1222,13 +1233,16 @@ function judgeHookStep(
   judgedId: string,
   gainer: Player | undefined,
   onDone: (finalCard: Card, gainer: Player | undefined) => void,
+  chain: { dead: boolean },
 ): void {
   if (k >= list.length) {
+    // 这条判定链到此为止：之后钩子再往盒子里写替换牌就「无家可归」了（见 JudgeBox.chain）
+    chain.dead = true;
     onDone(cur, gainer);
     return;
   }
   const { player, hook } = list[k]!;
-  const box: JudgeBox = {};
+  const box: JudgeBox = { chain };
   const res = hook.handler({
     state,
     player,
@@ -1250,7 +1264,7 @@ function judgeHookStep(
       pushLog(state, 'judge', `${player.name} 将判定牌替换为${cardLabel(next)}。`);
     }
     if (res?.gainJudgeCard || box.gainer) nextGainer = box.gainer ?? player;
-    judgeHookStep(state, list, k + 1, trick, next, judgedId, nextGainer, onDone);
+    judgeHookStep(state, list, k + 1, trick, next, judgedId, nextGainer, onDone, chain);
   };
 
   // 钩子挂起了询问（鬼才挑牌）：等它选完再应用决定
@@ -7018,7 +7032,20 @@ function makeSkillApi(
     askPickCards,
     replaceJudgeCard: (card) => {
       // 没有 judgeBox 说明不在判定流程里，静默忽略
-      if (judgeBox) judgeBox.replacement = card;
+      if (judgeBox) {
+        // 判定链已经跑完了（回答来得太晚）：这张牌没有判定可以替换了，但它**不能消失**——
+        // 按「打出的牌」进弃牌堆（模糊测试报过：它以前就这么没了）
+        if (judgeBox.chain?.dead) {
+          toDiscard(state, card);
+          pushLog(
+            state,
+            'judge',
+            `判定已经结算完，打出的【${cardLabel(card)}】置入弃牌堆。`,
+          );
+          return;
+        }
+        judgeBox.replacement = card;
+      }
     },
     judge: (skillName, onDone, judgeOpts) => {
       const judgeSeat = judgeOpts?.judgeSeatId ?? opts?.actor;
