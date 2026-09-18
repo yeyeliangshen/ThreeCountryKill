@@ -10,8 +10,8 @@
 // ⚠️ 驱动在 ./fuzzHarness（定位器也要用它——两边必须是同一份代码）。
 import { describe, it, expect } from 'vitest';
 import { checkDuplicate, riskyGame, rng, step } from './fuzzHarness';
-describe('随机对局不变式：待修，暂不挡 CI', () => {
-  it.skip('60 局随机对局里任何一步都有 pending', () => {
+describe('随机对局不变式：控制权不丢（任何一步都要有 pending）', () => {
+  it('60 局随机对局里任何一步都有 pending', () => {
     const problems: string[] = [];
     for (let seed = 1; seed <= 60; seed++) {
       const rand = rng(seed * 977);
@@ -21,8 +21,12 @@ describe('随机对局不变式：待修，暂不挡 CI', () => {
         while (!state.gameOver && steps < 4000) {
           step(state, rand);
           steps++;
-          // ① 控制权不能丢：任何一步跑完都必须有 pending（或已经分出胜负）
+          // ① 控制权不能丢：任何一步跑完都必须有 pending
+          // ⚠️ 分两种情况：游戏**正常结束**那一步本来就 pending=null（不是 bug，收工）；
+          //    其余情况 pending=null 就是控制权丢了（踩过两次：漏了 gameOver 判断，
+          //    以及漏了「结束后别再读 pending」）。
           if (!state.pending) {
+            if (state.gameOver) break;
             problems.push(`seed=${seed} 第 ${steps} 步：控制权丢了（pending=null）`);
             break;
           }
