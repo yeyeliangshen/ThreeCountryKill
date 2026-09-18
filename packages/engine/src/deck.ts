@@ -369,7 +369,9 @@ export function seededRng(seed: number): () => number {
 export function drawOne(state: GameState): Card | null {
   if (state.deck.length === 0) {
     if (state.discard.length === 0) return null;
-    state.deck = shuffle(state.discard);
+    // ⚠️ 洗回弃牌堆也要走 `state.rng`：用缺省的 `Math.random` 会让固定种子重放不出来
+    //    （这种「同一个种子每次局面都不同」的坑踩过两轮，一处都不能漏）
+    state.deck = shuffle(state.discard, state.rng);
     state.discard = [];
   }
   const card = state.deck.pop() ?? null;

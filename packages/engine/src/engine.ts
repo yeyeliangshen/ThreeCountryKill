@@ -646,9 +646,37 @@ function runHooks(state: GameState, timing: Timing, player: Player, payload?: un
 // 仍是同步（runHooks）：useCard / beforeResolve / afterResolve / death
 //   —— 预亮技能落在这些时机上时无法询问，只能「预亮即发动」（见 autoRevealHook）。
 
-/** 把「被询问打断的后续」压进队列；等 pending 空了由 drainResume 执行 */
+/**
+ * 把「被询问打断的后续」压进队列；等 pending 空了由 drainResume 执行。
+ *
+ * ⚠️ 入队位置分两种，这是这套续接队列唯一容易弄错的地方（踩过：
+ *   「恪守判定拿回判定牌 + 判红摸牌」被推迟了三个回合才执行）：
+ *
+ * - 从**主流程**入队（一个 intent 的同步执行里，且不在任何续接 / 询问回调里）：排到队尾。
+ *   同一次同步执行里先挂起的是更内层的，要先醒；后来挂起的外层排它后面。
+ *   （例：判定里问鬼才 → 判定续接排前面，伤害结算的续接排后面。）
+ * - 从**续接内部**入队（正在跑某条续接，或正在跑某个询问的回答回调）：插到**队首**。
+ *   它是比队里所有等待者都更内层的一层，必须紧接着醒。否则外层（例如伤害结算）会先跑完
+ *   并把 pending 挂回去，队列就再也等不到「pending 为空」的时机——内层续接被永久搁置，
+ *   那张牌一直攥在闭包里（模糊测试的牌张守恒检查就是这么报出来的：实测屯田/悲歌的判定牌
+ *   被搁置 27-28 步，跨了好几个回合才归位）。
+ */
 function pushResume(state: GameState, fn: () => void): void {
-  state.resumeQueue.push(fn);
+  if (resumeDepth > 0) state.resumeQueue.unshift(fn);
+  else state.resumeQueue.push(fn);
+}
+
+/** 当前「正在续接」的层数：>0 表示入队来自某条续接 / 询问回调内部（要插队首） */
+let resumeDepth = 0;
+
+/** 跑一段「续接」：队列里的条目、或某个询问的回答回调。期间入队的一律插队首 */
+function runResume(fn: () => void): void {
+  resumeDepth++;
+  try {
+    fn();
+  } finally {
+    resumeDepth--;
+  }
 }
 
 /**
@@ -656,7 +684,8 @@ function pushResume(state: GameState, fn: () => void): void {
  * 它是「询问 → 续接」这条控制流的唯一收口。
  *
  * 循环条件带 `pending === null`：续接里如果又产生了新流程（濒死、下一次判定），
- * 就停下等那串流程走完，之后回到这里继续。
+ * 就停下等那串流程走完，之后回到这里继续。队首永远是「最内层的等待者」，
+ * 所以它被 pending 挡住是对的：那条 pending 正是它（或它的内层）发问的。
  */
 function drainResume(state: GameState): void {
   // 兜底：续接互相触发形成死循环时别把进程挂死
@@ -668,7 +697,7 @@ function drainResume(state: GameState): void {
       break;
     }
     const fn = state.resumeQueue.shift()!;
-    fn();
+    runResume(fn);
   }
 }
 
@@ -3410,7 +3439,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
         kind: 'skill',
         message: `${player.name} 选择了「${picked.label}」。`,
       });
-      pending.resolve(state, player, picked.id);
+      // 回答回调算「续接」：它里面再入队的续接要插队首（见 pushResume）
+      runResume(() => pending.resolve(state, player, picked.id));
       // 选完若没有产生新的流程（濒死、下一张判定等），把控制权还给发起者
       if (state.pending === null && pending.returnTo) {
         resumePlay(state, pending.returnTo);
@@ -3486,7 +3516,7 @@ function onPickCards(
       ? `${player.name} 选择了 ${picked.length} 张牌。`
       : `${player.name} 选择了 ${picked.map((c) => `【${cardLabel(c)}】`).join('、') || '（无）'}。`,
   );
-  pending.resolve(state, player, picked);
+  runResume(() => pending.resolve(state, player, picked));
   // 选完若没有产生新的流程（濒死等），把控制权还给发起者
   if (state.pending === null && pending.returnTo) {
     resumePlay(state, pending.returnTo);
@@ -7012,6 +7042,12 @@ function makeSkillApi(
           onDone(finalCard, false);
           return;
         }
+        // keepCard：调用方要把这张牌派别的用场（收「田」），所以这里别替它决定去哪。
+        // ⚠️ 但**天妒抢走了的**必须由这里交给天妒：调用方只收到 canTake=false，
+        //    它手上没有这张牌的去处（「已被【天妒】取走」就到此为止）——以前这条分支
+        //    就只是告诉调用方「你不能拿」，结果这张牌谁也不管，直接消失（模糊测试的
+        //    缺席守望器报出来的：判定牌连续几十个稳定步不在任何区域）。
+        if (gainer) disposeJudgeCard(state, finalCard, gainer);
         onDone(finalCard, !gainer);
       });
     },
@@ -7342,7 +7378,7 @@ function makeSkillApi(
         return;
       }
       // 发起者从随机两张军令里挑一张交给执行者
-      const two = shuffle([...ARMY_ORDERS]).slice(0, 2);
+      const two = shuffle([...ARMY_ORDERS], state.rng).slice(0, 2);
       askChoice(
         state,
         initiatorSeatId,
@@ -7389,7 +7425,7 @@ function makeSkillApi(
         return;
       }
       // 发起者同样从随机两张里挑一条，然后**依次**问每个执行者（王平·将略）
-      const two = shuffle([...ARMY_ORDERS]).slice(0, 2);
+      const two = shuffle([...ARMY_ORDERS], state.rng).slice(0, 2);
       askChoice(
         state,
         initiatorSeatId,

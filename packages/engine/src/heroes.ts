@@ -3246,19 +3246,21 @@ const DENGAI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            // 统一技能判定：鬼才/鬼道可改判。判定牌要留着自己收「田」，所以 keepCard，
-            // 但天妒可能先把它收走——那就不能用它当「田」了。
+            // 统一技能判定：鬼才/鬼道可改判。判定牌要留着自己收「田」，所以 keepCard。
+            // ⚠️ canTake=false（天妒把这张牌收走了）要**先判**：那时牌已经进了天妒的手牌，
+            //    这里再动它就是「一牌两地」。以前红桃分支排在前面，天妒收走红桃判定牌时
+            //    会同时出现在天妒手牌和弃牌堆里。
             ctx.api.judge(
               '屯田',
               (judge, canTake) => {
                 if (!judge) return;
+                if (!canTake) {
+                  pushLog(st, 'skill', '【屯田】的判定牌已被【天妒】取走，无法作为「田」。');
+                  return;
+                }
                 if (judge.suit === 'heart') {
                   toDiscard(st, judge);
                   pushLog(st, 'skill', '【屯田】判定为红桃，此牌不能作为「田」。');
-                  return;
-                }
-                if (!canTake) {
-                  pushLog(st, 'skill', '【屯田】的判定牌已被【天妒】取走，无法作为「田」。');
                   return;
                 }
                 judge.tian = true;

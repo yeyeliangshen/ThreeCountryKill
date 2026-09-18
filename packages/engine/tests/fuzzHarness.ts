@@ -8,6 +8,7 @@ import {
   getHero,
   seededRng,
   toSnapshot,
+  type Card,
   type GameState,
   type SeatSetup,
 } from '../src';
@@ -42,23 +43,30 @@ export const RISKY = [
   'lukang', // 恪守/筑围（减伤 + 判定）
 ];
 
-/** 全场所有「有归属」的牌：牌堆 + 弃牌堆 + 手牌/装备/判定/田/千幻 + 木牛流马的扣置区 */
+/**
+ * 全场所有「有归属」的牌：牌堆 + 弃牌堆 + 手牌/装备/判定/田/千幻。
+ *
+ * ⚠️ **木牛流马扣置的牌（cargo）跟着这张装备牌走**——所以在**任何**区域里都要连它一起数，
+ * 不能只在装备区数：制蛮/顺手牵羊把【木牛流马】拿到手里时，扣置的牌也跟着进手牌，
+ * 只数装备区的话会误报成「这张牌凭空消失了」（模糊测试里踩过）。
+ */
 export function allCardIds(state: GameState): string[] {
   const out: string[] = [];
-  for (const c of state.deck) out.push(c.id);
-  for (const c of state.discard) out.push(c.id);
+  const push = (c: Card): void => {
+    out.push(c.id);
+    for (const x of c.cargo ?? []) out.push(x.id);
+  };
+  for (const c of state.deck) push(c);
+  for (const c of state.discard) push(c);
   for (const p of state.players) {
-    for (const c of p.hand) out.push(c.id);
+    for (const c of p.hand) push(c);
     for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount', 'treasure'] as const) {
       const c = p.equipment[slot];
-      if (c) {
-        out.push(c.id);
-        for (const x of c.cargo ?? []) out.push(x.id);
-      }
+      if (c) push(c);
     }
-    for (const c of p.judgment) out.push(c.id);
-    for (const c of p.tian) out.push(c.id);
-    for (const c of p.qianhuan) out.push(c.id);
+    for (const c of p.judgment) push(c);
+    for (const c of p.tian) push(c);
+    for (const c of p.qianhuan) push(c);
   }
   return out;
 }
@@ -66,33 +74,23 @@ export function allCardIds(state: GameState): string[] {
 /** 这张牌此刻在哪些位置（用例内部排查重复牌时打印用） */
 export function cardLocations(state: GameState, id: string): string[] {
   const out: string[] = [];
-  state.deck.forEach((c, i) => {
-    if (c.id === id) out.push(`deck[${i}]`);
-  });
-  state.discard.forEach((c, i) => {
-    if (c.id === id) out.push(`discard[${i}]`);
-  });
-  for (const p of state.players) {
-    p.hand.forEach((c, i) => {
-      if (c.id === id) out.push(`${p.seatId}.hand[${i}]`);
+  const chk = (c: Card, where: string): void => {
+    if (c.id === id) out.push(where);
+    (c.cargo ?? []).forEach((x, i) => {
+      if (x.id === id) out.push(`${where}.cargo[${i}]`);
     });
+  };
+  state.deck.forEach((c, i) => chk(c, `deck[${i}]`));
+  state.discard.forEach((c, i) => chk(c, `discard[${i}]`));
+  for (const p of state.players) {
+    p.hand.forEach((c, i) => chk(c, `${p.seatId}.hand[${i}]`));
     for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount', 'treasure'] as const) {
       const c = p.equipment[slot];
-      if (!c) continue;
-      if (c.id === id) out.push(`${p.seatId}.equip.${slot}`);
-      (c.cargo ?? []).forEach((x, i) => {
-        if (x.id === id) out.push(`${p.seatId}.cargo[${i}]`);
-      });
+      if (c) chk(c, `${p.seatId}.equip.${slot}`);
     }
-    p.judgment.forEach((c, i) => {
-      if (c.id === id) out.push(`${p.seatId}.judg[${i}]`);
-    });
-    p.tian.forEach((c, i) => {
-      if (c.id === id) out.push(`${p.seatId}.tian[${i}]`);
-    });
-    p.qianhuan.forEach((c, i) => {
-      if (c.id === id) out.push(`${p.seatId}.qh[${i}]`);
-    });
+    p.judgment.forEach((c, i) => chk(c, `${p.seatId}.judg[${i}]`));
+    p.tian.forEach((c, i) => chk(c, `${p.seatId}.tian[${i}]`));
+    p.qianhuan.forEach((c, i) => chk(c, `${p.seatId}.qh[${i}]`));
   }
   return out;
 }
@@ -232,5 +230,50 @@ export function riskyGame(seed: number): GameState {
   state.pending = { kind: 'play', seatId: state.seatOrder[0]! };
   state.log = [];
   return state;
+}
+
+
+/**
+ * 「牌不在任何区域」的守望器：跨步统计每张牌的缺席时长。
+ *
+ * 为什么不直接查「牌数守恒」：结算中途有牌**本来就该在飞**——判定牌被结算流程拿在手里、
+ * 五谷丰登/观星亮出来的那一池、拼点亮出的两张……它们不在任何区域，但也不是丢了。
+ * 只在「牌堆 + 弃牌堆 + 手牌 + 装备 + 判定区 + 田 + 千幻」里数牌，会被这些正常的在飞状态
+ * 反复误报（一开始就是这么被误导的：几十个种子「少 1-2 张」，其实全是在飞）。
+ *
+ * 真正该抓的是**积压**：一条被打断的流程忘了接着跑，那张牌就一直攥在闭包里没人放回去。
+ * 所以口径改成——
+ * - 只在**稳定时刻**（出牌/弃牌阶段的挂起）数缺席：这时候除了在飞没有别的理由不在区域里；
+ * - 同一张牌连续缺席超过 `limit` 个稳定步 = 积压（续接队列被卡住、结算被推迟）。
+ * - 「游戏结束那一刻」不查：最后一击可能正结算到一半，牌还在飞属正常（实测 200 局里有
+ *   55 张是这样「没回来」的，都不是 bug）。
+ *
+ * 标定（200 局实测，2026-09）：修掉续接队列的排序 bug 前最久 27-44 步，
+ * 修完之后最久 4 步（都是判定链里正常的几次询问），所以 limit 取 5。
+ */
+export function makeCardWatch(ids0: string[], limit = 5) {
+  const absence = new Map<string, number>();
+  return {
+    /** 每步调一次：返回第一条「积压」告警（同一张牌只报一次） */
+    observe(state: GameState): string | null {
+      const pend = state.pending;
+      const stable = pend?.kind === 'play' || pend?.kind === 'discard';
+      const now = new Set(allCardIds(state));
+      for (const id of ids0) {
+        if (now.has(id)) {
+          absence.delete(id);
+          continue;
+        }
+        if (!stable) continue;
+        const n = (absence.get(id) ?? 0) + 1;
+        if (n >= limit) {
+          absence.delete(id); // 只报一次，别刷屏
+          return `牌 ${id} 连续 ${n} 个稳定步不在任何区域（结算被积压了？）`;
+        }
+        absence.set(id, n);
+      }
+      return null;
+    },
+  };
 }
 

@@ -14556,6 +14556,29 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     expect(state.discard.some((c) => c.id === 'j1')).toBe(true);
   });
 
+  it('屯田 + 天妒：判定牌被【天妒】收走时必须归天妒，不能凭空消失', () => {
+    // 邓艾 + 郭嘉（同一人的主将/副将）：屯田的判定牌会被自己的【天妒】收走。
+    // keepCard 这条路上，引擎只告诉屯田「你不能拿这张牌了」——牌本身以前谁也不管：
+    // 判完就从全场消失（模糊测试的牌张守望器抓到）；红桃那半句还会先把它推进弃牌堆，
+    // 于是同一张牌又在天妒手牌、又在弃牌堆。
+    for (const suit of ['spade', 'heart'] as const) {
+      const state = gz([
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
+        { seatId: B, name: '乙', heroId: 'dengai', deputyHeroId: 'guojia', faction: 'wei', hand: [tao('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+      ]);
+      const b = state.players.find((p) => p.seatId === B)!;
+      state.deck = [mk('j1', 'sha', suit, 5)];
+      ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+      passWuxie(state);
+      expect(state.pending?.kind).toBe('choice');
+      ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+      expect(b.tian).toHaveLength(0); // 天妒先收走了，当不了「田」
+      expect(b.hand.some((c) => c.id === 'j1')).toBe(true); // 归天妒（＝判定者自己）
+      expect(state.discard.some((c) => c.id === 'j1')).toBe(false); // 不许两头都在
+    }
+  });
+
   it('急袭（主将技）：「田」可以当【顺手牵羊】使用', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'dengai', deputyHeroId: 'xuchu', faction: 'wei', hand: [] },
@@ -16053,9 +16076,17 @@ describe('国战 · 王平·将略', () => {
     return state;
   }
 
-  /** 军令是「从六条里随机抽两张」，测试里把随机数钉死，让抽到的那两条固定 */
-  function fixedDraw() {
-    return vi.spyOn(Math, 'random').mockReturnValue(0);
+  /**
+   * 军令是「从六条里随机抽两张」，测试里把随机数钉死，让抽到的那两条固定。
+   *
+   * ⚠️ 引擎的随机源是 `state.rng`（不是全局 `Math.random`）——所以钉死之后还得**把它接到
+   *    state 上**。只 mock 全局是没用的：军令抽牌、牌堆重洗都走 state.rng，
+   *    以前这两处只 mock 了全局，改完之后就变成「看运气」，偶发失败（seed 不固定）。
+   */
+  function fixedDraw(state: GameState) {
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    state.rng = spy;
+    return spy;
   }
 
   /** 从两张里挑出「失去 1 点体力」那条（效果确定，方便断言成环） */
@@ -16083,7 +16114,7 @@ describe('国战 · 王平·将略', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     const c = state.players.find((p) => p.seatId === C)!;
     expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('jianglue');
-    const mock = fixedDraw();
+    const mock = fixedDraw(state);
     try {
       ok(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
       pickLoseHp(state);
@@ -16129,7 +16160,7 @@ describe('国战 · 王平·将略', () => {
       A,
     );
     const a = state.players.find((p) => p.seatId === A)!;
-    const mock = fixedDraw();
+    const mock = fixedDraw(state);
     try {
       ok(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
       // 挑第一条（不指定是哪条，交给通用驱动器走完）
