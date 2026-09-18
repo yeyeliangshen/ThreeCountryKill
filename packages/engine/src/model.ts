@@ -371,6 +371,15 @@ export interface Player {
    * 孙策·魂殇（本回合拥有英姿/英魂）、法正·眩惑（获得武圣等之一直到回合结束）用它。
    */
   tempGrantedSkills: { heroId: string; skillName: string }[];
+
+  /**
+   * 君主技发的「临时技能库」记录（君曹操·建安 → 五子良将纛）。
+   *
+   * 与 `tempGrantedSkills`（**本回合**有效，回合开始清空）不同：纛给的技能持续到
+   * **君主的下个回合开始**，中间要跨过别人的回合，所以单开一条记录、由君主的回合开始清掉。
+   * 同时记下为代价「暂时不能明置」的那张武将牌（封锁同寿命）。
+   */
+  lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）

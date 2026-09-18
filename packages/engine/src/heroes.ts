@@ -204,6 +204,12 @@ export interface Hero {
    */
   isLord?: boolean;
   /**
+   * 「君主技给全势力发的那个东西」：这个君主在场（且已明置）时，**该势力的角色**在准备阶段
+   * 会多出一个选项（君曹操的「五子良将纛」是第一个用例）。
+   * 值＝势力；引擎按势力把选项发给对应角色（见 engine 的 askLordBanner）。
+   */
+  lordBanner?: Faction;
+  /**
    * 锁定技：【南蛮入侵】对你无效（祝融·巨象、孟获·祸起）。
    * 由引擎在构造 AOE 响应队列时把该角色排除掉。
    */
@@ -3381,11 +3387,88 @@ function lordEquipOnField(state: GameState, equipName: string): boolean {
   );
 }
 
+/**
+ * 君曹操。
+ * 【挥鞭】已按用户提供的官方口径实现（2019 典藏版 / 君临天下·权 的措辞有细微差异，按用户给的那版）；
+ * 【君威】与专属装备【六龙骖驾】、君主技【建安】（五子良将纛）未实现——前者缺【六龙骖驾】的
+ * 效果文本，后者是「给全魏势力一个临时技能库」，要单独做。
+ */
 const JUN_CAOCAO: Hero = lordHero(
   'juncaocao',
   '君曹操',
   'wei',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【六龙骖驾】、常规技能暂未实现。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【建安】（五子良将纛）与【挥鞭】已实现；【君威】（专属装备【六龙骖驾】）未实现——缺该坐骑的效果文本。',
+  {
+    // 建安（君主技）：明置时获得「五子良将纛」——魏势力角色在准备阶段可以换一个五子良将技能。
+    // 引擎按这个字段把选项发给同势力角色（见 askLordBanner）。
+    lordBanner: 'wei',
+    skills: [
+      { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
+      {
+        name: '建安',
+        desc: '君主技。当你明置后，与你势力相同的角色可以在自己的准备阶段弃置一张牌，并令自己的一张暗置武将牌暂时不能明置，以获得「五子良将」中的一个技能（不能选择场上已有的同名技能），直到你的下个回合开始。',
+      },
+      { name: '挥鞭', desc: '出牌阶段限一次，你可以对一名魏势力角色造成 1 点伤害并令其摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。' },
+    ],
+    activeSkills: [
+      {
+        // 官方口径（用户核对后提供）：「出牌阶段限一次，对一名魏势力角色造成 1 点伤害并令其
+        // 摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。」
+        // 第二个目标可选：场上没有别的「已受伤魏势力角色」时，只结算前半句。
+        id: 'huibian',
+        name: '挥鞭',
+        oncePerTurn: true,
+        minTargets: 1,
+        maxTargets: 2,
+        canUse: (state) =>
+          state.players.some((p) => p.alive && effectiveFaction(state, p) === 'wei'),
+        execute: (state, player, intent, api) => {
+          const ids = intent.targetIds ?? [];
+          const first = ids[0] ? getPlayer(state, ids[0]) : undefined;
+          if (!first) return '【挥鞭】需指定一名魏势力角色';
+          const second = ids[1] ? getPlayer(state, ids[1]) : undefined;
+          for (const t of [first, second]) {
+            if (!t) continue;
+            if (!t.alive) return '【挥鞭】的目标必须存活';
+            if (effectiveFaction(state, t) !== 'wei') return '【挥鞭】只能指定魏势力角色';
+          }
+          if (second && second.seatId === first.seatId) {
+            return '【挥鞭】第二个目标要是**另一名**魏势力角色';
+          }
+          if (second && second.hp >= second.maxHp) {
+            return '【挥鞭】第二个目标必须是**已受伤**的魏势力角色';
+          }
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 发动【挥鞭】：${first.name} 受到 1 点伤害并摸两张牌。`,
+            { seat: player.seatId },
+          );
+          // 先造成伤害（可能进濒死/阵亡，后续走回调），再让受伤者摸两张、然后治疗另一名
+          api.dealDamage(first, 1, player.seatId, undefined, () => {
+            let got = 0;
+            for (let i = 0; i < 2; i++) {
+              const c = drawOne(state);
+              if (!c) break;
+              first.hand.push(c);
+              got++;
+            }
+            pushLog(state, 'skill', `${first.name} 因【挥鞭】摸了 ${got} 张牌。`);
+            if (!second || !second.alive) return;
+            const healed = api.heal(second, 1);
+            if (healed > 0) {
+              pushLog(
+                state,
+                'skill',
+                `${second.name} 因【挥鞭】回复 ${healed} 点体力（剩余 ${second.hp} 体力）。`,
+              );
+            }
+          });
+          return undefined;
+        },
+      },
+    ],
+  },
 );
 
 /**
@@ -4394,7 +4477,7 @@ function heroHasSkill(h: Hero, name: string): boolean {
 }
 
 /** 这个技能在场上吗（只看**活着**的角色的**明置**武将牌 + 已授予的技能） */
-function skillOnField(state: GameState, name: string): boolean {
+export function skillOnField(state: GameState, name: string): boolean {
   for (const p of state.players) {
     if (!p.alive) continue;
     for (const h of effectiveHeroes(state, p)) if (heroHasSkill(h, name)) return true;

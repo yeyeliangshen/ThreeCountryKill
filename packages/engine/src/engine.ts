@@ -88,6 +88,7 @@ import {
   xuanhuoFor,
   hasYuxi,
   sameKnownFaction,
+  skillOnField,
   fengyangBlocksEquip,
   zhidaoTargetsBlocked,
   ROLE_NAME,
@@ -1000,13 +1001,16 @@ function startTurn(state: GameState, seatIndex: number): void {
   }
   // 国战：**准备阶段开始时是唯一能主动明置武将牌的时机**（其余时候只能在「发动技能」
   // 时顺带明置）。先问这一句，再走准备阶段的其他钩子。
-  askRevealAtTurnStart(state, player, () => {
+  askRevealAtTurnStart(state, player, () => askLordBanner(state, player, () => {
     // 整条回合流程都用可挂起钩子串起来：准备阶段的洛神/观星、判定阶段的鬼才
     // 都可能发起询问，问到一半不能把后面的阶段丢了。
     runHooksPausable(state, 'turnStart', player, undefined, () => {
       startJudgmentPhase(state, player);
     });
-  });
+  }));
+
+  // 君主旗的授予在**君主自己的回合开始**时到期清掉（另见 clearLordGrants）
+  clearLordGrants(state, player.seatId);
 }
 
 /**
@@ -1021,6 +1025,155 @@ function startTurn(state: GameState, seatIndex: number): void {
  * 而 returnTo 走的是 `resumePlay`（直接跳到出牌阶段），会把判定/摸牌阶段整个跳掉。
  * 所以由 resolve 自己调 `after()` 接回去。
  */
+/**
+ * 君主技发的「技能库」里能换的那几个（君曹操·建安 → 五子良将纛）。
+ * 官方口径（用户核对后提供）：张辽·突袭 / 徐晃·断粮 / 张郃·巧变 / 乐进·骁果 / 于禁·节钺，
+ * **不能选择场上已经存在的同名技能**。
+ */
+const LORD_BANNER_SKILLS: { heroId: string; name: string }[] = [
+  { heroId: 'zhangliao', name: '突袭' },
+  { heroId: 'xuhuang', name: '断粮' },
+  { heroId: 'zhanghe', name: '巧变' },
+  { heroId: 'lejin', name: '骁果' },
+  { heroId: 'yujin', name: '节钺' },
+];
+
+/** 场上有没有活着的、已明置的、带某个势力「旗」（Hero.lordBanner）的武将——返回持有者 */
+function bannerLordOf(state: GameState, faction: Faction): Player | null {
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    for (const h of activeHeroes(state, p)) {
+      if (h.lordBanner === faction) return p;
+    }
+  }
+  return null;
+}
+
+/** 这张武将牌是不是被「暂时不能明置」封着（君主旗的代价） */
+function revealBlocked(state: GameState, player: Player, heroId: string): boolean {
+  const g = player.lordGrant;
+  if (!g) return false;
+  if (g.blockedHeroId !== heroId) return false;
+  const lord = getPlayer(state, g.lordSeatId);
+  return !!lord?.alive; // 君主没了，封锁也该跟着解（在下一次准备阶段清理）
+}
+
+/**
+ * 准备阶段：同势力君主的「旗」（君曹操·【建安】→ 五子良将纛）让本势力角色换一个技能。
+ *
+ * 官方口径（用户提供）：魏势力角色在自己的准备阶段，可以弃置一张牌，并令自己的一张暗置
+ * 武将牌**暂时不能明置**，来获得「五子良将」中的一个技能，持续到君曹操的下个回合开始；
+ * 不能选择场上已经存在的同名技能。
+ *
+ * 本引擎口径：同一时间只留一次换取（`Player.lordGrant` 一个槽）；换取之后技能进 `grantedSkills`
+ * （永久授予那条路），由君主的回合开始清掉（见 startTurn）。
+ */
+function askLordBanner(state: GameState, player: Player, after: () => void): void {
+  const mine = effectiveFaction(state, player);
+  if (!mine || player.lordGrant) {
+    after();
+    return;
+  }
+  const lord = bannerLordOf(state, mine);
+  if (!lord || lord.seatId === player.seatId) {
+    after();
+    return;
+  }
+  const hidden = unrevealedHeroes(state.mode, player);
+  if (hidden.length === 0 || player.hand.length === 0) {
+    after();
+    return;
+  }
+  const avail = LORD_BANNER_SKILLS.filter((sk) => !skillOnField(state, sk.name));
+  if (avail.length === 0) {
+    after();
+    return;
+  }
+  askChoice(
+    state,
+    player.seatId,
+    `【建安】${lord.name} 的五子良将纛：是否换取一个技能？`,
+    [
+      { id: 'yes', label: '发动（弃一张牌；一张暗置武将牌暂时不能明置）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') {
+        after();
+        return;
+      }
+      askPickCards(
+        st,
+        p.seatId,
+        '【建安】：弃置一张牌',
+        p.hand.slice(),
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const cost = chosen[0];
+          if (!cost) {
+            after();
+            return;
+          }
+          removeCard(p2.hand, cost.id);
+          toDiscard(st2, cost);
+          askChoice(
+            st2,
+            p2.seatId,
+            '【建安】：哪张暗置武将牌暂时不能明置？',
+            hidden.map((h) => ({ id: h.id, label: h.name })),
+            (st3, p3, hid) => {
+              const blocked = hidden.find((h) => h.id === hid) ?? hidden[0]!;
+              askChoice(
+                st3,
+                p3.seatId,
+                `【建安】：获得哪一个技能？（${blocked.name} 暂时不能明置）`,
+                avail.map((sk) => ({ id: sk.heroId, label: sk.name })),
+                (st4, p4, pickHeroId) => {
+                  const pick = avail.find((sk) => sk.heroId === pickHeroId) ?? avail[0]!;
+                  p4.grantedSkills.push({ heroId: pick.heroId, skillName: pick.name });
+                  p4.lordGrant = {
+                    skillHeroId: pick.heroId,
+                    skillName: pick.name,
+                    blockedHeroId: blocked.id,
+                    lordSeatId: lord.seatId,
+                  };
+                  pushLog(
+                    st4,
+                    'skill',
+                    `${p4.name} 借【建安】的五子良将纛获得【${pick.name}】；【${blocked.name}】暂时不能明置（直到 ${lord.name} 下个回合开始）。`,
+                    { seat: p4.seatId, action: 'skill' },
+                  );
+                  after();
+                },
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
+/** 清理某个君主发出的「五子良将纛」授予（君主的下个回合开始时调用） */
+function clearLordGrants(state: GameState, lordSeatId: string): void {
+  for (const p of state.players) {
+    const g = p.lordGrant;
+    if (!g || g.lordSeatId !== lordSeatId) continue;
+    p.grantedSkills = p.grantedSkills.filter(
+      (x) => !(x.heroId === g.skillHeroId && x.skillName === g.skillName),
+    );
+    const hero = getHeroForMode(g.blockedHeroId, state.mode) ?? getHero(g.blockedHeroId);
+    pushLog(
+      state,
+      'skill',
+      `【建安】：${hero?.name ?? '那张暗置武将牌'} 的封锁解除，${p.name} 失去【${g.skillName}】。`,
+      { seat: p.seatId },
+    );
+    p.lordGrant = null;
+  }
+}
+
 function askRevealAtTurnStart(state: GameState, player: Player, after: () => void): void {
   if (unrevealedHeroes(state.mode, player).length === 0) {
     after();
@@ -1031,10 +1184,11 @@ function askRevealAtTurnStart(state: GameState, player: Player, after: () => voi
   // 君主将：亮一张就必须两张一起亮，所以只给「全部明置」
   const isLordPair = !!mainHero?.isLord || !!deputyHero?.isLord;
   const options: { id: string; label: string }[] = [];
+  // 被君主旗「暂时不能明置」封着的武将牌不给选项（君曹操·建安 → 五子良将纛的代价）
   if (!isLordPair) {
-    if (!player.heroRevealed && mainHero)
+    if (!player.heroRevealed && mainHero && !revealBlocked(state, player, mainHero.id))
       options.push({ id: 'main', label: `明置主将【${mainHero.name}】` });
-    if (!player.deputyRevealed && deputyHero)
+    if (!player.deputyRevealed && deputyHero && !revealBlocked(state, player, deputyHero.id))
       options.push({ id: 'deputy', label: `明置副将【${deputyHero.name}】` });
   }
   options.push({ id: 'all', label: '全部明置' });
@@ -7108,6 +7262,9 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
   const playPhaseReveal = state.turn.phase === 'play' && target.canRevealInPlayPhase === true;
   if (!isMyTurn || (state.turn.phase !== 'judgment' && !playPhaseReveal))
     return err('只能在你的准备阶段明置武将牌（其余时机要发动技能才能明置）');
+  // 被君主旗「暂时不能明置」封着（君曹操·建安 → 五子良将纛的代价）
+  if (revealBlocked(state, player, target.id))
+    return err(`【${target.name}】被【建安】封着，暂时不能明置`);
   if (!revealHeroCard(state, player, target)) return err('该武将已经亮出');
   return { ok: true };
 }
@@ -7139,6 +7296,14 @@ function canRevealNow(state: GameState, player: Player): boolean {
 
 function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
   if (state.mode !== 'guozhan') return false;
+  // 君主旗「暂时不能明置」（君曹操·建安 → 五子良将纛的代价）：连「发动技能顺带明置」这条路
+  // 也一并挡住——那张牌此刻就是不能翻。
+  if (revealBlocked(state, player, hero.id)) {
+    pushLog(state, 'reveal', `【${hero.name}】被【建安】封着，暂时不能明置。`, {
+      seat: player.seatId,
+    });
+    return false;
+  }
   // 邹氏·祸水：**她的回合内，其他角色不能明置武将牌**
   if (!canRevealNow(state, player)) {
     pushLog(state, 'reveal', `【祸水】生效：当前回合内，其他角色不能明置武将牌。`, {
