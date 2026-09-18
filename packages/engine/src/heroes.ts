@@ -4754,15 +4754,15 @@ const YUANSHU: Hero = {
 
 /** 伪帝能点名的人：本回合从牌堆获得过牌的其他存活角色 */
 function weidiTargets(state: GameState, player: Player): Player[] {
-  const marked = state.gainedFromDeckThisTurn;
-  if (marked.length === 0) return [];
+  const owners = state.deckGainOwner;
+  if (Object.keys(owners).length === 0) return [];
+  // 「本回合从牌堆获得过牌」＝他手上还拿着**他自己摸到**的牌。用归因表而不是「本回合抽出的
+  // 牌 id 列表」：后者会把「摸到之后被顺手牵羊拿走」的新持有者也算进来（账本记牌不记人）。
   const holds = (p: Player): boolean => {
     const all = [...p.hand, ...EQUIP_SLOTS.map((s) => p.equipment[s]).filter((c): c is Card => !!c)];
-    return all.some((c) => marked.includes(c.id));
+    return all.some((c) => owners[c.id] === p.seatId);
   };
-  return state.players.filter(
-    (p) => p.alive && p.seatId !== player.seatId && holds(p),
-  );
+  return state.players.filter((p) => p.alive && p.seatId !== player.seatId && holds(p));
 }
 
 /**

@@ -808,6 +808,7 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.killedThisTurn = [];
   // 「本回合从牌堆摸到过的牌」也只在**本回合**内有效（袁术·伪帝）
   state.gainedFromDeckThisTurn = [];
+  state.deckGainOwner = {};
   // 寄篱「这张牌已经重跑过」同样只在**本回合**内有效（严白虎）
   state.jiliReranCards = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
@@ -3268,6 +3269,9 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
   if (result.ok) {
     // 询问结束后接着跑被打断的流程。控制流的唯一收口，别在别处再调 drainResume。
     drainResume(state);
+    // 「这张牌是谁从牌堆摸到的」（袁术·伪帝）：要跟 ownedBefore 比，才能区分「自己摸的」和
+    // 「别人摸出来、被顺手牵羊拿走的」——所以和失去牌的检测放在一起。
+    attributeDeckGains(state, ownedBefore);
     // 手牌清空检测放最后：续接都跑完了才是这一手意图的真正终态
     checkHandEmptied(state, handBefore);
     checkCardsLost(state, ownedBefore);
@@ -3283,6 +3287,28 @@ function ownedCardIds(p: Player): string[] {
     if (c) out.push(c.id);
   }
   return out;
+}
+
+/**
+ * 把本回合抽到的牌**归因到人**（袁术·伪帝：「本回合从牌堆获得过牌的角色」）。
+ *
+ * 判定依据：某张牌在这一手意图里**第一次**出现在某人的手牌/装备区，且它在本次抽牌账本
+ * （`gainedFromDeckThisTurn`，drawOne 里登记）里，且还没归给别人 → 就算这个人摸的。
+ * 这样「A 摸到的牌被 B 顺手牵羊拿走」不会把 B 也算成摸牌的人（只看牌 id 列表做不到）。
+ */
+function attributeDeckGains(state: GameState, ownedBefore: string[][]): void {
+  const drawn = state.gainedFromDeckThisTurn;
+  if (drawn.length === 0) return;
+  state.players.forEach((p, i) => {
+    if (!p.alive) return;
+    const before = new Set(ownedBefore[i] ?? []);
+    for (const id of ownedCardIds(p)) {
+      if (before.has(id)) continue; // 本来就在他手里
+      if (!drawn.includes(id)) continue; // 不是本回合从牌堆抽出来的
+      if (state.deckGainOwner[id]) continue; // 已经归过人了
+      state.deckGainOwner[id] = p.seatId;
+    }
+  });
 }
 
 /**
@@ -7859,6 +7885,7 @@ export function createGame(
     damagedThisTurn: [],
     killedThisTurn: [],
     gainedFromDeckThisTurn: [],
+    deckGainOwner: {},
     jiliReranCards: [],
     equipLossSeq: 0,
     heroPool: [],

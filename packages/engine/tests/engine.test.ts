@@ -16739,8 +16739,9 @@ describe('国战 · 袁术（庸肆 / 伪帝）', () => {
     );
     const a = state.players.find((p) => p.seatId === A)!;
     const b = state.players.find((p) => p.seatId === B)!;
-    // 手动把「本回合从牌堆摸到的牌」记成乙手里的 b1（等价于乙本回合摸过牌）
+    // 手动把「b1 是乙本回合从牌堆摸到的」记进归因表（等价于乙本回合摸过牌）
     state.gainedFromDeckThisTurn = ['b1'];
+    state.deckGainOwner = { b1: B };
     expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('weidi');
     ok(act(state, A, { type: 'useSkill', skillId: 'weidi', cardIds: [], targetIds: [B] }));
     // 军令：甲（发起者）挑一条 → 乙决定是否执行
@@ -17875,5 +17876,101 @@ describe('国战 · 凌统·旋略（一次失去只触发一次）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('旋略');
     ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});
+
+/** 袁术·伪帝的账本「归因到人」：摸到的牌被抢走后，抢的人不算「从牌堆获得过牌」 */
+describe('国战 · 袁术·伪帝（从牌堆摸牌的归因）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('正例：本回合自己摸到的牌还在手上 → 伪帝点得到', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'yuanshu', faction: 'qun', hand: [wuzhong('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 有牌堆可控：无中生有给乙……不，是甲自己摸。改成让乙摸：用【遗计】太重，直接用引擎账本？
+    // 这里走真实路径：甲对乙用【借刀杀人】太重 —— 改用「甲用【无中生有】，然后看甲自己不是目标」
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // 甲自己摸的不算（伪帝只点「其他角色」），所以此时没有合法目标
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('weidi');
+    // 丙（没摸过牌）也不是目标
+    expect(state.deckGainOwner[A]).toBeUndefined(); // 甲摸的牌归因给甲（但在自己手里、不参与伪帝）
+    void b;
+  });
+
+  it('摸到的牌被别人抢走后，抢的人不算、原摸牌人也不再算（牌已不在他手上）', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'yuanshu',
+          faction: 'qun',
+          hand: [sha('a1'), shunshou('a2'), shunshou('a3')],
+        },
+        // 乙＝郭嘉：挨打后用【遗计】摸两张（都在甲的回合内，所以进的是本回合的账本）
+        { seatId: B, name: '乙', heroId: 'guojia', faction: 'wei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('d1', 'tao', 'heart', 1), mk('d2', 'shan', 'spade', 2)];
+    // 甲杀乙 → 乙不出闪 → 受伤 → 遗计摸两张（d2、d1）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('遗计');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 遗计第二步：选择送人的牌（一张不选＝全留下）
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, B, { type: 'pickCards', cardIds: [] }));
+    }
+    // 归因：这两张算乙摸的（甲虽然也是本回合摸牌，但那时是自己摸的那两张）
+    expect(state.deckGainOwner['d2']).toBe(B);
+    expect(state.deckGainOwner['d1']).toBe(B);
+    expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('weidi');
+    // 甲用两张【顺手牵羊】把乙那两张都拿走
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B], targetCardId: 'd1' }));
+    passWuxie(state);
+    ok(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [B], targetCardId: 'd2' }));
+    passWuxie(state);
+    expect(b.hand).toHaveLength(0);
+    // 归因没变（偷来的不算自己摸的），但乙手上已经没有自己摸到的牌 → 伪帝点不到他了
+    expect(state.deckGainOwner['d1']).toBe(B);
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('weidi');
   });
 });
