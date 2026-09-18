@@ -133,8 +133,9 @@ pending 会被这行直接覆盖，玩家看不到询问——表面上像技能
 
 **已转换（可挂起）的时机**：`afterDamage`、`afterDamageDealt`、`becomeTarget`、
 `turnStart`、`judgePhase`、`drawPhase`、`playPhase`、`turnEnd`。
-**尚未转换**：`nearDeath`、`beforeResolve`、`afterResolve`、`discardPhase`、`death`
-（`useCard` 已于 §5.34 转换；`afterUse` 目前只在【调虎离山】那条路派发）。
+**尚未转换**：只剩 `beforeResolve` / `afterResolve`（这两个是纯引擎内部的伤害时机，
+**没有任何技能挂在上面**，所以不影响任何技能行为）；`afterUse` 目前只在【调虎离山】那条路派发。
+`nearDeath` / `discardPhase` / `death` 其实早就是可挂起的（文档这里写旧了，已更正）。
 
 **想用「钩子内询问」的新技能必须挂在已转换的时机上**，否则询问会被静默吞掉。
 新增时机时同步更新 `roster.ts` 的 `PRIMITIVES_DONE` 注释与本节。
@@ -504,7 +505,7 @@ pending 会被这行直接覆盖，玩家看不到询问——表面上像技能
 | 意图 | `{type:'prelightSkill', skillName}`，再发一次即取消 |
 | 钩子分发 | `collectTimingHooks()` = 已明置武将的钩子 + 暗置武将里**已预亮**技能的钩子；没预亮的不进列表，所以不会产生任何询问 |
 | 询问 | 可挂起的时机：先问「是否明置【X】并发动？」，确认后 `revealHeroCard()` 再跑原钩子 |
-| 同步时机 | `beforeResolve / afterResolve / death` 挂不起询问 → **预亮即视为决定发动**（`autoRevealHook`）。这是唯一的降级点，写在代码注释里（`useCard` 已改成可挂起，见 §5.34） |
+| 同步时机 | 本来 `beforeResolve / afterResolve / death` 这类挂不起询问 → **预亮即视为决定发动**（`autoRevealHook`）。**现在这条降级路径实际上走不到了**：能挂起的时机已经全部转换（`useCard` 于 §5.34 收尾），剩下两个同步时机（`beforeResolve`/`afterResolve`）没有任何技能挂靠，所以预亮一律走「先问是否明置并发动」那条路 |
 | 主动技 | 暗置武将的主动技也进 `legalSkillIds`；点击 = 明置 + 发动（点击本身就是玩家的决定） |
 | 转化技 | 暗置 + 预亮过 → `canUseAsCard` 返回 true，真正打出去时 `revealForConversion` 明置 |
 | 界面 | 技能按钮三态：`.dark`（虚线，可点=预亮）、`.prelit`（实线金边）、正常。可预亮名单随**本人快照**下发（不是出牌提示），所以**别人的回合里也能预亮** |
@@ -1285,6 +1286,22 @@ WebSearch 的配额在上一轮用尽后恢复了，用它拿到了**国战口�
   当作这次改造最该盯的回归面。
 - 仍未转换：`nearDeath` / `beforeResolve` / `afterResolve` / `discardPhase` / `death`
   （`afterUse` 目前只在【调虎离山】那条路派发）。
+
+### 5.35 逐个武将的实战冒烟（26 名 × 主/副将位 = 52 局）
+
+单元测试是「按剧本走」，撞不出「某个技能在多层询问之后忘了把控制权还回去」这类问题——
+它的症状是 pending 变成 null、**整局静默卡死**。`smoke.test.ts` 原来只有 12 局随机对局
+（全随机武将，抽到谁算谁），新武将不保证被覆盖到。
+
+补了一层**逐个武将**的冒烟：把名单里的武将固定到 0 号位，随机驱动到分出胜负（步数上限 4000），
+主将位与副将位各跑一遍。名单挑的是机制最复杂/最近实现的那批 26 名（眩惑、千幻、将略、寄篱、
+调归、伪帝、举荐、雉盗、集智、克己、旋略、枭姬、铁骑、天义…）。
+
+场景比原来贴近实战：其余座位用**随机国战武将**（不是白板，这样拼点、借技能、势力技这些
+跨武将互动才有机会发生），并且**其中两个与 0 号位同势力**（否则「与你势力相同的角色」这类
+技能永远没有对象，测了等于没测）。
+
+跑起来很快（53 个用例约 1.5 秒），所以顺手当成了这类改动的回归网。
 
 ## 6. 批次表
 
