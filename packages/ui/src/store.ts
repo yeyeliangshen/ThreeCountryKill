@@ -30,7 +30,7 @@ export interface LobbyState {
 interface Store {
   screen: Screen;
   ws: WebSocket | null;
-  // 表单（只在大厅门口填：服务器地址 + 昵称）
+  // 连哪台服务器：**不给玩家填**，由页面地址/开发环境默认值决定（见下方初始化）
   serverAddr: string;
   name: string;
   /** 当前所在房间号（在大厅里是空串）。刷新后从 localStorage 恢复，用来认回房间 */
@@ -46,7 +46,7 @@ interface Store {
   // 内部
   _seatId: string | null;
   // setters
-  setForm: (patch: Partial<Pick<Store, 'serverAddr' | 'name' | 'heroDealCount'>>) => void;
+  setForm: (patch: Partial<Pick<Store, 'name' | 'heroDealCount'>>) => void;
   // 动作
   connect: () => void;
   disconnect: () => void;
@@ -129,7 +129,6 @@ export const useStore = create<Store>()((set, get) => {
           };
           // 记住「我在哪」：刷新/锁屏回来时靠它自动回到原房间原座位
           saveSession({
-            serverAddr: prev.serverAddr,
             roomCode: msg.roomCode,
             name: prev.name,
             seatId: msg.mySeatId,
@@ -206,8 +205,9 @@ export const useStore = create<Store>()((set, get) => {
   return {
     screen: 'join',
     ws: null,
-    // 开发默认 localhost:8080；生产构建后默认空（用当前页 host，即部署服务器）
-    serverAddr: saved?.serverAddr || (import.meta.env.DEV ? 'localhost:8080' : ''),
+    // 开发默认 localhost:8080；生产构建后空 = 用当前页 host（部署服务器）。
+    // ⚠️ 不再读存档里的地址：登录页已经没有这一栏，留着旧值只会把人指到别的服务器。
+    serverAddr: import.meta.env.DEV ? 'localhost:8080' : '',
     name: saved?.name ?? '',
     roomCode: saved?.roomCode ?? '',
     rooms: [],
