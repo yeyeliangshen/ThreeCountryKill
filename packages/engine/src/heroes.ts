@@ -3118,7 +3118,7 @@ function takeOneOfTargetCards(
     options,
     (st, _p, picked) => {
       if (picked === '__hand') {
-        const idx = Math.floor(Math.random() * target.hand.length);
+        const idx = Math.floor(state.rng() * target.hand.length);
         const card = target.hand[idx];
         if (!card) {
           after?.();
@@ -5940,7 +5940,7 @@ const ZUOCI: Hero = {
           options,
           (st, p, picked) => {
             // 移去一张「魂」（暗置 → 随机），并把那张武将牌亮出来（牌面与势力公开）
-            const idx = Math.floor(Math.random() * p.hun.length);
+            const idx = Math.floor(state.rng() * p.hun.length);
             const heroId = p.hun.splice(idx, 1)[0]!;
             const hero = getHeroForMode(heroId, st.mode);
             p.flags.hunUsedNames.push(picked);
@@ -6544,7 +6544,7 @@ const XUNYOU: Hero = {
             if (colors.size !== 1) return; // 颜色均相同才继续
             const src = sourceId ? getPlayer(st, sourceId) : undefined;
             if (!src || !src.alive || src.seatId === p.seatId || src.hand.length === 0) return;
-            const idx = Math.floor(Math.random() * src.hand.length);
+            const idx = Math.floor(st.rng() * src.hand.length);
             const card = src.hand[idx];
             if (!card) return;
             ctx.api.discardCard(src.seatId, card);
@@ -10008,7 +10008,7 @@ const PANGDE: Hero = {
               ...(EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[]),
             ];
             if (pool2.length === 0) return;
-            const card = pool2[Math.floor(Math.random() * pool2.length)]!;
+            const card = pool2[Math.floor(st.rng() * pool2.length)]!;
             const fromHand = target.hand.some((c) => c.id === card.id);
             st.log.push({
               id: st.logSeq++,
@@ -10328,7 +10328,7 @@ const CAIWENJI: Hero = {
                             ...picks,
                           ];
                           if (pool2.length === 0) break;
-                          picks.push(pool2[Math.floor(Math.random() * pool2.length)]!);
+                          picks.push(pool2[Math.floor(st2.rng() * pool2.length)]!);
                         }
                         if (picks.length > 0) ctx.api.discardCards(source.seatId, picks);
                         pushLog(st2, 'skill', `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`);
@@ -10637,7 +10637,7 @@ const TIANFENG: Hero = {
                 ];
                 if (pool.length === 0) return;
                 // 手牌随机不看内容（与猛进/过河拆桥同一口径）
-                const card = pool[Math.floor(Math.random() * pool.length)]!;
+                const card = pool[Math.floor(st.rng() * pool.length)]!;
                 const fromHand = target.hand.some((c) => c.id === card.id);
                 pushLog(
                   st2,

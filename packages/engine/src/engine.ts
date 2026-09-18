@@ -4311,7 +4311,7 @@ function pickTargetCard(
   }
   // 随机手牌
   if (target.hand.length > 0) {
-    const idx = Math.floor(Math.random() * target.hand.length);
+    const idx = Math.floor(state.rng() * target.hand.length);
     const [c] = target.hand.splice(idx, 1);
     return c ? { card: c, fromEquip: false } : null;
   }
@@ -4324,7 +4324,7 @@ function pickTargetCard(
     ...target.judgment,
   ];
   if (visible.length === 0) return null;
-  const pick = visible[Math.floor(Math.random() * visible.length)]!;
+  const pick = visible[Math.floor(state.rng() * visible.length)]!;
   // 装备牌按**自己的 type** 找槽位（不是一串 else if——那样加槽位会静默漏掉）
   const slot = EQUIP_SLOTS.find((s) => s === pick.type);
   if (slot) {
@@ -7922,6 +7922,7 @@ export function createGame(
     deckGainOwner: {},
     jiliReranCards: [],
     equipLossSeq: 0,
+    rng: opts?.rng ?? Math.random,
     heroPool: [],
     discardThisTurn: [],
     xianquSeat: null,
