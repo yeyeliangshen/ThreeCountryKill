@@ -22,7 +22,7 @@ import type {
 } from '@sgs/protocol';
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
-import { drawOne } from './deck';
+import {drawOne, lordEquipFeilong } from './deck';
 import { attackRange, canTarget, distance } from './distance';
 
 import {
@@ -3355,6 +3355,7 @@ function lordHero(
   name: string,
   faction: Faction,
   note: string,
+  extra?: Partial<Hero>,
 ): Hero {
   return {
     id,
@@ -3364,9 +3365,17 @@ function lordHero(
     gender: 'male',
     modes: ['guozhan'],
     isLord: true,
-    // 技能暂空：见上方注释与 roster 里的「部分实现」说明
+    // 技能：只有文本核实过的才写进来（见 roster 里的「部分实现」说明）
     skills: [{ name: '君主将', desc: note }],
+    ...extra,
   };
+}
+
+/** 场上（任何人的装备区）有没有这张专属装备——【君威】的发动条件 */
+function lordEquipOnField(state: GameState, equipName: string): boolean {
+  return state.players.some((p) =>
+    EQUIP_SLOTS.some((slot) => p.equipment[slot]?.equipName === equipName),
+  );
 }
 
 const JUN_CAOCAO: Hero = lordHero(
@@ -3376,11 +3385,45 @@ const JUN_CAOCAO: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【六龙骖驾】、常规技能暂未实现。',
 );
 
+/**
+ * 君刘备。【君威】与专属装备【飞龙夺凤】已按 WIKI 原文核实并实现；
+ * 「章武」「励众」缺机制（国战标记的使用 / 轮次）暂未做。
+ */
 const JUN_LIUBEI: Hero = lordHero(
   'junliubei',
   '君刘备',
   'shu',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【飞龙夺凤】、以及「章武」「励众」暂未实现。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】已实现（含专属装备【飞龙夺凤】）；「章武」「励众」未实现。',
+  {
+    activeSkills: [
+      {
+        // 官方原文（移动版 WIKI）：「出牌阶段，若场上没有【飞龙夺凤】，你可以弃置一张牌，
+        // 从游戏外使用之。当你死亡时，蜀势力角色各失去1点体力。」
+        // （死亡那半句是君主将的固定特性，已由引擎统一实现，不在这个技能里。）
+        id: 'junwei',
+        name: '君威',
+        minTargets: 0,
+        maxTargets: 0,
+        needsCards: true, // 弃置一张牌作为代价（点手牌）
+        canUse: (state, player) =>
+          !lordEquipOnField(state, 'feilong') && player.hand.length > 0,
+        execute: (state, player, intent, api) => {
+          const ids = intent.cardIds ?? [];
+          if (ids.length !== 1) return '请弃置一张牌作为代价';
+          const cost = removeCard(player.hand, ids[0]!);
+          if (!cost) return '这张牌不在你手里';
+          toDiscard(state, cost);
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 发动【君威】：弃置【${cardLabel(cost)}】，从游戏外使用【飞龙夺凤】。`,
+          );
+          // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）
+          api.giveEquipTo(lordEquipFeilong(), player.seatId);
+        },
+      },
+    ],
+  },
 );
 
 const JUN_SUNQUAN: Hero = lordHero(

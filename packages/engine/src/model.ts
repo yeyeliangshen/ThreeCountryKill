@@ -1,3 +1,4 @@
+import { CARD_TYPE_NAME, EQUIP_NAME } from '@sgs/protocol';
 import type {
   Card,
   CardType,
@@ -199,6 +200,8 @@ export interface PlayerFlags {
   damageCount: number;
   /** 严白虎·雉盗：这个出牌阶段是否已经「第一次对其造成伤害」领过牌了 */
   zhidaoHitDone: boolean;
+  /** 【飞龙夺凤】本回合已经触发过「首次使用【杀】造成伤害」（每回合重置） */
+  feilongDoneThisTurn: boolean;
   /**
    * 吴景·调归：「这次【调虎离山】用之前的队列人数」——技能发出锦囊时记下，
    * 结算完成后（afterUse）拿来比「是否**因此**形成队列」。null 表示没有待结算的调归。
@@ -266,6 +269,8 @@ export function emptyFlags(): PlayerFlags {
     damageCountKey: '',
     damageCount: 0,
     zhidaoHitDone: false,
+    // 【飞龙夺凤】「每回合首次使用【杀】造成伤害后」用过就算数（每回合在 startTurn 重置）
+    feilongDoneThisTurn: false,
     xietianziPending: false,
     discardedInDiscardPhase: false,
     removedFromSeating: false,
@@ -772,6 +777,16 @@ export function alivePlayers(state: GameState): Player[] {
  */
 export function toDiscard(state: GameState, ...cards: Card[]): void {
   for (const c of cards) {
+    // 「离开装备区后销毁之」的牌（君主专属装备）：**移出游戏**，不进弃牌堆。
+    // 官方文本就写在牌面上（例：【飞龙夺凤】「当此牌离开装备区后，销毁之」）。
+    if (c.destroyOnLeave) {
+      pushLog(
+        state,
+        'discard',
+        `【${c.equipName ? (EQUIP_NAME[c.equipName] ?? c.equipName) : CARD_TYPE_NAME[c.type]}】离开装备区，销毁之（移出游戏）。`,
+      );
+      continue;
+    }
     // 先递归卸载辎，再收这张装备牌自己（顺序不影响结果，但日志读起来更顺）
     if (c.cargo && c.cargo.length > 0) {
       const cargo = c.cargo;

@@ -18708,6 +18708,99 @@ describe('国战 · 君主将（特性）', () => {
     expect(c.hp).toBe(hpC);
   });
 
+  /** 摆一局：刘备（君主）与一名对手都在场，给定手牌 */
+  function junbeiGame(handA: Card[], handB: Card[], hpA?: number, hpB?: number) {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junliubei' },
+        { seatId: 'B', name: '乙', heroId: 'caocao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    const b = state.players.find((p) => p.seatId === 'B')!;
+    a.heroId = 'junliubei';
+    a.deputyHeroId = 'guanyu';
+    a.faction = 'shu';
+    a.heroRevealed = true;
+    a.deputyRevealed = true;
+    b.heroId = 'caocao';
+    b.faction = 'wei';
+    b.heroRevealed = true;
+    a.maxHp = 4;
+    a.hp = hpA ?? 4;
+    b.maxHp = 4;
+    b.hp = hpB ?? 4;
+    a.hand = handA.slice();
+    b.hand = handB.slice();
+    a.flags = emptyFlags();
+    b.flags = emptyFlags();
+    state.turn = { seatIndex: state.seatOrder.indexOf('A'), phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+    return { state, a, b };
+  }
+
+  it('君威：弃一张牌，从游戏外取得专属装备【飞龙夺凤】', () => {
+    const { state, a } = junbeiGame([mk('a1', 'sha', 'spade', 5)], []);
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
+    ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
+    expect(a.equipment.treasure?.equipName).toBe('feilong');
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true); // 代价进弃牌堆
+    // 场上已有专属装备 → 不能再发动
+    a.hand = [mk('a2', 'sha', 'heart', 6)];
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds ?? []).not.toContain('junwei');
+  });
+
+  it('飞龙夺凤离开装备区即销毁：不进弃牌堆', () => {
+    const yuxi = mk('y1', 'treasure', 'heart', 1);
+    yuxi.equipName = 'yuxi'; // 测试里的 mk 不带 extra，装备名要手动补
+    const { state, a } = junbeiGame([mk('a1', 'sha', 'spade', 5), yuxi], []);
+    ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
+    const feilong = a.equipment.treasure!;
+    expect(feilong.equipName).toBe('feilong');
+    // 再装一件宝物（玉玺）→ 飞龙夺凤被替换 → 销毁（不进弃牌堆）
+    ok(act(state, 'A', { type: 'playCard', cardId: 'y1' }));
+    expect(a.equipment.treasure?.equipName).toBe('yuxi');
+    expect(state.discard.some((c) => c.id === feilong.id)).toBe(false);
+    // 销毁之后场上又没有专属装备了 → 君威可以再发动
+    a.hand = [mk('a2', 'sha', 'club', 7)];
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
+  });
+
+  it('飞龙夺凤：每回合首次用【杀】造成伤害后，可获得其一张手牌', () => {
+    const { state, a, b } = junbeiGame(
+      [mk('a1', 'sha', 'spade', 5), mk('a2', 'sha', 'club', 7)],
+      [mk('b1', 'shan', 'heart', 2)],
+    );
+    // 直接装上专属装备（省掉一次君威，效果本身是本条的关注点）；
+    // 再给一把连弩，好让本回合能出第二张【杀】来验证「每回合首次」
+    a.equipment.treasure = {
+      id: 'feilong-1',
+      type: 'treasure',
+      suit: 'spade',
+      rank: 2,
+      equipName: 'feilong',
+      destroyOnLeave: true,
+    };
+    a.equipment.weapon = { id: 'zhuge-1', type: 'weapon', suit: 'club', rank: 1, equipName: 'zhuge' };
+    ok(act(state, 'A', { type: 'playCard', cardId: 'a1', targetIds: ['B'] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, 'B', { type: 'pass' }));
+    // 造成伤害后：问「获得标记或手牌」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('飞龙夺凤');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'hand' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, 'A', { type: 'pickCards', cardIds: ['b1'] }));
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
+    // 第二次用杀造成伤害：本回合已经触发过，不再问
+    ok(act(state, 'A', { type: 'playCard', cardId: 'a2', targetIds: ['B'] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, 'B', { type: 'pass' }));
+    expect(state.pending?.kind).toBe('play');
+  });
+
   it('君主阵亡的连带掉血把同势力打进濒死 → 换他求桃', () => {
     // 四家：甲（魏·君主）、乙（魏）、丙（蜀）、丁（吴）——留两人活着，免得死两个就判胜
     const state = gzDeal({

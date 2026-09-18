@@ -1,6 +1,7 @@
 // 装备牌特效 —— 与 engine 分离的纯查询/判定辅助，便于单测
 import { isRed, type Card } from '@sgs/protocol';
 import { getPlayer, pushLog, type AttackContext, type GameState, type Player } from './model';
+import { addMarker, consumeMarker, markerCount } from './markers';
 import {
   EQUIP_SLOTS,
   cardAsSeenBy,
@@ -9,6 +10,39 @@ import {
   type ActiveSkill,
   type SkillApi,
 } from './heroes';
+
+/**
+ * 询问原语由引擎注入（见 `setEquipAskHooks`）——equip 是纯查询/判定模块，
+ * 反向 import engine 会形成循环依赖，所以用注入。
+ */
+let askChoiceForEquip: (
+  state: GameState,
+  seatId: string,
+  title: string,
+  options: { id: string; label: string }[],
+  resolve: (state: GameState, player: Player, picked: string) => void,
+  returnTo?: string,
+) => void = () => {};
+
+let askPickCardsForEquip: (
+  state: GameState,
+  seatId: string,
+  title: string,
+  cards: Card[],
+  min: number,
+  max: number,
+  resolve: (state: GameState, player: Player, picked: Card[]) => void,
+  opts?: { returnTo?: string; secret?: boolean },
+) => void = () => {};
+
+/** 引擎启动时把 askChoice / askPickCards 注进来（engine.ts 顶层调用一次） */
+export function setEquipAskHooks(h: {
+  askChoice: typeof askChoiceForEquip;
+  askPickCards: typeof askPickCardsForEquip;
+}): void {
+  askChoiceForEquip = h.askChoice;
+  askPickCardsForEquip = h.askPickCards;
+}
 
 /** 攻击方武器是否无视目标防具（青釭剑） */
 export function ignoresArmor(source: Player | undefined): boolean {
@@ -253,4 +287,76 @@ export function equipActiveSkills(state: GameState, player: Player): ActiveSkill
   if (state.mode !== 'guozhan') return [];
   if (player.equipment.treasure?.equipName !== 'muniu') return [];
   return [MUNIU_SKILL];
+}
+
+/**
+ * 【飞龙夺凤】（君主专属宝物）——
+ * 「当你每回合首次使用【杀】对目标角色造成伤害后，你可以获得其一枚阴阳鱼标记或者一张手牌。
+ *   当此牌离开装备区后，销毁之。」（移动版 WIKI 原文）
+ *
+ * 口径：
+ * - 「使用【杀】造成伤害」＝ 这次伤害的生效牌是【杀】（`asType === 'sha'`，转化来的也算）；
+ * - 「每回合首次」＝ 本回合没触发过（`flags.feilongDoneThisTurn`，回合开始时重置）；
+ * - 「获得其一张手牌」由**持有者挑**：官方写「获得其一张牌」的，本引擎一律让获得者挑
+ *   （与反馈/刚烈同一口径，见 docs/guozhan-roster.md）；
+ * - 触发过就算数（选择「不发动」也消耗掉本回合的这次机会），官方是「首次…后，你可以」的一次性时机。
+ * - 「离开装备区即销毁」由 `Card.destroyOnLeave` + `model.toDiscard` 统一处理。
+ */
+export function feilongAfterShaDamage(
+  state: GameState,
+  attacker: Player,
+  victim: Player,
+  attack: AttackContext,
+  after: () => void,
+): void {
+  if (attacker.equipment.treasure?.equipName !== 'feilong' || attack.asType !== 'sha') {
+    after();
+    return;
+  }
+  if (attacker.flags.feilongDoneThisTurn) {
+    after();
+    return;
+  }
+  const hasMarker = markerCount(victim, 'yinyangyu') > 0;
+  const hasHand = victim.hand.length > 0;
+  if (!hasMarker && !hasHand) {
+    after();
+    return;
+  }
+  const options: { id: string; label: string }[] = [];
+  if (hasMarker) options.push({ id: 'marker', label: `获得 ${victim.name} 的一枚【阴阳鱼】标记` });
+  if (hasHand) options.push({ id: 'hand', label: `获得 ${victim.name} 的一张手牌` });
+  options.push({ id: 'no', label: '不发动' });
+  askChoiceForEquip(state, attacker.seatId, '【飞龙夺凤】：获得其标记或手牌？', options, (st, p, picked) => {
+    p.flags.feilongDoneThisTurn = true;
+    if (picked === 'marker') {
+      consumeMarker(victim, 'yinyangyu');
+      addMarker(p, 'yinyangyu');
+      pushLog(st, 'skill', `${p.name} 因【飞龙夺凤】获得 ${victim.name} 的一枚【阴阳鱼】标记。`);
+      after();
+      return;
+    }
+    if (picked !== 'hand') {
+      after();
+      return;
+    }
+    askPickCardsForEquip(
+      st,
+      p.seatId,
+      `【飞龙夺凤】：获得 ${victim.name} 的一张手牌`,
+      victim.hand.slice(),
+      1,
+      1,
+      (st2, p2, chosen) => {
+        const c = chosen[0];
+        if (c) {
+          const idx = victim.hand.findIndex((x) => x.id === c.id);
+          if (idx >= 0) victim.hand.splice(idx, 1);
+          p2.hand.push(c);
+          pushLog(st2, 'skill', `${p2.name} 因【飞龙夺凤】获得 ${victim.name} 的一张手牌。`);
+        }
+        after();
+      },
+    );
+  });
 }

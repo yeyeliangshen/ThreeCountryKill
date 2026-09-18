@@ -380,3 +380,24 @@ export function drawOne(state: GameState): Card | null {
   if (card) state.gainedFromDeckThisTurn.push(card.id);
   return card;
 }
+
+/**
+ * 君主将的**专属装备**——不在任何牌堆里，只能通过【君威】从**游戏外**取得。
+ *
+ * 【飞龙夺凤】（宝物 ♠2）效果原文（移动版 WIKI，已核）：
+ *   「当你每回合首次使用【杀】对目标角色造成伤害后，你可以获得其一枚阴阳鱼标记或者一张手牌。
+ *     当此牌离开装备区后，销毁之。」
+ *
+ * ⚠️ 另外三件（【六龙骖驾】【定澜夜明珠】【盟军大纛】）的 WIKI 没有页面、搜索配额也用尽了，
+ *    效果文本**待核对**——在查清之前不实现（本仓库不猜规则文本）。
+ */
+export function lordEquipFeilong(): Card {
+  return {
+    id: 'lord-feilong',
+    type: 'treasure',
+    suit: 'spade',
+    rank: 2,
+    equipName: 'feilong',
+    destroyOnLeave: true,
+  };
+}

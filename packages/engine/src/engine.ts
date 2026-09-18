@@ -50,6 +50,8 @@ import {
   damageBonus,
   equipActiveSkills,
   equipExtraDraw,
+  feilongAfterShaDamage,
+  setEquipAskHooks,
   tengjiaNullifiesAoe,
   tryBaguaDodge,
 } from './equip';
@@ -949,7 +951,16 @@ function runDamageDealtHooksP(
     after();
     return;
   }
-  runHooksPausable(state, 'afterDamageDealt', src, { attack, damage }, after);
+  // 君主专属装备【飞龙夺凤】：「每回合首次使用【杀】造成伤害后…」是**装备牌**的效果，
+  // 不走英雄钩子，所以在这里单独派发；它可能发问（选标记还是手牌），走续接。
+  const victim = getPlayer(state, attack.targetId);
+  const rest = (): void =>
+    runHooksPausable(state, 'afterDamageDealt', src, { attack, damage }, after);
+  if (victim) {
+    feilongAfterShaDamage(state, src, victim, attack, rest);
+    return;
+  }
+  rest();
 }
 
 // ——————————————————————————————————————————
@@ -3524,6 +3535,10 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
 // ——————————————————————————————————————————
 // 意图分发
 // ——————————————————————————————————————————
+
+// 装备特效（equip.ts）需要发问，但那边不能反向 import 本文件（循环依赖）→ 注入进去。
+// askChoice / askPickCards 是函数声明（会提升），放在模块顶层调用即可。
+setEquipAskHooks({ askChoice, askPickCards });
 
 export function applyIntent(state: GameState, seatId: string, intent: Intent): ApplyResult {
   // 手牌清空检测要在任何变更之前取快照，否则拿不到「原来是几张」
