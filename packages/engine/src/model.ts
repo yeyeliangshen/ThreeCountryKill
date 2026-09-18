@@ -126,6 +126,19 @@ export interface PlayerFlags {
    */
   damagePrevented: boolean;
   /**
+   * 「本次伤害减少几点」——`damageDealt` 钩子里除「防止」之外的**减伤通道**。
+   *
+   * 与 damagePrevented 同样：派发前清 0、派发后读。陆抗·恪守的「令此伤害-1」用它——
+   * 它是**要付代价的可选**减伤，所以不能像名士/白银狮子那样在 finalizeDamage 里直接算。
+   * 减到 0 即「不造成伤害」：不扣血、不跑伤害后钩子、也不进铁索蔓延。
+   */
+  damageReduce: number;
+  /**
+   * 本回合「使用【杀】的限制次数」的额外加成（陆抗·筑围 = 1）。
+   * 与 handLimitBonus 一样是「本回合」语义，随回合重置。
+   */
+  shaLimitBonus: number;
+  /**
    * 跳过判定阶段（夏侯渊·神速）。
    * 注意是**整个判定阶段跳过**，所以判定区的延时锦囊会原样留着、下回合再判。
    */
@@ -197,6 +210,8 @@ export function emptyFlags(): PlayerFlags {
     skipDraw: false,
     skipDiscard: false,
     damagePrevented: false,
+    damageReduce: 0,
+    shaLimitBonus: 0,
     dealtDamageThisTurn: false,
     hengjiangTarget: null,
     lostCardsThisPhase: 0,

@@ -1473,9 +1473,11 @@ function playSha(
       return err('没有【朱雀羽扇】，不能把【杀】改成火属性');
   }
   const heroes = activeHeroes(state, source);
-  // 诸葛连弩：本回合可出无限杀
+  // 诸葛连弩：本回合可出无限杀。另外加上「本回合次数 +N」（陆抗·筑围给当前回合角色）
   const hasZhuge = source.equipment.weapon?.equipName === 'zhuge';
-  const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
+  const maxSha = hasZhuge
+    ? Infinity
+    : Math.max(1, ...heroes.map(heroShaLimit)) + source.flags.shaLimitBonus;
   // 崔琰毛玠·征辟①：本回合对那名角色「使用牌无距离和次数限制」——
   // 目标里有他就跳过次数限制（距离那层由 distance() 放行）
   const limitless =
@@ -2363,18 +2365,32 @@ function damageStep(
   // 「当你受到伤害时」可挂起：小乔·天香要在这时弃牌、选人、二选一。
   // 取消通道是 `flags.damagePrevented`（钩子没有返回值）——派发前清、派发后读，
   // 读到就整条伤害作废：不扣血、不跑伤害后钩子、不进濒死。护心镜那层照旧在其后。
+  // 减伤通道是 `flags.damageReduce`（陆抗·恪守那种「可选的 -1」），同样派发前清、派发后读；
+  // 减到 0 也按「没造成伤害」处理（不扣血、不跑伤害后钩子、不进铁索蔓延）。
   target.flags.damagePrevented = false;
+  target.flags.damageReduce = 0;
   const finishDamage = (): void => {
     runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
       const prevented = target.flags.damagePrevented;
+      const reduced = target.flags.damageReduce;
       target.flags.damagePrevented = false;
+      target.flags.damageReduce = 0;
       if (prevented) {
         apply(dmg, true);
         return;
       }
-      withHuxinjing(state, attack, dmg, (hxPrevented) => {
-        if (!hxPrevented) target.hp -= dmg;
-        apply(dmg, hxPrevented);
+      const finalDmg = Math.max(0, dmg - reduced);
+      if (finalDmg <= 0) {
+        // 减到 0：等于没造成伤害（官方：伤害值变为 0 则不造成伤害）
+        if (reduced > 0) {
+          pushLog(state, 'damage', `${target.name} 受到的伤害被减少到 0。`);
+        }
+        apply(0, true);
+        return;
+      }
+      withHuxinjing(state, attack, finalDmg, (hxPrevented) => {
+        if (!hxPrevented) target.hp -= finalDmg;
+        apply(finalDmg, hxPrevented);
       });
     });
   };

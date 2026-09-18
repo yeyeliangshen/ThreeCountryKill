@@ -16087,3 +16087,141 @@ describe('军令 · 不能回复体力', () => {
     expect(a.flags.cannotHealThisTurn).toBe(false);
   });
 });
+
+/** 陆抗·恪守 / 筑围（君临天下·权，吴，1.5 阴阳鱼→3） */
+describe('国战 · 陆抗（恪守 / 筑围）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('恪守①：弃两张同色牌 → 此伤害 -1（1 点伤害被减到 0）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        // 两张红桃 —— 同色，够发动
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'lukang',
+          faction: 'wu',
+          hand: [mk('b1', 'tao', 'heart'), mk('b2', 'shan', 'heart')],
+        },
+        // 场上还有另一个吴势力角色 → 恪守第二句（判定）不触发，用例只验减伤
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 伤害询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('恪守');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1', 'b2'] }));
+    // 伤害被减到 0：不扣血，也不跑伤害后钩子
+    expect(b.hp).toBe(3);
+    expect(b.hand.length).toBe(0);
+    expect(state.log.some((e) => e.message.includes('被减少到 0'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('恪守'))).toBe(true);
+  });
+
+  it('恪守②：没有同势力其他角色时判定，判红摸一张（与是否弃牌无关）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        // 手里两张**不同色**的牌 → 发动不了恪守①，只走第二句
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'lukang',
+          faction: 'wu',
+          hand: [mk('b1', 'tao', 'heart'), mk('b2', 'shan', 'spade')],
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'tao', 'heart')]; // 判定牌：红桃 → 判红
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(2); // 1 点伤害照常落地
+    expect(b.hand.length).toBe(3); // 原有 2 张 + 判红摸的 1 张
+    expect(state.log.some((e) => e.message.includes('恪守'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('判定为红色'))).toBe(true);
+  });
+
+  it('筑围：判定牌是【杀】时获得之，并可令当前回合角色上限/杀次数 +1', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'lukang', faction: 'wu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('l1')); // 乐不思蜀：非红桃则跳过出牌阶段
+    state.deck = [mk('j1', 'sha', 'spade', 5)]; // 判定牌是【杀】→ 筑围的获得条件成立
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 判定阶段
+    skipRevealAsk(state);
+    // 筑围的询问（后半句：给当前回合角色加手牌上限与杀次数）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('筑围');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 判定牌【杀】进了自己手里
+    expect(b.hand.some((c) => c.id === 'j1')).toBe(true);
+    // 当前回合角色就是乙自己 → 上限/次数都 +1
+    expect(b.flags.handLimitBonus).toBe(1);
+    expect(b.flags.shaLimitBonus).toBe(1);
+  });
+
+  it('筑围：判定牌不是【杀】也不是伤害锦囊 → 什么也不做', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'lukang', faction: 'wu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(lebu('l1'));
+    state.deck = [mk('j1', 'tao', 'heart')]; // 红桃【桃】→ 乐不思蜀无效，筑围也不触发
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    // 不看手牌（牌堆会重洗，判定牌可能又被摸回来）——只看「有没有发动过」和标记
+    expect(state.log.some((e) => e.message.includes('筑围'))).toBe(false);
+    expect(b.flags.handLimitBonus).toBe(0);
+    expect(b.flags.shaLimitBonus).toBe(0);
+  });
+});

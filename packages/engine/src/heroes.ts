@@ -4466,6 +4466,187 @@ const LIJUE_GUOSI: Hero = {
   ],
 };
 
+/**
+ * 陆抗 —— 恪守 / 筑围（君临天下·权，吴，**1.5 阴阳鱼 → 3**，称号·孤柱扶厦；已核）。
+ *
+ * 恪守：当你受到伤害时，你可以弃置两张颜色相同的牌，令此伤害-1，若没有与你势力相同的
+ *       其他角色，你判定，若结果为红色，你摸一张牌。
+ * 筑围：当你的判定牌生效后，若此牌为【杀】或伤害锦囊牌，你可以获得之，然后你可以令当前
+ *       回合角色本回合手牌上限+1、使用【杀】的限制次数+1。
+ *
+ * 读法与实现要点：
+ * - 恪守的两句**互不依赖**（官网文本里第二句既没有「若如此做」也没有「然后」）：付不起、
+ *   或不想付代价时，只要「没有与你势力相同的其他角色」，判定照样做。
+ *   ⚠️ 版本差异：B 站 Wiki 的国战栏把它写成「……令此伤害-1，**然后**若没有……你进行一次判定」，
+ *   读起来像「付了代价才判」。本实现取三国杀官网口径。
+ * - 「令此伤害-1」走新通道 `flags.damageReduce`——damageDealt 钩子里除「防止」之外的第二个
+ *   出口（可选的减伤没法写进 finalizeDamage 那套锁定技算法里）；减到 0 按「没造成伤害」处理。
+ * - 筑围的「获得之」与【天妒】同路（beforeJudge 返回 `gainJudgeCard`）。⚠️ 与天妒一样是
+ *   **自动收**（白拿一张牌严格优于不拿，官方那半句是「可以」）；真正需要问的是后半句
+ *   （给当前回合角色加手牌上限/杀次数可能是在帮敌人），所以后半句单独弹一次询问。
+ * - 「伤害锦囊牌」＝结算时会造成伤害的锦囊：决斗 / 南蛮入侵 / 万箭齐发 / 火攻 +
+ *   势备篇的火烧连营、水淹七军（后者是「弃装备或受 1 点雷电伤害」二选一，能造成伤害所以算）。
+ */
+const LUKANG: Hero = {
+  id: 'lukang',
+  name: '陆抗',
+  faction: 'wu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'damageDealt',
+      skillId: '恪守',
+      handler: (ctx) => {
+        const me = ctx.player;
+        // 第一句：弃两张同色牌 → 此伤害 -1
+        const pool = handAndEquipOf(me);
+        const sameColor = pool.filter(
+          (c) => pool.filter((x) => cardColor(x) === cardColor(c)).length >= 2,
+        );
+        if (sameColor.length >= 2 && me.flags.damageReduce === 0) {
+          ctx.api.askChoice(
+            ctx.state,
+            me.seatId,
+            '是否发动【恪守】？（弃置两张颜色相同的牌，令此伤害-1）',
+            [
+              { id: 'yes', label: '发动（弃两张同色牌）' },
+              { id: 'no', label: '不发动' },
+            ],
+            (st, p, picked) => {
+              if (picked !== 'yes') {
+                lukangJudgePart(ctx);
+                return;
+              }
+              ctx.api.askPickCards(
+                st,
+                p.seatId,
+                '【恪守】：弃置两张颜色相同的牌',
+                sameColor,
+                2,
+                2,
+                (st2, p2, chosen) => {
+                  const [c1, c2] = chosen;
+                  if (!c1 || !c2 || cardColor(c1) !== cardColor(c2)) {
+                    // 选了两张不同色的（界面理论上不会给这种组合）——按不发动处理
+                    lukangJudgePart(ctx);
+                    return;
+                  }
+                  p2.flags.damageReduce += 1;
+                  // 两张牌依次弃（走 api.discardCard：丢掉装备牌会触发枭姬那类技能）
+                  const doDiscard = (i: number): void => {
+                    const next = chosen[i];
+                    if (!next) {
+                      pushLog(
+                        st2,
+                        'skill',
+                        `${p2.name} 发动【恪守】，弃置两张${cardColor(c1) === 'red' ? '红' : '黑'}色牌，此伤害-1。`,
+                      );
+                      lukangJudgePart(ctx);
+                      return;
+                    }
+                    ctx.api.discardCard(p2.seatId, next, () => doDiscard(i + 1));
+                  };
+                  doDiscard(0);
+                },
+              );
+            },
+          );
+          return;
+        }
+        lukangJudgePart(ctx);
+      },
+    },
+    {
+      timing: 'beforeJudge',
+      skillId: '筑围',
+      handler: (ctx) => {
+        const payload = ctx.payload as { judgeCard?: Card; judgedId?: string } | undefined;
+        const judge = payload?.judgeCard;
+        // 只认**自己**的判定（与天妒同一口径）
+        if (!judge || payload?.judgedId !== ctx.player.seatId) return;
+        if (!isDamageCardForZhujwei(judge)) return;
+        // 后半句：给当前回合角色「本回合手牌上限+1、使用【杀】的限制次数+1」
+        const turnSeatId = ctx.state.seatOrder[ctx.state.turn.seatIndex];
+        const turnPlayer = turnSeatId ? getPlayer(ctx.state, turnSeatId) : undefined;
+        if (turnPlayer && turnPlayer.alive) {
+          ctx.api.askChoice(
+            ctx.state,
+            ctx.player.seatId,
+            `【筑围】：是否令 ${turnPlayer.name} 本回合手牌上限+1、使用【杀】的限制次数+1？`,
+            [
+              { id: 'yes', label: '发动' },
+              { id: 'no', label: '不发动' },
+            ],
+            (st, _p, picked) => {
+              if (picked !== 'yes') return;
+              const t = getPlayer(st, turnPlayer.seatId);
+              if (!t) return;
+              t.flags.handLimitBonus += 1;
+              t.flags.shaLimitBonus += 1;
+              pushLog(
+                st,
+                'skill',
+                `${t.name} 因【筑围】本回合手牌上限+1、使用【杀】的限制次数+1。`,
+                { seat: t.seatId },
+              );
+            },
+          );
+        }
+        return { gainJudgeCard: true };
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '恪守',
+      desc: '当你受到伤害时，你可以弃置两张颜色相同的牌，令此伤害-1；若没有与你势力相同的其他角色，你判定，若结果为红色，你摸一张牌。',
+    },
+    {
+      name: '筑围',
+      desc: '当你的判定牌生效后，若此牌为【杀】或伤害锦囊牌，你可以获得之，然后你可以令当前回合角色本回合手牌上限+1、使用【杀】的限制次数+1。',
+    },
+  ],
+};
+
+/** 恪守的第二句：没有同势力其他角色时判定，判红摸一张（与第一句互不依赖） */
+function lukangJudgePart(ctx: HookContext): void {
+  const me = ctx.player;
+  if (!me.alive) return;
+  const mine = effectiveFaction(ctx.state, me);
+  const mates = ctx.state.players.filter(
+    (p) => p.alive && p.seatId !== me.seatId && effectiveFaction(ctx.state, p) === mine,
+  );
+  // 注意：暗将没有势力 → mine 为 null 时要按「没有同势力角色」算吗？
+  // 官方口径是「没有与你势力相同的其他角色」，暗置的自己没有确定势力，这里按**没有**处理
+  // （也就是暗置时那半句不触发）——与其它势力类技能一致。
+  if (!mine || mates.length > 0) return;
+  const judge = drawOne(ctx.state);
+  if (!judge) return;
+  toDiscard(ctx.state, judge);
+  pushLog(ctx.state, 'skill', `${me.name} 发动【恪守】，判定牌：${cardLabel(judge)}。`);
+  if (cardColor(judge) === 'red') {
+    const c = drawOne(ctx.state);
+    if (c) me.hand.push(c);
+    pushLog(ctx.state, 'skill', `判定为红色，${me.name} 摸了 1 张牌。`);
+  }
+}
+
+/** 筑围认的牌：【杀】或（会）造成伤害的锦囊 */
+function isDamageCardForZhujwei(card: Card): boolean {
+  if (card.type === 'sha') return true;
+  return (
+    card.type === 'juedou' ||
+    card.type === 'nanman' ||
+    card.type === 'wanjian' ||
+    card.type === 'huogong' ||
+    card.type === 'huoshao' ||
+    card.type === 'shuiyan'
+  );
+}
+
 const SHAMOKE: Hero = {
   id: 'shamoke',
   name: '沙摩柯',
@@ -9764,6 +9945,7 @@ export const HEROES: Hero[] = [
   CUIYAN_MAOJIE,
   FAZHENG,
   WANGPING,
+  LUKANG,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

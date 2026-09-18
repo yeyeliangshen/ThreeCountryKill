@@ -787,7 +787,15 @@ const QUAN: RosterEntry[] = [
     status: 'todo',
     primitives: ['pick_cards'],
   },
-  { id: 'lukang', name: '陆抗', faction: 'wu', pack: 'quan', status: 'todo' },
+  {
+    id: 'lukang',
+    name: '陆抗',
+    faction: 'wu',
+    pack: 'quan',
+    status: 'done',
+    primitives: ['pick_cards'],
+    note: '恪守 + 筑围（君临天下·权，吴，国战牌面 1.5 阴阳鱼 → 3，称号·孤柱扶厦）。恪守按**三国杀官网现行文本**：两句互不依赖（第二句没有「若如此做」也没有「然后」），付不起/不想付代价时只要没有同势力其他角色，判定照样做——B 站 Wiki 的国战栏写成「…令此伤害-1，**然后**若没有…你进行一次判定」，读起来像「付了代价才判」，未采用。「令此伤害-1」走新通道 flags.damageReduce（damageDealt 钩子里除「防止」外的第二个出口，可选的减伤没法写进 finalizeDamage 那套锁定技算法），减到 0 按「没造成伤害」处理。筑围的「获得之」与【天妒】同路（beforeJudge 返回 gainJudgeCard）且同样是自动收（官方那半句是「可以」，白拿严格更优），真正需要问的后半句单独弹一次；「伤害锦囊」按「结算时会造伤」认：决斗/南蛮/万箭/火攻 + 势备篇的火烧连营、水淹七军（后者二选一里能造成伤害）。「本回合手牌上限+1」复用 flags.handLimitBonus，杀次数新增 flags.shaLimitBonus（都随回合重置）。',
+  },
   {
     id: 'yuanshu',
     name: '袁术',
