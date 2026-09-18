@@ -1509,7 +1509,10 @@ const CAOCAO: Hero = {
   faction: 'wei',
   maxHp: 4,
   gender: 'male',
-  isLord: true,
+  // ⚠️ 这里原本挂着 `isLord: true`（当时想给将来补君主留个伏笔），但它会连带开启
+  //    **君主规则**：和任何同势力武将都算珠联璧合、亮将必须两张一起亮、且只能当主将。
+  //    官方国战里曹操/刘备就是**普通武将**，君主是另一张牌（君曹操/君刘备）——所以把标记摘了，
+  //    将来真做君主时新增独立的武将条目（那才是官方模型），这几个分支也就自然生效了。
   combos: ['xuchu'], // 曹操 ❤ 许褚
   // 护驾：需要打出【闪】时，可以令其他魏势力角色代打（势力技）
   factionCall: { id: 'hujia', name: '护驾', needType: 'shan' },
@@ -8006,7 +8009,7 @@ const LIUBEI: Hero = {
   faction: 'shu',
   maxHp: 4,
   gender: 'male',
-  isLord: true,
+  // 同上：摘掉 isLord（官方国战刘备是普通武将，君主另有「君刘备」）
   combos: ['guanyu', 'zhangfei'], // 刘备 ❤ 关羽、张飞
   // 激将：需要打出【杀】时，可以令其他蜀势力角色代打（势力技）
   factionCall: { id: 'jijiang', name: '激将', needType: 'sha' },

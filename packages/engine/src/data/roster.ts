@@ -129,7 +129,7 @@ const STANDARD_WEI: RosterEntry[] = [
     pack: 'standard',
     status: 'done',
     primitives: ['faction_call', 'hook_interaction'],
-    note: '护驾走 faction_call（需要【闪】的两种场景：被【杀】指定、响应【万箭齐发】）。★ 暂带 isLord 标记，所以当前只能作主将。',
+    note: '护驾走 faction_call（需要【闪】的两种场景：被【杀】指定、响应【万箭齐发】）。原本暂带 isLord 标记（想给将来补君主留伏笔），但官方国战曹操是**普通武将**、君主另有「君曹操」，而那标记会连带开启君主规则（白拿珠联璧合、亮将必须双亮、只能当主将）——已摘掉。',
   },
   {
     id: 'simayi',
@@ -257,7 +257,7 @@ const STANDARD_SHU: RosterEntry[] = [
     pack: 'standard',
     status: 'done',
     primitives: ['pick_cards', 'faction_call'],
-    note: '仁德（累计两张回血一次）+ 激将（faction_call 的【杀】场景：决斗/南蛮/借刀/离间的响应）。★ 暂带 isLord。',
+    note: '仁德（累计两张回血一次）+ 激将（faction_call 的【杀】场景：决斗/南蛮/借刀/离间的响应）。原本暂带 isLord（同曹操那条注释：官方国战刘备是普通武将，君主另有「君刘备」）——已摘掉。',
   },
   { id: 'zhangfei', name: '张飞', faction: 'shu', pack: 'standard', status: 'done' },
   { id: 'guanyu', name: '关羽', faction: 'shu', pack: 'standard', status: 'done' },

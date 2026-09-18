@@ -903,11 +903,12 @@ describe('国战模式', () => {
     const mainHero = getHero(pairA.main)!;
     const deputyHero = getHero(pairA.deputy)!;
     // 官方规则：向下取整。珠联璧合不再加成体力上限（改为发标记），所以这里与组合无关；
-    // 但**副将位减半个阴阳鱼**的技能（孙策·魂殇 / 严白虎·寄篱 / 徐庶·举荐）要减 1——
-    // 随机发将可能正好发到这些组合，所以期望值必须把这一条算进去。
-    const deputyHalfYang = getHeroForMode(pairA.deputy, 'guozhan')?.deputySlotHalfYang === true;
-    const expectedHp =
-      Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2) - (deputyHalfYang ? 1 : 0);
+    // 但**主将位/副将位各减半个阴阳鱼**的技能要在取平均**之前**各减 1（董卓·暴凌是主将位、
+    // 孙策·魂殇 / 严白虎·寄篱 / 徐庶·举荐是副将位）——随机发将可能正好发到这些组合，
+    // 期望值必须照 engine.finishDraft 的算法逐字算一遍。
+    const mainHp = mainHero.maxHp - (mainHero.mainSlotHalfYang ? 1 : 0);
+    const deputyHp = deputyHero.maxHp - (deputyHero.deputySlotHalfYang ? 1 : 0);
+    const expectedHp = Math.floor((mainHp + deputyHp) / 2);
     ok(act(state, A, { type: 'pickHero', heroId: pairA.main, deputyHeroId: pairA.deputy }));
     const pairB = findSameFactionPair(state.draft!.deals[B]!)!;
     ok(act(state, B, { type: 'pickHero', heroId: pairB.main, deputyHeroId: pairB.deputy }));
@@ -3942,43 +3943,67 @@ describe('新增武将（按最新国战标准）', () => {
 
   // —— 君主将 ——
 
-  it('君主将只能作主将', () => {
-    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
-    // 曹操作副将 → 拒
-    fail(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'caocao' }));
-    // 曹操作主将 → 通过
-    ok(act(state, A, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
-  });
+  // ⚠️ 君主将（君曹操/君刘备…）**本次不做**，引擎里那几条 `isLord` 分支因此处于休眠状态：
+  //    没有任何出厂的武将带这个标记（曹操/刘备曾经暂带过，但官方国战里他们是普通武将，
+  //    君主是另外两张牌——带着标记会连带开启「白拿珠联璧合 / 亮将必须双亮 / 只能当主将 /
+  //    不会成为野心家」四条规则，属于错误行为，已摘掉）。下面用**临时打标记**的方式
+  //    把这几条规则继续盖住，等真做君主时它们自然生效。
 
-  it('君主将亮将时主副将同时明置，并获得【珠联璧合】', () => {
+  it('曹操/刘备是普通武将：可以作副将、也不白拿珠联璧合', () => {
     const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
-    ok(act(state, A, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
-    ok(act(state, B, { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'ganning' }));
+    // 曹操/刘备作副将 → 允许（官方：他们不是君主）
+    ok(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'caocao' }));
+    ok(act(state, B, { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'liubei' }));
+    // 曹操的珠联璧合伙伴是许褚 ✓（不是「任何魏势力」）：两人都在场也不该白拿标记
     const a = state.players.find((p) => p.seatId === A)!;
-    expect(a.maxHp).toBe(4); // floor((4+4)/2)
     ok(act(state, A, { type: 'revealHero', heroId: 'caocao' }));
-    expect(a.heroRevealed).toBe(true);
-    expect(a.deputyRevealed).toBe(true); // 双将同亮
-    expect(a.markers.zhulian).toBe(1); // 君主与同势力全员珠联璧合
-    expect(a.markers.xianqu).toBe(1);
+    // markers 里没这个键就是「没拿到」（引擎只在真触发时才 addMarker）
+    expect(a.markers.zhulian ?? 0).toBe(0);
   });
 
-  it('君主不会成为野心家：3 魏里最后那个是君主 → 往前顺延给别人', () => {
-    const seats4: SeatSetup[] = [
-      { seatId: A, name: '甲' },
-      { seatId: B, name: '乙' },
-      { seatId: C, name: '丙' },
-      { seatId: D, name: '丁' },
-    ];
-    const state = createGame(seats4, 'TEST', { mode: 'guozhan', freePick: true });
-    ok(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' })); // 魏
-    ok(act(state, B, { type: 'pickHero', heroId: 'simayi', deputyHeroId: 'xiahoudun' })); // 魏
-    ok(act(state, C, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' })); // 魏（君主）
-    ok(act(state, D, { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' })); // 蜀
-    const c = state.players.find((p) => p.seatId === C)!;
-    const b = state.players.find((p) => p.seatId === B)!;
-    expect(c.faction).toBe('wei'); // 君主保持魏
-    expect(b.faction).toBe('ambitionist'); // 跳过君主，顺延到上一个魏
+  it('（休眠规则）君主将只能作主将 / 亮将双亮并获【珠联璧合】/ 不成野心家', () => {
+    const lord = getHero('caocao')!;
+    const deputySkip = getHero('liubei')!;
+    try {
+      // 临时给曹操/刘备打上君主标记，验证引擎那几条分支仍然正确
+      (lord as { isLord?: boolean }).isLord = true;
+      (deputySkip as { isLord?: boolean }).isLord = true;
+
+      // ① 只能作主将
+      const s1 = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+      fail(act(s1, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'caocao' }));
+      ok(act(s1, A, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
+
+      // ② 亮将双亮 + 与同势力全员珠联璧合
+      const s2 = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+      ok(act(s2, A, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
+      ok(act(s2, B, { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'ganning' }));
+      const a = s2.players.find((p) => p.seatId === A)!;
+      ok(act(s2, A, { type: 'revealHero', heroId: 'caocao' }));
+      expect(a.heroRevealed).toBe(true);
+      expect(a.deputyRevealed).toBe(true); // 双将同亮
+      expect(a.markers.zhulian).toBe(1);
+
+      // ③ 不成野心家：3 魏里最后一个本该转野心家，跳过君主往前顺延
+      const seats4: SeatSetup[] = [
+        { seatId: A, name: '甲' },
+        { seatId: B, name: '乙' },
+        { seatId: C, name: '丙' },
+        { seatId: D, name: '丁' },
+      ];
+      const s3 = createGame(seats4, 'TEST', { mode: 'guozhan', freePick: true });
+      ok(act(s3, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+      ok(act(s3, B, { type: 'pickHero', heroId: 'simayi', deputyHeroId: 'xiahoudun' }));
+      ok(act(s3, C, { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xuchu' }));
+      ok(act(s3, D, { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+      const c = s3.players.find((p) => p.seatId === C)!;
+      const b = s3.players.find((p) => p.seatId === B)!;
+      expect(c.faction).toBe('wei'); // 君主保持魏
+      expect(b.faction).toBe('ambitionist'); // 跳过君主，顺延到上一个魏
+    } finally {
+      delete (lord as { isLord?: boolean }).isLord;
+      delete (deputySkip as { isLord?: boolean }).isLord;
+    }
   });
 
   // —— 新武将技能 ——
