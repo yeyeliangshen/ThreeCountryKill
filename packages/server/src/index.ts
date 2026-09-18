@@ -224,17 +224,24 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
         // 认回/接替：那个座位有名字但离线。已开局的房间只允许这一种进入方式
-        const joinable = target.canJoin(msg.seatId);
+        // （没带座位号时按**昵称**认：同一个昵称＝同一个人，换了设备也能回来）
+        const joinable = target.canJoin(msg.seatId, name);
         if (!joinable.ok) {
           send(ws, { type: 'error', message: joinable.error });
           break;
         }
         const seat = msg.seatId ? target.seats.find((x) => x.seatId === msg.seatId) : undefined;
-        const reclaiming = !!seat && seat.name !== null && !seat.connected;
+        // 带座位号但那个位子已经空了/不是我的 → 不算「认回」，走下面的按昵称找
+        const reclaiming = !!seat && seat.name === name;
+        // 没带座位号（换了设备、本地没记住）：先按**昵称**找自己的座位，再退到第一个空位。
+        // 不这么找的话，同一个人回来会变成「同名两个人」——旧座位成离线幽灵，新座位又占一位。
+        const mine = target.findByName(name);
         leaveCurrentRoom();
         room = target;
         hallClients.delete(ws);
-        const wantSeatId = reclaiming ? msg.seatId! : (target.findEmpty()?.seatId ?? null);
+        const wantSeatId = reclaiming
+          ? msg.seatId!
+          : (mine?.seatId ?? target.findEmpty()?.seatId ?? null);
         if (wantSeatId) {
           const res = target.claimSeat(wantSeatId, ws, name);
           if (!res.ok) send(ws, { type: 'error', message: res.error });

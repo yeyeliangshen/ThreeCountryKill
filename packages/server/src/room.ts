@@ -74,6 +74,17 @@ export class Room {
   }
 
   /**
+   * 这个昵称占着哪个座位。
+   *
+   * **一个昵称＝一个用户**：房间里的身份认昵称，不认连接。换设备、清了本地记录、
+   * 或者同一个浏览器开第二个标签页时，靠它认出「这是我自己的座位」，
+   * 而不是又占一个新位子、把旧座位变成离线幽灵。
+   */
+  findByName(name: string): SeatEntry | null {
+    return this.seats.find((s) => s.name === name) ?? null;
+  }
+
+  /**
    * 落座 / 重连 / 换座。
    * - 空座位：新落座。房里还没有房主时（＝刚建好的房间）他成为房主。
    * - 已占用且断线：**重连**，恢复原身份（保留 name / heroId / isHost）——
@@ -90,12 +101,36 @@ export class Room {
   ): { ok: true; seatId: string } | { ok: false; error: string } {
     const seat = this.seats.find((s) => s.seatId === seatId);
     if (!seat) return { ok: false, error: '座位不存在' };
-    if (seat.name !== null && seat.connected && seat.ws !== ws)
+    // 同名＝同一个人：点自己那个正在线的座位，等于「在别处接着打」，顶掉旧连接而不是被拒
+    const sameSeatOtherConn = seat.name === name && seat.ws !== ws;
+    if (seat.name !== null && seat.connected && seat.ws !== ws && !sameSeatOtherConn)
       return { ok: false, error: '该座位已被占用' };
+
+    // 同昵称＝同一个用户：把**另一个**同名的座位让出来。
+    // 不这么做就会「同名两个人」：旧座位变成离线幽灵，新座位又占一个位置。
+    // ⚠️ 只在未开局时做：开局后座位是游戏状态的一部分（换座＝换人），不能因为同名就动它。
+    const sameNameOther =
+      this.started || seat.name === name
+        ? null
+        : this.seats.find((s) => s.name === name && s.seatId !== seatId) ?? null;
 
     // 换座：先离开原来那个座位（房主换座时身份也要跟着走，见下方再次指派）
     const previous = this.seats.find((s) => s.ws === ws && s.seatId !== seatId);
-    const keepHost = !!previous?.isHost;
+    let keepHost = !!previous?.isHost;
+
+    // 顶掉旧连接：明确告诉他回大厅——否则他那边的界面会静默卡住（收不到 lobby 了）
+    if (sameSeatOtherConn && seat.ws) {
+      this.kickNotice(seat.ws, '同一个昵称在别处登入，这个座位已由新的连接接管。');
+    }
+    if (sameNameOther) {
+      if (sameNameOther.isHost) keepHost = true; // 房主是「人」的属性，跟着人走
+      // ⚠️ 只有**别的连接**才需要通知：同一条连接换座时，那个「同名旧座位」就是它自己
+      //    刚离开的位子——发通知会把它自己顶回大厅。
+      if (sameNameOther.connected && sameNameOther.ws && sameNameOther.ws !== ws) {
+        this.kickNotice(sameNameOther.ws, '同一个昵称在别处登入，这里的座位已合并到那边。');
+      }
+      this.releaseSeat(sameNameOther.seatId);
+    }
     if (previous) this.releaseSeat(previous.seatId);
 
     if (seat.name !== null) {
@@ -162,9 +197,13 @@ export class Room {
    * 其他人一律进不去，免得半路插进一局正在打的牌。
    * 这是大厅那条「已开局 → 显示但点不进去」的唯一判定处。
    */
-  canJoin(seatId?: string): { ok: true } | { ok: false; error: string } {
+  canJoin(seatId?: string, name?: string): { ok: true } | { ok: false; error: string } {
     if (!this.started) return { ok: true };
-    const seat = seatId ? this.seats.find((s) => s.seatId === seatId) : undefined;
+    const seat = seatId
+      ? this.seats.find((s) => s.seatId === seatId)
+      : name
+        ? this.findByName(name)
+        : undefined;
     if (seat && seat.name !== null && !seat.connected) return { ok: true };
     return { ok: false, error: '该房间已开局，无法加入' };
   }
@@ -273,6 +312,11 @@ export class Room {
       connected: s.connected,
       heroId: s.heroId,
     }));
+  }
+
+  /** 把一个连接「请回大厅」：座位上没它了，只能直接发（客户端收到就回大厅并提示） */
+  private kickNotice(ws: WebSocket, reason: string): void {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'roomClosed', reason }));
   }
 
   private sendToSeat(seatId: string, msg: ServerMessage): void {

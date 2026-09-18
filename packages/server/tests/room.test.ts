@@ -55,6 +55,98 @@ describe('Room · 落座与房主', () => {
   });
 });
 
+describe('Room · 一个昵称＝一个用户', () => {
+  it('同一个昵称用新连接回来：并成一个座位，旧座位不再占着', () => {
+    const room = newRoom();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    // 甲换了设备（新连接、本地没记住座位号）→ 服务端按昵称认出他
+    const seats = room.seatViews();
+    const mine = seats.find((s) => s.name === '甲')!;
+    const res = room.claimSeat('3', fakeWs(), '甲');
+    expect(res.ok).toBe(true);
+    // 仍然只有一个人叫「甲」：新座位坐上了，旧座位被让出来
+    expect(room.seatViews().filter((s) => s.name === '甲')).toHaveLength(1);
+    expect(room.seatViews().find((s) => s.name === '甲')!.seatId).toBe('3');
+    expect(room.seats.find((s) => s.seatId === mine.seatId)!.name).toBeNull();
+    expect(room.summary().players).toBe(2); // 甲 + 乙
+  });
+
+  it('被并掉的那条连接会收到 roomClosed（否则它那边界面静默卡住）', () => {
+    const room = newRoom();
+    const oldSent: string[] = [];
+    room.claimSeat('1', fakeWs(oldSent), '甲');
+    room.claimSeat('2', fakeWs(), '甲');
+    expect(oldSent.some((m) => m.includes('roomClosed'))).toBe(true);
+  });
+
+  it('同一个昵称点自己那个**在线**的座位：接管，而不是「已被占用」', () => {
+    const room = newRoom();
+    const oldSent: string[] = [];
+    room.claimSeat('1', fakeWs(oldSent), '甲');
+    const res = room.claimSeat('1', fakeWs(), '甲'); // 另一个标签页
+    expect(res.ok).toBe(true);
+    expect(room.seats[0]!.connected).toBe(true);
+    expect(oldSent.some((m) => m.includes('roomClosed'))).toBe(true);
+    expect(room.summary().players).toBe(1);
+  });
+
+  it('同一条连接换座（同名）不会把自己顶回大厅', () => {
+    const room = newRoom();
+    const sent: string[] = [];
+    const ws = fakeWs(sent); // 同一条连接：先坐 1 号位，再换到 3 号位
+    room.claimSeat('1', ws, '甲');
+    room.claimSeat('3', ws, '甲');
+    expect(sent.some((m) => m.includes('roomClosed'))).toBe(false);
+    expect(room.seatViews().filter((s) => s.name === '甲')).toHaveLength(1);
+  });
+
+  it('同名的是房主时，房主身份跟着人走', () => {
+    const room = newRoom();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('3', fakeWs(), '甲'); // 换到 3 号位
+    expect(room.hostSeatId).toBe('3');
+    expect(room.seats.find((s) => s.seatId === '3')!.isHost).toBe(true);
+    expect(room.seats.filter((s) => s.isHost)).toHaveLength(1);
+  });
+
+  it('开局后不按昵称并座位（局中座位是游戏状态，不能因为同名就动）', () => {
+    const room = newRoom();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    room.started = true;
+    // 局中「甲」的旧座位离线，另一个连接用同名坐 3 号位 → 旧座位保留（认回得走座位号）
+    room.seats[0]!.connected = false;
+    room.seats[0]!.ws = null;
+    const res = room.claimSeat('3', fakeWs(), '甲');
+    expect(res.ok).toBe(true);
+    expect(room.seatViews().filter((s) => s.name === '甲')).toHaveLength(2);
+  });
+
+  it('不同昵称互不影响：乙坐别的位子不会动甲', () => {
+    const room = newRoom();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    expect(room.seatViews().filter((s) => s.name !== null)).toHaveLength(2);
+    expect(room.hostSeatId).toBe('1');
+  });
+
+  it('已开局的房间：同昵称的离线座位不带座位号也能认出（换了设备也能回）', () => {
+    const room = newRoom();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    room.started = true;
+    room.seats[0]!.connected = false;
+    room.seats[0]!.ws = null;
+    expect(room.canJoin(undefined, '甲')).toEqual({ ok: true });
+    expect(room.canJoin(undefined, '乙')).toEqual({ ok: false, error: '该房间已开局，无法加入' });
+    expect(room.canJoin(undefined, '丙')).toEqual({ ok: false, error: '该房间已开局，无法加入' });
+    // 甲自己还在线时也不能被顶（局中不该换手）
+    room.seats[1]!.connected = true;
+    expect(room.canJoin(undefined, '乙')).toEqual({ ok: false, error: '该房间已开局，无法加入' });
+  });
+});
+
 describe('Room · 换座', () => {
   it('换到别的空座位时会释放原座位（不会一人占两位）', () => {
     const room = newRoom();

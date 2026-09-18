@@ -76,12 +76,20 @@ export function Hall() {
         <div className="hall-rooms">
           {rooms.map((room) => {
             const status = statusOf(room);
-            const joinable = !room.started && room.players < room.maxSeats;
+            // 满员的等待房进不去；**已开局的房间可以点**——同名的人要能认回自己的位子
+            // （服务端按昵称认：座位还在、且离线才放行，别人会被拒并给出提示）。
+            const joinable = room.started || room.players < room.maxSeats;
             return (
               <div
                 key={room.roomCode}
                 className={`room-card ${joinable ? 'clickable' : ''}`}
-                title={room.started ? '这一局已经开始了，进不去' : '点一下加入这个房间'}
+                title={
+                  room.started
+                    ? '这一局已经开始了：只有原来坐在这里、且已经离线的人能点进去接着打'
+                    : room.players >= room.maxSeats
+                      ? '房间满了'
+                      : '点一下加入这个房间'
+                }
                 onClick={joinable ? () => joinRoom(room.roomCode) : undefined}
               >
                 <div className="room-code">房间 {room.roomCode}</div>
