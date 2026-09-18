@@ -16766,3 +16766,122 @@ describe('国战 · 袁术（庸肆 / 伪帝）', () => {
     fail(act(state, A, { type: 'useSkill', skillId: 'weidi', cardIds: [], targetIds: [B] }));
   });
 });
+
+/** 孙策·鹰扬（拼点的牌亮出后 ±3）——拼点流程新增的 pindianRevealed 时机 */
+describe('国战 · 孙策·鹰扬', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('鹰扬：亮牌后 +3，把原本输掉的拼点扳回来', () => {
+    const state = gz(
+      [
+        // 甲用【天义】和乙拼点：甲 2 点、乙 5 点
+        { seatId: A, name: '甲', heroId: 'taishici', faction: 'wu', hand: [mk('a1', 'sha', 'spade', 2)] },
+        { seatId: B, name: '乙', heroId: 'sunce', faction: 'wu', hand: [mk('b1', 'tao', 'heart', 5)] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', cardIds: [], targetIds: [B] }));
+    // 拼点：双方各扣一张（秘密选牌）
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 亮牌之后、比大小之前：乙（孙策）被问鹰扬
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('鹰扬');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'plus' }));
+    expect(state.log.some((e) => e.message.includes('其拼点牌点数 5 → 8'))).toBe(true);
+    // 8 > 2 → 乙赢，甲的天义没赢
+    expect(state.log.some((e) => e.message.includes('【拼点】乙 赢'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('拼点未获胜'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('鹰扬：不发动就按原点数比大小；发起者也可以是自己', () => {
+    const state = gz(
+      [
+        // 这次让孙策当**发起者**：甲是太史慈，乙（孙策）用天义？
+        // 天义是太史慈的技能，所以这里还是甲发起、乙（孙策）作为目标来验「不发动」
+        { seatId: A, name: '甲', heroId: 'taishici', faction: 'wu', hand: [mk('a1', 'sha', 'spade', 9)] },
+        { seatId: B, name: '乙', heroId: 'sunce', faction: 'wu', hand: [mk('b1', 'tao', 'heart', 5)] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', cardIds: [], targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.log.some((e) => e.message.includes('鹰扬'))).toBe(false);
+    // 9 > 5 → 甲赢
+    expect(state.log.some((e) => e.message.includes('【拼点】甲 赢'))).toBe(true);
+  });
+
+  it('鹰扬：点数被夹在 A 到 K（13 点 +3 还是 13）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'taishici', faction: 'wu', hand: [mk('a1', 'sha', 'spade', 9)] },
+        { seatId: B, name: '乙', heroId: 'sunce', faction: 'wu', hand: [mk('b1', 'tao', 'heart', 13)] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', cardIds: [], targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'plus' }));
+    expect(state.log.some((e) => e.message.includes('其拼点牌点数 13 → 13'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('【拼点】乙 赢'))).toBe(true);
+  });
+
+  it('鹰扬：拼点双方都没有这个技能时，流程照旧（不会多出询问）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'taishici', faction: 'wu', hand: [mk('a1', 'sha', 'spade', 9)] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [mk('b1', 'tao', 'heart', 5)] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', cardIds: [], targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 直接出结果，中间没有询问
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.log.some((e) => e.message.includes('【拼点】甲 赢'))).toBe(true);
+  });
+});

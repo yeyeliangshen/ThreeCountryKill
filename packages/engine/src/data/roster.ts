@@ -635,10 +635,9 @@ const SHI: RosterEntry[] = [
     name: '孙策',
     faction: 'wu',
     pack: 'shi',
-    status: 'partial',
-    primitives: ['awaken_skill'],
-    missing: ['鹰扬（要改拼点流程：亮牌后、比大小前插一次 ±3 询问）'],
-    note: '激昂已实现（用/被打红色杀或决斗两个方向都摸一张；决斗方向用了新加的「单人目标锦囊也派发成为目标后」）。魂殇已实现（副将技：体力不大于 1 时本回合临时获得英姿与英魂，回合结束自动清掉）。只剩鹰扬——那个要动拼点流程（亮牌后、比大小前插一次 ±3 询问）。副将位的「减半个阴阳鱼」（deputySlotHalfYang）已经就绪。',
+    status: 'done',
+    primitives: ['awaken_skill', 'pindian', 'slot_skills'],
+    note: '激昂（用/被打红色杀或决斗两个方向都摸一张；决斗方向用了「单人目标锦囊也派发成为目标后」）+ 鹰扬 + 魂殇（副将技，deputySlotHalfYang 减半个阴阳鱼）都已实现。鹰扬按国战原文「当你拼点的牌亮出后，你可以令此牌的点数+3或-3（至少为A，至多为K）」——为此给拼点流程加了新时机 pindianRevealed + api.setPindianRank（与判定里的 replaceJudgeCard 同一套「盒子」写法：问了才知道改几，不能靠返回值）。⚠️ 顺带修了一个坑：拼点原本靠最后一次扣牌询问的 returnTo 回到出牌阶段，鹰扬的询问一挂起那条兜底就失效（pending 会停在 null），所以引擎在拼点链末尾显式补一次 resumePlay。珠联璧合（周瑜/大乔/太史慈）也已登记。',
   },
   {
     id: 'chenwu_dongxi',

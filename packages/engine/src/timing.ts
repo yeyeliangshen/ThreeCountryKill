@@ -141,6 +141,13 @@ export type Timing =
   | 'nearDeathResolved'
   | 'kill' // 你**杀死**了一名角色（派发给凶手，payload.victimId）——曹丕·行殇
   | 'afterHeal' // 回复体力后（派发给回复者，payload.amount 是**实际**回复量）——甘夫人·淑慎
+  /**
+   * **你拼点的牌亮出后**（派发给拼点的**双方**，payload: { card, opponentCard, isInitiator }）。
+   * 时机夹在「亮牌」与「比大小」之间——孙策·鹰扬要在这时改自己的点数。
+   * 钩子在询问回调里调 `api.setPindianRank(n)` 写新点数（与判定里的 replaceJudgeCard 同一套：
+   * 引擎那条自己的链读这个盒子，不能靠返回值——问了才知道改几）。
+   */
+  | 'pindianRevealed'
   | 'death'; // 死亡
 
 /**
@@ -249,6 +256,13 @@ export interface SkillApi {
    * 不在判定里调用它没有效果（没有可替换的目标）。
    */
   replaceJudgeCard: (card: Card) => void;
+  /**
+   * 改写本次拼点里**你那张牌**的点数。**只能在 `pindianRevealed` 的钩子里调用**。
+   *
+   * 与 replaceJudgeCard 同一套路：钩子常常要先问玩家（+3 还是 -3），那时拿不到返回值，
+   * 所以在询问回调里调本函数，引擎接着按新点数比大小。不在拼点流程里调用没有效果。
+   */
+  setPindianRank: (rank: number) => void;
   /**
    * 把某人的一张牌（手牌或装备区）转给另一个人。
    * 拿走装备会触发「失去装备」的技能（枭姬那类），after 在所有结算完成后调用。

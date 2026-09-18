@@ -5662,6 +5662,8 @@ const SUNCE: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 珠联璧合（国战孙策）：周瑜、大乔、太史慈
+  combos: ['zhouyu', 'daqiao', 'taishici'],
   deputySlotSkills: ['魂殇'],
   deputySlotHalfYang: true,
   hooks: [
@@ -5731,6 +5733,40 @@ const SUNCE: Hero = {
         jiyangDraw(ctx);
       },
     },
+    {
+      // 鹰扬：拼点的牌亮出后、比大小前，可以令**自己那张**点数 ±3（至少为 A、至多 K）。
+      // 改点数走 api.setPindianRank（引擎那条拼点链读它，见 engine.askPindianRevealed）。
+      timing: 'pindianRevealed',
+      skillId: '鹰扬',
+      handler: (ctx) => {
+        const payload = ctx.payload as { card?: Card } | undefined;
+        const card = payload?.card;
+        if (!card) return;
+        const me = ctx.player;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `【鹰扬】：是否令你拼点的【${cardLabel(card)}】（${card.rank} 点）+3 或 -3？`,
+          [
+            { id: 'plus', label: `点数 +3（${Math.min(13, card.rank + 3)} 点）` },
+            { id: 'minus', label: `点数 -3（${Math.max(1, card.rank - 3)} 点）` },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked === 'no') return;
+            const after =
+              picked === 'plus' ? Math.min(13, card.rank + 3) : Math.max(1, card.rank - 3);
+            ctx.api.setPindianRank(after);
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 发动【鹰扬】，其拼点牌点数 ${card.rank} → ${after}。`,
+              { seat: p.seatId },
+            );
+          },
+        );
+      },
+    },
   ],
   skills: [
     {
@@ -5739,7 +5775,7 @@ const SUNCE: Hero = {
     },
     {
       name: '鹰扬',
-      desc: '当你拼点的牌亮出后，你可以令此牌的点数+3或-3。（拼点流程的改造还没做，暂时不可用）',
+      desc: '当你拼点的牌亮出后，你可以令此牌的点数+3或-3（至少为A，至多为K）。',
     },
     {
       name: '魂殇',

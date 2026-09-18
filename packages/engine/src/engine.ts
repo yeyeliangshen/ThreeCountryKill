@@ -1153,6 +1153,14 @@ interface JudgeBox {
   gainer?: Player;
 }
 
+/**
+ * 拼点过程中钩子可以写入的决定（鹰扬改点数）。
+ * 与 JudgeBox 同理：钩子要先问玩家才知道改几，所以写盒子、由引擎的链读。
+ */
+interface PindianBox {
+  rank?: number;
+}
+
 /** 成为【杀】目标时钩子可以写入的决定（流离那类改目标） */
 interface AttackBox {
   redirectTo?: string;
@@ -1931,6 +1939,70 @@ function fireEquipLost(state: GameState, owner: Player, card: Card, after: () =>
     });
     after();
   });
+}
+
+/**
+ * 「拼点的牌亮出后」的派发（孙策·鹰扬）：按「发起者 → 目标」依次问，钩子可以改写点数，
+ * 全部问完回调最终点数。
+ *
+ * 为什么自己摊一条链而不是用 runHooksPausable：那个拿不到「把点数写回来」的盒子
+ * （判定那条路也是同样的原因自己摊了一条，见 judgeHookStep）。
+ * 双方都可能有鹰扬，官方没规定同一时机的先后，这里定为发起者先问。
+ */
+function askPindianRevealed(
+  state: GameState,
+  participants: { player: Player; card: Card; isInitiator: boolean }[],
+  done: (ranks: number[]) => void,
+): void {
+  const ranks = participants.map((x) => x.card.rank);
+  const step = (i: number): void => {
+    const cur = participants[i];
+    if (!cur) {
+      done(ranks);
+      return;
+    }
+    const hooks = collectTimingHooks(state, cur.player, 'pindianRevealed', false);
+    if (hooks.length === 0) {
+      step(i + 1);
+      return;
+    }
+    const box: PindianBox = {};
+    const opponent = participants.find((x) => x.player.seatId !== cur.player.seatId);
+    const runOne = (k: number): void => {
+      const hk = hooks[k];
+      if (!hk) {
+        if (box.rank !== undefined) ranks[i] = box.rank;
+        step(i + 1);
+        return;
+      }
+      hk.handler({
+        state,
+        player: cur.player,
+        timing: 'pindianRevealed',
+        payload: {
+          card: cur.card,
+          opponentCard: opponent?.card,
+          isInitiator: cur.isInitiator,
+        },
+        // ⚠️ resumeTo 必须给：鹰扬的询问会**挂起**，而拼点自己的「回到出牌阶段」是靠最后那次
+        // 扣牌询问的 returnTo 兜的——一旦中间挂起，那条兜底就不生效了（不传就停在 pending=null，
+        // 出牌方卡死，是这个引擎反复踩过的坑）。口径与拼点自己的询问一致：还给当前回合玩家。
+        api: makeSkillApi(state, {
+          pindianBox: box,
+          actor: cur.player.seatId,
+          resumeTo: state.seatOrder[state.turn.seatIndex],
+        }),
+      });
+      // 钩子挂起了询问（鹰扬的「+3 还是 -3」）：等它选完再跑下一个
+      if (state.pending?.kind === 'choice' || state.pending?.kind === 'pickCards') {
+        pushResume(state, () => runOne(k + 1));
+        return;
+      }
+      runOne(k + 1);
+    };
+    runOne(0);
+  };
+  step(0);
 }
 
 /**
@@ -6660,17 +6732,28 @@ export function prelitableSkills(
  */
 function makeSkillApi(
   state: GameState,
-  opts?: { resumeTo?: string; actor?: string; judgeBox?: JudgeBox; attackBox?: AttackBox },
+  opts?: {
+    resumeTo?: string;
+    actor?: string;
+    judgeBox?: JudgeBox;
+    attackBox?: AttackBox;
+    pindianBox?: PindianBox;
+  },
 ): SkillApi {
   const resumeTo = opts?.resumeTo;
   const judgeBox = opts?.judgeBox;
   const attackBox = opts?.attackBox;
+  const pindianBox = opts?.pindianBox;
   return {
     askChoice,
     askPickCards,
     replaceJudgeCard: (card) => {
       // 没有 judgeBox 说明不在判定流程里，静默忽略
       if (judgeBox) judgeBox.replacement = card;
+    },
+    setPindianRank: (rank) => {
+      // 没有 pindianBox 说明不在拼点流程里，静默忽略
+      if (pindianBox) pindianBox.rank = rank;
     },
     redirectAttack: (newTargetSeatId) => {
       if (attackBox) attackBox.redirectTo = newTargetSeatId;
@@ -6931,17 +7014,33 @@ function makeSkillApi(
                 'skill',
                 `【拼点】：${init.name} 亮出【${cardLabel(c1)}】，${tgt.name} 亮出【${cardLabel(c2)}】。`,
               );
-              let winner: string | null = null;
-              if (c1.rank > c2.rank) winner = initiatorId;
-              else if (c2.rank > c1.rank) winner = targetId;
-              pushLog(
+              // 亮牌之后、比大小之前：鹰扬可以改自己的点数
+              askPindianRevealed(
                 st2,
-                'skill',
-                winner
-                  ? `【拼点】${winner === initiatorId ? init.name : tgt.name} 赢。`
-                  : '【拼点】平点，无人获胜。',
+                [
+                  { player: init, card: c1, isInitiator: true },
+                  { player: tgt, card: c2, isInitiator: false },
+                ],
+                ([r1, r2]) => {
+                  let winner: string | null = null;
+                  if (r1! > r2!) winner = initiatorId;
+                  else if (r2! > r1!) winner = targetId;
+                  pushLog(
+                    st2,
+                    'skill',
+                    winner
+                      ? `【拼点】${winner === initiatorId ? init.name : tgt.name} 赢。`
+                      : '【拼点】平点，无人获胜。',
+                  );
+                  onResult(st2, winner);
+                  // 拼点自己的「回到出牌阶段」原来靠最后一次扣牌询问的 returnTo 兜底，
+                  // 但鹰扬的 ±3 询问会把这条链**挂起**——一挂起那条兜底就不再生效，
+                  // 整条链跑完 pending 会是 null（出牌方卡死）。这里显式补一次。
+                  if (st2.pending === null && !st2.gameOver) {
+                    resumePlay(st2, st2.seatOrder[st2.turn.seatIndex]!);
+                  }
+                },
               );
-              onResult(st2, winner);
             },
             // 最后一次选完要把控制权还回来，否则 pending 停在 null、出牌方卡死。
             // 拼点都发生在出牌阶段，所以还给当前回合玩家。
