@@ -3677,6 +3677,7 @@ function askZhangwu(ctx: HookContext): void {
           others.map((x) => ({ id: x.seatId, label: x.name })),
           (st2, p2, seatId) => {
             noteMarkerUsed(st2, p2.seatId, 'xianqu');
+            // 钩子里**不传** returnTo：看过之后由钩子链条自己接着跑（见 runHooksFrom）
             useXianqu(st2, p2, getPlayer(st2, seatId), ctx.api, via('xianqu'));
           },
         );

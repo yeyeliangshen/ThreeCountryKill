@@ -66,6 +66,7 @@ export function useXianqu(
   target: Player | undefined,
   api: SkillApi,
   via: string,
+  opts?: { returnTo?: string },
 ): void {
   const got = drawN(state, player, Math.max(0, 4 - player.hand.length));
   pushLog(
@@ -76,12 +77,14 @@ export function useXianqu(
   if (!target) return;
   // 「观看其一张暗置武将牌」：两张都暗着时由观看者挑一张（与知彼同一口径）
   const hidden = unrevealedHeroes(state.mode, target);
+  // 观看是自己要看完的信息展示：**主动技**里给 returnTo（看完把控制权还给出牌方）；
+  // **钩子**里不能给（钩子链条会自己接着跑，见 runHooksFrom 的 viewCards 分支）。
   const show = (name: string): void => {
     api.privateView(
       player.seatId,
       `${target.name} 的暗置武将牌`,
       { cards: [], note: name },
-      { returnTo: player.seatId },
+      opts?.returnTo ? { returnTo: opts.returnTo } : undefined,
     );
   };
   if (hidden.length === 0) {
@@ -100,7 +103,7 @@ export function useXianqu(
     (_st, _p, picked) => {
       show(hidden.find((h) => h.id === picked)?.name ?? hidden[0]!.name);
     },
-    player.seatId,
+    opts?.returnTo,
   );
 }
 
@@ -120,7 +123,10 @@ const XIANQU: ActiveSkill = {
     if (!target) return '【先驱】需选择一名其他角色';
     if (!consumeMarker(player, 'xianqu')) return '没有【先驱】标记';
     noteMarkerUsed(state, player.seatId, 'xianqu');
-    useXianqu(state, player, target, api, `${player.name} 弃置【先驱】`);
+    useXianqu(state, player, target, api, `${player.name} 弃置【先驱】`, {
+      // 选完必须把控制权还给发起者，否则 pending 停在询问上、出牌方再也动不了
+      returnTo: player.seatId,
+    });
     return undefined;
   },
 };

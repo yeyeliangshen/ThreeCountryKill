@@ -19524,6 +19524,63 @@ describe('国战 · 君主将（特性）', () => {
     expect(askedZhangwu).toBe(false);
   });
 
+  it('章武·视为使用【先驱】看完暗置武将牌后，回合照常交给下家（钩子里的观看不能抢控制权）', () => {
+    // 回归：钩子里「观看暗置武将牌」曾经把控制权带走——看完牌 pending 被 returnTo 塞成
+    // 「甲的出牌阶段」，而乙的结束阶段流程还在往下走（双头）。修法见 runHooksFrom 的 viewCards 分支。
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junliubei' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junliubei', 'shu', []);
+    const b = seatSet(state, 'B', 'guanyu', 'shu', [mk('b1', 'tao')]);
+    const c = seatSet(state, 'C', 'zhangliao', 'wei', []);
+    c.heroRevealed = false; // 丙两张都暗着 → 会走「由观看者挑一张」那条分支
+    c.deputyRevealed = false;
+    c.deputyHeroId = 'xiahoudun';
+    b.markers.xianqu = 1;
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+
+    // 乙（蜀）用掉【先驱】，目标丙（看他的暗置武将牌）
+    ok(act(state, 'B', { type: 'useSkill', skillId: 'mark_xianqu', targetIds: ['C'] }));
+    let guard = 0;
+    while (state.pending && guard++ < 10) {
+      const p = state.pending;
+      if (p.kind === 'choice') ok(act(state, p.seatId, { type: 'chooseOption', optionId: p.options[0]!.id }));
+      else if (p.kind === 'viewCards') ok(act(state, p.seatId, { type: 'ack' }));
+      else break;
+    }
+
+    // 乙结束 → 甲【章武】视为使用【先驱】→ 先选目标（丙）→ 丙两张暗着 → 再问看哪张
+    ok(act(state, 'B', { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('章武');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'xianqu' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'C' }));
+    expect(state.pending?.kind).toBe('choice'); // 「观看哪一张暗置武将牌？」
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'xiahoudun' }));
+    expect(state.pending?.kind).toBe('viewCards'); // 只有甲看得到
+    if (state.pending?.kind !== 'viewCards') return;
+    expect(state.pending.seatId).toBe('A');
+    ok(act(state, 'A', { type: 'ack' }));
+
+    // 看完之后：不是「甲的出牌阶段」，而是乙的结束阶段正常收尾 → 轮到丙
+    expect(state.turn.seatIndex).toBe(2);
+    expect(state.seatOrder[state.turn.seatIndex]).toBe('C');
+    expect(state.pending).not.toEqual({ kind: 'play', seatId: 'A' });
+    expect(state.players.find((x) => x.seatId === 'A')!.hand.length).toBe(4); // 先驱：补至四张
+  });
+
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
     // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
     const state = createGame(

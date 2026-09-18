@@ -935,7 +935,15 @@ function runHooksFrom(
       onDone(true);
       return;
     }
-    if (state.pending?.kind === 'choice' || state.pending?.kind === 'pickCards') {
+    // ⚠️ viewCards 也算「被问住了」：钩子里的「观看某人的暗置武将牌」是信息展示，
+    //    没有 returnTo 可还（钩子链条得自己接着跑）。不认它的话，观看结束后 pending 会被
+    //    置空、而链条那头以为没人打断继续往下走——玩家看完牌就卡在「谁的回合都不是」的状态里，
+    //    或者被 returnTo 塞进某个人的出牌阶段（君刘备·章武「视为使用【先驱】」踩到过）。
+    if (
+      state.pending?.kind === 'choice' ||
+      state.pending?.kind === 'pickCards' ||
+      state.pending?.kind === 'viewCards'
+    ) {
       pushResume(state, () =>
         runHooksFrom(state, player, timing, payload, hooks, k + 1, onDone, attackBox, token),
       );
