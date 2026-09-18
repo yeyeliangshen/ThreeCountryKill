@@ -764,6 +764,22 @@ function runResume(fn: () => void): void {
 }
 
 /**
+ * 这个 pending 算不算「场上没人被问话」（＝续接队列可以接着排）。
+ *
+ * `null` 与**弃牌阶段的占位空位**算；其余（choice / pickCards / respondSha …
+ * 以及各种等待队列）都是「某个流程正在等回答」，必须等它答完。
+ *
+ * ⚠️ **出牌阶段的占位不算**，虽然它也是「等你动手」的空位：出牌阶段正是回合交替
+ * 可能正在发生的窗口，那种时刻排队列会让回合交界处的流程执行两遍——试过放开，测试立刻
+ * 抓到【双刃】没赢之后交出去的出牌阶段又被还回来、【戚乱】摸两次三张。
+ * 弃牌阶段没有这个窗口（回合还没结束），放开它是安全的。
+ */
+function isIdlePending(pending: GameState['pending']): boolean {
+  if (pending === null) return true;
+  return pending.kind === 'discard';
+}
+
+/**
  * 排空续接队列。只在**每个 intent 处理完之后**调用一处，别散着调——
  * 它是「询问 → 续接」这条控制流的唯一收口。
  *
@@ -774,7 +790,12 @@ function runResume(fn: () => void): void {
 function drainResume(state: GameState): void {
   // 兜底：续接互相触发形成死循环时别把进程挂死
   let guard = 0;
-  while (state.pending === null && state.resumeQueue.length > 0 && !state.gameOver) {
+  // ⚠️ 「没人被问话」不只是 `pending === null`：出牌/弃牌阶段的 pending 只是**占位空位**
+  //    （技能在阶段里发问靠的就是覆盖它接管控制权，见 askChoice 那段注释）。
+  //    只认 null 的话，绝大多数意图结束时都留着占位空位，队列整步整步地被跳过——
+  //    实测陈旧续接因此拖到十几步之后才醒（牌一直攥在闭包里，`seed=314` / `seed=1067`）。
+  //    真正该拦住队列的是「有流程在等回答」（choice / pickCards / respondXxx …）。
+  while (isIdlePending(state.pending) && state.resumeQueue.length > 0 && !state.gameOver) {
     if (++guard > 100) {
       pushLog(state, 'system', '续接队列超过 100 次，可能存在死循环，已中止。');
       state.resumeQueue.length = 0;
