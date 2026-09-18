@@ -280,6 +280,24 @@ export function virtualShaFrom(cards: Card[], state?: GameState, owner?: Player)
 }
 
 /**
+ * 「把这次用的/打出的那张牌从原处取走、放进弃牌堆」，取不到就返回 false（**别弃**）。
+ *
+ * ⚠️ 用牌和「收代价」之间隔着询问（无懈窗口、目标响应…），这期间牌可能已经离开原处
+ *    （实测 seed=425：出的牌还没结算完，牌主先阵亡、手牌被清进了弃牌堆）。取不到还硬推，
+ *    同一张牌就会在弃牌堆里出现两份。调用方拿到 false 应当就此作罢，别再把它放到别的地方。
+ */
+function takeAndDiscard(state: GameState, player: Player, card: Card): boolean {
+  if (!takeUsableCard(player, card.id)) return false;
+  toDiscard(state, card);
+  return true;
+}
+
+/** 取一张「要放到场上（装备区/判定区）」的牌；取不到就报错，别把它再放到别处去 */
+function takeForField(state: GameState, player: Player, card: Card): string | null {
+  return takeUsableCard(player, card.id) ? null : '这张牌已经不在你手上了';
+}
+
+/**
  * 支付一张（可能是虚拟的）牌的代价：把它的实体牌从手牌/扣置区取走并置入弃牌堆。
  *
  * 普通牌就是收它自己；虚拟牌（丈八蛇矛的杀）收的是 `materials` 里的两张手牌——
@@ -287,8 +305,15 @@ export function virtualShaFrom(cards: Card[], state?: GameState, owner?: Player)
  */
 function consumeCard(state: GameState, player: Player, card: Card): void {
   const cards = card.materials && card.materials.length > 0 ? card.materials : [card];
-  for (const c of cards) takeUsableCard(player, c.id);
-  toDiscard(state, ...cards);
+  // ⚠️ 取不到的**不能再推一次**。用牌和「收代价」之间隔着询问（无懈窗口、目标响应…），
+  //    这期间那张牌可能已经离开原处了——实测（seed=425）：出的牌还没结算完，牌主先阵亡、
+  //    手牌被清空进弃牌堆，随后结算继续走这里，把已经在弃牌堆里的那张又推了一遍，
+  //    同一张牌于是在弃牌堆里出现两份。
+  const moved: Card[] = [];
+  for (const c of cards) {
+    if (takeUsableCard(player, c.id)) moved.push(c);
+  }
+  if (moved.length > 0) toDiscard(state, ...moved);
 }
 
 /**
@@ -804,6 +829,8 @@ function runHooksPausable(
   // 记下它：等整条钩子链跑完，如果调用方没有产生新的 pending，就把它还回去——
   // 否则出牌阶段的牌一打完（例如装装备触发枭姬）pending 就成了 null，玩家卡死。
   const ambient = state.pending;
+  // 这条链的令牌：跑完就置死，用来拦住「排到很后面才醒」的陈旧续接（见 runHooksFrom 的注释）
+  const token: ChainToken = { alive: true };
   runHooksFrom(
     state,
     player,
@@ -812,13 +839,23 @@ function runHooksPausable(
     hooks,
     0,
     (cancelled) => {
+      token.alive = false;
       onDone(cancelled);
       if (state.pending === null && ambient && !state.gameOver) {
         state.pending = ambient;
       }
     },
     attackBox,
+    token,
   );
+}
+
+/**
+ * 一条钩子链的「还在跑吗」令牌（见 `runHooksFrom` 的 ⚠️ 注释）。
+ * 建链时 alive=true；链跑完（要调 onDone 之前）置 false。
+ */
+export interface ChainToken {
+  alive: boolean;
 }
 
 function runHooksFrom(
@@ -830,7 +867,15 @@ function runHooksFrom(
   from: number,
   onDone: (cancelled: boolean) => void,
   attackBox?: AttackBox,
+  token?: ChainToken,
 ): void {
+  // ⚠️ 这条链可能**已经跑完**：它被询问打断、续接排到了很后面，中途棋局翻篇
+  //    （回合结束、角色阵亡…），等续接终于排到，链其实早就走完了。
+  //    这时什么也别做——尤其**别调 onDone**：那等于把调用方的后续再执行一遍。
+  //    实测（seed=425）：【杀】的 cardActionStarted 钩子链的 onDone 被第二次调用，
+  //    `onPlayCard` 里「真正打出这张牌」的回调于是跑了两次 —— 同一张牌用了两次、
+  //    进了两次弃牌堆，日志里已经阵亡的 P3 还又出了一张牌。
+  if (token && !token.alive) return;
   markDamaged(state, timing, player, payload);
   // 「本回合出牌阶段用过的牌」（克己/谋断）与「指定过其他势力」（约俭）也在这里登记——
   // ⚠️ 只在**链条第一次**进入时记（from === 0）：这是个可挂起的时机，续接时会再进本函数，
@@ -850,7 +895,7 @@ function runHooksFrom(
     }
     if (state.pending?.kind === 'choice' || state.pending?.kind === 'pickCards') {
       pushResume(state, () =>
-        runHooksFrom(state, player, timing, payload, hooks, k + 1, onDone, attackBox),
+        runHooksFrom(state, player, timing, payload, hooks, k + 1, onDone, attackBox, token),
       );
       return;
     }
@@ -1188,12 +1233,15 @@ function runDiscardPhaseEnd(state: GameState, player: Player, discarded: Card[] 
 function processJudgmentPhase(state: GameState, player: Player): void {
   const judgments = player.judgment.slice();
   player.judgment = [];
+  // 台账：这叠牌此刻不在任何区域（见 GameState.judgmentInFlight）。死了也要有人管它们。
+  state.judgmentInFlight = { seatId: player.seatId, cards: judgments.slice() };
   judgmentStep(state, player, judgments, 0);
 }
 
 /** 逐张判定。beforeJudge 里可能挂起询问（鬼才/鬼道），所以用下标往下递 */
 function judgmentStep(state: GameState, player: Player, judgments: Card[], index: number): void {
   if (index >= judgments.length) {
+    state.judgmentInFlight = null;
     afterJudgmentPhase(state, player);
     return;
   }
@@ -1202,6 +1250,7 @@ function judgmentStep(state: GameState, player: Player, judgments: Card[], index
   if (!judgeCard) {
     // 牌堆耗尽：剩下的判定牌直接进弃牌堆，判定阶段就此结束
     for (let k = index; k < judgments.length; k++) toDiscard(state, judgments[k]!);
+    state.judgmentInFlight = null;
     afterJudgmentPhase(state, player);
     return;
   }
@@ -1294,6 +1343,9 @@ function judgeHookStep(
   onDone: (finalCard: Card, gainer: Player | undefined) => void,
   chain: { dead: boolean },
 ): void {
+  // ⚠️ 同 runHooksFrom：这条判定链可能早就跑完了，陈旧的续接醒来时别再跑一遍钩子
+  //    （否则【鬼才】会对一个早已结算完的判定再问一次、甚至再打出一张牌）
+  if (chain.dead) return;
   if (k >= list.length) {
     // 这条判定链到此为止：之后钩子再往盒子里写替换牌就「无家可归」了（见 JudgeBox.chain）
     chain.dead = true;
@@ -1356,6 +1408,7 @@ function resolveJudgment(
       } else {
         pushLog(state, 'lebu', `${player.name} 的【乐不思蜀】判定为红桃，无效。`);
       }
+      untrackJudgmentCard(state, trick);
       toDiscard(state, trick);
       break;
     case 'bingliang':
@@ -1366,6 +1419,7 @@ function resolveJudgment(
       } else {
         pushLog(state, 'bingliang', `${player.name} 的【兵粮寸断】判定为梅花，无效。`);
       }
+      untrackJudgmentCard(state, trick);
       toDiscard(state, trick);
       break;
     case 'shandian': {
@@ -1377,6 +1431,7 @@ function resolveJudgment(
           'shandian',
           `${player.name} 的【闪电】判定为黑桃${judgeCard.rank}，受到3点雷电伤害！`,
         );
+        untrackJudgmentCard(state, trick);
         toDiscard(state, trick);
         // 判定牌先归位（天妒/进弃牌堆）**再**结算伤害：伤害那一层是可挂起的
         // （小乔·天香就在这儿发问），挂起后本函数剩下的代码不会再执行，
@@ -1420,6 +1475,7 @@ function resolveJudgment(
         const nextIdx = nextAliveSeat(state, state.seatOrder.indexOf(player.seatId));
         const nextPlayer = getPlayer(state, state.seatOrder[nextIdx]!);
         if (nextPlayer && nextPlayer.seatId !== player.seatId) {
+          untrackJudgmentCard(state, trick);
           nextPlayer.judgment.push(trick);
           pushLog(
             state,
@@ -1427,18 +1483,29 @@ function resolveJudgment(
             `${player.name} 的【闪电】判定不触发，【闪电】移到 ${nextPlayer.name} 的判定区。`,
           );
         } else {
+          untrackJudgmentCard(state, trick);
           toDiscard(state, trick);
         }
       }
       break;
     }
     default:
+      untrackJudgmentCard(state, trick);
       toDiscard(state, trick);
       break;
   }
   // 天妒：判定牌被某个技能收走了，就不进弃牌堆
   disposeJudgeCard(state, judgeCard, gainer);
   after();
+}
+
+/**
+ * 把一张判定阶段的延时锦囊从台账里划掉（它已经归位：进弃牌堆 / 移到下家判定区 / 被收走）。
+ * 归位点必须逐处调用——漏了就会在死亡清场时被当成「还在飞」而重复弃置（踩过：闪电那一支）。
+ */
+function untrackJudgmentCard(state: GameState, trick: Card): void {
+  const ledger = state.judgmentInFlight;
+  if (ledger) ledger.cards = ledger.cards.filter((c) => c.id !== trick.id);
 }
 
 /** 判定牌归位：天妒（被收走）或进弃牌堆。哨兵值是「已经归位过了」 */
@@ -3349,6 +3416,13 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
         dying.equipment = emptyEquipment();
         for (const c of dying.judgment) toDiscard(state, c);
         dying.judgment = [];
+        // 判定阶段手里还攥着的那叠（典型：自己的【闪电】把自己劈死）：也归他，一并弃置。
+        // 不处理的话它们谁都不在、再也回不来（见 GameState.judgmentInFlight）
+        const ledger = state.judgmentInFlight;
+        if (ledger && ledger.seatId === dying.seatId) {
+          for (const c of ledger.cards) toDiscard(state, c);
+          state.judgmentInFlight = null;
+        }
 
         if (checkWin(state)) return;
         // 回到当前回合玩家（伤害来源）的出牌阶段
@@ -3761,8 +3835,7 @@ function playTao(
   card: import('@sgs/protocol').Card,
 ): ApplyResult {
   if (player.hp >= player.maxHp) return err('体力已满，不能使用桃');
-  takeUsableCard(player, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, player, card);
   const healed = healAndTrigger(state, player, 1);
   pushLog(state, 'tao', `${player.name} 使用了【桃】，回复 ${healed} 点体力。`, {
     seat: player.seatId,
@@ -3802,8 +3875,7 @@ function playJiu(
   player: Player,
   card: import('@sgs/protocol').Card,
 ): ApplyResult {
-  takeUsableCard(player, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, player, card);
   player.flags.jiuActive = true;
   pushLog(state, 'jiu', `${player.name} 使用了【酒】，下一张杀伤害+1。`, {
     seat: player.seatId,
@@ -3819,7 +3891,10 @@ function playEquip(
   player: Player,
   card: import('@sgs/protocol').Card,
 ): ApplyResult {
-  takeUsableCard(player, card.id);
+  {
+    const gone = takeForField(state, player, card);
+    if (gone) return err(gone);
+  }
   const slot = card.type as (typeof EQUIP_SLOTS)[number];
   const old = player.equipment[slot];
   player.equipment[slot] = card;
@@ -3863,7 +3938,10 @@ function playDelayedTrick(
   if (type === 'shandian') {
     // 闪电：置于自己判定区
     if (player.judgment.some((t) => t.type === 'shandian')) return err('你的判定区已有【闪电】');
-    takeUsableCard(player, card.id);
+    {
+      const gone = takeForField(state, player, card);
+      if (gone) return err(gone);
+    }
     player.judgment.push(card);
     pushLog(state, 'shandian', `${player.name} 将【闪电】置于自己的判定区。`, {
       seat: player.seatId,
@@ -3886,7 +3964,10 @@ function playDelayedTrick(
   )
     return err('目标超出距离1');
   if (target.judgment.some((t) => t.type === type)) return err('目标判定区已有同类延时锦囊');
-  takeUsableCard(player, card.id);
+  {
+    const gone = takeForField(state, player, card);
+    if (gone) return err(gone);
+  }
   target.judgment.push(card);
   pushLog(
     state,
@@ -4020,8 +4101,7 @@ function playTrick(
   // 以逸待劳 / 五谷丰登：目标是规则定的（同势力 / 全体），无需指定
 
   // 出牌
-  takeUsableCard(player, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, player, card);
   pushLog(state, 'trick', `${player.name} 使用了【${CARD_TYPE_NAME[type]}】。`, {
     seat: player.seatId,
     action: type,
@@ -5959,8 +6039,7 @@ function respondWanjianShan(
     return err('万箭齐发需打出【闪】');
   // 靠转化技出的这张【闪】要明置（甄姬·倾国 / 赵云·龙胆）
   revealForConversion(state, responder, card, 'shan');
-  takeUsableCard(responder, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, responder, card);
   pushLog(state, 'trick', `${responder.name} 打出了【闪】。`, {
     seat: responder.seatId,
     action: 'shan',
@@ -6187,8 +6266,7 @@ function onRespondWuxie(
   if (!isWuxieLike(card) && !canUseAsCard(state, responder, card, 'wuxie'))
     return err('只能使用【无懈可击】');
   revealForConversion(state, responder, card, 'wuxie');
-  takeUsableCard(responder, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, responder, card);
   const ctx = pending.ctx;
   const isGuo = card.type === 'wuxieguo';
   /**
@@ -6356,8 +6434,7 @@ function respondSha(
   if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
     return err('只能用【闪】响应');
   revealForConversion(state, responder, card, 'shan');
-  takeUsableCard(responder, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, responder, card);
   pushLog(state, 'shan', `${responder.name} 使用了【闪】。`, {
     seat: responder.seatId,
     action: 'shan',
@@ -6750,8 +6827,7 @@ function respondDeathSave(
   if (card.type !== 'tao') revealForConversion(state, saver, card, 'tao');
   // 酒当桃救人：限1次/回合
   if (card.type === 'jiu' && saver.flags.taoSaveCountThisTurn > 0) return err('本回合已用过酒救人');
-  takeUsableCard(saver, card.id);
-  toDiscard(state, card);
+  takeAndDiscard(state, saver, card);
   if (card.type === 'jiu') saver.flags.taoSaveCountThisTurn++;
   const dying = getPlayerOrThrow(state, pending.dyingId);
   // 救援：同势力的**其他**角色对你使用【桃】时额外回复（孙权·救援）
@@ -8098,6 +8174,7 @@ export function createGame(
     discardThisTurn: [],
     xianquSeat: null,
     resumeQueue: [],
+    judgmentInFlight: null,
     extraTurns: [],
   };
   pushLog(state, 'start', '游戏开始，随机发将。');
