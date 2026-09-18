@@ -847,7 +847,9 @@ const BUCHEN: RosterEntry[] = [
     name: '吴景',
     faction: 'wu',
     pack: 'buchen',
-    status: 'verify',
+    status: 'done',
+    primitives: ['virtual_trick', 'siege_formation', 'pick_cards'],
+    note: '调归 + 风扬（不臣篇·上，吴，国战牌面 2 阴阳鱼 → 4，称号·汗马鎏金；移动版 2021 口径）。调归：手牌里的一张装备牌当【调虎离山】使用（材料先付），走 api.castVirtualTrick 的完整锦囊流程；「若你的势力**因此**形成队列」按字面读＝这次结算后队列确实形成或变长（before 存 flags.queueSizeBeforeTrick，afterUse 时比较），所以本来就有队列没变长、或被无懈抵消时都不摸牌。为此引擎在【调虎离山】结算收尾处派发了 afterUse（该时机以前只有声明；目前只开这一条路，推广到所有锦囊出口要改 49 处 resumePlay，先不动）。formationQueue 现在跳过「被调虎离山移出座次」的角色——否则调归的典型用法（把中间的敌人调走让同势力连上）根本不会成立。⚠️ 读法：「队列」按**至少 2 名**处理（官方阵法技是否要求 3 名未在本会话核实）。风扬做成字段 fengyang + fengyangBlocksEquip()，引擎在过河拆桥/顺手牵羊的选牌、transferCard（反馈那类获得）两处收口调用；「移动」类（巧变/谋断/勇进/甘露）不受限——官方只说「弃置或获得」。UI 目前不会把被保护的装备置灰（引擎会拒绝该选择）。',
   },
   {
     id: 'yanbaihu',

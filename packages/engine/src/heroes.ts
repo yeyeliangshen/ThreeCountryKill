@@ -116,6 +116,7 @@ export interface HeroVariant {
   canRevealInPlayPhase?: Hero['canRevealInPlayPhase'];
   spadeAsHeart?: Hero['spadeAsHeart'];
   virtualYuxi?: Hero['virtualYuxi'];
+  fengyang?: Hero['fengyang'];
 }
 
 export interface Hero {
@@ -335,6 +336,12 @@ export interface Hero {
    */
   spadeAsHeart?: boolean;
   /**
+   * 吴景·风扬（阵法技，锁定技）：与你势力不同或未确定势力的角色，不能弃置或获得
+   * **与你处于同一队列**的角色装备区里的牌。判定收在 `heroes.fengyangBlocksEquip`，
+   * 由引擎在「拿走/弃置他人装备牌」的几处收口调用。
+   */
+  fengyang?: boolean;
+  /**
    * 袁术·庸肆（锁定技）：**若场上没有【玉玺】**，你视为装备着【玉玺】。
    *
    * 两处消费方都走 `hasYuxi()`（equip.ts 的摸牌加成 + engine 的出牌阶段开始时视为使用
@@ -404,7 +411,9 @@ export type FieldSkill =
   /** 小乔·红颜：你的黑桃牌视为红桃牌 */
   | 'spadeAsHeart'
   /** 袁术·庸肆：场上没有实体【玉玺】时视为装备着【玉玺】 */
-  | 'virtualYuxi';
+  | 'virtualYuxi'
+  /** 吴景·风扬：同队列角色的装备区里的牌不受异势力角色弃置/获得 */
+  | 'fengyang';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -429,6 +438,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canRevealInPlayPhase',
   'spadeAsHeart',
   'virtualYuxi',
+  'fengyang',
   'gainsUsedNanman',
   'xingleBasicDiscard',
   'grantsFeiyingToQueue',
@@ -2109,7 +2119,9 @@ function tianxiangClassic(ctx: HookContext): void {
 export function formationQueue(state: GameState, player: Player): Player[] {
   const alive = state.seatOrder
     .map((id) => getPlayer(state, id))
-    .filter((p): p is Player => !!p && p.alive);
+    // 被【调虎离山】移出的角色**不计入座次**（这是那张牌的核心效果），所以也不能当队列的
+    // 「断开点」——吴景·调归正是靠「把中间的人调走、让同势力连起来」形成队列的。
+    .filter((p): p is Player => !!p && p.alive && !p.flags.removedFromSeating);
   const n = alive.length;
   if (n < 2) return [];
   const idx = alive.findIndex((p) => p.seatId === player.seatId);
@@ -4688,6 +4700,137 @@ function weidiTargets(state: GameState, player: Player): Player[] {
   return state.players.filter(
     (p) => p.alive && p.seatId !== player.seatId && holds(p),
   );
+}
+
+/**
+ * 吴景 —— 调归 / 风扬（不臣篇·上，吴，**2 阴阳鱼 → 4**，称号·汗马鎏金；移动版 2021 口径，已核）。
+ *
+ * 调归：出牌阶段限一次，你可以将一张装备牌当【调虎离山】使用，若你的势力**因此**形成队列，
+ *       你摸 X 张牌（X 为该队列的人数）。
+ * 风扬（阵法技，锁定技）：与你势力不同或未确定势力的角色不能弃置或获得**与你处于同一队列**
+ *       的角色装备区里的牌。
+ *
+ * 实现要点 / 读法：
+ * - 调归按字面只说「将一张装备牌当【调虎离山】使用」：材料是**手牌里的装备牌**，
+ *   代价先付（进弃牌堆），然后走 `api.castVirtualTrick`（虚拟锦囊的完整流程：可被无懈抵消）。
+ * - 「**因此**形成队列」按字面读：要求这次结算后队列**确实形成或变长**（before/after 比较，
+ *   before 存在 `flags.queueSizeBeforeTrick` 里）。若吴景本来就有队列、这次没让它变长，不摸牌。
+ *   为此引擎在【调虎离山】结算收尾处派发了 `afterUse`（详见那处注释：目前只开这一条路）。
+ * - 队列 = `formationQueue`（与你势力相同的角色连续相邻的一段；被调虎离山移出的人不算座次，
+ *   所以不算断开点）。⚠️ 官方阵法技里「队列」是否要求**至少 3 名**，本实现按「至少 2 名」
+ *   处理（调归的典型用法就是把一名间隔角色调走、让两人连成一段），这一点已在 roster note 里标注。
+ * - 风扬做成字段 `fengyang` + `fengyangBlocksEquip()`：引擎在「获得/弃置他人装备区里的牌」的
+ *   几处收口调用它（过河拆桥/顺手牵羊的选牌、反馈那类转牌、麒麟弓/寒冰剑的弃牌）。
+ *   「移动」类（巧变/谋断/勇进/甘露）不受限——官方只说「弃置或获得」，移动是另一种动作。
+ */
+const WUJING: Hero = {
+  id: 'wujing',
+  name: '吴景',
+  faction: 'wu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  lockedFields: ['fengyang'],
+  skillFields: { 风扬: ['fengyang'] },
+  fengyang: true,
+  activeSkills: [
+    {
+      id: 'diaogui',
+      name: '调归',
+      oncePerTurn: true,
+      minTargets: 1,
+      maxTargets: 2,
+      needsCards: true,
+      maxCards: () => 1,
+      canUse: (state, player) => player.hand.some((c) => isEquipCard(c)),
+      execute: (state, player, intent, api) => {
+        const cardId = intent.cardIds?.[0];
+        const material = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        if (!material || !isEquipCard(material)) return '调归要用一张装备牌当【调虎离山】';
+        const targets = intent.targetIds.filter((id) => id !== player.seatId);
+        if (targets.length === 0) return '【调虎离山】要指定一名其他角色';
+        // 先付代价：材料牌进弃牌堆
+        removeCard(player.hand, material.id);
+        toDiscard(state, material);
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【调归】，将【${cardLabel(material)}】当【调虎离山】使用。`,
+        );
+        // 记下「用之前」的队列大小，结算完再比（afterUse 里读）
+        player.flags.queueSizeBeforeTrick = formationQueue(state, player).length;
+        api.castVirtualTrick(player.seatId, {
+          type: 'tiaohu',
+          suit: material.suit,
+          rank: material.rank,
+        }, targets);
+        return undefined;
+      },
+    },
+  ],
+  hooks: [
+    {
+      // 调归的收尾：结算完成后（含被无懈抵消的情况）看队列有没有**因此**形成/变长
+      timing: 'afterUse',
+      skillId: '调归',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const before = me.flags.queueSizeBeforeTrick;
+        if (before === null) return; // 不是本回合那次调归（或已经结算过）
+        me.flags.queueSizeBeforeTrick = null;
+        const q = formationQueue(ctx.state, me);
+        if (q.length < 2 || q.length <= before) return;
+        for (let i = 0; i < q.length; i++) {
+          const c = drawOne(ctx.state);
+          if (c) me.hand.push(c);
+        }
+        pushLog(
+          ctx.state,
+          'skill',
+          `${me.name} 的【调归】因此形成队列（${q.length} 名），摸了 ${q.length} 张牌。`,
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '调归',
+      desc: '出牌阶段限一次，你可以将一张装备牌当【调虎离山】使用，若你的势力因此形成队列，你摸X张牌（X为该队列人数）。',
+    },
+    {
+      name: '风扬',
+      desc: '阵法技，与你势力不同或未确定势力的角色不能弃置或获得与你处于同一队列的角色装备区里的牌。',
+    },
+  ],
+};
+
+/**
+ * 风扬（吴景·阵法技）：这次「拿走/弃置 **[owner]** 的 **[card]**」的动作是不是被风扬挡住？
+ *
+ * 条件：那张牌在 owner 的**装备区**里；场上有明置的吴景；owner 与那名吴景**同一队列**；
+ * 动手的人（actor）与那名吴景**势力不同或未确定势力**。吴景自己动手不受自己限制。
+ * 引擎在几个收口处读它（见吴景武将注释里的清单）。
+ */
+export function fengyangBlocksEquip(
+  state: GameState,
+  actorSeatId: string,
+  owner: Player,
+  card: Card,
+): boolean {
+  if (!EQUIP_SLOTS.some((s) => owner.equipment[s]?.id === card.id)) return false;
+  const actor = getPlayer(state, actorSeatId);
+  if (!actor) return false;
+  const actorFaction = effectiveFaction(state, actor);
+  for (const p of state.players) {
+    if (!p.alive || p.seatId === actorSeatId) continue;
+    if (!effectiveHeroes(state, p).some((h) => h.fengyang === true)) continue;
+    const mine = effectiveFaction(state, p);
+    if (!mine) continue; // 暗置的吴景没有风扬（effectiveHeroes 已经滤掉，这里是双保险）
+    if (actorFaction === mine) continue; // 同势力不受限
+    if (formationQueue(state, p).some((q) => q.seatId === owner.seatId)) return true;
+  }
+  return false;
 }
 
 const WUGUOTAI: Hero = {
@@ -10413,6 +10556,7 @@ export const HEROES: Hero[] = [
   ZHANGXIU,
   WUGUOTAI,
   YUANSHU,
+  WUJING,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

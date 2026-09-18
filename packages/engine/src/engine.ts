@@ -85,6 +85,7 @@ import {
   huangtianFor,
   xuanhuoFor,
   hasYuxi,
+  fengyangBlocksEquip,
   ROLE_NAME,
   type ActiveSkill,
   type Hero,
@@ -4028,7 +4029,7 @@ function resolveGuohe(state: GameState, ctx: TrickContext): void {
     resumePlay(state, ctx.sourceId);
     return;
   }
-  const got = pickTargetCard(state, target, ctx.targetCardId);
+  const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
   if (got) {
     toDiscard(state, got.card);
     pushLog(
@@ -4055,7 +4056,7 @@ function resolveShunshou(state: GameState, ctx: TrickContext): void {
     resumePlay(state, ctx.sourceId);
     return;
   }
-  const got = pickTargetCard(state, target, ctx.targetCardId);
+  const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
   if (got) {
     source.hand.push(got.card);
     pushLog(
@@ -4076,6 +4077,7 @@ function resolveShunshou(state: GameState, ctx: TrickContext): void {
 /** 从目标的牌中选取一张（优先指定明牌区，否则随机手牌，再否则随机装备/判定） */
 function pickTargetCard(
   state: GameState,
+  actorSeatId: string,
   target: Player,
   targetCardId: string | undefined,
 ): { card: import('@sgs/protocol').Card; fromEquip: boolean } | null {
@@ -4085,6 +4087,8 @@ function pickTargetCard(
     for (const slot of EQUIP_SLOTS) {
       const c = eq[slot];
       if (c?.id === targetCardId) {
+        // 吴景·风扬：异势力角色不能弃置/获得同队列吴景队友的装备牌 → 这张不能选
+        if (fengyangBlocksEquip(state, actorSeatId, target, c)) return null;
         eq[slot] = null;
         return { card: c, fromEquip: true };
       }
@@ -4107,10 +4111,12 @@ function pickTargetCard(
     const [c] = target.hand.splice(idx, 1);
     return c ? { card: c, fromEquip: false } : null;
   }
-  // 随机装备/判定
+  // 随机装备/判定（被风扬保护住的装备不进候选——连随机都不该选中它）
   const eq = target.equipment;
   const visible: import('@sgs/protocol').Card[] = [
-    ...(EQUIP_SLOTS.map((s) => eq[s]).filter(Boolean) as import('@sgs/protocol').Card[]),
+    ...(EQUIP_SLOTS.map((s) => eq[s]).filter(
+      (c): c is Card => !!c && !fengyangBlocksEquip(state, actorSeatId, target, c),
+    ) as import('@sgs/protocol').Card[]),
     ...target.judgment,
   ];
   if (visible.length === 0) return null;
@@ -4895,7 +4901,13 @@ function resolveTiaoHu(state: GameState, ctx: TrickContext): void {
     seat: source.seatId,
     action: 'draw',
   });
-  resumePlay(state, ctx.sourceId);
+  // 「这张牌结算完成」的时机（吴景·调归要在这时看「我的势力是否**因此**形成队列」）。
+  // ⚠️ 目前只在【调虎离山】这条路上派发——它是 afterUse 唯一的用户，所以先只开这一处；
+  //    将来若有别的技能需要「牌结算完之后」，再把它推广到 resolveTrick 的所有出口
+  //    （那里有 49 处 resumePlay，一次性改动静太大）。
+  runHooksPausable(state, 'afterUse', source, { card: ctx.card, trickCtx: ctx }, () =>
+    resumePlay(state, ctx.sourceId),
+  );
 }
 
 /**
@@ -6894,7 +6906,7 @@ function makeSkillApi(
           return;
         }
       }
-      const got = pickTargetCard(state, target, cardId);
+      const got = pickTargetCard(state, opts?.actor ?? targetSeatId, target, cardId);
       if (!got) {
         pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
         done();
@@ -7340,6 +7352,11 @@ function makeSkillApi(
       const eq = from.equipment;
       for (const slot of EQUIP_SLOTS) {
         if (eq[slot]?.id === card.id) {
+          // 吴景·风扬：异势力角色不能**获得**同队列吴景队友的装备牌
+          if (fengyangBlocksEquip(state, opts?.actor ?? toSeatId, from, card)) {
+            done();
+            return;
+          }
           eq[slot] = null;
           to.hand.push(card);
           // 失去装备要触发枭姬那类技能，所以不能直接 splice

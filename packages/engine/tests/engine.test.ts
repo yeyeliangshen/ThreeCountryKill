@@ -16885,3 +16885,186 @@ describe('国战 · 孙策·鹰扬', () => {
     expect(state.log.some((e) => e.message.includes('【拼点】甲 赢'))).toBe(true);
   });
 });
+
+/** 吴景·调归 / 风扬（不臣篇·上，吴，2 阴阳鱼→4） */
+describe('国战 · 吴景（调归 / 风扬）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('调归：装备牌当【调虎离山】，把中间的人调走后形成队列 → 摸 X 张', () => {
+    // 四人一围：甲(吴景,吴) 的两边都是敌人，唯一的队友丙在**对面**
+    //   座位 甲(吴) → 乙(魏) → 丙(吴) → 丁(魏)
+    // 把乙调出座次之后，甲与丙相邻 → 队列从 1 人变 2 人 → 摸 2 张
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [wpn('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('diaogui');
+    const handBefore = a.hand.length;
+    ok(
+      act(state, A, {
+        type: 'useSkill',
+        skillId: 'diaogui',
+        cardIds: ['a1'],
+        targetIds: [B],
+      }),
+    );
+    passWuxie(state);
+    // 材料牌进了弃牌堆、乙被移出座次
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
+    expect(state.players.find((p) => p.seatId === B)!.flags.removedFromSeating).toBe(true);
+    // 队列现在有甲、丙 2 人 → 摸 2 张（材料出去 1 张，调虎离山自己摸 1 张，调归再摸 2 张）
+    expect(state.log.some((e) => e.message.includes('因此形成队列（2 名）'))).toBe(true);
+    expect(a.hand.length).toBe(handBefore - 1 + 1 + 2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('调归：本来就有队列、这次没让它变长 → 不摸牌', () => {
+    // 座位 甲(吴景,吴) → 乙(吴) → 丙(魏) → 丁(魏)：甲与乙本来就相邻（队列 2 人）
+    // 把丙调走并不会让队列变长（甲的另一边还是丁）
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [wpn('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(
+      act(state, A, {
+        type: 'useSkill',
+        skillId: 'diaogui',
+        cardIds: ['a1'],
+        targetIds: [C],
+      }),
+    );
+    passWuxie(state);
+    expect(state.log.some((e) => e.message.includes('因此形成队列'))).toBe(false);
+    // 只有「材料出去 1 张 + 调虎离山自己摸 1 张」
+    expect(a.hand.length).toBe(1);
+  });
+
+  it('调归：被【无懈可击】抵消时队列没形成 → 不摸牌', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [wpn('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [wuxie('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(
+      act(state, A, {
+        type: 'useSkill',
+        skillId: 'diaogui',
+        cardIds: ['a1'],
+        targetIds: [B],
+      }),
+    );
+    // 乙打出【无懈可击】抵消
+    expect(state.pending?.kind).toBe('wuxieQueue');
+    if (state.pending?.kind === 'wuxieQueue') {
+      const asked = state.pending.askQueue[state.pending.askIndex]!;
+      expect(asked).toBe(B);
+      ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    }
+    // 乙没被移出座次、队列没形成
+    expect(state.players.find((p) => p.seatId === B)!.flags.removedFromSeating).toBe(false);
+    expect(state.log.some((e) => e.message.includes('因此形成队列'))).toBe(false);
+    // 材料 1 张出去；【调虎离山】自己那句「使用此牌后摸一张牌」不因无懈而取消（本引擎口径），
+    // 所以手牌是 1 张 —— 但调归不该再摸（队列没形成）
+    expect(a.hand.length).toBe(1);
+    expect(state.log.some((e) => e.message.includes('因此形成队列'))).toBe(false);
+    void b;
+  });
+
+  it('风扬：异势力角色不能拿走/弃置同队列队友的装备牌', () => {
+    const state = gz(
+      [
+        // 甲(吴景,吴)、乙(吴) 同队列（相邻同势力）
+        { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', equip: [wpn('b1')], hand: [] },
+        // 丙是魏，拿着过河拆桥 + 顺手牵羊
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [guohe('c1'), shunshou('c2')] },
+      ],
+      C,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 丙用【过河拆桥】指定乙的装备 → 被风扬挡住（选牌返回 null，装备还在）
+    ok(act(state, C, { type: 'playCard', cardId: 'c1', targetIds: [B], targetCardId: 'b1' }));
+    passWuxie(state);
+    expect(b.equipment.weapon?.id).toBe('b1');
+    // 丙用【顺手牵羊】指定同一张 → 同样被挡
+    ok(act(state, C, { type: 'playCard', cardId: 'c2', targetIds: [B], targetCardId: 'b1' }));
+    passWuxie(state);
+    expect(b.equipment.weapon?.id).toBe('b1');
+    expect(state.players.find((p) => p.seatId === C)!.hand.some((c) => c.id === 'b1')).toBe(false);
+  });
+
+  it('风扬：同势力角色不受限；吴景自己也不受限', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [guohe('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', equip: [wpn('b1')], hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 吴景（同势力）拆乙的装备 → 放行
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'b1' }));
+    passWuxie(state);
+    expect(b.equipment.weapon).toBeNull();
+  });
+});

@@ -177,6 +177,11 @@ export interface PlayerFlags {
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
+   * 吴景·调归：「这次【调虎离山】用之前的队列人数」——技能发出锦囊时记下，
+   * 结算完成后（afterUse）拿来比「是否**因此**形成队列」。null 表示没有待结算的调归。
+   */
+  queueSizeBeforeTrick: number | null;
+  /**
    * 势备篇【挟天子以令诸侯】：「本回合结束后我要进行一个额外回合」的待办。
    * 还要配合 discardedInDiscardPhase 一起判——规则是「若你于弃牌阶段弃置一张牌」。
    */
@@ -231,6 +236,7 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayColor: null,
     cannotHealThisTurn: false,
     revealRewarded: false,
+    queueSizeBeforeTrick: null,
     xietianziPending: false,
     discardedInDiscardPhase: false,
     removedFromSeating: false,
