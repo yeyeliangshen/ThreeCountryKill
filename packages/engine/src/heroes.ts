@@ -3420,90 +3420,170 @@ function lordEquipOnField(state: GameState, equipName: string): boolean {
 }
 
 /**
+ * 【雄驰】（君曹操；口径来自用户核对后的精确转述）：
+ * 「当你每回合第一次造成伤害后，你可以令受伤的角色对一名与你势力相同的角色造成1点虚拟伤害。」
+ *
+ * 口径与存疑（见 docs/guozhan-roster.md §5.59）：
+ * - 「每回合第一次」＝ **每个回合**（任何人的回合）里你第一次造成伤害的那个时机；问过一次就用掉
+ *   （选择「不发动」也算用掉，官方是「首次…后，你可以」的一次性时机）。所以账本记在
+ *   `state.xiongchiDoneSeats` 上——`PlayerFlags` 只在自己回合开始时清，不满足「每个回合」。
+ * - 「虚拟伤害」＝ 没有牌、没有属性来源的伤害，走 `api.dealDamage`（攻击上下文 cardId 为空）。
+ *   它照样触发卖血技（反馈/遗计…）、照样会进濒死，但**不算「使用【杀】造成伤害」**。
+ * - 「一名与你势力相同的角色」由**技能使用者**（君主）指定：官方文本没写谁选，本实现按
+ *   「发动者做选择」的通例。候选＝和你势力相同、**已明置**（effectiveFaction 口径）、存活的角色，
+ *   但不包括受伤者本人（不能被令对自己造成伤害）。
+ */
+function askXiongchi(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+  const attack = payload?.attack;
+  if (!attack || (payload?.damage ?? 0) <= 0) return;
+  if (attack.sourceId !== me.seatId) return; // 派给来源的钩子，保险
+  const victim = getPlayer(state, attack.targetId);
+  if (!victim || victim.seatId === me.seatId || !victim.alive) return; // 自伤 / 已被反噬致死都不问
+  if (state.xiongchiDoneSeats.includes(me.seatId)) return; // 本回合的第一次已经用掉
+  const faction = effectiveFaction(state, me);
+  if (!faction) return;
+  const mates = state.players.filter(
+    (p) => p.alive && p.seatId !== victim.seatId && effectiveFaction(state, p) === faction,
+  );
+  if (mates.length === 0) return;
+  state.xiongchiDoneSeats.push(me.seatId);
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【雄驰】：是否令 ${victim.name} 对一名与你势力相同的角色造成 1 点伤害？`,
+    [
+      ...mates.map((p) => ({ id: p.seatId, label: `${p.name} 受到 1 点伤害` })),
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'no') return;
+      const target = getPlayer(st, picked);
+      const source = getPlayer(st, victim.seatId);
+      if (!target || !target.alive || !source || !source.alive) return;
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 发动【雄驰】：${source.name} 对 ${target.name} 造成 1 点虚拟伤害。`,
+        { seat: p.seatId },
+      );
+      ctx.api.dealDamage(target, 1, source.seatId);
+    },
+  );
+}
+
+/**
+ * 【征戎】（君曹操；口径来自用户核对后的精确转述）：
+ * 「当你受到伤害后，你可以将一名角色的至多X张手牌替换为等量张【杀】（X为你已损失的体力值且至少为1）」
+ *
+ * 口径（用户明确认定）：
+ * - 换来的【杀】是**牌堆里的实体牌**（从牌堆里找出来塞进对方手牌），不是凭空生成的虚拟杀，
+ *   也**不是**从弃牌堆拿；所以牌堆里还剩几张【杀】就最多换几张（不够就少换，绝不凭空生成）。
+ * - 「替换」＝ 选中某人至多 X 张手牌 → 这些原手牌被换走 → 从牌堆找等量【杀】交给他当手牌。
+ *   原手牌的去向用户转述里没写，本实现按**弃置进弃牌堆**处理（待核对，见 §5.59）。
+ * - X ＝ 已损失的体力值（`maxHp - hp`），且至少 1。
+ * - 「一名角色」不限阵营、也可以是自己。
+ */
+function askZhengrong(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+  if ((payload?.damage ?? 0) <= 0) return; // 0 点伤害不触发
+  const x = Math.max(1, me.maxHp - me.hp);
+  const shaInDeck = state.deck.filter((c) => c.type === 'sha').length;
+  const max = Math.min(x, shaInDeck);
+  if (max <= 0) return; // 牌堆里一张【杀】都没有 → 替换无从谈起（不能白扔牌）
+  const candidates = state.players.filter((p) => p.alive && p.hand.length > 0);
+  if (candidates.length === 0) return; // 全场没手牌 → 不弹询问
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【征戎】（至多 ${max} 张）：是否将一名角色的手牌替换为等量张【杀】？`,
+    [
+      ...candidates.map((p) => ({ id: p.seatId, label: `${p.name}（${p.hand.length} 张手牌）` })),
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'no') return;
+      const target = getPlayer(st, picked);
+      if (!target || !target.alive || target.hand.length === 0) return;
+      const limit = Math.min(max, target.hand.length);
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        `【征戎】：选择要替换 ${target.name} 的至多 ${limit} 张手牌（换成等量【杀】）`,
+        target.hand.slice(),
+        0,
+        limit,
+        (st2, p2, cards) => {
+          if (cards.length === 0) return;
+          // 原手牌换走（进弃牌堆）：走 API 的「一次弃多张」，让失去牌触发的技能照常响
+          ctx.api.discardCards(target.seatId, cards, () => {
+            const got: Card[] = [];
+            for (let i = 0; i < cards.length; i++) {
+              // 「从牌堆中**找到**」——按牌堆顺序搜出【杀】，不是从堆顶摸
+              const idx = st2.deck.findIndex((c) => c.type === 'sha');
+              if (idx < 0) break;
+              const [sha] = st2.deck.splice(idx, 1);
+              if (!sha) break;
+              target.hand.push(sha);
+              got.push(sha);
+            }
+            pushLog(
+              st2,
+              'skill',
+              `${p2.name} 发动【征戎】：${target.name} 的 ${cards.length} 张手牌被换走，从牌堆获得 ${got.length} 张【杀】。`,
+              { seat: p2.seatId },
+            );
+          });
+        },
+      );
+    },
+  );
+}
+
+/**
  * 君曹操。
- * 【挥鞭】已按用户提供的官方口径实现（2019 典藏版 / 君临天下·权 的措辞有细微差异，按用户给的那版）；
- * 【君威】与专属装备【六龙骖驾】、君主技【建安】（五子良将纛）未实现——前者缺【六龙骖驾】的
- * 效果文本，后者是「给全魏势力一个临时技能库」，要单独做。
+ *
+ * 技能集合按**用户核对后的口径**定为【君威】+【雄驰】+【征戎】，三条都已实现。
+ * 【君威】的专属装备是【六龙骖驾】（♥K 宝物：你计算与其他角色的距离 -3）。
+ *
+ * ⚠️ 版本差异：用户先前查到的另一种说法是【建安】（五子良将纛）+【挥鞭】+【总御】——那属于
+ *    **另一版本**（2019 典藏版 / 君临天下·权 的措辞与技能表都不同），按用户口径不在这个
+ *    君曹操身上，所以这两条已从本定义摘掉（实现留在 git 历史）。
+ *    引擎侧的「君主旗」机制（`Hero.lordBanner` / `askLordBanner` / 五子良将纛）**保留**，
+ *    给将来要用的那一版挂着用；【总御】的完整文本仍未核到，同样不做。
  */
 const JUN_CAOCAO: Hero = lordHero(
   'juncaocao',
   '君曹操',
   'wei',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【六龙骖驾】）、【建安】（五子良将纛）、【挥鞭】已实现；【总御】未实现——它的完整文本还没核到。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【六龙骖驾】）、【雄驰】、【征戎】已实现；另一版本（2019 典藏版）的【建安】【挥鞭】【总御】不在此武将上。',
   {
-    // 建安（君主技）：明置时获得「五子良将纛」——魏势力角色在准备阶段可以换一个五子良将技能。
-    // 引擎按这个字段把选项发给同势力角色（见 askLordBanner）。
-    lordBanner: 'wei',
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
       {
-        name: '建安',
-        desc: '君主技。当你明置后，与你势力相同的角色可以在自己的准备阶段弃置一张牌，并令自己的一张暗置武将牌暂时不能明置，以获得「五子良将」中的一个技能（不能选择场上已有的同名技能），直到你的下个回合开始。',
+        name: '君威',
+        desc: '出牌阶段，若场上没有【六龙骖驾】，你可以弃置一张牌，然后从游戏外使用一张【六龙骖驾】。当你死亡时，与你势力相同的角色各失去 1 点体力。',
       },
       {
-        name: '挥鞭',
-        desc: '出牌阶段限一次，你可以对一名魏势力角色造成 1 点伤害并令其摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。',
+        name: '雄驰',
+        desc: '当你每回合第一次造成伤害后，你可以令受伤的角色对一名与你势力相同的角色造成 1 点虚拟伤害。',
+      },
+      {
+        name: '征戎',
+        desc: '当你受到伤害后，你可以将一名角色的至多 X 张手牌替换为等量张【杀】（X 为你已损失的体力值且至少为 1）。',
       },
     ],
     activeSkills: [
       // 【君威】（专属装备【六龙骖驾】，♥K 宝物：你计算与其他角色的距离 -3）
       junweiSkill('liulong', '六龙骖驾', lordEquipLiulong),
-      {
-        // 官方口径（用户核对后提供）：「出牌阶段限一次，对一名魏势力角色造成 1 点伤害并令其
-        // 摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。」
-        // 第二个目标可选：场上没有别的「已受伤魏势力角色」时，只结算前半句。
-        id: 'huibian',
-        name: '挥鞭',
-        oncePerTurn: true,
-        minTargets: 1,
-        maxTargets: 2,
-        canUse: (state) =>
-          state.players.some((p) => p.alive && effectiveFaction(state, p) === 'wei'),
-        execute: (state, player, intent, api) => {
-          const ids = intent.targetIds ?? [];
-          const first = ids[0] ? getPlayer(state, ids[0]) : undefined;
-          if (!first) return '【挥鞭】需指定一名魏势力角色';
-          const second = ids[1] ? getPlayer(state, ids[1]) : undefined;
-          for (const t of [first, second]) {
-            if (!t) continue;
-            if (!t.alive) return '【挥鞭】的目标必须存活';
-            if (effectiveFaction(state, t) !== 'wei') return '【挥鞭】只能指定魏势力角色';
-          }
-          if (second && second.seatId === first.seatId) {
-            return '【挥鞭】第二个目标要是**另一名**魏势力角色';
-          }
-          if (second && second.hp >= second.maxHp) {
-            return '【挥鞭】第二个目标必须是**已受伤**的魏势力角色';
-          }
-          pushLog(
-            state,
-            'skill',
-            `${player.name} 发动【挥鞭】：${first.name} 受到 1 点伤害并摸两张牌。`,
-            { seat: player.seatId },
-          );
-          // 先造成伤害（可能进濒死/阵亡，后续走回调），再让受伤者摸两张、然后治疗另一名
-          api.dealDamage(first, 1, player.seatId, undefined, () => {
-            let got = 0;
-            for (let i = 0; i < 2; i++) {
-              const c = drawOne(state);
-              if (!c) break;
-              first.hand.push(c);
-              got++;
-            }
-            pushLog(state, 'skill', `${first.name} 因【挥鞭】摸了 ${got} 张牌。`);
-            if (!second || !second.alive) return;
-            const healed = api.heal(second, 1);
-            if (healed > 0) {
-              pushLog(
-                state,
-                'skill',
-                `${second.name} 因【挥鞭】回复 ${healed} 点体力（剩余 ${second.hp} 体力）。`,
-              );
-            }
-          });
-          return undefined;
-        },
-      },
+    ],
+    hooks: [
+      { timing: 'afterDamageDealt', skillId: '雄驰', handler: (ctx) => askXiongchi(ctx) },
+      { timing: 'afterDamage', skillId: '征戎', handler: (ctx) => askZhengrong(ctx) },
     ],
   },
 );

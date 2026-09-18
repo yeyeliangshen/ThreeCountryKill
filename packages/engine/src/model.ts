@@ -737,6 +737,14 @@ export interface GameState {
    */
   damageThisRound: Record<string, number>;
   /**
+   * 「本回合已经因【雄驰】问过一次」的角色（君曹操）。
+   *
+   * 【雄驰】是「当你**每回合第一次**造成伤害后」——「每回合」指场上每一个回合，
+   * 不是只有自己的回合，所以不能靠 `PlayerFlags`（那套只在自己回合开始时清）。
+   * 生命周期一个回合：与 `damagedThisTurn` 一起在 `startTurn` 清空。
+   */
+  xiongchiDoneSeats: string[];
+  /**
    * 排队的额外回合（刘禅·放权、挟天子以令诸侯）。
    * 当前回合结束后先结算队首：该角色（存活的话）进行一个额外回合。
    */

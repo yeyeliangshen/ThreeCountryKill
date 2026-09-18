@@ -295,7 +295,10 @@ export function equipActiveSkills(state: GameState, player: Player): ActiveSkill
  *   当此牌离开装备区后，销毁之。」（移动版 WIKI 原文）
  *
  * 口径：
- * - 「使用【杀】造成伤害」＝ 这次伤害的生效牌是【杀】（`asType === 'sha'`，转化来的也算）；
+ * - 「使用【杀】造成伤害」＝ 这次伤害的生效牌是【杀】（`asType === 'sha'`，转化来的、丈八凑出来的
+ *   虚拟杀都算）。⚠️ 还得要求**真有那么一张牌**（`cardId !== ''`）——技能直接造成的「虚拟伤害」
+ *   （`api.dealDamage` 造的攻击上下文 `asType` 也是 'sha'，比如君曹操·雄驰）并没有使用任何【杀】，
+ *   不加这个条件会被它骗出一次「每回合首次」；
  * - 「每回合首次」＝ 本回合没触发过（`flags.feilongDoneThisTurn`，回合开始时重置）；
  * - 「获得其一张手牌」由**持有者挑**：官方写「获得其一张牌」的，本引擎一律让获得者挑
  *   （与反馈/刚烈同一口径，见 docs/guozhan-roster.md）；
@@ -309,7 +312,11 @@ export function feilongAfterShaDamage(
   attack: AttackContext,
   after: () => void,
 ): void {
-  if (attacker.equipment.treasure?.equipName !== 'feilong' || attack.asType !== 'sha') {
+  if (
+    attacker.equipment.treasure?.equipName !== 'feilong' ||
+    attack.asType !== 'sha' ||
+    attack.cardId === '' // 技能造成的虚拟伤害没有使用任何【杀】
+  ) {
     after();
     return;
   }

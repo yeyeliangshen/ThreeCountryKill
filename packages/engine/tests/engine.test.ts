@@ -18748,6 +18748,7 @@ describe('国战 · 君主将（特性）', () => {
     ok(act(state, 'C', { type: 'playCard', cardId: 'c1', targetIds: ['A'] }));
     // 甲不出闪（挨下这 1 点）→ 濒死 → 所有人放弃救援 → 阵亡
     if (state.pending?.kind === 'respondSha') ok(act(state, 'A', { type: 'pass' }));
+    declineZhengrong(state, 'A');
     passDeathSaves(state);
     expect(a.alive).toBe(false);
     // 乙（同势力）掉 1 点；丙（异势力）不掉
@@ -18850,10 +18851,162 @@ describe('国战 · 君主将（特性）', () => {
     expect(distance(state, 'A', 'E')).toBe(before - 3);
   });
 
-  it('建安·五子良将纛：魏将准备阶段换一个技能，代价是封锁一张暗置武将牌', () => {
-    // 甲：君曹操（魏，明置）＝发纛的人；乙：张辽（明置）+ 于禁（暗置）
-    // 乙是魏势力 → 准备阶段会出现【建安】的询问；「不能选择场上已有的同名技能」——
-    // 张辽的【突袭】已在场（明置）→ 不在候选里；暗置的于禁不算（暗将没有技能）。
+  /** 按座位取角色（createGame 之后） */
+  function p2(state: GameState, seatId: string) {
+    return state.players.find((x) => x.seatId === seatId)!;
+  }
+
+  /**
+   * 甲是君曹操：他**受到伤害后**会被问【征戎】。
+   * ⚠️ 引擎把「受到伤害后」钩子排在濒死结算**之前**（见 docs/guozhan-roster.md §5.59），
+   * 所以濒死求桃之前可能先冒出这个询问——不关心它的用例一律选「不发动」。
+   */
+  function declineZhengrong(state: GameState, seatId: string) {
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('征戎'))
+      ok(act(state, seatId, { type: 'chooseOption', optionId: 'no' }));
+  }
+
+  it('雄驰：每回合第一次造成伤害后，可令受伤者对一名同势力已明置角色造成 1 点虚拟伤害', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'juncaocao' },
+        { seatId: 'B', name: '乙', heroId: 'zhenji' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+        { seatId: 'D', name: '丁', heroId: 'zhouyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const p = (seatId: string) => state.players.find((x) => x.seatId === seatId)!;
+    const set = (seatId: string, heroId: string, faction: Faction, hand: Card[], hp = 4) => {
+      const pl = p(seatId);
+      pl.heroId = heroId;
+      pl.faction = faction;
+      pl.heroRevealed = true;
+      pl.deputyRevealed = false;
+      pl.maxHp = 4;
+      pl.hp = hp;
+      pl.hand = hand;
+      pl.flags = emptyFlags();
+    };
+    set('A', 'juncaocao', 'wei', [sha('a1'), juedou('a2')]);
+    set('B', 'zhenji', 'wei', []); // 受伤者本人也是魏 → 但「不能被令对自己造成伤害」
+    set('C', 'zhangliao', 'wei', []);
+    set('D', 'zhouyu', 'wu', []);
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+
+    // 甲【杀】乙：乙没闪吃 1 点 → 【雄驰】问甲
+    ok(act(state, 'A', { type: 'playCard', cardId: 'a1', targetIds: ['B'] }));
+    ok(act(state, 'B', { type: 'pass' })); // 乙没手牌，弃权不闪
+    expect(p('B').hp).toBe(3);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('雄驰');
+    const ids = state.pending.options.map((o) => o.id);
+    expect(ids).toContain('A'); // 君主自己也算「与你势力相同的角色」
+    expect(ids).toContain('C');
+    expect(ids).toContain('no');
+    expect(ids).not.toContain('B'); // 受伤者本人不能被选（不能被令对自己造成伤害）
+    expect(ids).not.toContain('D'); // 不同势力
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'C' }));
+    expect(p('C').hp).toBe(3); // 乙（虚拟伤害的来源）打了丙 1 点
+    expect(state.damageThisRound['B']).toBe(1); // 这 1 点算在**乙**头上（虚拟伤害的来源是受伤角色）
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'A' });
+
+    // 同一回合里甲再造成一次伤害 → 不再问（「每回合第一次」）
+    ok(act(state, 'A', { type: 'playCard', cardId: 'a2', targetIds: ['B'] })); // 【决斗】
+    passWuxie(state);
+    ok(act(state, 'B', { type: 'pass' })); // 乙没【杀】可出 → 吃 1 点
+    expect(p('B').hp).toBe(2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'A' });
+
+    // 回合交给乙 → 账本随回合清空（下个回合还能再触发一次）
+    ok(act(state, 'A', { type: 'endPhase' }));
+    expect(state.xiongchiDoneSeats).toEqual([]);
+  });
+
+  it('征戎：受到伤害后，把一名角色的至多 X 张手牌换成牌堆里的等量【杀】', () => {
+    /** 甲（君曹操，4 上限 / 2 体力 → X = 2）被乙的【杀】打 1 点，牌堆由用例指定 */
+    const build = (deck: Card[]) => {
+      const state = createGame(
+        [
+          { seatId: 'A', name: '甲', heroId: 'juncaocao' },
+          { seatId: 'B', name: '乙', heroId: 'guanyu' },
+          { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+        ],
+        'TEST',
+        { mode: 'guozhan' },
+      );
+      state.draft = null;
+      const p = (seatId: string) => state.players.find((x) => x.seatId === seatId)!;
+      const set = (seatId: string, heroId: string, faction: Faction, hand: Card[], hp = 4) => {
+        const pl = p(seatId);
+        pl.heroId = heroId;
+        pl.faction = faction;
+        pl.heroRevealed = true;
+        pl.deputyRevealed = false;
+        pl.maxHp = 4;
+        pl.hp = hp;
+        pl.hand = hand;
+        pl.flags = emptyFlags();
+      };
+      set('A', 'juncaocao', 'wei', [], 2); // 已损失 2 点体力 → X = 2
+      set('B', 'guanyu', 'shu', [tao('b1'), guohe('b2'), shan('b3'), sha('b4')]);
+      set('C', 'zhangliao', 'wei', []);
+      state.deck = deck;
+      state.turn = { seatIndex: 1, phase: 'play' };
+      state.pending = { kind: 'play', seatId: 'B' };
+      state.log = [];
+      return state;
+    };
+
+    // ① 牌堆里有两张【杀】：换 2 张（原牌进弃牌堆，牌堆的【杀】进其手牌）
+    const s1 = build([mk('d1', 'shan'), sha('d2'), sha('d3')]);
+    ok(act(s1, 'B', { type: 'playCard', cardId: 'b4', targetIds: ['A'] }));
+    ok(act(s1, 'A', { type: 'pass' })); // 甲没手牌，弃权不闪
+    expect(p2(s1, 'A').hp).toBe(1);
+    expect(s1.pending?.kind).toBe('choice');
+    if (s1.pending?.kind !== 'choice') return;
+    expect(s1.pending.title).toContain('征戎');
+    expect(s1.pending.title).toContain('至多 2 张');
+    const opts = s1.pending.options.map((o) => o.id);
+    expect(opts).toContain('B'); // 「一名角色」不限阵营
+    expect(opts).not.toContain('A'); // 甲自己手里没牌 → 不在候选里
+    expect(opts).toContain('no');
+    ok(act(s1, 'A', { type: 'chooseOption', optionId: 'B' }));
+    expect(s1.pending?.kind).toBe('pickCards');
+    if (s1.pending?.kind !== 'pickCards') return;
+    expect(s1.pending.max).toBe(2);
+    ok(act(s1, 'A', { type: 'pickCards', cardIds: ['b1', 'b2'] }));
+    const b = p2(s1, 'B');
+    // b4 是乙打出去的那张【杀】（已经用掉），b1/b2 被换走 → 手里是 b3 + 牌堆里找出来的两张【杀】
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['b3', 'd2', 'd3']);
+    // 弃牌堆：乙用掉的【杀】＋被换走的两张原手牌（「换走」的去向按弃置处理，见 §5.59）
+    expect(s1.discard.map((c) => c.id).sort()).toEqual(['b1', 'b2', 'b4']);
+    expect(s1.deck.map((c) => c.id)).toEqual(['d1']); // 两张【杀】是从牌堆里**找**出来的
+    expect(s1.pending).toEqual({ kind: 'play', seatId: 'B' });
+
+    // ② 牌堆里只剩一张【杀】：至多换 1 张（不够就少换，绝不凭空生成）
+    const s2 = build([sha('d2'), mk('d1', 'shan')]);
+    ok(act(s2, 'B', { type: 'playCard', cardId: 'b4', targetIds: ['A'] }));
+    ok(act(s2, 'A', { type: 'pass' }));
+    expect(s2.pending?.kind).toBe('choice');
+    if (s2.pending?.kind !== 'choice') return;
+    expect(s2.pending.title).toContain('至多 1 张');
+
+    // ③ 牌堆里一张【杀】都没有：不发动、不弹询问
+    const s3 = build([mk('d1', 'shan')]);
+    ok(act(s3, 'B', { type: 'playCard', cardId: 'b4', targetIds: ['A'] }));
+    ok(act(s3, 'A', { type: 'pass' }));
+    expect(s3.pending).toEqual({ kind: 'play', seatId: 'B' });
+  });
+
+  it('建安（五子良将纛）不属于当前口径的君曹操：魏将准备阶段不再出现「换技能」询问', () => {
+    // 口径：君曹操 = 君威 + 雄驰 + 征戎；【建安】/【挥鞭】属于另一版本（2019 典藏版），
+    // 已从本武将上摘掉。引擎里的「君主旗」机制还留着，但没有武将挂它 → 不发问。
     const state = createGame(
       [
         { seatId: 'A', name: '甲', heroId: 'juncaocao' },
@@ -18876,8 +19029,8 @@ describe('国战 · 君主将（特性）', () => {
     b.heroId = 'zhangliao';
     b.deputyHeroId = 'yujin';
     b.faction = 'wei';
-    b.heroRevealed = true; // 张辽明置 → 突袭已在场
-    b.deputyRevealed = false; // 于禁暗置 → 可以拿它当代价
+    b.heroRevealed = true;
+    b.deputyRevealed = false;
     b.maxHp = 4;
     b.hp = 4;
     b.hand = [mk('b1', 'shan', 'heart', 2)];
@@ -18887,115 +19040,13 @@ describe('国战 · 君主将（特性）', () => {
     state.pending = { kind: 'play', seatId: 'A' };
     state.log = [];
 
-    // 甲结束回合 → 轮到乙：准备阶段的明置询问 → 然后才是【建安】
     ok(act(state, 'A', { type: 'endPhase' }));
     if (state.pending?.kind === 'choice' && state.pending.title.includes('明置'))
       ok(act(state, 'B', { type: 'chooseOption', optionId: 'none' }));
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind !== 'choice') return;
-    expect(state.pending.title).toContain('建安');
-    ok(act(state, 'B', { type: 'chooseOption', optionId: 'yes' }));
-    // ① 弃一张牌
-    expect(state.pending?.kind).toBe('pickCards');
-    ok(act(state, 'B', { type: 'pickCards', cardIds: ['b1'] }));
-    // ② 选一张暗置武将牌封锁（只有于禁一张暗着）
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind !== 'choice') return;
-    ok(act(state, 'B', { type: 'chooseOption', optionId: 'yujin' }));
-    // ③ 选技能：突袭已在场上 → 不在候选里；断粮在
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind !== 'choice') return;
-    const ids = state.pending.options.map((o) => o.id);
-    expect(ids).not.toContain('zhangliao');
-    expect(ids).toContain('xuhuang');
-    ok(act(state, 'B', { type: 'chooseOption', optionId: 'xuhuang' }));
-
-    // 拿到技能、记录了封锁与「谁的旗」
-    expect(b.grantedSkills.some((g) => g.skillName === '断粮')).toBe(true);
-    expect(b.lordGrant?.blockedHeroId).toBe('yujin');
-    expect(state.discard.some((c) => c.id === 'b1')).toBe(true); // 代价进弃牌堆
-    // 被封锁的武将牌：主动明置会被拒
-    const blockedTry = act(state, 'B', { type: 'revealHero', heroId: 'yujin' });
-    expect(blockedTry.ok).toBe(false);
-
-    // 甲的下个回合开始 → 授予与封锁一起到期
-    ok(act(state, 'B', { type: 'endPhase' }));
-    if (state.pending?.kind === 'discard') {
-      const hand = toSnapshot(state, 'B').myHand;
-      ok(
-        act(state, 'B', {
-          type: 'discard',
-          cardIds: hand.slice(0, state.pending.count).map((c) => c.id),
-        }),
-      );
-    }
-    expect(b.lordGrant).toBeNull();
-    expect(b.grantedSkills.some((g) => g.skillName === '断粮')).toBe(false);
-  });
-
-  it('挥鞭：对一名魏势力角色造成 1 点伤害并令其摸两张牌，再令另一名已受伤魏将回血', () => {
-    const state = createGame(
-      [
-        { seatId: 'A', name: '甲', heroId: 'juncaocao' },
-        { seatId: 'B', name: '乙', heroId: 'caoren' },
-        { seatId: 'C', name: '丙', heroId: 'guanyu' },
-      ],
-      'TEST',
-      { mode: 'guozhan' },
-    );
-    state.draft = null;
-    const a = state.players.find((p) => p.seatId === 'A')!;
-    const b = state.players.find((p) => p.seatId === 'B')!;
-    const c = state.players.find((p) => p.seatId === 'C')!;
-    const setup = (p: typeof a, heroId: string, faction: 'wei' | 'shu', hp: number) => {
-      p.heroId = heroId;
-      p.faction = faction;
-      p.heroRevealed = true;
-      p.maxHp = 4;
-      p.hp = hp;
-      p.hand = [];
-      p.flags = emptyFlags();
-    };
-    setup(a, 'juncaocao', 'wei', 3); // 甲已受伤（当第二个目标）
-    setup(b, 'caoren', 'wei', 4); // 乙满血（当第一个目标）
-    setup(c, 'guanyu', 'shu', 4);
-    state.turn = { seatIndex: 0, phase: 'play' };
-    state.pending = { kind: 'play', seatId: 'A' };
-    state.log = [];
-
-    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('huibian');
-    ok(act(state, 'A', { type: 'useSkill', skillId: 'huibian', targetIds: ['B', 'A'] }));
-    expect(b.hp).toBe(3); // 挨了 1 点
-    expect(b.hand.length).toBe(2); // 摸了 2 张
-    expect(a.hp).toBe(4); // 另一名已受伤魏将回了 1 点
-    // 每回合限一次
-    expect(toSnapshot(state, 'A').prompt?.legalSkillIds ?? []).not.toContain('huibian');
-
-    // 目标校验：只能指定魏势力、第二个必须已受伤
-    const state2 = createGame(
-      [
-        { seatId: 'A', name: '甲', heroId: 'juncaocao' },
-        { seatId: 'C', name: '丙', heroId: 'guanyu' },
-      ],
-      'TEST',
-      { mode: 'guozhan' },
-    );
-    state2.draft = null;
-    const a2 = state2.players.find((p) => p.seatId === 'A')!;
-    const c2 = state2.players.find((p) => p.seatId === 'C')!;
-    setup(a2, 'juncaocao', 'wei', 4);
-    setup(c2, 'guanyu', 'shu', 4);
-    state2.turn = { seatIndex: 0, phase: 'play' };
-    state2.pending = { kind: 'play', seatId: 'A' };
-    const bad = act(state2, 'A', { type: 'useSkill', skillId: 'huibian', targetIds: ['C'] });
-    expect(bad.ok).toBe(false);
-    // 满血的第二个目标也不行
-    const bad2 = act(state2, 'A', {
-      type: 'useSkill',
-      skillId: 'huibian',
-      targetIds: ['A', 'C'],
-    });
-    expect(bad2.ok).toBe(false);
+    // 乙直接进自己的出牌阶段：没有【建安】的询问、也没有被授予技能 / 封锁的武将牌
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'B' });
+    expect(b.lordGrant ?? null).toBeNull();
+    expect(b.grantedSkills).toEqual([]);
   });
 
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
@@ -19126,6 +19177,7 @@ describe('国战 · 君主将（特性）', () => {
     giveTurn(state, 'D');
     ok(act(state, 'D', { type: 'playCard', cardId: 'd1', targetIds: ['A'] }));
     if (state.pending?.kind === 'respondSha') ok(act(state, 'A', { type: 'pass' }));
+    declineZhengrong(state, 'A'); // 甲的【征戎】排在濒死之前，先拒掉
     // 只把**甲那一轮**求桃过完（别人的求桃要留着观察）
     let guard = 0;
     while (

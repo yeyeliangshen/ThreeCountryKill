@@ -980,6 +980,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   player.flags = emptyFlags();
   // 「本回合受到过伤害的角色」也随回合清空
   state.damagedThisTurn = [];
+  // 【雄驰】的「每回合第一次」同样按**每个回合**重算（不是只有自己的回合）
+  state.xiongchiDoneSeats = [];
   // 「本回合杀死过角色的人」同理（戚乱是在每个回合结束时检查的）
   state.killedThisTurn = [];
   // 「本回合从牌堆摸到过的牌」也只在**本回合**内有效（袁术·伪帝）
@@ -8475,6 +8477,7 @@ export function createGame(
     resumeQueue: [],
     judgmentInFlight: null,
     damageThisRound: {},
+    xiongchiDoneSeats: [],
     extraTurns: [],
   };
   pushLog(state, 'start', '游戏开始，随机发将。');

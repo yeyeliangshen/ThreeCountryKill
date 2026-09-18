@@ -162,9 +162,9 @@ function step(state: GameState, rand: () => number): string {
 }
 
 describe('随机对局冒烟：全势备篇牌堆不卡死、不抛错', () => {
-  it('12 局（固定种子）都跑到分出胜负', () => {
+  it('24 局（固定种子）都跑到分出胜负', () => {
     let totalSteps = 0;
-    for (let seed = 1; seed <= 12; seed++) {
+    for (let seed = 1; seed <= 24; seed++) {
       const rand = rng(seed);
       const n = 5 + (seed % 3);
       const setup: SeatSetup[] = Array.from({ length: n }, (_, i) => ({
