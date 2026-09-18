@@ -285,6 +285,8 @@ export function Game() {
   const [usePick, setUsePick] = useState<{ cardId: string; uses: CardUse[] } | null>(null);
   // 连横模式：已选好要交出去的牌，等点目标
   const [lianhengCard, setLianhengCard] = useState<string | null>(null);
+  // 连横选中的目标（选中不等于发出：也要点一下确认）
+  const [lianhengPick, setLianhengPick] = useState<string | null>(null);
   /**
    * 【丈八蛇矛】模式：正在挑「两张手牌」。
    *
@@ -486,14 +488,37 @@ export function Game() {
     setUsePick({ cardId: card.id, uses });
   }
 
-  /** 点目标：选满 max 就发出去；不足 max 但要凑够 min 就先攒着 */
+  /**
+   * 点目标：**只选中，不发出**——选完还要点「确认使用」。
+   *
+   * 以前单目标牌是「点谁就打谁」，误点一下头像就出去了（【杀】/【顺手牵羊】这种最要命）；
+   * 现在统一成「选中 → 确认」两步，已选中的再点一下＝取消该目标。
+   */
   function pickTarget(targetId: string) {
     if (!selected) return;
-    if (selected.picked.includes(targetId)) return;
+    if (selected.picked.includes(targetId)) {
+      setSelected({ ...selected, picked: selected.picked.filter((t) => t !== targetId) });
+      return;
+    }
     if (selected.picked.length >= selected.max) return;
-    const next = [...selected.picked, targetId];
-    // 还没到上限 → 先攒着，让玩家自己决定要不要再加一个（铁索连环：1 或 2 名）
-    setSelected({ ...selected, picked: next });
+    setSelected({ ...selected, picked: [...selected.picked, targetId] });
+  }
+
+  /** 选中的目标够不够（够就可以点确认了） */
+  function selectedCanConfirm(): boolean {
+    if (!selected) return false;
+    return selected.picked.length >= selected.min && selected.picked.length <= selected.max;
+  }
+
+  /** 确认按钮文案：把「对谁用什么」写清楚，免得又误点 */
+  function selectedConfirmLabel(): string {
+    if (!selected) return '确认使用';
+    const card = myUsableCards.find((c) => c.id === selected.cardId);
+    const name = selected.as ? CARD_TYPE_NAME[selected.as] : card ? cardShortName(card) : '这张牌';
+    const who = selected.picked
+      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
+      .join('、');
+    return `确认：对 ${who} 使用【${name}】`;
   }
 
   /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去 */
@@ -509,23 +534,6 @@ export function Game() {
       targetIds: selected.picked,
     });
     setSelected(null);
-  }
-
-  /** 单目标牌在点满时自动发出，不用再点一次确认 */
-  function pickTargetAuto(targetId: string) {
-    if (!selected) return;
-    if (selected.max === 1) {
-      sendIntent({
-        type: 'playCard',
-        cardId: selected.cardId,
-        ...(selected.as ? { as: selected.as } : {}),
-        ...(selected.asAttribute ? { asAttribute: selected.asAttribute } : {}),
-        targetIds: [...selected.picked, targetId],
-      });
-      setSelected(null);
-      return;
-    }
-    pickTarget(targetId);
   }
 
   // —— 响应杀/濒死/锦囊/无懈：直接出牌（引擎自动检测转化） ——
@@ -639,7 +647,16 @@ export function Game() {
   // 判定当前选中牌的目标提示文案
   function selectedHint(): string {
     if (!selected) return '';
-    if (selected.picked.length === 2) return '请选择武器持有者'; // 借刀杀人
+    const names = selected.picked
+      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
+      .join('、');
+    // 目标够了：把「对谁用」摆出来，并提示还要点一下确认（点目标不再直接出牌）
+    if (selected.picked.length >= selected.min) {
+      if (selected.min === 2) {
+        return `已选：${names}（第 1 个是武器持有者、第 2 个是出杀目标）——点「确认」发出`;
+      }
+      return `目标：${names} —— 点「确认」发出`;
+    }
     if (selected.min === 2) {
       if (selected.picked.length === 0) return '请选择武器持有者';
       return '请选择出杀目标';
@@ -647,7 +664,7 @@ export function Game() {
     if (selected.max > 1) {
       return `请选择 1 至 2 名目标（${selected.self ? '可含自己' : '不含自己'}），已选 ${selected.picked.length} 名`;
     }
-    return '请选择目标（点上方对手）';
+    return '请选择目标（点上方对手，选完再点确认）';
   }
 
   // 技能确认按钮是否可用
@@ -843,8 +860,8 @@ export function Game() {
 
   function handleTargetClick(p: PlayerView) {
     if (lianhengCard) {
-      sendIntent({ type: 'lianheng', cardId: lianhengCard, targetSeatId: p.seatId });
-      setLianhengCard(null);
+      // 只选中（同一个再点一下＝取消）；发出交给「确认连横」
+      setLianhengPick((prev) => (prev === p.seatId ? null : p.seatId));
       return;
     }
     if (skillMode) {
@@ -853,7 +870,7 @@ export function Game() {
     }
     if (selected) {
       if (selected.picked.includes(p.seatId)) return; // 已选
-      pickTargetAuto(p.seatId);
+      pickTarget(p.seatId);
     }
   }
 
@@ -986,7 +1003,9 @@ export function Game() {
             const isTarget = canClickTarget(p);
             const isPickedTarget =
               targeting &&
-              (selected?.picked.includes(p.seatId) || skillMode?.targetIds.includes(p.seatId));
+              (selected?.picked.includes(p.seatId) ||
+                skillMode?.targetIds.includes(p.seatId) ||
+                lianhengPick === p.seatId);
             const isCurrent = snapshot.turn.seatId === p.seatId;
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
@@ -1292,28 +1311,54 @@ export function Game() {
               {lianhengCard && prompt.kind === 'play' && (
                 <span className="hint">连横：点一名对手把手牌交给他（势力不同的会摸一张牌）</span>
               )}
-              {lianhengCard && (
-                <button className="ghost" onClick={() => setLianhengCard(null)}>
-                  取消连横
-                </button>
+              {lianhengCard && prompt.kind === 'play' && (
+                <>
+                  <span className="hint">
+                    连横：点一名同势力角色
+                    {lianhengPick
+                      ? `（已选 ${snapshot?.players.find((p) => p.seatId === lianhengPick)?.name ?? '?'}）`
+                      : ''}
+                    —— 点「确认」把牌交给他
+                  </span>
+                  <button
+                    className="primary"
+                    disabled={!lianhengPick}
+                    onClick={() => {
+                      if (!lianhengPick) return;
+                      sendIntent({
+                        type: 'lianheng',
+                        cardId: lianhengCard,
+                        targetSeatId: lianhengPick,
+                      });
+                      setLianhengCard(null);
+                      setLianhengPick(null);
+                    }}
+                  >
+                    确认连横
+                  </button>
+                  <button
+                    className="ghost"
+                    onClick={() => {
+                      setLianhengCard(null);
+                      setLianhengPick(null);
+                    }}
+                  >
+                    取消连横
+                  </button>
+                </>
               )}
 
               {/* 选目标提示 */}
               {selected && prompt.kind === 'play' && (
                 <>
                   <span className="hint">{selectedHint()}</span>
-                  {selected.max > 1 && (
-                    <button
-                      className="primary"
-                      disabled={
-                        selected.picked.length < selected.min ||
-                        selected.picked.length > selected.max
-                      }
-                      onClick={confirmTargets}
-                    >
-                      确认目标（{selected.picked.length}）
-                    </button>
-                  )}
+                  <button
+                    className="primary"
+                    disabled={!selectedCanConfirm()}
+                    onClick={confirmTargets}
+                  >
+                    {selectedConfirmLabel()}
+                  </button>
                   <button className="ghost" onClick={() => setSelected(null)}>
                     取消
                   </button>
@@ -1471,7 +1516,7 @@ export function Game() {
             slots={heroSlots}
             targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
             picked={!!selected?.picked.includes(me.seatId)}
-            onSelect={canPickSelf ? () => pickTargetAuto(me.seatId) : undefined}
+            onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
           />
         </div>
       </aside>
