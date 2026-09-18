@@ -5,11 +5,11 @@ import { Hall } from './pages/Hall';
 import { Lobby } from './pages/Lobby';
 import { Game } from './pages/Game';
 import { SoundToggle, useGameAudio } from './audio';
+import { FullscreenToggle } from './components/FullscreenToggle';
 import './styles.css';
 
 /** 构建版本戳（由 client 的 vite 注入）。开发模式下没有，显示占位 */
-const BUILD_STAMP =
-  typeof __BUILD_STAMP__ === 'string' ? __BUILD_STAMP__ : '开发模式（未构建）';
+const BUILD_STAMP = typeof __BUILD_STAMP__ === 'string' ? __BUILD_STAMP__ : '开发模式（未构建）';
 
 export function App() {
   const screen = useStore((s) => s.screen);
@@ -30,6 +30,7 @@ export function App() {
   return (
     <div className="app">
       <SoundToggle />
+      <FullscreenToggle />
 
       {screen === 'join' && <JoinPage />}
       {screen === 'hall' && <Hall />}

@@ -713,7 +713,10 @@ button:disabled {
   }
 }
 
-@media (min-width: 880px) {
+/* ⚠️ 手机横屏也走这套「宽屏双栏」：手机横过来宽度往往只有 800 出头（iPhone 390×844 横屏是
+   844），按宽度判断会掉进竖屏单列，而竖屏单列在 390 高的屏幕里根本没法玩。
+   触发条件里带上「矮视口 + 横向」，两边都能覆盖到（媒体查询里不能用变量，这里手写 560）。 */
+@media (min-width: 880px), (orientation: landscape) and (max-height: 560px) {
   .game {
     flex-direction: row;
     gap: 10px;
@@ -1666,6 +1669,25 @@ button:disabled {
 }
 
 /* 声音开关（固定右上角，各界面都在） */
+.fs-ctl {
+  position: absolute;
+  top: 10px;
+  /* 挨着声音控件右边：那个是 absolute right: 10px，宽度约 120 */
+  right: 150px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fs-hint {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .sound-ctl {
   position: fixed;
   top: 10px;
@@ -1730,5 +1752,60 @@ button:disabled {
 @media (max-width: 879px) {
   .hero-panel {
     max-width: 260px;
+  }
+}
+
+/* ⚠️ 这一块必须在文件**末尾**：它要覆盖上面 .hand/.prompt/.player 这些基础规则，
+   放在前面会被后面的同权重规则顶掉（踩过：--card-h 生效了、.hand 的内边距没生效）。 */
+/* 手机横屏：屏幕矮（iPhone 横屏只有 390 上下）。宽屏双栏是对的，但还得把牌、间距、字号
+   都收一档，目标是「不滚动就能看见自己的手牌」——卡牌游戏看不见自己的牌等于没法玩。
+   （媒体查询里不能用变量，高度阈值同样手写 560） */
+@media (orientation: landscape) and (max-height: 560px) {
+  :root {
+    --card-h: 64px;
+    --side-w: 320px;
+  }
+  .game {
+    padding: 4px;
+    gap: 4px;
+  }
+  .players-row {
+    gap: 4px;
+  }
+  .player {
+    padding: 4px 6px;
+    min-width: 130px;
+  }
+  .prompt {
+    padding: 4px;
+    gap: 4px;
+  }
+  .prompt-msg {
+    font-size: 12px;
+  }
+  .hand {
+    padding: 6px 0 2px;
+  }
+  .sound-ctl,
+  .fs-ctl {
+    top: 4px;
+  }
+  /* 右栏（记录 + 武将面板 + 技能）别把整页顶高：面板可缩、日志自己滚，
+     不然「矮屏横着看」还是得上下滚。 */
+  .side {
+    max-height: calc(100vh - 8px);
+    overflow: hidden;
+  }
+  .side-main {
+    min-height: 0;
+    overflow: hidden;
+  }
+  .hero-panel {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .hero-panel img {
+    object-fit: cover;
   }
 }
