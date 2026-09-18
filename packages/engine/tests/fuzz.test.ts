@@ -9,7 +9,7 @@
 //
 // ⚠️ 驱动在 ./fuzzHarness（定位器也要用它——两边必须是同一份代码）。
 import { describe, it, expect } from 'vitest';
-import { checkDuplicate, riskyGame, rng, step } from './fuzzHarness';
+import { riskyGame, rng, step } from './fuzzHarness';
 describe('随机对局不变式：控制权不丢（任何一步都要有 pending）', () => {
   it('60 局随机对局里任何一步都有 pending', () => {
     const problems: string[] = [];
@@ -30,7 +30,7 @@ describe('随机对局不变式：控制权不丢（任何一步都要有 pendin
             problems.push(`seed=${seed} 第 ${steps} 步：控制权丢了（pending=null）`);
             break;
           }
-          // 「重复牌」那条检查目前还没干净（见文件末尾的 skip 用例），不在这里断言
+          // 「重复牌」那条检查还没干净（见文件末尾的 skip 用例），不在这里断言
         }
       } catch (e) {
         problems.push(`seed=${seed} 第 ${steps} 步抛错：${(e as Error).message}`);
@@ -76,9 +76,13 @@ describe('随机对局不变式：重复牌 / 牌张守恒 / 不询问阵亡者'
    *   已经排查过、确认**没问题**的两处：① 判定阶段开头 `player.judgment = []` 先清空、
    *   再逐张结算（所以「闪电移到下家判定区」不会两头都在）；② `moveFieldCard` 处理判定区时
    *   是先 splice 再 push ✓。所以来源在别处 —— 下次先在用例内部把重复牌的 `where` 打出来。
-   * ⚠️ 工具链遗留问题：同种子的「定位器」复现不出用例报的这两处（两边用的是同一份驱动，
-   * 我没能钉死差异），所以这两处只能先记着：下次先在**用例内部**把重复牌的 `where` 打出来
-   * （别另写定位器），再顺位置找来源。
+   * ⚠️⚠️ **工具链的关键发现（解释了之前所有「同种子结果不一致」）**：
+   * 引擎里仍有 **10 处 `Math.random()`**（随机选牌、军令抽两张、左慈的魂牌、悲歌弃牌…），
+   * 而 fuzz 只给「洗牌 + 发将 + 摸牌」注入了种子——**所以同一个种子每次跑出来的对局并不相同**：
+   * 同一个 bug 一会有一会没、定位器和用例对不上，都是这个原因。
+   * 想按种子稳定复现（以及让这层网真正可回归），得先把那 10 处改成走 `state` 上的随机源
+   * （`createGame` 已经有 `opts.rng`，把种子存进 state 即可）。在那之前：
+   * 排查这类 bug 只能靠「用例内部打印现场 + 多跑几轮」，别指望固定种子。
    */
   it.skip('60 局随机对局里都不出现重复牌、不丢牌、不问阵亡者', () => {
     expect(true).toBe(true);

@@ -63,6 +63,40 @@ export function allCardIds(state: GameState): string[] {
   return out;
 }
 
+/** 这张牌此刻在哪些位置（用例内部排查重复牌时打印用） */
+export function cardLocations(state: GameState, id: string): string[] {
+  const out: string[] = [];
+  state.deck.forEach((c, i) => {
+    if (c.id === id) out.push(`deck[${i}]`);
+  });
+  state.discard.forEach((c, i) => {
+    if (c.id === id) out.push(`discard[${i}]`);
+  });
+  for (const p of state.players) {
+    p.hand.forEach((c, i) => {
+      if (c.id === id) out.push(`${p.seatId}.hand[${i}]`);
+    });
+    for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount', 'treasure'] as const) {
+      const c = p.equipment[slot];
+      if (!c) continue;
+      if (c.id === id) out.push(`${p.seatId}.equip.${slot}`);
+      (c.cargo ?? []).forEach((x, i) => {
+        if (x.id === id) out.push(`${p.seatId}.cargo[${i}]`);
+      });
+    }
+    p.judgment.forEach((c, i) => {
+      if (c.id === id) out.push(`${p.seatId}.judg[${i}]`);
+    });
+    p.tian.forEach((c, i) => {
+      if (c.id === id) out.push(`${p.seatId}.tian[${i}]`);
+    });
+    p.qianhuan.forEach((c, i) => {
+      if (c.id === id) out.push(`${p.seatId}.qh[${i}]`);
+    });
+  }
+  return out;
+}
+
 /** 同一张牌不能同时存在于两个区域（这条最狠：抓到过两次真 bug） */
 export function checkDuplicate(state: GameState): string | null {
   const seen = new Set<string>();
