@@ -268,7 +268,7 @@ const STANDARD_SHU: RosterEntry[] = [
     pack: 'standard',
     status: 'done',
     primitives: ['pick_cards', 'deck_top'],
-    note: '观星已实现。简化：只能选「哪些沉底」，留在牌堆顶的保持原序，不做任意排序。',
+    note: '观星已实现。「任意顺序」两句都实现了：先选「置于牌堆顶」的牌（**按点击顺序**＝从最上面往下数），再从剩下的里选「置于牌堆底」的（同样按点击顺序）；第一步一张不选＝都不动（旧行为）。界面给选中的牌标了序号，所以点选顺序看得见。⚠️ 顺手修了一个真 bug：第二步一张不选时，同一张牌会被同时放进「顶堆」和「底堆」两个数组（牌堆里出现两张同样的牌）。',
   },
   { id: 'zhaoyun', name: '赵云', faction: 'shu', pack: 'standard', status: 'done' },
   { id: 'machao', name: '马超', faction: 'shu', pack: 'standard', status: 'done' },

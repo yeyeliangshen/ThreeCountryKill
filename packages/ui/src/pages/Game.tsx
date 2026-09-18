@@ -1104,6 +1104,8 @@ export function Game() {
                 <div className="pick-cards-row">
                   {prompt.pickCards.map((card) => {
                     const on = pickSel.includes(card.id);
+                    // 选牌是**有序**的（诸葛亮·观星要按点击顺序摆牌堆），所以给选中的牌标个序号
+                    const order = pickSel.indexOf(card.id) + 1;
                     const name = cardShortName(card);
                     const catClass = isEquipCard(card)
                       ? 'cat-equip'
@@ -1133,6 +1135,11 @@ export function Game() {
                         <span className="c-name">
                           <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
                         </span>
+                        {on && prompt.pickMax !== 1 && (
+                          <span className="c-order" title="点击顺序">
+                            {order}
+                          </span>
+                        )}
                       </button>
                     );
                   })}

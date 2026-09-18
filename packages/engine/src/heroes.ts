@@ -1627,26 +1627,62 @@ function guanxing(state: GameState, player: Player, api: SkillApi): void {
     top.push(c);
   }
   if (top.length === 0) return;
+  /**
+   * 摆放：牌堆在引擎里是**栈**——`deck` 末尾是牌堆顶（drawOne 从末尾抽），
+   * 数组开头是牌堆底。`topPile` / `bottomPile` 里的顺序都是**玩家点的顺序**
+   * （第一张＝该堆里最先被抽到的）。
+   */
+  const place = (st: GameState, p: Player, topPile: Card[], bottomPile: Card[]): void => {
+    for (let i = topPile.length - 1; i >= 0; i--) st.deck.push(topPile[i]!);
+    // 沉底的那批：先被抽到的排在最靠后（数组开头是最深的牌堆底，所以整批要倒过来）
+    st.deck.unshift(...[...bottomPile].reverse());
+    pushLog(
+      st,
+      'skill',
+      `${p.name} 发动【观星】：${topPile.length} 张置于牌堆顶，${bottomPile.length} 张置于牌堆底。`,
+    );
+  };
+  // 第一步：牌堆**顶**放哪些、按什么顺序（按官方原文的顺序：先顶后底）
   api.askPickCards(
     state,
     player.seatId,
-    `【观星】：观看牌堆顶 ${top.length} 张，选择要置于牌堆底的牌（其余按原序留在牌堆顶）`,
+    `【观星】：观看牌堆顶 ${top.length} 张。选择要置于牌堆**顶**的牌（按点击顺序＝从最上面往下数；一张不选＝都不动，全部按原序留在牌堆顶）`,
     top,
     0,
     top.length,
-    (st, p, picked) => {
-      const toBottom = new Set(picked.map((c) => c.id));
-      const stay = top.filter((c) => !toBottom.has(c.id));
-      const sink = top.filter((c) => toBottom.has(c.id));
-      for (let i = stay.length - 1; i >= 0; i--) st.deck.push(stay[i]!);
-      st.deck.unshift(...sink);
-      pushLog(
+    (st, p, topPicked) => {
+      // 「一张不选」＝什么都不动（旧行为）：全部按原序留在牌堆顶，也不再问第二步。
+      // 想把某几张放回牌堆底，就在第一步里把**其余的**挑出来（挑出来的按点击顺序置顶）。
+      if (topPicked.length === 0) {
+        place(st, p, top, []);
+        return;
+      }
+      const topIds = new Set(topPicked.map((c) => c.id));
+      const rest = top.filter((c) => !topIds.has(c.id));
+      if (rest.length === 0) {
+        place(st, p, topPicked, []);
+        return;
+      }
+      // 第二步：剩下的这些，哪些沉底、按什么顺序（先被抽到的先点）
+      api.askPickCards(
         st,
-        'skill',
-        `${p.name} 发动【观星】：${stay.length} 张留在牌堆顶，${sink.length} 张置于牌堆底。`,
+        p.seatId,
+        `【观星】：剩下的 ${rest.length} 张里，选择要置于牌堆**底**的牌（按点击顺序＝沉底后先抽到的先点；一张不选＝全部按原序沉底）`,
+        rest,
+        0,
+        rest.length,
+        (st2, p2, bottomPicked) => {
+          // ⚠️ 「一张不选」时 bottom = rest、middle 必须为**空**——否则同一张牌会被同时
+          // 放进「顶上那批」和「沉底那批」两个数组里（牌堆里出现两张同样的牌！）
+          const bottomIds = new Set(bottomPicked.map((c) => c.id));
+          const middle = bottomPicked.length > 0 ? rest.filter((c) => !bottomIds.has(c.id)) : [];
+          const bottom = bottomPicked.length > 0 ? bottomPicked : rest;
+          place(st2, p2, [...topPicked, ...middle], bottom);
+        },
+        // 看牌堆顶是私密信息：日志只记张数，不记牌名
+        { secret: true },
       );
     },
-    // 看牌堆顶是私密信息：日志只记张数，不记牌名
     { secret: true },
   );
 }

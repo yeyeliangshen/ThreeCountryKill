@@ -4195,6 +4195,7 @@ describe('选牌原语与观星（阶段 2.2）', () => {
       // 关键：候选牌不在手牌里（是牌堆顶），所以提示必须下发完整牌面
       expect(state.pending.cards.map((c) => c.id)).toEqual(['d4', 'd3']);
     }
+    // 第一步就一张不选＝都不动（旧行为保留），不会再问第二步
     ok(act(state, B, { type: 'pickCards', cardIds: [] }));
     const b = state.players.find((p) => p.seatId === B)!;
     // 牌堆没动，摸牌阶段拿走原来的顶两张
@@ -4211,7 +4212,7 @@ describe('选牌原语与观星（阶段 2.2）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: B });
   });
 
-  it('观星：选中的牌沉到牌堆底（最后才被抽到）', () => {
+  it('观星：第一步挑「留在牌堆顶」的牌，其余的沉到牌堆底', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
       { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
@@ -4219,13 +4220,42 @@ describe('选牌原语与观星（阶段 2.2）', () => {
     setDeck(state, ['d1', 'd2', 'd3', 'd4']);
     ok(act(state, A, { type: 'endPhase' }));
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
-    // 把最先抽到的 d4 沉底
-    ok(act(state, B, { type: 'pickCards', cardIds: ['d4'] }));
+    // 第一步：只把 d3 留在顶上（那 d4 就归到「其余」里）
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d3'] }));
+    // 第二步：剩下的 d4 一张不选＝按原序沉底
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.cards.map((c) => c.id)).toEqual(['d4']);
+    }
+    ok(act(state, B, { type: 'pickCards', cardIds: [] }));
     const b = state.players.find((p) => p.seatId === B)!;
     // 摸到 d3、d2；d4 被压到牌堆最底（数组最前面）
     expect(b.hand.map((c) => c.id).sort()).toEqual(['d2', 'd3']);
     expect(state.deck[0]!.id).toBe('d4');
     skipRevealAsk(state); // B 的准备阶段：暂不明置
+    expect(state.pending).toEqual({ kind: 'play', seatId: B });
+  });
+
+  it('观星：两堆都可以自定顺序（先点的先被抽到）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhugeliang', hand: [] },
+    ]);
+    setDeck(state, ['d1', 'd2', 'd3', 'd4', 'd5']); // d5 最先被抽到；场上 2 人 → 观星看 2 张
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 第一步：把最先抽到的 d5 挑来**放在顶上**（顺序就是点击顺序）
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d5'] }));
+    // 第二步：剩下的 d4 也点上＝沉底
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['d4'] }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 观星只看 2 张（存活 2 人）：d5 被挑到顶上、d4 沉底。
+    // 摸牌阶段抽 2 张 → 先抽 d5（玩家特意放上去的），再抽原本的顶牌 d3；
+    // 不重排的话这里第一张会是 d4。d4 则躺在牌堆最底（数组开头）。
+    expect(b.hand.map((c) => c.id).sort()).toEqual(['d3', 'd5']);
+    expect(state.deck[0]!.id).toBe('d4');
+    skipRevealAsk(state);
     expect(state.pending).toEqual({ kind: 'play', seatId: B });
   });
 

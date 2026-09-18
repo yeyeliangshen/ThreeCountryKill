@@ -1544,6 +1544,26 @@ button:disabled {
 .pick-cards .card {
   cursor: pointer;
 }
+/* 选牌是有序的（诸葛亮·观星按点击顺序摆牌堆）→ 给选中的牌标序号。
+   深底金字，压在牌面左上角，和 .c-idx 错开。 */
+.pick-cards .c-order {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #2a2118;
+  color: #f3d9a4;
+  border: 1px solid #c8a45c;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+.pick-cards .card {
+  position: relative;
+}
 
 /* —— 私密查看（知己知彼）：内容只有本人看得到 —— */
 .view-cards {
