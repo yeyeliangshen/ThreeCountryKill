@@ -12,7 +12,7 @@ import type { Faction } from '@sgs/protocol';
 //    没核对过的字段不填猜测值。核对状态记在 status 上。
 
 /** 扩展包归属 */
-export type HeroPack = 'standard' | 'zhen' | 'shi' | 'bian' | 'quan' | 'buchen';
+export type HeroPack = 'standard' | 'zhen' | 'shi' | 'bian' | 'quan' | 'buchen' | 'jun';
 
 export const PACK_NAME: Record<HeroPack, string> = {
   standard: '国战标准版',
@@ -21,6 +21,7 @@ export const PACK_NAME: Record<HeroPack, string> = {
   bian: '君临天下·变',
   quan: '君临天下·权',
   buchen: '不臣篇',
+  jun: '君主将（阵/势/变/权）',
 };
 
 /**
@@ -880,6 +881,54 @@ const BUCHEN: RosterEntry[] = [
  * 现在 roster 里**没有**「改不了判定的技能」了。
  */
 export const GUOZHAN_ROSTER: RosterEntry[] = [
+  /**
+   * 君主将四张（君曹操/君刘备/君孙权/君袁绍）——**独立的武将牌**，不是普通的曹操/刘备/孙权/袁绍。
+   *
+   * 状态是 `partial`（这是名录里第一次出现「部分实现」，如实记着）：
+   * 已实现的是**君主将的固定特性**（只作主将 / 不当野心家 / 亮将双将同亮 / 与同势力全员珠联璧合 /
+   * 阵亡令同势力各失去 1 点体力），未实现的是**牌自己的技能**：
+   * 君主技「君威」与四件专属装备（飞龙夺凤 / 六龙骖驾 / 定澜夜明珠 / 盟军大纛）、
+   * 以及各君主的常规技能。文本已核对到的一部分（WIKI，移动版）：
+   *   君刘备 · 君威：出牌阶段，若场上没有【飞龙夺凤】，你可以弃置一张牌，从游戏外使用之。
+   *                    当你死亡时，蜀势力角色各失去 1 点体力。
+   *   君刘备 · 章武：一名角色的结束阶段，你可以视为使用 1 枚与你势力相同的角色本回合使用过的国战标记。
+   *   君刘备 · 励众（锁定技）：每轮结束时，你令与你势力相同的角色中本轮造成过伤害且造成伤害值最多的
+   *                    角色各获得 1 枚「先驱」标记。
+   * 未做的原因：君威依赖「从游戏外获取并使用专属装备」这条新机制；章武依赖「国战标记的使用」；
+   * 励众依赖「轮次」概念与伤害账本——都是独立的一块，等单独排期。
+   */
+  {
+    id: 'juncaocao',
+    name: '君曹操',
+    faction: 'wei',
+    pack: 'jun',
+    status: 'partial',
+    note: '君主特性已实现；君威 + 专属装备【六龙骖驾】 + 常规技能未实现（待按官方文本核对后单独做）。',
+  },
+  {
+    id: 'junliubei',
+    name: '君刘备',
+    faction: 'shu',
+    pack: 'jun',
+    status: 'partial',
+    note: '君主特性已实现；君威 + 专属装备【飞龙夺凤】 + 【章武】【励众】未实现（文本见本组注释，移动版 WIKI 已核）。',
+  },
+  {
+    id: 'junsunquan',
+    name: '君孙权',
+    faction: 'wu',
+    pack: 'jun',
+    status: 'partial',
+    note: '君主特性已实现；君威 + 专属装备【定澜夜明珠】 + 常规技能未实现。',
+  },
+  {
+    id: 'junyuanshao',
+    name: '君袁绍',
+    faction: 'qun',
+    pack: 'jun',
+    status: 'partial',
+    note: '君主特性已实现；君威 + 专属装备【盟军大纛】 + 常规技能未实现。⚠️ 群势力的君主在部分资料里写作「君张角」，本仓库以 biligame 的君威条目为准取「君袁绍」。',
+  },
   ...STANDARD_WEI,
   ...STANDARD_SHU,
   ...STANDARD_WU,

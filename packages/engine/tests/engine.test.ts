@@ -18606,6 +18606,151 @@ describe('制蛮：拿走判定区的牌要摘干净', () => {
   });
 });
 
+describe('国战 · 君主将（特性）', () => {
+  /**
+   * 造一个国战选将局面，并把两家的发将池**换成指定武将**——测试要能稳定选到君主。
+   * （发将本身是随机的；引擎在 pickHero 时按 deals 校验，所以直接改写 deals 即可。）
+   */
+  function gzDeal(deals: Record<string, string[]>, seats: string[] = Object.keys(deals)) {
+    const state = createGame(
+      seats.map((seatId) => ({ seatId, name: seatId, heroId: 'vanilla' })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    for (const [seatId, ids] of Object.entries(deals)) state.draft!.deals[seatId] = ids;
+    return state;
+  }
+
+  /** 把回合/挂起直接摆到某人出牌阶段（跳过前面几个回合的推进） */
+  function giveTurn(state: ReturnType<typeof gzDeal>, seatId: string) {
+    state.turn = { seatIndex: state.seatOrder.indexOf(seatId), phase: 'play' };
+    state.pending = { kind: 'play', seatId };
+  }
+
+  it('君主将只能作主将', () => {
+    const state = gzDeal({ A: ['caocao', 'juncaocao'], B: ['guanyu', 'zhangfei'] });
+    // 君曹操当副将 → 拒绝
+    const bad = act(state, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'juncaocao' });
+    expect(bad.ok).toBe(false);
+    // 君主作主将、同势力普通武将作副将 → 可以
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    expect(state.players.find((p) => p.seatId === 'A')!.heroId).toBe('juncaocao');
+  });
+
+  it('君主将与同势力**所有**武将珠联璧合（不限于官方组合表）', () => {
+    // 君曹操 + 曹操：官方组合表里没有这一对，但君主与同势力全员珠联璧合
+    // （标记在选将结束时统一发放，所以两家都要选完）
+    const state = gzDeal({ A: ['juncaocao', 'caocao'], B: ['guanyu', 'zhangfei'] });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    // 珠联璧合与阴阳鱼都是**双将同时明置**时才发的（onHeroRevealed）
+    const ask = state.pending;
+    if (ask?.kind === 'choice' && ask.seatId === 'A')
+      ok(act(state, 'A', { type: 'chooseOption', optionId: 'all' }));
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    expect(a.markers.zhulian).toBe(1);
+    // 对照：两个普通魏将（曹操 + 夏侯惇）不在官方组合表里 → 没有珠联璧合
+    const state2 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
+    ok(act(state2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xiahoudun' }));
+    ok(act(state2, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    const ask2 = state2.pending;
+    if (ask2?.kind === 'choice' && ask2.seatId === 'A')
+      ok(act(state2, 'A', { type: 'chooseOption', optionId: 'all' }));
+    expect(state2.players.find((p) => p.seatId === 'A')!.markers.zhulian).toBeUndefined();
+  });
+
+  it('君主将亮将时主副将同时亮出（没有「只亮一张」的选项）', () => {
+    const state = gzDeal({ A: ['juncaocao', 'caocao'], B: ['guanyu', 'zhangfei'] });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    // 选将结束 → 第一回合（甲）准备阶段会问「是否明置武将牌」
+    const p = state.pending;
+    expect(p?.kind).toBe('choice');
+    if (p?.kind === 'choice') {
+      const ids = p.options.map((o) => o.id);
+      expect(ids).not.toContain('main'); // 君主不给「只亮主将」
+      expect(ids).not.toContain('deputy'); // 也不给「只亮副将」
+      expect(ids).toContain('all'); // 只有「全部明置」
+      ok(act(state, 'A', { type: 'chooseOption', optionId: 'all' }));
+    }
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    expect(a.heroRevealed).toBe(true);
+    expect(a.deputyRevealed).toBe(true);
+  });
+
+  it('君主阵亡：同势力角色各失去 1 点体力，异势力不受影响', () => {
+    const state = gzDeal({ A: ['juncaocao', 'caocao'], B: ['caoren', 'xuchu'], C: ['guanyu', 'zhangfei'] });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'caoren', deputyHeroId: 'xuchu' }));
+    ok(act(state, 'C', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    const b = state.players.find((p) => p.seatId === 'B')!;
+    const c = state.players.find((p) => p.seatId === 'C')!;
+    // 连带效果按「与你势力相同的角色」算，暗置的人没有已知势力 → 先把大家都亮出来
+    for (const p of [a, b, c]) {
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    a.hp = 1;
+    const hpB = b.hp;
+    const hpC = c.hp;
+    // 丙（蜀）用【杀】把甲（魏·君主）打死
+    const sha: Card = { id: 'c1', type: 'sha', suit: 'spade', rank: 7 };
+    c.hand = [sha];
+    giveTurn(state, 'C');
+    ok(act(state, 'C', { type: 'playCard', cardId: 'c1', targetIds: ['A'] }));
+    // 甲不出闪（挨下这 1 点）→ 濒死 → 所有人放弃救援 → 阵亡
+    if (state.pending?.kind === 'respondSha') ok(act(state, 'A', { type: 'pass' }));
+    passDeathSaves(state);
+    expect(a.alive).toBe(false);
+    // 乙（同势力）掉 1 点；丙（异势力）不掉
+    expect(b.hp).toBe(hpB - 1);
+    expect(c.hp).toBe(hpC);
+  });
+
+  it('君主阵亡的连带掉血把同势力打进濒死 → 换他求桃', () => {
+    // 四家：甲（魏·君主）、乙（魏）、丙（蜀）、丁（吴）——留两人活着，免得死两个就判胜
+    const state = gzDeal({
+      A: ['juncaocao', 'caocao'],
+      B: ['caoren', 'xuchu'],
+      C: ['guanyu', 'zhangfei'],
+      D: ['zhouyu', 'lvmeng'],
+    });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'caoren', deputyHeroId: 'xuchu' }));
+    ok(act(state, 'C', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    ok(act(state, 'D', { type: 'pickHero', heroId: 'zhouyu', deputyHeroId: 'lvmeng' }));
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    const b = state.players.find((p) => p.seatId === 'B')!;
+    const d = state.players.find((p) => p.seatId === 'D')!;
+    for (const p of [a, b, d]) {
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    a.hp = 1;
+    b.hp = 1; // 连带掉 1 点就会到 0
+    // 由丁（吴，座次上就在甲旁边）动手，免得攻击范围不够
+    const sha: Card = { id: 'd1', type: 'sha', suit: 'spade', rank: 7 };
+    d.hand = [sha];
+    giveTurn(state, 'D');
+    ok(act(state, 'D', { type: 'playCard', cardId: 'd1', targetIds: ['A'] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, 'A', { type: 'pass' }));
+    // 只把**甲那一轮**求桃过完（别人的求桃要留着观察）
+    let guard = 0;
+    while (
+      state.pending?.kind === 'respondDeath' &&
+      state.pending.dyingId === 'A' &&
+      guard++ < 20
+    ) {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    expect(a.alive).toBe(false);
+    expect(b.hp).toBe(0); // 连带掉血生效
+    expect(state.pending?.kind).toBe('respondDeath'); // 轮到乙求桃
+    if (state.pending?.kind === 'respondDeath') expect(state.pending.dyingId).toBe('B');
+  });
+});
+
 /**
  * 结构检查：带 canUseAs 的武将必须在 skillFields 里登记「提供这个转化能力的技能名」。
  *

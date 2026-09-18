@@ -2292,7 +2292,7 @@ function besiegedBySha(state: GameState, sourceId: string, targetId: string): Pl
 }
 
 /** 双方是否**已明置**且势力相同（国战里暗置＝没有势力，判断同势力一律走这里） */
-function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
+export function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
   const fa = effectiveFaction(state, a);
   return !!fa && fa === effectiveFaction(state, b);
 }
@@ -3331,6 +3331,71 @@ const DENGAI: Hero = {
     },
   ],
 };
+
+/**
+ * 君主将（君临天下 · 阵/势/变/权）—— 四张**独立的武将牌**：君曹操 / 君刘备 / 君孙权 / 君袁绍。
+ *
+ * ⚠️ 与「普通的曹操/刘备/孙权/袁绍」是**不同的牌**（§5.37 记过：把 `isLord` 挂在普通武将身上
+ * 会让君主规则一直错误地生效，所以摘掉了）。官方口径见 docs/guozhan-reference.md §3：
+ * 君主将四项固定特性（引擎里原本就有分支，只是以前没有君主牌，从没生效过）：
+ *   ① 只能作为**主将**（`onPickHero` 里拦）；
+ *   ② 不会成为**野心家**（组局分配时跳过）；
+ *   ③ 亮将时**主副将同时亮出**；
+ *   ④ 与**同势力所有**武将珠联璧合（不限于官方组合表）。
+ * ⑤ 阵亡时**与你势力相同的角色各失去 1 点体力**（`doDeath` 里实现）。
+ *
+ * **本轮未实现**（如实记在名录里，标注为「部分实现」）：
+ *   - 君主技「君威」与四件**专属装备**（飞龙夺凤 / 六龙骖驾 / 定澜夜明珠 / 盟军大纛）；
+ *   - 各君主自己的常规技能（君刘备的「章武」「励众」等）——WIKI 上能查到文本，
+ *     但它们要么依赖「国战标记」的使用机制、要么依赖轮次概念，本轮不做。
+ * 牌面数值：四张都是 **2 阴阳鱼**（本引擎的口径是 `maxHp = 2 × 阴阳鱼`，与邓艾一致）。
+ */
+function lordHero(
+  id: string,
+  name: string,
+  faction: Faction,
+  note: string,
+): Hero {
+  return {
+    id,
+    name,
+    faction,
+    maxHp: 4, // 2 阴阳鱼
+    gender: 'male',
+    modes: ['guozhan'],
+    isLord: true,
+    // 技能暂空：见上方注释与 roster 里的「部分实现」说明
+    skills: [{ name: '君主将', desc: note }],
+  };
+}
+
+const JUN_CAOCAO: Hero = lordHero(
+  'juncaocao',
+  '君曹操',
+  'wei',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【六龙骖驾】、常规技能暂未实现。',
+);
+
+const JUN_LIUBEI: Hero = lordHero(
+  'junliubei',
+  '君刘备',
+  'shu',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【飞龙夺凤】、以及「章武」「励众」暂未实现。',
+);
+
+const JUN_SUNQUAN: Hero = lordHero(
+  'junsunquan',
+  '君孙权',
+  'wu',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【定澜夜明珠】、常规技能暂未实现。',
+);
+
+const JUN_YUANSHAO: Hero = lordHero(
+  'junyuanshao',
+  '君袁绍',
+  'qun',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【盟军大纛】、常规技能暂未实现。',
+);
 
 const MASU: Hero = {
   id: 'masu',
@@ -11058,6 +11123,10 @@ function fenji(ctx: HookContext, who: Player): void {
 }
 
 export const HEROES: Hero[] = [
+  JUN_CAOCAO,
+  JUN_LIUBEI,
+  JUN_SUNQUAN,
+  JUN_YUANSHAO,
   GUANYU,
   ZHANGFEI,
   ZHAOYUN,

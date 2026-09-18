@@ -85,6 +85,7 @@ import {
   huangtianFor,
   xuanhuoFor,
   hasYuxi,
+  sameKnownFaction,
   fengyangBlocksEquip,
   zhidaoTargetsBlocked,
   ROLE_NAME,
@@ -3401,6 +3402,60 @@ function checkWin(state: GameState): boolean {
   return false;
 }
 
+/**
+ * 君主阵亡的连带效果：**与你势力相同的其他角色各失去 1 点体力**。
+ *
+ * 见 docs/guozhan-reference.md §3（官方君主将固定特性）。实现要点：
+ * - 「同势力」按**阵亡那一刻**的势力算（阵亡会把双将亮出，所以君主一定是明置的）；
+ * - 失去体力不是伤害，所以不派发伤害类钩子（只记日志 + 走濒死）；
+ * - 逐个结算：中途有人被打进濒死（会挂起）就把剩下的压进续接队列，
+ *   等那串濒死走完再继续，最后调 `after`（死者自己的收尾）。
+ */
+function lordDeathLoss(
+  state: GameState,
+  dying: Player,
+  index: number,
+  after: () => void,
+): void {
+  const victims =
+    index === 0
+      ? state.players.filter((p) => p.alive && p.seatId !== dying.seatId && sameKnownFaction(state, dying, p))
+      : lordVictimsOf(state, dying);
+  if (index >= victims.length) {
+    after();
+    return;
+  }
+  const v = victims[index]!;
+  if (v.alive) {
+    v.hp -= 1;
+    pushLog(
+      state,
+      'damage',
+      `${dying.name}（君主）阵亡：${v.name} 失去 1 点体力，剩余 ${Math.max(0, v.hp)} 体力。`,
+    );
+    if (v.hp <= 0) {
+      pushResume(state, () => lordDeathLoss(state, dying, index + 1, after));
+      enterNearDeath(state, {
+        sourceId: v.seatId,
+        cardId: '',
+        asType: 'sha',
+        targetId: v.seatId,
+        damage: 1,
+        dodged: false,
+      });
+      return;
+    }
+  }
+  lordDeathLoss(state, dying, index + 1, after);
+}
+
+/** 续接时重算「同势力存活者」（中途可能有人死了，位置会变） */
+function lordVictimsOf(state: GameState, dying: Player): Player[] {
+  return state.players.filter(
+    (p) => p.alive && p.seatId !== dying.seatId && sameKnownFaction(state, dying, p),
+  );
+}
+
 function doDeath(state: GameState, dyingId: string, killerId?: string): void {
   const dying = getPlayerOrThrow(state, dyingId);
   dying.alive = false;
@@ -3428,26 +3483,32 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
       // 补益/汲魂都要求「存活」所以这里不会真的发动，但时机本身要派发出去。
       dispatchNearDeathResolved(state, dying.seatId, false, killerId, () => {
         // 清牌：行殇没拿走的才进弃牌堆
-        for (const c of dying.hand) toDiscard(state, c);
-        dying.hand = [];
-        const eq = dying.equipment;
-        for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
-          if (c) toDiscard(state, c);
-        }
-        dying.equipment = emptyEquipment();
-        for (const c of dying.judgment) toDiscard(state, c);
-        dying.judgment = [];
-        // 判定阶段手里还攥着的那叠（典型：自己的【闪电】把自己劈死）：也归他，一并弃置。
-        // 不处理的话它们谁都不在、再也回不来（见 GameState.judgmentInFlight）
-        const ledger = state.judgmentInFlight;
-        if (ledger && ledger.seatId === dying.seatId) {
-          for (const c of ledger.cards) toDiscard(state, c);
-          state.judgmentInFlight = null;
-        }
+        const cleanup = (): void => {
+          for (const c of dying.hand) toDiscard(state, c);
+          dying.hand = [];
+          const eq = dying.equipment;
+          for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
+            if (c) toDiscard(state, c);
+          }
+          dying.equipment = emptyEquipment();
+          for (const c of dying.judgment) toDiscard(state, c);
+          dying.judgment = [];
+          // 判定阶段手里还攥着的那叠（典型：自己的【闪电】把自己劈死）：也归他，一并弃置。
+          // 不处理的话它们谁都不在、再也回不来（见 GameState.judgmentInFlight）
+          const ledger = state.judgmentInFlight;
+          if (ledger && ledger.seatId === dying.seatId) {
+            for (const c of ledger.cards) toDiscard(state, c);
+            state.judgmentInFlight = null;
+          }
 
-        if (checkWin(state)) return;
-        // 回到当前回合玩家（伤害来源）的出牌阶段
-        resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+          if (checkWin(state)) return;
+          // 回到当前回合玩家（伤害来源）的出牌阶段
+          resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+        };
+        // 君主阵亡：**与你势力相同的角色各失去 1 点体力**（官方君主将的固定特性之一）。
+        // 失去体力可能把人打进濒死，所以逐个来：谁进了濒死就把「剩下的」压进续接队列，
+        // 等那串濒死结算完了接着掉（同一次同步执行里连开两串濒死会把 pending 覆盖掉）。
+        lordDeathLoss(state, dying, 0, cleanup);
       });
     });
   };
