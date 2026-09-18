@@ -1939,9 +1939,20 @@ function tryCixiongSwords(state: GameState, target: Player, attack: AttackContex
 }
 
 /** 失去装备区的一张牌之后（枭姬 / 白银狮子回血）。可挂起：它挂在装备变动路径上，和伤害链一样要能被询问打断 */
-function fireEquipLost(state: GameState, owner: Player, card: Card, after: () => void): void {
+function fireEquipLost(
+  state: GameState,
+  owner: Player,
+  card: Card,
+  after: () => void,
+  event?: { id: number; cards: Card[] },
+): void {
   const isBailong = card.equipName === 'bailong';
-  runHooksPausable(state, 'equipLost', owner, { card }, () => {
+  const payload = {
+    card,
+    cards: event?.cards ?? [card],
+    eventId: event?.id ?? ++state.equipLossSeq,
+  };
+  runHooksPausable(state, 'equipLost', owner, payload, () => {
     // 白银狮子（锁定技）：离开装备区时你回复 1 点体力。
     // 放在触发技之后跑——「失去装备区牌」是它离开这件事本身，先结算钩子再结算它。
     if (!isBailong || !owner.alive) {
@@ -1955,6 +1966,33 @@ function fireEquipLost(state: GameState, owner: Player, card: Card, after: () =>
     });
     after();
   });
+}
+
+/**
+ * 一个动作失去**多张**装备：逐张派发（每张都可能触发枭姬那类「每张都算」的技能），
+ * 但整批**共用一个 eventId** ——凌统·旋略的官方口径是「一次失去只触发一次」，
+ * 它按 eventId 去重就能只问一遍（见 heroes 里旋略的钩子）。
+ */
+function fireEquipLostMany(
+  state: GameState,
+  owner: Player,
+  cards: Card[],
+  after: () => void,
+): void {
+  if (cards.length === 0) {
+    after();
+    return;
+  }
+  const id = ++state.equipLossSeq;
+  const step = (i: number): void => {
+    const card = cards[i];
+    if (!card) {
+      after();
+      return;
+    }
+    fireEquipLost(state, owner, card, () => step(i + 1), { id, cards });
+  };
+  step(0);
 }
 
 /**
@@ -2308,14 +2346,24 @@ function tryQinglongBlade(
 }
 
 /** 一张牌从玩家身上（手牌或装备区）进弃牌堆；失去装备会触发 equipLost */
-function discardOwnCard(state: GameState, p: Player, card: Card, after: () => void): void {
+function discardOwnCard(
+  state: GameState,
+  p: Player,
+  card: Card,
+  after: () => void,
+  batchEventId?: number,
+): void {
   const finish = (): void => fireCardDiscarded(state, p, [card], after);
   const eq = p.equipment;
   for (const slot of EQUIP_SLOTS) {
     if (eq[slot]?.id === card.id) {
       eq[slot] = null;
       toDiscard(state, card);
-      fireEquipLost(state, p, card, finish);
+      // batchEventId 存在＝这是「一次弃多张」里的其中一张，整批算一次失去
+      fireEquipLost(state, p, card, finish, {
+        id: batchEventId ?? ++state.equipLossSeq,
+        cards: [card],
+      });
       return;
     }
   }
@@ -2344,19 +2392,23 @@ function fireCardDiscarded(
   runHooksPausable(state, 'cardDiscarded', owner, { cards }, after);
 }
 
-/** 逐张弃置（中间可能被失去装备的询问打断），全部处理完再调 after */
-function discardOwnCards(
-  state: GameState,
-  p: Player,
-  cards: Card[],
-  after: () => void,
-  i = 0,
-): void {
-  if (i >= cards.length) {
-    after();
-    return;
-  }
-  discardOwnCard(state, p, cards[i]!, () => discardOwnCards(state, p, cards, after, i + 1));
+/**
+ * 逐张弃置（中间可能被失去装备的询问打断），全部处理完再调 after。
+ *
+ * 「一次弃多张」（贯石斧、悲歌梅花那类）是**一个动作**：里面如果有装备牌，它们属于同一次
+ * 「失去装备」事件——所以这里先记一个 eventId，交给 discardOwnCard 一路带下去。
+ */
+function discardOwnCards(state: GameState, p: Player, cards: Card[], after: () => void): void {
+  const eventId = cards.length > 1 ? ++state.equipLossSeq : undefined;
+  const step = (i: number): void => {
+    const card = cards[i];
+    if (!card) {
+      after();
+      return;
+    }
+    discardOwnCard(state, p, card, () => step(i + 1), eventId);
+  };
+  step(0);
 }
 
 /** 自己身上可以被弃掉的牌：手牌 + 装备区（可选排除某件武器） */
@@ -5036,7 +5088,9 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
     ],
     (st, p, picked) => {
       if (picked === 'discard') {
-        // 逐张弃：每一张都可能触发「失去装备区牌」的技能（枭姬那类），所以串着来
+        // 「弃置装备区里的所有牌」是**一个动作**：逐张派发但共用同一个 eventId
+        // （枭姬那种每张都算，旋略那种只算一次）
+        const eventId = ++st.equipLossSeq;
         let i = 0;
         const step = (): void => {
           if (i >= eqCards.length) {
@@ -5052,7 +5106,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
           p.equipment[slot] = null;
           toDiscard(st, card);
           pushLog(st, 'discard', `${p.name} 因【水淹七军】弃置【${cardLabel(card)}】。`);
-          fireEquipLost(st, p, card, step);
+          fireEquipLost(st, p, card, step, { id: eventId, cards: eqCards });
         };
         step();
         return;
@@ -7072,6 +7126,16 @@ function makeSkillApi(
       }
       discardOwnCard(state, owner, card, done);
     },
+    discardCards: (ownerSeatId, cards, after) => {
+      const owner = getPlayer(state, ownerSeatId);
+      const done = after ?? (() => {});
+      if (!owner) {
+        done();
+        return;
+      }
+      // 「一次弃多张」＝一个动作（里面的装备牌算同一次失去事件）
+      discardOwnCards(state, owner, cards, done);
+    },
     swapEquipAreas: (seatA, seatB, after) => {
       const a = getPlayer(state, seatA);
       const b = getPlayer(state, seatB);
@@ -7087,22 +7151,9 @@ function makeSkillApi(
       const bCards = EQUIP_SLOTS.map((s) => b.equipment[s]).filter((c): c is Card => !!c);
       a.equipment = emptyEquipment();
       b.equipment = emptyEquipment();
-      // 失去要逐张派发（可挂起），所以串成链
-      const loseStep = (
-        owner: Player,
-        cards: Card[],
-        i: number,
-        next: () => void,
-      ): void => {
-        const card = cards[i];
-        if (!card) {
-          next();
-          return;
-        }
-        fireEquipLost(state, owner, card, () => loseStep(owner, cards, i + 1, next));
-      };
-      loseStep(a, aCards, 0, () => {
-        loseStep(b, bCards, 0, () => {
+      // 每一次「失去」是一个事件（旋略那种「一次失去只触发一次」靠它去重）
+      fireEquipLostMany(state, a, aCards, () => {
+        fireEquipLostMany(state, b, bCards, () => {
           // 互换：A 的牌进 B 的对应栏位，反之亦然（装备牌的 type 就是槽位）
           for (const c of aCards) {
             const slot = EQUIP_SLOTS.find((s) => s === c.type);
@@ -7809,6 +7860,7 @@ export function createGame(
     killedThisTurn: [],
     gainedFromDeckThisTurn: [],
     jiliReranCards: [],
+    equipLossSeq: 0,
     heroPool: [],
     discardThisTurn: [],
     xianquSeat: null,

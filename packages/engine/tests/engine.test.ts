@@ -17726,3 +17726,154 @@ describe('国战 · 黄月英·集智（后半句）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });
+
+/** 凌统·旋略：一次失去装备只触发一次（equipLost 是逐张派发的，靠 eventId 去重） */
+describe('国战 · 凌统·旋略（一次失去只触发一次）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  const armor = (id: string): Card => ({ id, type: 'armor', suit: 'club', rank: 2, equipName: 'bagua' });
+
+  it('甘露让凌统一次失去两张装备 → 旋略只问一遍', () => {
+    const state = gz(
+      [
+        // 甲＝吴国太（已损失 2 点体力 → 允许「牌数差 ≤ 2」的一对）
+        { seatId: A, name: '甲', heroId: 'wuguotai', faction: 'wu', hp: 1 },
+        // 乙＝凌统，装备区两张牌
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'lingtong',
+          faction: 'wu',
+          equip: [wpn('b1'), armor('b2')],
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'useSkill', skillId: 'ganlu', cardIds: [], targetIds: [B, C] }));
+    // 两张装备都换走了 → 只弹**一次**旋略
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('旋略');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    // 答完就回到甲的出牌阶段（如果没去重，这里会再弹一次旋略）
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    expect(state.players.find((p) => p.seatId === B)!.equipment.weapon).toBeNull();
+  });
+
+  it('水淹七军弃掉凌统装备区所有牌 → 旋略也只问一遍', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [mk('a1', 'shuiyan', 'spade', 3)],
+        },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'lingtong',
+          faction: 'wu',
+          equip: [wpn('b1'), armor('b2')],
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    // 乙选择「弃置装备区里的所有牌」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'discard' }));
+    // 第一张弃掉后触发旋略（后面的牌要等这次询问结束才继续弃——挂起机制）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('旋略');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    // 同一次失去：剩下的牌接着弃，**不会再问一遍**
+    expect(b.equipment.weapon).toBeNull();
+    expect(b.equipment.armor).toBeNull();
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('两次**分开**的失去各问一遍（对照组）', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [guohe('a1'), guohe('a2')],
+        },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'lingtong',
+          faction: 'wu',
+          equip: [wpn('b1'), armor('b2')],
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    // 第一次拆：武器
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'b1' }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('旋略');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    // 第二次拆：防具 → 应该**再问一遍**（这是另一次失去）
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B], targetCardId: 'b2' }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('旋略');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});

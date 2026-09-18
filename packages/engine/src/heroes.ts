@@ -3435,6 +3435,13 @@ const LINGTONG: Hero = {
       timing: 'equipLost',
       skillId: '旋略',
       handler: (ctx) => {
+        // 官方口径：**一次**失去装备只触发一次。而 equipLost 是逐张派发的（枭姬要每张都算），
+        // 所以这里按 payload.eventId 去重——甘露交换、水淹七军弃光装备、贯石斧一次弃两张
+        // 都算「一次」，不会连问好几遍。
+        const payload = ctx.payload as { eventId?: number } | undefined;
+        const eventId = payload?.eventId ?? -1;
+        if (ctx.player.flags.xuanlveEventId === eventId) return;
+        ctx.player.flags.xuanlveEventId = eventId;
         const others = ctx.state.players.filter((x) => x.alive && x.seatId !== ctx.player.seatId);
         if (others.length === 0) return;
         ctx.api.askChoice(
@@ -10214,21 +10221,23 @@ const CAIWENJI: Hero = {
                         break;
                       }
                       case 'club': {
-                        // 伤害来源弃置两张牌（手牌随机，与仓库口径一致）
+                        // 伤害来源弃置两张牌（手牌随机，与仓库口径一致）。
+                        // 这是**一个动作**，所以用 discardCards 一次交出去——里面的装备牌
+                        // 算同一次「失去装备」事件（旋略只触发一次）。
                         if (!source) break;
+                        const picks: Card[] = [];
                         for (let i = 0; i < 2; i++) {
                           const pool2 = [
                             ...source.hand,
                             ...(EQUIP_SLOTS.map((slot) => source.equipment[slot]).filter(
                               Boolean,
                             ) as Card[]),
+                            ...picks,
                           ];
                           if (pool2.length === 0) break;
-                          ctx.api.discardCard(
-                            source.seatId,
-                            pool2[Math.floor(Math.random() * pool2.length)]!,
-                          );
+                          picks.push(pool2[Math.floor(Math.random() * pool2.length)]!);
                         }
+                        if (picks.length > 0) ctx.api.discardCards(source.seatId, picks);
                         pushLog(st2, 'skill', `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`);
                         break;
                       }

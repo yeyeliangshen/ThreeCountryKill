@@ -177,6 +177,11 @@ export interface PlayerFlags {
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
+   * 凌统·旋略：「同一次失去装备」的事件编号——官方口径是一次失去只触发一次，
+   * 而 equipLost 是**逐张**派发的（枭姬要每张都触发）。靠 payload.eventId 去重。
+   */
+  xuanlveEventId: number;
+  /**
    * 严白虎·雉盗：本回合「只能指定他与你」的那名角色（null = 没有这个限制）。
    * 与 distanceToOneThisTurn 同源，随回合清空。
    */
@@ -249,6 +254,7 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayColor: null,
     cannotHealThisTurn: false,
     revealRewarded: false,
+    xuanlveEventId: -1,
     queueSizeBeforeTrick: null,
     cardTargetOnlySeat: null,
     damageCountKey: '',
@@ -638,6 +644,10 @@ export interface GameState {
    * 第二次结算时技能钩子会再次看到这张牌，靠它跳过（否则无限递归）。随回合清空。
    */
   jiliReranCards: string[];
+  /**
+   * 装备「失去事件」的编号（见 timing.EquipLostPayload.eventId）。单调递增，不需要重置。
+   */
+  equipLossSeq: number;
   /**
    * 「未加入游戏的武将牌堆」：选将结束后剩下的武将 id（变包的**变更副将**从这堆里
    * 连续亮将，直到亮出与主将势力相同者）。

@@ -164,9 +164,21 @@ export interface HealPayload {
   taoSaverId?: string;
 }
 
-/** 装备区里失去一张牌的原因，供技能区分（都触发 equipLost，但语义不同） */
+/**
+ * 失去装备区里一张牌的载荷。
+ *
+ * `eventId` / `cards` 描述**同一次动作**：像甘露（交换装备区）、水淹七军（弃置装备区所有牌）、
+ * 贯石斧（一次弃两张）这种「一个动作丢多张」的情况，逐张派发时**共用一个 eventId**、
+ * `cards` 是这一批的全部牌。为什么要给：凌统·旋略官方口径是「一次失去只触发一次」，
+ * 而孙尚香·枭姬是**每张**都触发——有了 eventId，两种口径可以各按各的来（旋略按 id 去重）。
+ * 单张失去也会带一个全新的 eventId。
+ */
 export interface EquipLostPayload {
   card: Card;
+  /** 同一次失去动作里的全部装备牌（单张时就是 [card]） */
+  cards?: Card[];
+  /** 同一次失去动作的编号（单调递增；同一次动作内的各张牌相同） */
+  eventId?: number;
 }
 
 /**
@@ -297,6 +309,11 @@ export interface SkillApi {
    * after 在结算完成后调用。
    */
   discardCard: (ownerSeatId: string, card: Card, after?: () => void) => void;
+  /**
+   * 让某人**一次**弃置多张牌（悲歌梅花那类）。与连续调 discardCard 的区别：
+   * 这是**一个动作**，里面的装备牌算同一次「失去装备」事件（旋略只触发一次）。
+   */
+  discardCards: (ownerSeatId: string, cards: Card[], after?: () => void) => void;
   /**
    * 把一张**手牌**放进别人的装备区（张昭张纮·直谏）。
    *
