@@ -278,7 +278,7 @@ const STANDARD_SHU: RosterEntry[] = [
     faction: 'shu',
     pack: 'standard',
     status: 'done',
-    note: '集智官方还有「若摸到基本牌可弃之再摸一张」，本实现取前半段（简化）。',
+    note: '集智两句都实现了：使用非延时锦囊时摸一张；若摸到的是基本牌，可以弃之再摸一张（只有第一张会触发，不作递归）。⚠️ 为此把集智从 `useCard`（同步分发）挪到 `cardActionStarted`（可挂起）——后半句要发问，同步时机上的询问会被后续流程静默覆盖。顺带修了一个真 bug：`cardActionStarted` 在 onPlayCard 里被**派发过两次**（doPlay 里多留了一句），对蒺藜那种只读计数的技能看不出来，对有副作用的集智就会多摸一张。',
   },
   {
     id: 'ganfuren',

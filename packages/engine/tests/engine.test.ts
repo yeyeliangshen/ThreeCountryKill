@@ -4005,6 +4005,11 @@ describe('新增武将（按最新国战标准）', () => {
     const before = state.players.find((p) => p.seatId === A)!.hand.length;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
     passWuxie(state);
+    // 集智摸到基本牌时会有后半句的询问（弃之再摸一张）——这里一律选「留」（两种选择的净摸牌数一样，
+    // 选「留」让后面的计数不依赖牌堆随机）
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('集智')) {
+      ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    }
     // 打掉 1 张，无中生有摸 2 张，集智再摸 1 张
     expect(state.players.find((p) => p.seatId === A)!.hand.length).toBe(before - 1 + 3);
     expect(state.log.some((e) => e.message.includes('集智'))).toBe(true);
@@ -17623,5 +17628,101 @@ describe('国战 · 技能判定接入改判时机', () => {
       ok(act(state, A, { type: 'chooseOption', optionId: 'damage' }));
     }
     expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+  });
+});
+
+/** 黄月英·集智的后半句（摸到基本牌可弃之再摸一张）＋ cardActionStarted 只该派发一次 */
+describe('国战 · 黄月英·集智（后半句）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+    deck: Card[] = [],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.deck = deck.slice();
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('摸到基本牌 → 可以弃置并再摸一张', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'huangyueying', faction: 'shu', hand: [wuzhong('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+      // drawOne 从牌堆**末尾**抽，而且**集智先摸**（它挂在「使用牌时」，在锦囊结算之前）：
+      // 所以集智抽到的是最后一张 d5（【桃】＝基本牌 → 会问），
+      // 之后的【无中生有】才摸 d4、d3。留 d1 是为了「弃之再摸一张」时牌堆还有牌
+      // （不然会触发重洗，弃掉的牌又回到牌堆里，断言就看不出去了）。
+      [
+        mk('d1', 'shan', 'heart', 1),
+        mk('d2', 'guohe', 'spade', 2),
+        mk('d3', 'guohe', 'club', 3),
+        mk('d4', 'guohe', 'spade', 4),
+        mk('d5', 'tao', 'heart', 5),
+      ],
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // 集智摸到【闪】（基本牌）→ 问「是否弃置并再摸一张」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('集智');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 弃掉那张【闪】、又摸了一张；【无中生有】的 2 张也结算完了
+    expect(a.hand.some((c) => c.id === 'd5')).toBe(false);
+    expect(state.discard.some((c) => c.id === 'd5')).toBe(true);
+    const drawn = a.hand.filter((c) => c.id !== 'a1');
+    expect(drawn.length).toBe(3); // 无中生有 2 张 + 集智重摸 1 张
+    expect(state.log.some((e) => e.message.includes('弃置'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('摸到的不是基本牌 → 不询问；且每张牌只派发一次（集智只摸 1 张）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'huangyueying', faction: 'shu', hand: [wuzhong('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+      // 集智抽到的是锦囊（非基本牌）→ 不询问
+      [
+        mk('d1', 'sha', 'heart', 1),
+        mk('d2', 'sha', 'spade', 2),
+        mk('d3', 'sha', 'club', 3),
+        mk('d4', 'guohe', 'spade', 4),
+        mk('d5', 'guohe', 'club', 5),
+      ],
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    expect(state.log.some((e) => e.message.includes('集智') && e.message.includes('是否弃置'))).toBe(
+      false,
+    );
+    // 关键：集智只摸 1 张（曾经 cardActionStarted 被派发两次，会摸 2 张）
+    expect(a.hand.filter((c) => c.id !== 'a1').length).toBe(3);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });

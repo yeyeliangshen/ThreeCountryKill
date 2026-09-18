@@ -3428,9 +3428,9 @@ function onPlayCard(
   player.flags.cardsUsedOrPlayed += 1;
   player.flags.actionRangeSnapshot = attackRange(state, player);
   const doPlay = (): ApplyResult => {
-    // 「你使用或打出了本回合第 N 张牌」（沙摩柯·蒺藜）：在计数的同一处派发，
-    // 这样使用与打出两条路都覆盖到，也不用去动 useCard 那套既有记账。
-    runHooksPausable(state, 'cardActionStarted', player, { card }, () => {});
+    // ⚠️ 这里**不要**再派发一次 cardActionStarted：外面那个 runHooksPausable 已经派发过了。
+    //    以前这里多留了一句，于是每打一张牌钩子会跑两遍——对蒺藜那种「只读计数」的技能看不出问题
+    //    （计数本身只加一次），但对有副作用的技能（黄月英·集智会摸牌）就会多摸一张。已删除。
     if (as === 'sha') return playSha(state, player, card, intent.targetIds, as, intent.asAttribute);
     if (as === 'tao') return playTao(state, player, card);
     if (as === 'jiu') return playJiu(state, player, card);

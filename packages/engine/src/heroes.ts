@@ -1562,24 +1562,57 @@ const HUANGYUEYING: Hero = {
   combos: ['zhugeliang'], // 诸葛亮 ❤ 黄月英
   ignoresTrickDistance: true, // 奇才
   lockedFields: ['ignoresTrickDistance'],
-  // 集智：使用一张非延时类锦囊牌时，摸一张牌
+  // 集智：使用一张非延时类锦囊牌时，摸一张牌（摸到基本牌还可以弃之再摸一张）。
+  //
+  // ⚠️ 挂 `cardActionStarted`（**可挂起**）而不是 `useCard`（同步分发）：后半句要发问，
+  // 同步时机上的询问会被后续流程静默覆盖（本引擎的老坑）。这个时机是「使用/打出」的公共点，
+  // 用 `isInstantTrick` 过滤后正好是「使用非延时锦囊」——包括响应时使用【无懈可击】。
   hooks: [
     {
-      timing: 'useCard',
+      timing: 'cardActionStarted',
       skillId: '集智',
       handler: (ctx) => {
         const payload = ctx.payload as { card?: Card } | undefined;
         const card = payload?.card;
         if (!card || !isInstantTrick(card)) return;
+        const me = ctx.player;
         const c = drawOne(ctx.state);
         if (!c) return;
-        ctx.player.hand.push(c);
-        pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【集智】，摸了 1 张牌。`);
+        me.hand.push(c);
+        pushLog(ctx.state, 'skill', `${me.name} 发动【集智】，摸了 1 张牌。`);
+        // 后半句（官方原文）：「若你以此法摸到的牌为基本牌，你可以弃置之，然后摸一张牌。」
+        // ⚠️ 只有**第一张**会触发（摸到的第二张不再继续滚），所以这里不做递归。
+        if (!isBasicCard(c) || me.hand.length === 0) return;
+        if (!me.hand.some((x) => x.id === c.id)) return; // 牌已经不在了（极端情况）
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `【集智】：摸到的是基本牌【${cardLabel(c)}】，是否弃置并再摸一张？`,
+          [
+            { id: 'yes', label: '弃置并再摸一张' },
+            { id: 'no', label: '留在手里' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            removeCard(p.hand, c.id);
+            toDiscard(st, c);
+            const again = drawOne(st);
+            if (again) p.hand.push(again);
+            pushLog(
+              st,
+              'skill',
+              `${p.name} 的【集智】：弃置【${cardLabel(c)}】${again ? `并摸了【${cardLabel(again)}】` : '，牌堆已空'}。`,
+            );
+          },
+        );
       },
     },
   ],
   skills: [
-    { name: '集智', desc: '当你使用一张非延时类锦囊牌时，你可以摸一张牌。' },
+    {
+      name: '集智',
+      desc: '当你使用一张非延时类锦囊牌时，你可以摸一张牌；若你以此法摸到的牌为基本牌，你可以弃置之，然后摸一张牌。',
+    },
     { name: '奇才', desc: '锁定技，你使用锦囊牌无距离限制。' },
   ],
 };
