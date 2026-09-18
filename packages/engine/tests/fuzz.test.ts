@@ -9,7 +9,7 @@
 //
 // ⚠️ 驱动在 ./fuzzHarness（定位器也要用它——两边必须是同一份代码）。
 import { describe, it, expect } from 'vitest';
-import { riskyGame, rng, step } from './fuzzHarness';
+import { checkDuplicate, riskyGame, rng, step } from './fuzzHarness';
 describe('随机对局不变式：控制权不丢（任何一步都要有 pending）', () => {
   it('60 局随机对局里任何一步都有 pending', () => {
     const problems: string[] = [];
@@ -90,7 +90,35 @@ describe('随机对局不变式：重复牌 / 牌张守恒 / 不询问阵亡者'
    *   现在都走 `state.rng()`（`createGame` 的 `opts.rng` 会存进 state）。所以**种子现在能稳定重放**
    *   ——上面那些复现点都是可重跑的（以前不行：同一个种子每次局面都不同，白查了两轮）。
    */
-  it.skip('60 局随机对局里都不出现重复牌、不丢牌、不问阵亡者', () => {
-    expect(true).toBe(true);
-  });
+  it('200 局随机对局里都不出现重复牌', () => {
+    const problems: string[] = [];
+    for (let seed = 1; seed <= 200; seed++) {
+      const rand = rng(seed * 977);
+      const state = riskyGame(seed);
+      let steps = 0;
+      try {
+        while (!state.gameOver && steps < 4000) {
+          step(state, rand);
+          steps++;
+          if (!state.pending) {
+            if (state.gameOver) break;
+            problems.push(`seed=${seed} 第 ${steps} 步：控制权丢了`);
+            break;
+          }
+          // 只在**稳定时刻**查（结算中途有些牌本来就会短暂地同时挂在两处）
+          if (state.pending.kind !== 'play' && state.pending.kind !== 'discard') continue;
+          const dup = checkDuplicate(state);
+          if (dup) {
+            problems.push(`seed=${seed} 第 ${steps} 步：${dup}`);
+            break;
+          }
+        }
+      } catch (e) {
+        problems.push(`seed=${seed} 第 ${steps} 步抛错：${(e as Error).message}`);
+      }
+    }
+    if (problems.length > 0)
+      console.log('发现问题：' + String.fromCharCode(10) + problems.slice(0, 10).join(String.fromCharCode(10)));
+    expect(problems).toEqual([]);
+  }, 60000);
 });

@@ -3583,8 +3583,12 @@ function doRecast(
   card: import('@sgs/protocol').Card,
   displayType: CardType,
 ): void {
-  removeCard(player.hand, card.id);
-  toDiscard(state, card);
+  // ⚠️ 用 `takeUsableCard` 而不是 `removeCard(player.hand, …)`：可重铸的牌可能躺在
+  //    邓艾的「田」或木牛流马的扣置区里——只从手牌删会**删不掉**，却照样把牌推进弃牌堆，
+  //    于是同一张牌同时存在于两个区域（模糊测试抓到的重复牌就是这么来的）。
+  const taken = takeUsableCard(player, card.id);
+  if (!taken) return; // 牌已经不在他身上了（被移走/被拿走）→ 什么也不做
+  toDiscard(state, taken);
   const drawn = drawOne(state);
   if (drawn) player.hand.push(drawn);
   pushLog(
