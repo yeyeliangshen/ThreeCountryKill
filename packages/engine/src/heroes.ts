@@ -225,6 +225,18 @@ export interface Hero {
    */
   dealtDamageBonus?: (state: GameState, self: Player) => number;
   /**
+   * **任何**伤害的数值修正（张绣·从谏），不限【杀】/【决斗】。
+   *
+   * 与 dealtDamageBonus 的分工：那个在【杀】/【决斗】的结算处就读掉了（裸衣的范围），
+   * 这个在 damageStep 里统一读——它是「回合外造成伤害 +1 / 回合内受到伤害 +1」那种
+   * 跟牌型无关的修正。来源与目标**双方**的武将都会被问到，返回正数表示加伤。
+   */
+  damageDelta?: (
+    state: GameState,
+    self: Player,
+    ctx: { sourceId?: string; targetId: string },
+  ) => number;
+  /**
    * 只在列出的模式里出现。不填＝全模式可用。
    *
    * 国战专属武将（甘夫人、丁奉、马腾、孔融、纪灵、田丰、潘凤、邹氏）必须标
@@ -356,6 +368,8 @@ export type FieldSkill =
   | 'ignoresTrickDistance'
   | 'rescueHealBonusFromFaction'
   | 'dealtDamageBonus'
+  /** 张绣·从谏：任何伤害的数值修正（回合外造成 / 回合内受到 → +1） */
+  | 'damageDelta'
   | 'factionCall'
   | 'duelShaRequired'
   | 'hasBaguaAlways'
@@ -393,6 +407,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'ignoresTrickDistance',
   'rescueHealBonusFromFaction',
   'dealtDamageBonus',
+  'damageDelta',
   'factionCall',
   'duelShaRequired',
   'hasBaguaAlways',
@@ -4487,6 +4502,134 @@ const LIJUE_GUOSI: Hero = {
  * - 「伤害锦囊牌」＝结算时会造成伤害的锦囊：决斗 / 南蛮入侵 / 万箭齐发 / 火攻 +
  *   势备篇的火烧连营、水淹七军（后者是「弃装备或受 1 点雷电伤害」二选一，能造成伤害所以算）。
  */
+/**
+ * 张绣 —— 附敌 / 从谏（君临天下·权，群，**2 阴阳鱼 → 4**；文本按三国杀官网，已核）。
+ *
+ * 附敌：当你受到伤害后，你可以交给伤害来源一张手牌。若如此做，你对与其势力相同的角色中
+ *       体力值最多且不小于你的一名角色造成 1 点伤害。
+ * 从谏：锁定技，当你于回合外造成伤害时，或当你于回合内受到伤害时，此伤害 +1。
+ *
+ * 读法与实现要点：
+ * - 附敌的「其」是**伤害来源**：先把一张手牌交给来源（`api.transferCard`），再从「与来源
+ *   势力相同的角色」里挑人打 1 点。候选要**体力值 ≥ 你**（体力值＝当前体力），其中取体力
+ *   **最多**那一档；并列时由张绣挑。一个候选都没有时（例如来源是暗将、没有确定势力）
+ *   连询问都不该弹，所以先算候选再决定要不要问。
+ *   「与来源势力相同的角色」**含来源自己**（官方写的是「与其势力相同的角色」而非「其他角色」），
+ *   也含同势力的张绣自己。
+ * - 从谏是**锁定技**、用字段 `damageDelta` 表达（引擎在 damageStep 里读，所以任何伤害都吃得到，
+ *   不像裸衣那样只作用于【杀】/【决斗】）。两个方向各自判断：① 你（来源）**回合外**造成伤害
+ *   → +1；② 你（目标）**回合内**受到伤害 → +1。两条同时命中的只有「在自己回合里对自己
+ *   造成伤害」——那时算②，不会加两次。
+ */
+const ZHANGXIU: Hero = {
+  id: 'zhangxiu',
+  name: '张绣',
+  faction: 'qun',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  lockedFields: ['damageDelta'],
+  // 引擎记日志时要反查「是哪个技能改的伤害」（skillNameForField），所以登记一下
+  skillFields: { 从谏: ['damageDelta'] },
+  damageDelta: (state, self, ctx) => {
+    const turnSeatId = state.seatOrder[state.turn.seatIndex];
+    const inOwnTurn = turnSeatId === self.seatId;
+    let d = 0;
+    if (ctx.sourceId === self.seatId && !inOwnTurn) d += 1; // ① 回合外造成的伤害 +1
+    if (ctx.targetId === self.seatId && inOwnTurn) d += 1; // ② 回合内受到的伤害 +1
+    return d;
+  },
+  hooks: [
+    {
+      timing: 'afterDamage',
+      skillId: '附敌',
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const sourceId = payload?.attack?.sourceId;
+        if (!payload?.damage || !sourceId || sourceId === ctx.player.seatId) return;
+        const me = ctx.player;
+        const source = getPlayer(ctx.state, sourceId);
+        if (!source || me.hand.length === 0) return;
+        if (fudiTargets(ctx.state, me, source).length === 0) return; // 没有合法目标就不该发动
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【附敌】？（交给 ${source.name} 一张手牌，然后对其势力中体力最多的角色造成 1 点伤害）`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              `【附敌】：选择交给 ${source.name} 的一张手牌`,
+              p.hand.slice(),
+              1,
+              1,
+              (st2, p2, chosen) => {
+                const card = chosen[0];
+                if (!card) return;
+                ctx.api.transferCard(p2.seatId, card, source.seatId, () => {
+                  pushLog(st2, 'skill', `${p2.name} 发动【附敌】，交给 ${source.name} 一张手牌。`);
+                  // 牌交出去之后**重算**候选（手牌变化可能影响不到体力，但保持与当下状态一致）
+                  const list = fudiTargets(st2, p2, source);
+                  if (list.length === 0) return;
+                  const hit = (victim: Player): void => {
+                    pushLog(st2, 'skill', `${p2.name} 对 ${victim.name} 造成 1 点伤害（附敌）。`);
+                    ctx.api.dealDamage(victim, 1, p2.seatId);
+                  };
+                  if (list.length === 1) {
+                    hit(list[0]!);
+                    return;
+                  }
+                  ctx.api.askChoice(
+                    st2,
+                    p2.seatId,
+                    '【附敌】：对其中哪一名角色造成 1 点伤害？',
+                    list.map((t) => ({ id: t.seatId, label: t.name })),
+                    (st3, _p3, victimId) => {
+                      const victim = getPlayer(st3, victimId);
+                      if (victim) hit(victim);
+                    },
+                  );
+                });
+              },
+            );
+          },
+        );
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '附敌',
+      desc: '当你受到伤害后，你可以交给伤害来源一张手牌。若如此做，你对与其势力相同的角色中体力值最多且不小于你的一名角色造成1点伤害。',
+    },
+    {
+      name: '从谏',
+      desc: '锁定技，当你于回合外造成伤害时，或当你于回合内受到伤害时，此伤害+1。',
+    },
+  ],
+};
+
+/**
+ * 附敌能打的人：与**伤害来源**势力相同的存活角色里，体力值 ≥ 张绣自己、且取体力最多的那一档。
+ * 来源自己也算（官方写的是「与其势力相同的角色」）。
+ */
+function fudiTargets(state: GameState, me: Player, source: Player): Player[] {
+  const f = effectiveFaction(state, source);
+  if (!f) return []; // 来源没有确定势力（暗将）→ 无从谈起
+  const candidates = state.players.filter(
+    (p) => p.alive && effectiveFaction(state, p) === f && p.hp >= me.hp,
+  );
+  if (candidates.length === 0) return [];
+  const maxHp = Math.max(...candidates.map((p) => p.hp));
+  return candidates.filter((p) => p.hp === maxHp);
+}
+
 const LUKANG: Hero = {
   id: 'lukang',
   name: '陆抗',
@@ -9946,6 +10089,7 @@ export const HEROES: Hero[] = [
   FAZHENG,
   WANGPING,
   LUKANG,
+  ZHANGXIU,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

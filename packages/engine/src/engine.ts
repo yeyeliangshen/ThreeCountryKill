@@ -1931,6 +1931,36 @@ function fireEquipLost(state: GameState, owner: Player, card: Card, after: () =>
 }
 
 /**
+ * 与牌型无关的伤害修正（张绣·从谏）：**来源**与**目标**双方的武将都会被问到。
+ *
+ * 与 dealtDamageBonus 的分工见 Hero.damageDelta 的注释：那个只在【杀】/【决斗】处读，
+ * 这个在 damageStep 里读，所以【南蛮入侵】【万箭齐发】【闪电】那类伤害也吃得到。
+ * 日志里的技能名走 skillNameForField 反查（别把名字硬编码进引擎）。
+ */
+function damageDeltaFor(
+  state: GameState,
+  target: Player,
+  attack: AttackContext,
+): { delta: number; label: string } {
+  const src = attack.sourceId ? getPlayer(state, attack.sourceId) : undefined;
+  let delta = 0;
+  let label = '';
+  const ask = (p: Player | undefined): void => {
+    if (!p) return;
+    for (const h of activeHeroes(state, p)) {
+      const d =
+        h.damageDelta?.(state, p, { sourceId: attack.sourceId, targetId: target.seatId }) ?? 0;
+      if (d === 0) continue;
+      delta += d;
+      label = skillNameForField([h], 'damageDelta') ?? label;
+    }
+  };
+  ask(src);
+  if (target.seatId !== src?.seatId) ask(target);
+  return { delta, label };
+}
+
+/**
  * 伤害来源的技能给出的伤害加成（裸衣）。
  * 只在【杀】与【决斗】的结算处调用——那正是裸衣的加成范围。
  */
@@ -2361,7 +2391,18 @@ function damageStep(
   rawDamage: number,
   apply: (dmg: number, prevented: boolean) => void,
 ): void {
-  const dmg = finalizeDamage(state, target, attack, rawDamage);
+  // 与牌型无关的伤害修正（张绣·从谏）：来源与目标双方的武将都会被问到。
+  // 放在 finalizeDamage **之前**：那是目标侧的锁定技修正（名士 -1 / 白银狮子防止多余），
+  // 而这种「伤害值本身」的加减先算才对。
+  const { delta, label } = damageDeltaFor(state, target, attack);
+  if (delta !== 0) {
+    pushLog(
+      state,
+      'damage',
+      `${target.name} 受到的伤害 ${delta > 0 ? '+' : ''}${delta}（技能${label ? `【${label}】` : ''}）。`,
+    );
+  }
+  const dmg = finalizeDamage(state, target, attack, Math.max(0, rawDamage + delta));
   // 「当你受到伤害时」可挂起：小乔·天香要在这时弃牌、选人、二选一。
   // 取消通道是 `flags.damagePrevented`（钩子没有返回值）——派发前清、派发后读，
   // 读到就整条伤害作废：不扣血、不跑伤害后钩子、不进濒死。护心镜那层照旧在其后。

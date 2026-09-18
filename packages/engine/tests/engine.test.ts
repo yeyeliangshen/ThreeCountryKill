@@ -16225,3 +16225,133 @@ describe('国战 · 陆抗（恪守 / 筑围）', () => {
     expect(b.flags.shaLimitBonus).toBe(0);
   });
 });
+
+/** 张绣·附敌 / 从谏（君临天下·权，群，2 阴阳鱼→4） */
+describe('国战 · 张绣（附敌 / 从谏）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('附敌：交给来源一张手牌，然后打「与来源同势力、体力最多且不小于你」的那个人', () => {
+    const state = gz(
+      [
+        // 来源甲只有 2 血 → 他自己不够格（候选要「不小于张绣」），把机会让给 3 血的丙
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [sha('a1'), sha('a2')], hp: 2 },
+        { seatId: B, name: '乙', heroId: 'zhangxiu', faction: 'shu', hand: [sha('b1')], hp: 3 },
+        // 与来源（群）同势力的三人：丙 3 血（够格且最多）、丁 2 血（不够格）
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [], hp: 3 },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: [], hp: 2 },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受 1 点伤害（3→2）
+    expect(b.hp).toBe(2);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('附敌');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 手牌给了甲；候选＝与甲同势力且体力 ≥ 张绣(2) 的人里体力最多的那一档 → 只有 3 血的丙
+    expect(a.hand.some((x) => x.id === 'b1')).toBe(true);
+    // ⚠️ 丙掉 2 点：附敌这 1 点伤害也是「张绣在**回合外**造成的伤害」，所以从谏① 照样 +1
+    expect(c.hp).toBe(1);
+    expect(state.log.some((e) => e.message.includes('对 丙 造成 1 点伤害（附敌）'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('从谏'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('附敌：没有合格目标时不弹询问', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [sha('a1')], hp: 1 },
+        { seatId: B, name: '乙', heroId: 'zhangxiu', faction: 'shu', hand: [sha('b1')] },
+        // 甲作为来源自己也算候选，但他和丙都只有 1 血 → 都不「不小于张绣（4 血）」→ 候选为空
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [], hp: 1 },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('附敌'))).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('从谏①：回合外造成的伤害 +1（按回合归属直接验字段的三个分支）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangxiu', faction: 'shu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'qun', hand: [] },
+      ],
+      B, // 回合玩家是乙 → 对张绣来说是「回合外」
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const hero = getHeroForMode('zhangxiu', 'guozhan')!;
+    const delta = hero.damageDelta!;
+    // 回合外、张绣是来源 → +1
+    expect(delta(state, a, { sourceId: A, targetId: B })).toBe(1);
+    // 回合外、张绣是目标 → 不加（那条只管「回合内受到」）
+    expect(delta(state, a, { sourceId: B, targetId: A })).toBe(0);
+    // 自己回合内、自己是来源 → 不加
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'play' };
+    expect(delta(state, a, { sourceId: A, targetId: B })).toBe(0);
+    // 自己回合内、自己是目标 → +1
+    expect(delta(state, a, { sourceId: B, targetId: A })).toBe(1);
+  });
+
+  it('从谏②：回合内受到的伤害 +1（闪电劈在张绣自己的回合）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'zhangxiu', faction: 'qun', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(shandian('sd0'));
+    state.deck = [mk('j1', 'sha', 'spade', 5)]; // 黑桃 5 → 闪电造成 3 点雷电伤害
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 判定阶段挨闪电
+    skipRevealAsk(state);
+    // 3 点 + 从谏② 1 点 = 4 点：4 血直接掉到 0
+    expect(b.hp).toBe(0);
+    expect(state.log.some((e) => e.message.includes('从谏'))).toBe(true);
+    // 张绣自己是来源时的那条不参与（闪电没有来源）
+    expect(state.pending?.kind).toBe('respondDeath');
+  });
+});
