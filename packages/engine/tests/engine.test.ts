@@ -18444,3 +18444,66 @@ describe('国战 · 吕范·调度：链条里嵌套了别人的询问也要还�
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });
+
+/**
+ * 模糊测试抓到的第四类真 bug：**拿走判定区的牌时没从原处摘掉**。
+ * 马谡·制蛮「防止伤害、获得其装备区/判定区一张牌」拿走判定区的【闪电】后，
+ * 那张牌**同时在**新主人手里和原主人的判定区（同一张牌存在于两个区域）。
+ */
+describe('制蛮：拿走判定区的牌要摘干净', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('制蛮拿到判定区的【闪电】后，目标判定区里不该还留着', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'masu', faction: 'shu', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.judgment.push(shandian('sd1')); // 乙判定区里的【闪电】
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 即将造成伤害 → 制蛮询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('制蛮');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 选「获得其【闪电】」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('获得');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'sd1' }));
+    // 牌进了甲手里；乙的判定区**不能再留着它**
+    expect(a.hand.some((c) => c.id === 'sd1')).toBe(true);
+    expect(b.judgment.some((c) => c.id === 'sd1')).toBe(false);
+    expect(b.judgment).toHaveLength(0);
+  });
+});

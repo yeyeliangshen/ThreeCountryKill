@@ -7615,6 +7615,21 @@ function makeSkillApi(
           return;
         }
       }
+      // 判定区（延时锦囊）：也要从原处**摘掉**再放手里。
+      // ⚠️ 以前这里没有这一支，于是「获得其装备/判定区一张牌」那类技能（马谡·制蛮、
+      //    反馈…）拿走判定区的【闪电】之后，牌**同时在**新主人手里和原主人的判定区
+      //    ——模糊测试抓到的重复牌就是这么来的（一张牌同时存在于两个区域）。
+      const ji = from.judgment.findIndex((c) => c.id === card.id);
+      if (ji >= 0) {
+        from.judgment.splice(ji, 1);
+        to.hand.push(card);
+        pushLog(state, 'skill', `${from.name} 判定区的【${cardLabel(card)}】被 ${to.name} 获得。`, {
+          seat: to.seatId,
+          action: 'gain',
+        });
+        done();
+        return;
+      }
       removeCard(from.hand, card.id);
       to.hand.push(card);
       done();
