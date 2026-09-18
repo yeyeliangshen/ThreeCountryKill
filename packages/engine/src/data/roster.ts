@@ -927,6 +927,12 @@ export const PRIMITIVES_DONE: PrimitiveId[] = [
   // maxhp_change：董卓·崩坏已接上（changeMaxHp + 崩坏伪武将），可以算了。
   'maxhp_change',
   'change_deputy', // 变更副将：残留武将牌堆 + 连亮到同势力 + 替换副将（马谡·制蛮）
+  // remove_hero / slot_skills（第十批就做完了，一直漏登记）：移除武将牌
+  //   （Player.removedHeroIds + effectiveHeroes 过滤 + api.removeHeroCard）与主将技/副将技
+  //   （Hero.mainSlotSkills / deputySlotSkills + collectTimingHooks 过滤 + mainSlotHalfYang）。
+  //   用户：董卓·暴凌、糜夫人、张任、孙策·魂殇、严白虎·寄篱、徐庶·举荐。
+  'remove_hero',
+  'slot_skills',
   // virtual_equip：虚拟装备。第一个用户是袁术·庸肆「若场上没有【玉玺】你视为装备着【玉玺】」
   //   （heroes.hasYuxi，两处消费方——摸牌阶段多摸一张、出牌阶段开始时视为使用【知己知彼】
   //   ——共用它）。更早的同类做法是卧龙诸葛亮·八阵的 hasBaguaAlways（只服务防具栏）。
