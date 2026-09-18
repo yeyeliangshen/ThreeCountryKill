@@ -833,9 +833,29 @@ const BUCHEN: RosterEntry[] = [
     primitives: ['army_order'],
     note: '劝进已实现（军令机制的第一个用户）。体力填的是身份局口径的 3（牌面是 1.5 阴阳鱼，阴阳鱼数 = 体力÷2，见文档 4.1）。',
   },
-  { id: 'xushu', name: '徐庶', faction: 'shu', pack: 'buchen', status: 'verify' },
-  { id: 'wujing', name: '吴景', faction: 'wu', pack: 'buchen', status: 'verify' },
-  { id: 'yanbaihu', name: '严白虎', faction: 'qun', pack: 'buchen', status: 'verify' },
+  // ⚠️ 以下三名的**国战（不臣篇）文本**尚未查到，查到之前不实现（见 docs/guozhan-roster.md §5.27
+  // 记的查证过程与死路）。它们的势力/体力也还没确认，别照身份局那版填。
+  {
+    id: 'xushu',
+    name: '徐庶',
+    faction: 'shu',
+    pack: 'buchen',
+    status: 'verify',
+  },
+  {
+    id: 'wujing',
+    name: '吴景',
+    faction: 'wu',
+    pack: 'buchen',
+    status: 'verify',
+  },
+  {
+    id: 'yanbaihu',
+    name: '严白虎',
+    faction: 'qun',
+    pack: 'buchen',
+    status: 'verify',
+  },
 ];
 
 export const GUOZHAN_ROSTER: RosterEntry[] = [
