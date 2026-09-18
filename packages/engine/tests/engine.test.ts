@@ -18361,3 +18361,86 @@ describe('判定牌替换：一张牌只能进弃牌堆一次', () => {
     expect(countEverywhere(state, 'j1')).toBe(1);
   });
 });
+
+/**
+ * 吕范·调度的链条收尾 + 嵌套询问：调度把装备移给队友时会触发**别人的**钩子
+ * （枭姬那类「失去装备摸两张」），那次嵌套询问结束之后没人负责还控制权 →
+ * pending 停在 null、整局静默卡死。模糊测试抓到过（调度 + 枭姬）。
+ */
+describe('国战 · 吕范·调度：链条里嵌套了别人的询问也要还控制权', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[]; equip?: Card[] }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('调度把装备移给会【枭姬】的队友：枭姬问完，控制权要回到吕范', () => {
+    const state = gz(
+      [
+        // 甲＝吕范（调度是主动技，他出牌阶段发动）
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'lvfan',
+          faction: 'wu',
+          equip: [wpn('a1')], // 甲自己装备区的武器（移给队友的材料）
+        },
+        // 乙＝孙尚香（枭姬）：她会「失去装备」吗？不会 —— 她是**接收方**，所以这里让甲做移出方、
+        // 乙做接收方不行；改成让乙**持有**装备、由调度移动它 → 乙失去装备 → 枭姬触发
+        { seatId: B, name: '乙', heroId: 'sunshangxiang', faction: 'wu', equip: [armor('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'diaodu', cardIds: [], targetIds: [] }));
+    // 调度依次问同势力角色（甲、乙）。甲先选「不选择」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('调度');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    // 轮到乙：把她的防具移给甲
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'move:b1' }));
+    // 选接收者（只有一个队友 → 可能直接结算，没有再问）
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('移给谁')) {
+      ok(act(state, B, { type: 'chooseOption', optionId: A }));
+    }
+    // 乙失去装备 → 枭姬问「是否摸两张」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('枭姬');
+    const b = state.players.find((p) => p.seatId === B)!;
+    const handBefore = b.hand.length;
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand.length).toBe(handBefore + 2);
+    // 关键：链条走完，控制权回到吕范的出牌阶段（以前这里 pending 会停在 null）
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+});

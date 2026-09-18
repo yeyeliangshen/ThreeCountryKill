@@ -7527,6 +7527,11 @@ function makeSkillApi(
       if (!p) return;
       goToDiscardPhase(state, p);
     },
+    returnPlayPhase: (seatId) => {
+      // 只在**没有询问在挂起**时生效：有询问说明流程还没走完，控制权不该被抢
+      if (state.pending !== null || state.gameOver) return;
+      resumePlay(state, seatId);
+    },
     giveDiscardedTo: (cards, targetSeatId, skillName) => {
       const target = getPlayer(state, targetSeatId);
       if (!target) return;

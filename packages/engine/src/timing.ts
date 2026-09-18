@@ -343,6 +343,18 @@ export interface SkillApi {
    */
   endPlayPhase: (seatId: string) => void;
   /**
+   * 把控制权还给某人的**出牌阶段**——**只在技能自己的链条收尾时用**。
+   *
+   * 为什么需要它：一串询问的「还控制权」原本是靠**最后一次询问的 returnTo** 兜的
+   * （见 askChoice 的 returnTo 说明）。但如果链条的某一步里**嵌套**了别人的询问
+   * （典型：吕范·调度把装备移给队友 → 触发枭姬的「是否摸两张」），那次嵌套询问结束之后
+   * 控制权就没人还了——`pending` 停在 null、整局静默卡死（模糊测试抓到的）。
+   * 所以链条自己在收尾处补一句：`if (state.pending === null) api.returnPlayPhase(seat)`。
+   *
+   * 引擎侧做两件事：没有 pending 时才生效（有询问在挂起就别抢），然后 resumePlay。
+   */
+  returnPlayPhase: (seatId: string) => void;
+  /**
    * 把**刚进弃牌堆**的几张牌交给某个角色（孔融·礼让）。
    * 按 id 从弃牌堆里取出来塞进目标手牌；找不到的（已经被别人拿走了）跳过。
    */

@@ -6231,7 +6231,14 @@ function diaoduStep(
 ): void {
   const p = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
   if (!p || !p.alive) {
-    if (i < queue.length) diaoduStep(state, lvfan, queue, i + 1, api);
+    if (i < queue.length) {
+      diaoduStep(state, lvfan, queue, i + 1, api);
+      return;
+    }
+    // 链条走完了。⚠️ 必须显式还控制权：某一步「移动装备」会**嵌套**触发别人的询问
+    // （枭姬那类），那次嵌套询问结束之后没人负责还控制权——pending 会停在 null、整局卡死
+    // （模糊测试抓到的）。有询问在挂起时这个调用不生效，不会抢流程。
+    api.returnPlayPhase(lvfan.seatId);
     return;
   }
   const mine = effectiveFaction(state, p);
@@ -6249,7 +6256,16 @@ function diaoduStep(
     }
   }
   options.push({ id: 'no', label: '不选择' });
-  const next = (): void => diaoduStep(state, lvfan, queue, i + 1, api);
+  // 链条往前一格。⚠️ 走到尽头时**显式还控制权**：某一步「移动装备」会嵌套触发别人的询问
+  // （枭姬那类），那次嵌套询问结束之后没人负责还控制权——pending 会停在 null、整局卡死
+  // （模糊测试抓到的）。有询问在挂起时 returnPlayPhase 不生效，不会抢流程。
+  const next = (): void => {
+    if (i + 1 >= queue.length) {
+      api.returnPlayPhase(lvfan.seatId);
+      return;
+    }
+    diaoduStep(state, lvfan, queue, i + 1, api);
+  };
   if (options.length === 1) {
     next();
     return;
