@@ -784,8 +784,9 @@ const QUAN: RosterEntry[] = [
     name: '吴国太',
     faction: 'wu',
     pack: 'quan',
-    status: 'todo',
-    primitives: ['pick_cards'],
+    status: 'done',
+    primitives: ['pick_cards', 'move_field_card', 'army_order'],
+    note: '甘露 + 补益（君临天下·权，吴，国战牌面 1.5 阴阳鱼 → 3，称号·武烈皇后；文本按三国杀官网，与 B 站 Wiki 的国战栏一致）。甘露的限制（牌数差 ≤ 你已损失体力值、牌数之和 ≥ 1）都在「两名角色」这一对上，所以目标组合在 execute 里校验；交换走新原语 api.swapEquipAreas——先把两边装备区的牌都收下来（各自触发失去装备的钩子：枭姬、白银狮子回血），再互换放回，中途不会把牌顶进弃牌堆（逐张顶掉会把本来要换过去的牌弃掉）。补益挂在 nearDeathResolved，sourceId 取 payload 里新加的「本次伤害来源」；没有来源（闪电那种）时跳过；「每回合限一次」用 flags.skillUsedThisTurn。',
   },
   {
     id: 'lukang',

@@ -14948,7 +14948,14 @@ describe('国战 · 吕范（调度 / 典财）', () => {
 /** 左慈·役鬼/汲魂（2019 典藏版）：魂牌堆 + 移去一张视为用牌（目标受势力限制） */
 describe('国战 · 左慈（役鬼 / 汲魂）', () => {
   function gz(
-    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
     pool: string[] = [],
     actor?: string,
   ) {
@@ -14966,7 +14973,7 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
       p.heroRevealed = true;
       p.deputyRevealed = true;
       p.maxHp = 4;
-      p.hp = 4;
+      p.hp = s.hp ?? 4;
       p.hand = (s.hand ?? []).slice();
       p.flags = emptyFlags();
     }
@@ -15030,6 +15037,53 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     ok(act(state, A, { type: 'pass' })); // 甲不闪 → 受伤 → 汲魂
     expect(a.hun).toHaveLength(1);
     expect(state.log.some((e) => e.message.includes('汲魂'))).toBe(true);
+  });
+
+  it('汲魂②：与你势力不同的角色脱离濒死后补一张「魂」；同势力的不给', () => {
+    // 这条以前是**空跑**的：nearDeathResolved 只有声明和消费方、没有派发点。
+    // 现在三个出口（技能救回 / 桃救回 / 阵亡）都会派发，这条用例才真的在验东西。
+    const pool = ['zhangliao', 'zhouyu', 'xuchu'];
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+        // 乙是蜀（与左慈的群**不同势力**）→ 脱离濒死后应补魂
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), tao('b2')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
+      ],
+      pool,
+      B,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    // 乙（蜀）杀丙（蜀，1 血）→ 丙濒死 → 乙用桃救回
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+    // 求桃轮询顺序：从濒死者起 → [丙, 甲, 乙]
+    ok(act(state, C, { type: 'pass' })); // 丙不出桃
+    ok(act(state, A, { type: 'pass' })); // 左慈不出桃
+    ok(act(state, B, { type: 'respondCard', cardId: 'b2' })); // 乙用桃救
+    expect(c.hp).toBe(1);
+    expect(a.hun).toHaveLength(1); // 与左慈势力不同 + 存活 → 补一张魂
+    expect(pool).toHaveLength(2);
+
+    // 对照组：濒死的是**同势力**（群）的角色 → 不给
+    const same = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), tao('b2')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [], hp: 1 },
+      ],
+      ['zhangliao', 'zhouyu', 'xuchu'],
+      B,
+    );
+    const a2 = same.players.find((p) => p.seatId === A)!;
+    ok(act(same, B, { type: 'playCard', cardId: 'b1', targetIds: [C] }));
+    ok(act(same, C, { type: 'pass' }));
+    ok(act(same, C, { type: 'pass' }));
+    ok(act(same, A, { type: 'pass' }));
+    ok(act(same, B, { type: 'respondCard', cardId: 'b2' }));
+    expect(a2.hun).toHaveLength(0);
   });
 });
 
@@ -16353,5 +16407,176 @@ describe('国战 · 张绣（附敌 / 从谏）', () => {
     expect(state.log.some((e) => e.message.includes('从谏'))).toBe(true);
     // 张绣自己是来源时的那条不参与（闪电没有来源）
     expect(state.pending?.kind).toBe('respondDeath');
+  });
+});
+
+/** 吴国太·甘露 / 补益（君临天下·权，吴，1.5 阴阳鱼→3） */
+describe('国战 · 吴国太（甘露 / 补益）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        // 装备牌的 type 就是槽位
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('甘露：交换两名角色装备区里的牌（上限＝已损失体力值）', () => {
+    const state = gz(
+      [
+        // 吴国太 3 血、掉到 1 血 → 已损失 2 → 牌数差 ≤ 2 才允许
+        { seatId: A, name: '甲', heroId: 'wuguotai', faction: 'wu', hp: 1 },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', equip: [wpn('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', equip: [wpn('c1'), armor('c2', 'bagua')] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('ganlu');
+    ok(
+      act(state, A, {
+        type: 'useSkill',
+        skillId: 'ganlu',
+        cardIds: [],
+        targetIds: [B, C],
+      }),
+    );
+    // 乙的武器换到丙手里，丙的两张换到乙手里
+    expect(b.equipment.weapon?.id).toBe('c1');
+    expect(b.equipment.armor?.id).toBe('c2');
+    expect(c.equipment.weapon?.id).toBe('b1');
+    expect(c.equipment.armor).toBeNull();
+    // 一张牌都没进弃牌堆（是交换，不是顶掉）
+    expect(state.discard.length).toBe(0);
+    expect(state.log.some((e) => e.message.includes('甘露'))).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('甘露：牌数差超过已损失体力值 / 两张空装备区 → 不能发动', () => {
+    const state = gz(
+      [
+        // 满血（已损失 0）→ 只能换「牌数相同」的一对
+        { seatId: A, name: '甲', heroId: 'wuguotai', faction: 'wu' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', equip: [wpn('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', equip: [wpn('c1')] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei' },
+      ],
+      A,
+    );
+    // 乙丙都是 1 张（差 0）→ 合法；乙丁是 1 张 vs 0 张（差 1 > 0）→ 不合法；丙丁同理
+    ok(act(state, A, { type: 'useSkill', skillId: 'ganlu', cardIds: [], targetIds: [B, C] }));
+    expect(state.players.find((p) => p.seatId === B)!.equipment.weapon?.id).toBe('c1');
+
+    // 再来一次：这次选一个不合法的组合
+    const state2 = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wuguotai', faction: 'wu' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', equip: [wpn('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    fail(act(state2, A, { type: 'useSkill', skillId: 'ganlu', cardIds: [], targetIds: [B, C] }));
+    // 两个空装备区也不能交换
+    const state3 = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wuguotai', faction: 'wu' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    expect(toSnapshot(state3, A).prompt?.legalSkillIds ?? []).not.toContain('ganlu');
+  });
+
+  it('补益：同势力角色脱离濒死后，令伤害来源执行军令，不执行则该角色回血', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wu', hand: [sha('a1'), tao('a2')] },
+        // 吴国太与乙同为吴 → 触发补益
+        { seatId: B, name: '乙', heroId: 'wuguotai', faction: 'wu' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [], hp: 1 },
+      ],
+      A,
+    );
+    const c = state.players.find((p) => p.seatId === C)!;
+    // 甲（吴）杀丙（吴）→ 丙濒死 → 甲用桃救回
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+    ok(act(state, C, { type: 'pass' })); // 丙自己不出桃
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲用桃救
+    // 补益询问（吴国太乙）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('补益');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 军令：先由发起者（吴国太）从两张里挑一条
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('军令');
+    ok(act(state, B, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    // 执行者甲拒绝 → 丙回复 1 点体力
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(c.hp).toBe(2); // 桃救回 1 点 + 补益再回 1 点
+    expect(state.log.some((e) => e.message.includes('补益'))).toBe(true);
+    // 不执行就什么都不发生的对照：换一条路（执行）留给 arm_order 自己的用例
+  });
+
+  it('补益：每回合限一次；不同势力的濒死不触发', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wu', hand: [sha('a1'), tao('a2')] },
+        { seatId: B, name: '乙', heroId: 'wuguotai', faction: 'wu' },
+        // 丙是**蜀**势力：与吴国太不同势力 → 补益不该触发
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    expect(state.log.some((e) => e.message.includes('补益'))).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 });

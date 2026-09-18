@@ -4521,6 +4521,140 @@ const LIJUE_GUOSI: Hero = {
  *   → +1；② 你（目标）**回合内**受到伤害 → +1。两条同时命中的只有「在自己回合里对自己
  *   造成伤害」——那时算②，不会加两次。
  */
+/**
+ * 吴国太 —— 甘露 / 补益（君临天下·权，吴，**1.5 阴阳鱼 → 3**，称号·武烈皇后；已核）。
+ *
+ * 甘露：出牌阶段限一次，你可以交换两名角色装备区里的牌（两者装备区里牌数之差不大于你已
+ *       损失体力值，且牌数之和不小于 1）。
+ * 补益：每回合限一次，当与你势力相同的角色脱离濒死状态后，你可以令本次伤害来源执行一次
+ *       「军令」，若其不执行，此濒死角色回复 1 点体力。
+ *
+ * 实现要点：
+ * - 甘露的两个限制都在「两名角色」这一对上，所以目标选择收在 execute 里校验（界面的合法目标
+ *   是通用的「所有其他角色」，选错组合时给一句明确的错误）。交换走新原语
+ *   `api.swapEquipAreas`——先把两边装备区的牌都收下来（各自触发失去装备的钩子），再互换放回，
+ *   中途不会把牌顶进弃牌堆（那张「顶掉」的做法会把本来要换过去的牌弃掉）。
+ *   「你已损失的体力值」按 X = 体力上限 - 当前体力。
+ * - 补益挂在 `nearDeathResolved`（本轮才补上的派发点，见 engine.dispatchNearDeathResolved），
+ *   payload 里的 `sourceId` 就是「本次伤害来源」。没有来源（闪电那种）时无从执行军令，直接跳过。
+ *   「每回合限一次」用 `flags.skillUsedThisTurn['补益']`（随吴国太自己的回合重置）。
+ */
+const WUGUOTAI: Hero = {
+  id: 'wuguotai',
+  name: '吴国太',
+  faction: 'wu',
+  // 国战牌面 1.5 阴阳鱼 → 3
+  maxHp: 3,
+  gender: 'female',
+  modes: ['guozhan'],
+  hooks: [
+    {
+      timing: 'nearDeathResolved',
+      skillId: '补益',
+      handler: (ctx) => {
+        const payload = ctx.payload as
+          | { dyingSeatId?: string; alive?: boolean; sourceId?: string }
+          | undefined;
+        const me = ctx.player;
+        if (!payload?.alive || !payload.dyingSeatId || !payload.sourceId) return;
+        if (me.flags.skillUsedThisTurn['补益']) return; // 每回合限一次
+        const dying = getPlayer(ctx.state, payload.dyingSeatId);
+        const source = getPlayer(ctx.state, payload.sourceId);
+        if (!dying || !source || !source.alive) return;
+        const mine = effectiveFaction(ctx.state, me);
+        if (!mine || effectiveFaction(ctx.state, dying) !== mine) return; // 只对同势力
+        if (dying.seatId === me.seatId) return; // 「与你势力相同的角色」是**别人**
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【补益】？（令 ${source.name} 执行一次「军令」，不执行则 ${dying.name} 回复 1 点体力）`,
+          [
+            { id: 'yes', label: '发动' },
+            { id: 'no', label: '不发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            p.flags.skillUsedThisTurn['补益'] = true;
+            ctx.api.armyOrder(p.seatId, source.seatId, (st2, executed) => {
+              if (executed) return;
+              const d = getPlayer(st2, dying.seatId);
+              if (!d || !d.alive) return;
+              const healed = ctx.api.heal(d, 1);
+              pushLog(
+                st2,
+                'skill',
+                `${source.name} 没有执行军令，${d.name} 因【补益】回复 ${healed} 点体力。`,
+              );
+            });
+          },
+        );
+      },
+    },
+  ],
+  activeSkills: [
+    {
+      id: 'ganlu',
+      name: '甘露',
+      oncePerTurn: true,
+      minTargets: 2,
+      maxTargets: 2,
+      needsCards: false,
+      canUse: (state, player) => ganluPairs(state, player).length > 0,
+      execute: (state, player, intent, api) => {
+        const pair = ganluPairs(state, player).find(
+          (p) => p.has(intent.targetIds[0]!) && p.has(intent.targetIds[1]!),
+        );
+        if (!pair) return '要选两名装备区里牌数之差不大于你已损失体力值的角色';
+        const [a, b] = [intent.targetIds[0]!, intent.targetIds[1]!];
+        pushLog(state, 'skill', `${player.name} 发动【甘露】。`);
+        api.swapEquipAreas(a, b, () => {
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 交换了装备区里的牌（甘露）。`,
+          );
+        });
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '甘露',
+      desc: '出牌阶段限一次，你可以交换两名角色装备区里的牌（两者装备区里牌数之差不大于你已损失体力值，且牌数之和不小于 1）。',
+    },
+    {
+      name: '补益',
+      desc: '每回合限一次，当与你势力相同的角色脱离濒死状态后，你可以令本次伤害来源执行一次「军令」，若其不执行，此濒死角色回复 1 点体力。',
+    },
+  ],
+};
+
+/**
+ * 甘露此刻能交换的「角色对」：两两组合里满足
+ * ① 装备区牌数之差 ≤ 吴国太已损失体力值；② 两边牌数之和 ≥ 1（不能是两张空装备区）。
+ * 返回的是「座位对」的集合（用来判玩家的目标选择是否合法）。
+ */
+function ganluPairs(state: GameState, player: Player): Set<string>[] {
+  const lost = player.maxHp - player.hp;
+  const alive = state.players.filter((p) => p.alive);
+  const count = (p: Player): number =>
+    EQUIP_SLOTS.filter((s) => !!p.equipment[s]).length;
+  const out: Set<string>[] = [];
+  for (let i = 0; i < alive.length; i++) {
+    for (let j = i + 1; j < alive.length; j++) {
+      const a = alive[i]!;
+      const b = alive[j]!;
+      const na = count(a);
+      const nb = count(b);
+      if (na + nb < 1) continue;
+      if (Math.abs(na - nb) > lost) continue;
+      out.push(new Set([a.seatId, b.seatId]));
+    }
+  }
+  return out;
+}
+
 const ZHANGXIU: Hero = {
   id: 'zhangxiu',
   name: '张绣',
@@ -10090,6 +10224,7 @@ export const HEROES: Hero[] = [
   WANGPING,
   LUKANG,
   ZHANGXIU,
+  WUGUOTAI,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

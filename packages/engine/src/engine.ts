@@ -2870,10 +2870,37 @@ function afterNearDeath(state: GameState, attack: AttackContext, dying: Player):
   if (dying.hp > 0) {
     // 被技能救回来了（涅槃/不屈）：不建濒死队列，把控制权还回去
     pushLog(state, 'nearDeath', `${dying.name} 脱离了濒死状态。`);
-    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    dispatchNearDeathResolved(state, dying.seatId, true, attack.sourceId, () => {
+      resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    });
     return;
   }
   enterDeathQueue(state, dying, attack.sourceId);
+}
+
+/**
+ * 「濒死结算结束后」的统一派发（左慈·汲魂、吴国太·补益）。
+ *
+ * payload：`{ dyingSeatId, alive, sourceId }`——`alive` 是结算完还活着没有，
+ * `sourceId` 是**本次伤害来源**（没有来源的伤害、或来源已不在场上时可能是 undefined）。
+ *
+ * ⚠️ 这个时机原来只有声明和消费方、**没有派发点**，所以汲魂的后半句从来没生效过
+ *    （它的测试只覆盖了「受伤后补魂」那一半，正好没撞上）。现在三个出口都派发：
+ *    被技能救回、被【桃】救回、以及真的阵亡。
+ */
+function dispatchNearDeathResolved(
+  state: GameState,
+  dyingSeatId: string,
+  alive: boolean,
+  sourceId: string | undefined,
+  after: () => void,
+): void {
+  runAllPlayersHooks(
+    state,
+    'nearDeathResolved',
+    { dyingSeatId, alive, sourceId },
+    after,
+  );
 }
 
 /** 建立濒死求桃队列（完杀在这里生效）。killerId 供阵亡后的「杀死角色后」技能用 */
@@ -3029,20 +3056,24 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
     pushLog(state, 'death', `${dying.name} 阵亡${roleText}${factionText}。`);
     // 走可挂起版本：蔡文姬·断肠要在死亡时问「让凶手失去哪张武将牌的技能」
     runHooksPausable(state, 'death', dying, { killerId }, () => {
-      // 清牌：行殇没拿走的才进弃牌堆
-      for (const c of dying.hand) toDiscard(state, c);
-      dying.hand = [];
-      const eq = dying.equipment;
-      for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
-        if (c) toDiscard(state, c);
-      }
-      dying.equipment = emptyEquipment();
-      for (const c of dying.judgment) toDiscard(state, c);
-      dying.judgment = [];
+      // 「濒死结算结束后」的第三个出口：这回是真的没了（alive=false）。
+      // 补益/汲魂都要求「存活」所以这里不会真的发动，但时机本身要派发出去。
+      dispatchNearDeathResolved(state, dying.seatId, false, killerId, () => {
+        // 清牌：行殇没拿走的才进弃牌堆
+        for (const c of dying.hand) toDiscard(state, c);
+        dying.hand = [];
+        const eq = dying.equipment;
+        for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
+          if (c) toDiscard(state, c);
+        }
+        dying.equipment = emptyEquipment();
+        for (const c of dying.judgment) toDiscard(state, c);
+        dying.judgment = [];
 
-      if (checkWin(state)) return;
-      // 回到当前回合玩家（伤害来源）的出牌阶段
-      resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+        if (checkWin(state)) return;
+        // 回到当前回合玩家（伤害来源）的出牌阶段
+        resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+      });
     });
   };
 
@@ -6322,8 +6353,10 @@ function respondDeathSave(
     { amount: heal, taoSaverId: card.type === 'tao' && saver.seatId !== dying.seatId ? saver.seatId : undefined },
     () => {},
   );
-  // 救活，回到伤害来源出牌阶段
-  resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+  // 救活：先派发「濒死结算结束后」（左慈·汲魂 / 吴国太·补益），再把控制权还回去
+  dispatchNearDeathResolved(state, dying.seatId, true, pending.killerId, () => {
+    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+  });
   return { ok: true };
 }
 
@@ -6799,6 +6832,55 @@ function makeSkillApi(
         return;
       }
       discardOwnCard(state, owner, card, done);
+    },
+    swapEquipAreas: (seatA, seatB, after) => {
+      const a = getPlayer(state, seatA);
+      const b = getPlayer(state, seatB);
+      const done = after ?? (() => {});
+      if (!a || !b || a.seatId === b.seatId) {
+        done();
+        return;
+      }
+      // 先把双方装备区的牌**都收下来**（各自触发「失去装备区里的牌」：枭姬、白银狮子回血…），
+      // 再互换着放进对应栏位。不能一张一张地互相塞——那样目标栏位原有的牌会先被顶进弃牌堆，
+      // 而那些牌本来是要换过去的。
+      const aCards = EQUIP_SLOTS.map((s) => a.equipment[s]).filter((c): c is Card => !!c);
+      const bCards = EQUIP_SLOTS.map((s) => b.equipment[s]).filter((c): c is Card => !!c);
+      a.equipment = emptyEquipment();
+      b.equipment = emptyEquipment();
+      // 失去要逐张派发（可挂起），所以串成链
+      const loseStep = (
+        owner: Player,
+        cards: Card[],
+        i: number,
+        next: () => void,
+      ): void => {
+        const card = cards[i];
+        if (!card) {
+          next();
+          return;
+        }
+        fireEquipLost(state, owner, card, () => loseStep(owner, cards, i + 1, next));
+      };
+      loseStep(a, aCards, 0, () => {
+        loseStep(b, bCards, 0, () => {
+          // 互换：A 的牌进 B 的对应栏位，反之亦然（装备牌的 type 就是槽位）
+          for (const c of aCards) {
+            const slot = EQUIP_SLOTS.find((s) => s === c.type);
+            if (slot) b.equipment[slot] = c;
+          }
+          for (const c of bCards) {
+            const slot = EQUIP_SLOTS.find((s) => s === c.type);
+            if (slot) a.equipment[slot] = c;
+          }
+          pushLog(
+            state,
+            'skill',
+            `${a.name} 与 ${b.name} 交换了装备区里的牌。`,
+          );
+          done();
+        });
+      });
     },
     /**
      * 拼点。两步选牌都在 makeSkillApi 里串起来——不需要新的 pending 类型，

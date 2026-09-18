@@ -431,6 +431,14 @@ export interface SkillApi {
    * 姜维·挑衅的「你弃置其一张牌」用它——手牌是不可见的，想拿哪张只能随机。
    */
   discardTargetCard: (targetSeatId: string, cardId?: string, after?: () => void) => void;
+  /**
+   * 交换两名角色**装备区里的牌**（吴国太·甘露）。
+   *
+   * 先把两边装备区的牌都收下来、各自触发「失去装备区里的牌」（枭姬、白银狮子回血…），
+   * 再互换着放进对应栏位——所以中途**不会有牌被顶进弃牌堆**（甘露是交换，不是覆盖）。
+   * `after` 在整条链（含可能挂起的失去装备钩子）走完后调用。
+   */
+  swapEquipAreas: (seatA: string, seatB: string, after?: () => void) => void;
 }
 
 // 钩子上下文
