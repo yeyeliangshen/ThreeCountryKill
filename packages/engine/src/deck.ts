@@ -430,6 +430,25 @@ export function lordEquipLiulong(seq: number): Card {
  *    花色点数用占位值 ♣2 —— 查到以后改这一个函数即可（专属装备是场外牌，花色点数在
  *    本引擎里只影响拼点/判定那类场景，日常对局用不到）。
  */
+/**
+ * 【定澜夜明珠】（君孙权的君主专属装备）——
+ * 「锁定技，你每回合首次弃置牌后，摸一张牌。当此牌离开你的装备区时，销毁之。」
+ * （移动版官网《国战模式更新公告》里给的就是这一版文本；用户核对后也给了同一版）
+ *
+ * ⚠️ **待核对**：与【盟军大纛】一样，只核到效果，**花色/点数/装备类型**没核到。
+ *    按同族记 `treasure`、花色点数用占位值 ♥7（见 §5.61）。
+ */
+export function lordEquipDinglan(seq: number): Card {
+  return {
+    id: `lord-dinglan#${seq}`,
+    type: 'treasure',
+    suit: 'heart',
+    rank: 7,
+    equipName: 'dinglan',
+    destroyOnLeave: true,
+  };
+}
+
 export function lordEquipMengjun(seq: number): Card {
   return {
     id: `lord-mengjun#${seq}`,

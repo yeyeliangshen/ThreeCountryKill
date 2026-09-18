@@ -49,6 +49,7 @@ import {
   armorNullifiesSha,
   capDamageByBailong,
   damageBonus,
+  dinglanAfterDiscard,
   equipActiveSkills,
   equipExtraDraw,
   feilongAfterShaDamage,
@@ -89,6 +90,7 @@ import {
   huangtianFor,
   xuanhuoFor,
   hasYuxi,
+  factionGrantedActiveSkills,
   knownFactionCount,
   sameKnownFaction,
   skillOnField,
@@ -2818,7 +2820,12 @@ function fireCardDiscarded(
     after();
     return;
   }
-  runHooksPausable(state, 'cardDiscarded', owner, { cards }, after);
+  // 宝物【定澜夜明珠】（君主专属）：「你每回合首次弃置牌后摸一张牌」。
+  // 装备牌的效果不走英雄钩子，所以和【飞龙夺凤】【盟军大纛】一样在这里显式派发；
+  // 排在英雄钩子（礼让）前面——同时机固定顺序，见 roster 的说明。
+  dinglanAfterDiscard(state, owner, () =>
+    runHooksPausable(state, 'cardDiscarded', owner, { cards }, after),
+  );
 }
 
 /**
@@ -4525,17 +4532,31 @@ function startTrickResolution(
   // 单人目标的锦囊要在这里派一环，让技能有机会取消它；多人目标不算「唯一目标」。
   // （锦囊牌本身不可能是装备牌，所以这里不用排装备，只排「目标数不等于 1」）
   const singleTargetId = targetIds.length === 1 ? targetIds[0]! : null;
+  // 「这张锦囊的目标定下来了」——派给所有存活角色（payload 带完整目标列表）。
+  // 君孙权·据江挂这里：它要「与你势力相同的角色**指定你为目标**的非伤害牌额外结算一次」，
+  // 而多目标的锦囊（五谷/桃园/联军）不经过上面那条「唯一目标」的分支，得单独开一个时机。
+  // 排在千幻那一步**之后**：牌被取消掉就不该再谈额外结算。
+  // ⚠️ 目标列表用 `wuxieScopeCandidates`（「这张牌真正会影响谁」的既有算法）算，
+  //    不能用 intent 里那串：无中生有/桃园/五谷这类目标由规则定死的锦囊，intent 常常是空的
+  //    （出牌阶段 UI 也不需要玩家点目标），而据江要判的正是「有没有指定我」。
+  const afterTargets = (): void =>
+    runAllPlayersHooks(
+      state,
+      'trickTargeted',
+      { card, targetIds: wuxieScopeCandidates(state, ctx), trickCtx: ctx },
+      () => openWuxieWindow(state, ctx, () => resolveTrick(state, ctx)),
+    );
   if (singleTargetId) {
     runAllPlayersHooks(
       state,
       'othersBecomeTarget',
       // 把 trickCtx 一并给出去：技能取消这张锦囊时要用它记「抵消」（见于吉·千幻）
       { targetId: singleTargetId, card, trickCtx: ctx },
-      () => openWuxieWindow(state, ctx, () => resolveTrick(state, ctx)),
+      afterTargets,
     );
     return;
   }
-  openWuxieWindow(state, ctx, () => resolveTrick(state, ctx));
+  afterTargets();
 }
 
 /**
@@ -4624,7 +4645,7 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
       const targetName =
         (ctx.targetIds ?? []).map((id) => getPlayer(state, id)?.name ?? '').filter(Boolean).join('、') ||
         '目标';
-      pushLog(state, 'skill', `【寄篱】：此牌对 ${targetName} 再结算一次。`);
+      pushLog(state, 'skill', `【${ctx.rerunSkill ?? '寄篱'}】：此牌对 ${targetName} 再结算一次。`);
       startTrickResolution(state, source, ctx.card, ctx.targetIds ?? [], undefined);
       return;
     }
@@ -8373,6 +8394,10 @@ function onUseSkill(
     }
   }
   if (!skill) skill = markerActiveSkills(state, player).find((s) => s.id === intent.skillId);
+  // 「同势力君主授予的技能」（君孙权·督授）：和标记技能一样，不属于使用者自己的武将牌
+  if (!skill) {
+    skill = factionGrantedActiveSkills(state, player).find((s) => s.id === intent.skillId);
+  }
   // 装备牌带来的主动技（【木牛流马】）
   if (!skill) skill = equipActiveSkills(state, player).find((s) => s.id === intent.skillId);
   // 别人的势力技（黄天：群势力角色把【闪】/【闪电】交给明置的张角）

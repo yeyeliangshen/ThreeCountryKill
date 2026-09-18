@@ -19268,6 +19268,191 @@ describe('国战 · 君主将（特性）', () => {
     expect(state2.players.find((x) => x.seatId === 'A')!.hand.some((c) => c.id === 'a9')).toBe(true);
   });
 
+  it('君威·定澜夜明珠：每回合首次弃置牌后摸一张（代价弃置不算，见 §5.61）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+        { seatId: 'B', name: '乙', heroId: 'ganning' },
+        { seatId: 'C', name: '丙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junsunquan', 'wu', [
+      shan('a1'),
+      tao('a2'),
+      mk('a3', 'guohe'),
+      mk('a4', 'juedou'),
+      mk('a5', 'tiesuo'),
+      mk('a6', 'wuzhong'),
+    ]);
+    seatSet(state, 'B', 'ganning', 'wu', []);
+    seatSet(state, 'C', 'guanyu', 'shu', []);
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    // 只数宝物自己的那条日志（【君威】的日志里也有「定澜夜明珠」这几个字）
+    const dinglan = () => state.log.filter((l) => l.message.includes('本回合首次弃牌')).length;
+
+    // ① 发动【君威】取宝物（代价是弃一张牌）——代价弃置不触发它（已知缺口）
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
+    ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
+    expect(a.equipment.treasure?.equipName).toBe('dinglan');
+    expect(dinglan()).toBe(0);
+
+    // ② 弃牌阶段弃一张 → 触发「本回合首次弃置牌后摸一张」
+    const handBefore = a.hand.length;
+    ok(act(state, 'A', { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('discard');
+    if (state.pending?.kind !== 'discard') return;
+    const discardIds = toSnapshot(state, 'A').myHand.slice(0, state.pending.count).map((c) => c.id);
+    ok(act(state, 'A', { type: 'discard', cardIds: discardIds }));
+    expect(dinglan()).toBe(1);
+    expect(a.hand.length).toBe(handBefore - discardIds.length + 1); // 弃了几张、摸回一张
+
+    // ③ 触发过就算数（`flags.dinglanDoneThisTurn`），本回合再弃也不会摸第二次；
+    //    它在持有者自己的回合开始时重置（与【飞龙夺凤】同一口径）
+    expect(a.flags.dinglanDoneThisTurn).toBe(true);
+    expect(dinglan()).toBe(1);
+  });
+
+  it('督授：同势力角色出牌阶段限一次，弃至多两张令君孙权摸等量牌', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+        { seatId: 'B', name: '乙', heroId: 'ganning' },
+        { seatId: 'C', name: '丙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junsunquan', 'wu', []);
+    seatSet(state, 'B', 'ganning', 'wu', [mk('b1', 'guohe'), mk('b2', 'juedou'), mk('b3', 'tiesuo')]);
+    seatSet(state, 'C', 'guanyu', 'shu', []);
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    const b = state.players.find((x) => x.seatId === 'B')!;
+
+    // 乙（吴）的出牌阶段多出【督授】
+    expect(toSnapshot(state, 'B').prompt?.legalSkillIds).toContain('dushou');
+    // 丙（蜀）没有
+    state.pending = { kind: 'play', seatId: 'C' };
+    expect(toSnapshot(state, 'C').prompt?.legalSkillIds ?? []).not.toContain('dushou');
+    state.pending = { kind: 'play', seatId: 'B' };
+
+    // 乙弃两张 → 甲摸两张
+    ok(act(state, 'B', { type: 'useSkill', skillId: 'dushou', cardIds: ['b1', 'b2'], targetIds: [] }));
+    expect(b.hand.map((c) => c.id)).toEqual(['b3']);
+    expect(a.hand.length).toBe(2);
+    expect(state.discard.map((c) => c.id).sort()).toEqual(['b1', 'b2']);
+    // 「出牌阶段限一次」
+    expect(toSnapshot(state, 'B').prompt?.legalSkillIds ?? []).not.toContain('dushou');
+
+    // 授予者不在场（甲阵亡）→ 同势力角色也发不了
+    const state2 = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+        { seatId: 'B', name: '乙', heroId: 'ganning' },
+        { seatId: 'C', name: '丙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state2.draft = null;
+    seatSet(state2, 'A', 'junsunquan', 'wu', []);
+    seatSet(state2, 'B', 'ganning', 'wu', [mk('b1', 'guohe')]);
+    seatSet(state2, 'C', 'guanyu', 'shu', []);
+    state2.players.find((x) => x.seatId === 'A')!.alive = false;
+    state2.turn = { seatIndex: 1, phase: 'play' };
+    state2.pending = { kind: 'play', seatId: 'B' };
+    state2.log = [];
+    expect(toSnapshot(state2, 'B').prompt?.legalSkillIds ?? []).not.toContain('dushou');
+  });
+
+  it('据江：吴不为大势力时，同势力角色指定我为目标的非伤害牌额外结算一次', () => {
+    /** 三家：甲＝君孙权（吴）、乙＝甘宁（吴）、丙＝关羽（蜀）——吴只有 1 人明置 → 不是大势力 */
+    const build = (wuTwo: boolean) => {
+      const seats = wuTwo
+        ? [
+            { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+            { seatId: 'B', name: '乙', heroId: 'ganning' },
+            { seatId: 'C', name: '丙', heroId: 'guanyu' },
+            { seatId: 'D', name: '丁', heroId: 'zhangliao' },
+          ]
+        : [
+            { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+            { seatId: 'B', name: '乙', heroId: 'ganning' },
+            { seatId: 'C', name: '丙', heroId: 'guanyu' },
+          ];
+      const state = createGame(seats, 'TEST', { mode: 'guozhan' });
+      state.draft = null;
+      seatSet(state, 'A', 'junsunquan', 'wu', [mk('a1', 'wuzhong')]);
+      seatSet(state, 'B', 'ganning', wuTwo ? 'wu' : 'shu', [mk('b1', 'wuzhong')]);
+      seatSet(state, 'C', 'guanyu', 'shu', []);
+      if (wuTwo) seatSet(state, 'D', 'zhangliao', 'wei', []);
+      return state;
+    };
+
+    // ① 吴不是大势力（只有甲一人）→ 甲自己的【无中生有】再结算一次（摸 4 张）
+    const s1 = build(false);
+    s1.turn = { seatIndex: 0, phase: 'play' };
+    s1.pending = { kind: 'play', seatId: 'A' };
+    s1.log = [];
+    ok(act(s1, 'A', { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(s1);
+    expect(s1.players.find((x) => x.seatId === 'A')!.hand.length).toBe(4);
+    expect(s1.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
+
+    // ② 吴是大势力（甲＋乙，2 人为全场最多）→ 不额外结算（只摸 2 张）
+    const s2 = build(true);
+    s2.players.find((x) => x.seatId === 'B')!.heroRevealed = true;
+    s2.players.find((x) => x.seatId === 'B')!.faction = 'wu';
+    s2.turn = { seatIndex: 0, phase: 'play' };
+    s2.pending = { kind: 'play', seatId: 'A' };
+    s2.log = [];
+    ok(act(s2, 'A', { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(s2);
+    expect(s2.players.find((x) => x.seatId === 'A')!.hand.length).toBe(2);
+    expect(s2.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(0);
+
+    // ③ 同势力角色（乙，吴）对甲用【顺手牵羊】→ 这张牌再结算一次，甲被拿走两张。
+    //    注意吴得有两个人（不然没有「同势力角色」），而这时要保住「吴不是大势力」，
+    //    就得让另一个势力人更多——所以摆五家：两个吴 + 三个蜀。
+    const s3 = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+        { seatId: 'B', name: '乙', heroId: 'ganning' },
+        { seatId: 'C', name: '丙', heroId: 'guanyu' },
+        { seatId: 'D', name: '丁', heroId: 'zhangfei' },
+        { seatId: 'E', name: '戊', heroId: 'zhaoyun' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    s3.draft = null;
+    seatSet(s3, 'A', 'junsunquan', 'wu', [mk('a1', 'tao'), mk('a2', 'tao')]);
+    seatSet(s3, 'B', 'ganning', 'wu', [mk('b1', 'shunshou')]);
+    seatSet(s3, 'C', 'guanyu', 'shu', []);
+    seatSet(s3, 'D', 'zhangfei', 'shu', []);
+    seatSet(s3, 'E', 'zhaoyun', 'shu', []);
+    s3.turn = { seatIndex: 1, phase: 'play' };
+    s3.pending = { kind: 'play', seatId: 'B' };
+    s3.log = [];
+    ok(act(s3, 'B', { type: 'playCard', cardId: 'b1', targetIds: ['A'] }));
+    passWuxie(s3);
+    // 两遍结算各可能问一次「拿哪张」（引擎在某些路径上自动挑），问到就答
+    for (let i = 0; i < 3 && s3.pending?.kind === 'pickCards'; i++) {
+      ok(act(s3, 'B', { type: 'pickCards', cardIds: [s3.pending.cards[0]!.id] }));
+    }
+    expect(s3.players.find((x) => x.seatId === 'A')!.hand.length).toBe(0); // 两张都被拿走
+    expect(s3.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
+  });
+
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
     // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
     const state = createGame(

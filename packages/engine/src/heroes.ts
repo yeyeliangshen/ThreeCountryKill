@@ -1,5 +1,7 @@
 import {
   CARD_TYPE_NAME,
+  DAMAGE_CARD_TYPES,
+  FACTION_TRICK_TYPES,
   cardColor,
   cardLabel,
   FIRE_TRICKS,
@@ -23,7 +25,13 @@ import type {
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
 import { addMarker } from './markers';
-import { drawOne, lordEquipFeilong, lordEquipLiulong, lordEquipMengjun } from './deck';
+import {
+  drawOne,
+  lordEquipDinglan,
+  lordEquipFeilong,
+  lordEquipLiulong,
+  lordEquipMengjun,
+} from './deck';
 import { attackRange, canTarget, distance } from './distance';
 
 import {
@@ -209,6 +217,12 @@ export interface Hero {
    * 值＝势力；引擎按势力把选项发给对应角色（见 engine 的 askLordBanner）。
    */
   lordBanner?: Faction;
+  /**
+   * 「这个武将给**同势力角色**授予一个出牌阶段技能」——值是那条技能的 id（目前只有君孙权的督授）。
+   * 与 `lordBanner` 同一类：引擎按它去场上找提供者（见 `factionGrantedActiveSkills`）。
+   */
+  factionSkillId?: string;
+
   /**
    * 锁定技：【南蛮入侵】对你无效（祝融·巨象、孟获·祸起）。
    * 由引擎在构造 AOE 响应队列时把该角色排除掉。
@@ -3638,11 +3652,181 @@ const JUN_LIUBEI: Hero = lordHero(
   },
 );
 
+/**
+ * 【督授】（君孙权；用户核对后提供的口径，与移动版 WIKI 的「君孙权」一致）：
+ * 「每名与你势力相同的角色的出牌阶段限一次，其可以弃置至多两张牌，令你摸等量的牌。」
+ *
+ * 口径：
+ * - 它不是「君孙权自己发动的技能」，而是**同势力角色手里多出来的一个出牌阶段技能**——
+ *   所以走 `factionGrantedActiveSkills`（与标记技能 `markerActiveSkills` 同一套接线：
+ *   合法的出牌提示与 useSkill 各合并一次）。
+ * - 「与你势力相同」按**已确定势力**口径（effectiveFaction）——提供者（君孙权）与使用者都要明置；
+ *   君主自己也在「与你势力相同的角色」里，对自己用就是弃两张摸两张（官方也不禁止）。
+ * - 「弃置至多两张牌」＝自己的**手牌**（与【君威】的代价同一口径：本引擎要付牌的技能一律点手牌）。
+ *   弃置走 `api.discardCards`（一个动作、会触发「失去牌/弃牌后」那类效果，
+ *   比如宝物【定澜夜明珠】的「首次弃牌后摸一张」与孔融·礼让）。
+ * - 「令你摸等量的牌」＝按**弃置成功的张数**给君孙权摸（弃了两张就摸两张）。
+ */
+function dushouSkill(providerSeatId: string): ActiveSkill {
+  return {
+    id: 'dushou',
+    name: '督授',
+    oncePerTurn: true, // 「出牌阶段限一次」
+    minTargets: 0,
+    maxTargets: 0,
+    needsCards: true, // 弃置至多两张牌作代价 → 点手牌
+    canUse: (_state, player) => handAndEquipOf(player).length > 0,
+    execute: (state, player, intent, api) => {
+      const ids = (intent.cardIds ?? []).slice(0, 2);
+      if (ids.length === 0) return '请选择至多两张要弃置的牌';
+      const provider = getPlayer(state, providerSeatId);
+      if (!provider || !provider.alive) return '【督授】的授予者已不在场';
+      const cards: Card[] = [];
+      for (const id of ids) {
+        const c = player.hand.find((x) => x.id === id);
+        if (!c) return '这张牌不在你手里';
+        cards.push(c);
+      }
+      pushLog(
+        state,
+        'skill',
+        `${player.name} 发动【督授】：弃置 ${cards.length} 张牌，令 ${provider.name} 摸 ${cards.length} 张牌。`,
+        { seat: player.seatId },
+      );
+      api.discardCards(player.seatId, cards, () => {
+        let got = 0;
+        for (let i = 0; i < cards.length; i++) {
+          const c = drawOne(state);
+          if (!c) break;
+          provider.hand.push(c);
+          got++;
+        }
+        pushLog(state, 'skill', `${provider.name} 因【督授】摸了 ${got} 张牌。`, {
+          seat: provider.seatId,
+        });
+      });
+      return undefined;
+    },
+  };
+}
+
+/** 场上有没有「给同势力角色授予这条技能」的**已明置**提供者；有就返回它的座位 */
+function factionSkillProviderOf(
+  state: GameState,
+  faction: Faction,
+  skillId: string,
+): string | undefined {
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    if (effectiveFaction(state, p) !== faction) continue;
+    const main = p.heroRevealed ? getHeroForMode(p.heroId, state.mode) : undefined;
+    const deputy = p.deputyRevealed ? getHeroForMode(p.deputyHeroId, state.mode) : undefined;
+    if (main?.factionSkillId === skillId || deputy?.factionSkillId === skillId) return p.seatId;
+  }
+  return undefined;
+}
+
+/**
+ * 某角色此刻可以发动的「同势力君主授予的技能」（目前只有督授）。
+ * 与 `markerActiveSkills` 同一套路：合法的出牌提示与 useSkill 各自合并一次。
+ */
+export function factionGrantedActiveSkills(state: GameState, player: Player): ActiveSkill[] {
+  if (state.mode !== 'guozhan') return [];
+  const faction = effectiveFaction(state, player);
+  if (!faction) return [];
+  const provider = factionSkillProviderOf(state, faction, 'dushou');
+  if (!provider) return [];
+  return [dushouSkill(provider)];
+}
+
+/**
+ * 【据江】（君孙权，锁定技）「若吴势力不为大势力，与你势力相同的角色指定你为目标的
+ * **非伤害牌**额外结算一次（装备牌、延时锦囊牌和势力锦囊牌除外）」
+ *
+ * 口径与待核对（见 docs/guozhan-roster.md §5.61）：
+ * - 「非伤害牌」＝ 不在 `DAMAGE_CARD_TYPES` 里的牌（【杀】【决斗】【南蛮】【万箭】【火攻】
+ *   【水淹七军】【火烧连营】都是伤害牌，一律排除）。
+ * - 排除项：「装备牌」走的是另一条路（不经锦囊结算，自然到不了这里）；「延时锦囊牌」由
+ *   playDelayedTrick 处理，也不经这里；「势力锦囊牌」见 protocol 的 `FACTION_TRICK_TYPES`
+ *   （按本引擎的实现线索枚举，待核对）。
+ * - 「与你势力相同的角色」按**已确定势力**口径（effectiveFaction）：暗置的角色没有势力，
+ *   不算；君孙权自己也在内。
+ * - 「吴势力不为大势力」用 `isBigFaction`（与势备篇的大势力同一口径；没有势备篇时
+ *   大势力概念本就不存在，等于恒真）。
+ * - 「额外结算一次」＝ 同一张牌再走一遍完整结算（复用寄篱那套 `jiliSecond`），于是
+ *   **所有**目标都再结算一次——官方原文是「此牌额外结算一次」，不是「只对你再算一次」。
+ *   同一张牌只重跑一次（`state.jiliReranCards` 按牌 id 去重）。
+ */
+function askJujiang(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as
+    { card?: Card; targetIds?: string[]; trickCtx?: TrickContext } | undefined;
+  const card = payload?.card;
+  const tctx = payload?.trickCtx;
+  if (!card || !tctx) return;
+  if (!(payload?.targetIds ?? []).includes(me.seatId)) return; // 没指定我为目标 → 不触发
+  if (DAMAGE_CARD_TYPES.has(card.type)) return; // 伤害牌不算
+  if (FACTION_TRICK_TYPES.has(card.type)) return; // 势力锦囊牌不算
+  if (isDelayedTrick(card)) return; // 延时锦囊牌不算（正常也到不了这里，兜底）
+  if (isEquipCard(card)) return; // 装备牌不算（同上）
+  const myFaction = effectiveFaction(state, me);
+  if (!myFaction) return;
+  if (isBigFaction(state, myFaction)) return; // 本势力是大势力就不发动
+  const user = getPlayer(state, tctx.sourceId);
+  if (!user || !user.alive) return;
+  if (effectiveFaction(state, user) !== myFaction) return; // 只有「与你势力相同的角色」的牌才算
+  if (tctx.jiliSecond || tctx.jiliDone) return;
+  if (state.jiliReranCards.includes(card.id)) return; // 同一张牌只重跑一次
+  tctx.jiliSecond = true;
+  tctx.rerunSkill = '据江';
+  state.jiliReranCards.push(card.id);
+  pushLog(
+    state,
+    'skill',
+    `【据江】：${user.name} 的【${cardLabel(card)}】指定了 ${me.name}，此牌额外结算一次。`,
+    { seat: me.seatId },
+  );
+}
+
 const JUN_SUNQUAN: Hero = lordHero(
   'junsunquan',
   '君孙权',
   'wu',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【定澜夜明珠】、常规技能暂未实现。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【定澜夜明珠】）、【督授】、【据江】已实现。',
+  {
+    // 督授：给**同势力角色**一个出牌阶段技能（引擎按这个 id 找提供者，见 factionGrantedActiveSkills）
+    factionSkillId: 'dushou',
+    skills: [
+      { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
+      {
+        name: '君威',
+        desc: '出牌阶段，若场上没有【定澜夜明珠】，你可以弃置一张牌，然后从游戏外使用一张【定澜夜明珠】。当你死亡时，与你势力相同的角色各失去 1 点体力。',
+      },
+      {
+        name: '督授',
+        desc: '每名与你势力相同的角色的出牌阶段限一次，其可以弃置至多两张牌，令你摸等量的牌。',
+      },
+      {
+        name: '据江',
+        desc: '锁定技，若吴势力不为大势力，与你势力相同的角色指定你为目标的非伤害牌额外结算一次（装备牌、延时锦囊牌和势力锦囊牌除外）。',
+      },
+    ],
+    activeSkills: [
+      // 【君威】（专属装备【定澜夜明珠】：每回合首次弃置牌后摸一张，离开装备区即销毁）
+      junweiSkill('dinglan', '定澜夜明珠', lordEquipDinglan),
+    ],
+    hooks: [
+      {
+        // 据江：挂在「这张锦囊的目标定下来了」那个时机（多目标锦囊也能观察到），
+        // 置位后由 endTrickResolution 把同一张牌再走一遍（复用寄篱那套）。
+        timing: 'trickTargeted',
+        skillId: '据江',
+        locked: true,
+        handler: (ctx) => askJujiang(ctx),
+      },
+    ],
+  },
 );
 
 /**

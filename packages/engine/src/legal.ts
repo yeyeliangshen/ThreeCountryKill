@@ -23,7 +23,7 @@ import {
 } from './heroes';
 import { MARKER_DESC, MARKER_SKILL_PREFIX, markerActiveSkills } from './markers';
 import { equipActiveSkills } from './equip';
-import { huangtianFor, xuanhuoFor } from './heroes';
+import { factionGrantedActiveSkills, huangtianFor, xuanhuoFor } from './heroes';
 import type { Card } from '@sgs/protocol';
 import {
   activeHeroes,
@@ -386,6 +386,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     ...huangtianFor(state, player),
     // 眩惑（法正·反向技）：同势力角色的出牌阶段多出来的一条操作
     ...xuanhuoFor(state, player),
+    // 督授（君孙权）：同势力角色的出牌阶段多出来的一条操作（提供者必须是已明置的君主）
+    ...factionGrantedActiveSkills(state, player),
   ];
   for (const skill of skills) {
     if (

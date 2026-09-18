@@ -202,6 +202,8 @@ export interface PlayerFlags {
   zhidaoHitDone: boolean;
   /** 【飞龙夺凤】本回合已经触发过「首次使用【杀】造成伤害」（每回合重置） */
   feilongDoneThisTurn: boolean;
+  /** 【定澜夜明珠】「每回合首次弃置牌后摸一张」用过就算数（每回合在 startTurn 重置） */
+  dinglanDoneThisTurn: boolean;
   /**
    * 吴景·调归：「这次【调虎离山】用之前的队列人数」——技能发出锦囊时记下，
    * 结算完成后（afterUse）拿来比「是否**因此**形成队列」。null 表示没有待结算的调归。
@@ -271,6 +273,7 @@ export function emptyFlags(): PlayerFlags {
     zhidaoHitDone: false,
     // 【飞龙夺凤】「每回合首次使用【杀】造成伤害后」用过就算数（每回合在 startTurn 重置）
     feilongDoneThisTurn: false,
+    dinglanDoneThisTurn: false,
     xietianziPending: false,
     discardedInDiscardPhase: false,
     removedFromSeating: false,
@@ -407,6 +410,7 @@ export interface AttackContext {
    */
   totalTargets?: number;
   /** 严白虎·寄篱：这张【杀】要再结算一次 + 「已经重跑过」的守卫（见 TrickContext 同名注释） */
+  /** 严白虎·寄篱：这张【杀】要再结算一次 + 「已经重跑过」的守卫（见 TrickContext 同名注释） */
   jiliSecond?: boolean;
   jiliDone?: boolean;
   /**
@@ -459,11 +463,15 @@ export interface TrickContext {
   // 决斗：当前该谁出杀（target=目标方，source=来源方）
   duelTurn?: 'target' | 'source';
   /**
-   * 严白虎·寄篱：这张牌要**再结算一次**（成为唯一目标时由技能置位），
-   * 以及「已经重跑过了」的守卫（防止无限递归）。
+   * 这张牌要**再结算一次**（由技能在这个时机置位），以及「已经重跑过了」的守卫
+   * （防止无限递归）。两个技能走这条路：
+   *   严白虎·寄篱：成为红色牌的唯一目标 → 此牌结算两次；
+   *   君孙权·据江：与你势力相同的角色指定你为目标的非伤害牌 → 额外结算一次。
+   * 字段名沿用寄篱那套；`rerunSkill` 只是日志里那个技能名（缺省按寄篱写）。
    */
   jiliSecond?: boolean;
   jiliDone?: boolean;
+  rerunSkill?: string;
   /**
    * 决斗：当前响应方在「这一次响应」里已经打出的【杀】数。
    * 对手含无双时每次要出两张【杀】，凑满才换手（见 heroDuelShaRequired）。

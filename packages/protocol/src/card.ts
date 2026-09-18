@@ -69,6 +69,23 @@ export const DAMAGE_CARD_TYPES: ReadonlySet<CardType> = new Set<CardType>([
   'huoshao',
 ]);
 
+/**
+ * 「势力锦囊牌」：势备篇里**用不用得出来取决于势力**的那几张。
+ *
+ * 用于君孙权·据江的排除项（「装备牌、延时锦囊牌和势力锦囊牌除外」）。
+ * 本仓库没有现成的「势力锦囊」标记，这里按**本引擎自己的实现线索**枚举：这三张的
+ * 可用性都挂在势力条件上（合法的 `legal.ts` 与引擎两条路都拦）——
+ *   挟天子以令诸侯：只有**大势力**角色能对自己使用；
+ *   联军盛宴：要有一个与你不同、且已有人明置的**其他势力**；
+ *   勠力同心：场上要有**大势力**才谈得上「所有大势力/小势力角色」。
+ * ⚠️ 待核对：官方对「势力锦囊牌」的完整定义（是否还有别的牌、敕令算不算）没核到。
+ */
+export const FACTION_TRICK_TYPES: ReadonlySet<CardType> = new Set<CardType>([
+  'xietianzi',
+  'lianjun',
+  'lutong',
+]);
+
 export function isRecastable(card: Card): boolean {
   return RECASTABLE_CARD_TYPES.has(card.type);
 }
@@ -234,6 +251,7 @@ export const EQUIP_NAME: Record<string, string> = {
   feilong: '飞龙夺凤',
   liulong: '六龙骖驾',
   mengjun: '盟军大纛',
+  dinglan: '定澜夜明珠',
   // 防具
   bagua: '八卦阵',
   renwang: '仁王盾',

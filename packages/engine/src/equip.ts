@@ -2,6 +2,7 @@
 import { isRed, type Card } from '@sgs/protocol';
 import { getPlayer, pushLog, type AttackContext, type GameState, type Player } from './model';
 import { addMarker, consumeMarker, markerCount } from './markers';
+import { drawOne } from './deck';
 import {
   EQUIP_SLOTS,
   cardAsSeenBy,
@@ -300,6 +301,36 @@ export function equipActiveSkills(state: GameState, player: Player): ActiveSkill
   if (state.mode !== 'guozhan') return [];
   if (player.equipment.treasure?.equipName !== 'muniu') return [];
   return [MUNIU_SKILL];
+}
+
+/**
+ * 【定澜夜明珠】（君主专属宝物）——
+ * 「锁定技，你每回合首次弃置牌后，摸一张牌。当此牌离开你的装备区时，销毁之。」
+ *
+ * 口径：
+ * - 触发时机＝**你的牌因弃置进入弃牌堆**（引擎的 `cardDiscarded`：弃牌阶段、技能/牌的代价、
+ *   过河拆桥那类都算；「使用牌进弃牌堆、拼点亮牌、阵亡清牌」不算——与礼让同一口径）。
+ *   ⚠️ 已知缺口：技能里那些「直接 toDiscard 的代价」（例如【君威】弃的那一张）没走
+ *   `fireCardDiscarded`，所以不会触发它（本仓库的代价弃置一直是这样，见 §5.61 待核对）。
+ * - 锁定技：不问、直接摸；「每回合」＝持有者自己的一回合（与【飞龙夺凤】同一口径，
+ *   由 `flags.dinglanDoneThisTurn` 记账、在持有者的回合开始重置）。
+ * - 它不是英雄技能，所以和【飞龙夺凤】【盟军大纛】一样由 engine 显式派发。
+ */
+export function dinglanAfterDiscard(state: GameState, owner: Player, after: () => void): void {
+  if (owner.equipment.treasure?.equipName !== 'dinglan' || owner.flags.dinglanDoneThisTurn) {
+    after();
+    return;
+  }
+  owner.flags.dinglanDoneThisTurn = true;
+  const card = drawOne(state);
+  if (card) owner.hand.push(card);
+  pushLog(
+    state,
+    'skill',
+    `【定澜夜明珠】：${owner.name} 本回合首次弃牌${card ? '后摸一张牌' : '，但牌堆已空'}。`,
+    { seat: owner.seatId },
+  );
+  after();
 }
 
 /**

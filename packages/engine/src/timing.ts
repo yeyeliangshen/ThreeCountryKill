@@ -170,7 +170,18 @@ export type Timing =
    * ⚠️ 待核对：WIKI 与官方公告都没写这个「角色数」按明置算还是按武将牌本身的势力算
    *    （后者是胜负/鏖战的口径），本实现按前者，理由见 docs/guozhan-roster.md §5.60。
    */
-  | 'factionCountChanged';
+  | 'factionCountChanged'
+  /**
+   * **一张锦囊的目标定下来了**（派给**所有存活角色**，
+   * payload: { card, targetIds, trickCtx }）。
+   *
+   * 君孙权·据江挂这里（「与你势力相同的角色指定你为目标的非伤害牌额外结算一次」）。
+   * 与 `othersBecomeTarget` 的区别：那个只在「**唯一**目标」时派发（于吉·千幻要用它取消牌），
+   * 而据江要看所有目标，多目标的锦囊（五谷/桃园/联军）也得能观察到。
+   * 「再结算一次」复用寄篱那套：技能在钩子里把 `trickCtx.jiliSecond` 置位（+`rerunSkill` 供日志），
+   * `endTrickResolution` 走到出口时把同一张牌再走一遍。
+   */
+  | 'trickTargeted';
 
 /**
  * 回复体力后的载荷。
