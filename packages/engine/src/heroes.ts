@@ -4262,6 +4262,93 @@ export function xuanhuoFor(state: GameState, player: Player): ActiveSkill[] {
   return XUANHUO.canUse(state, player) ? [XUANHUO] : [];
 }
 
+/**
+ * 王平 —— 将略（君临天下·权，限定技；文本按**三国杀官网现行文本**，已核）。
+ *
+ * 将略：限定技，出牌阶段，你可以选择一个「军令」，与你势力相同的其他角色均可执行该军令。
+ *       你和每一个执行军令的角色体力上限+1且回复1点体力，然后你摸X张牌
+ *       （X 为因此回复体力的角色数）。
+ *
+ * ⚠️ 版本差异：《君临天下·权》2018 印刷版里还有一句「未确定势力的角色可以在此时明置武将牌」，
+ *    线上现行文本（官网 / OL / 移动版）删掉了它——本实现按现行文本，**不能让暗将借机明置**。
+ *
+ * 实现要点：
+ * - 军令那套机制现成（董昭·劝进、于禁·节钺），这里用的是「**一条**军令问**多个**人」的
+ *   变体 `api.armyOrderMulti`（引擎侧与 armyOrder 共用随机两张的挑令流程与结算队列）。
+ * - 「体力上限+1且回复1点体力」的**顺序按官方原文**：先加满上限、再回血。这个顺序有实际影响：
+ *   满血的队友加上限之后就有空间回这 1 点，所以「因此回复体力」的人必然是活着的参与者，
+ *   X 也就等于「王平 + 真正执行的队友」的人数（被军令翻面的那种会因为不能回复体力而不算，
+ *   所以用 `api.heal` 的**实际**回复量来数，不靠人数硬算）。
+ * - 军令中途可能打死人（「造成 1 点伤害」那条），所以名单上的人要**依次**问、
+ *   死掉的跳过——这也是 armyOrderMulti 里那个 step 链存在的原因。
+ */
+const WANGPING: Hero = {
+  id: 'wangping',
+  name: '王平',
+  faction: 'shu',
+  // 国战牌面 2 阴阳鱼 → 4
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'jianglue',
+      name: '将略',
+      oncePerGame: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state, player) => sameFactionOthers(state, player).length > 0,
+      execute: (state, player, _intent, api) => {
+        const mates = sameFactionOthers(state, player);
+        if (mates.length === 0) return '没有与你势力相同的其他角色';
+        pushLog(state, 'skill', `${player.name} 发动【将略】。`);
+        api.armyOrderMulti(
+          player.seatId,
+          mates.map((m) => m.seatId),
+          (st, executed) => {
+            let healed = 0;
+            for (const seatId of [player.seatId, ...executed]) {
+              const p = getPlayer(st, seatId);
+              if (!p || !p.alive) continue;
+              api.changeMaxHp(p, 1); // 先加上限
+              if (api.heal(p, 1) > 0) healed++; // 再回血；回不动的（不能回复体力）不算
+            }
+            const me = getPlayer(st, player.seatId);
+            if (!me) return;
+            pushLog(
+              st,
+              'skill',
+              `${me.name} 的【将略】：${healed} 名角色体力上限+1并回复1点体力。`,
+            );
+            for (let i = 0; i < healed; i++) {
+              const c = drawOne(st);
+              if (c) me.hand.push(c);
+            }
+            pushLog(st, 'skill', `${me.name} 因【将略】摸了 ${healed} 张牌。`);
+          },
+        );
+        return undefined;
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '将略',
+      desc: '限定技，出牌阶段，你可以选择一个「军令」，与你势力相同的其他角色均可执行该军令。你和每一个执行军令的角色体力上限+1且回复1点体力，然后你摸X张牌（X为因此回复体力的角色数）。',
+    },
+  ],
+};
+
+/** 场上与你势力相同的其他角色（含暗置的吗？不含——暗将没有势力，见 effectiveFaction） */
+function sameFactionOthers(state: GameState, player: Player): Player[] {
+  const mine = effectiveFaction(state, player);
+  if (!mine) return [];
+  return state.players.filter(
+    (p) => p.alive && p.seatId !== player.seatId && effectiveFaction(state, p) === mine,
+  );
+}
+
 const LIJUE_GUOSI: Hero = {
   id: 'lijue_guosi',
   name: '李傕郭汜',
@@ -9676,6 +9763,7 @@ export const HEROES: Hero[] = [
   YUJIN,
   CUIYAN_MAOJIE,
   FAZHENG,
+  WANGPING,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

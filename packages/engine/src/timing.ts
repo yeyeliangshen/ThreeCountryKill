@@ -361,6 +361,19 @@ export interface SkillApi {
     onDone: (state: GameState, executed: boolean) => void,
   ) => void;
   /**
+   * 令**多名**角色依次决定是否执行**同一条**军令（王平·将略）。
+   *
+   * 与 `armyOrder` 的区别只有「问几个人」：发起者照样先从随机两张里挑一条，
+   * 然后名单上的每个人各自决定执行/不执行，执行的各算各的效果（依次结算完再问下一个）。
+   * `onDone(state, executedSeatIds)` 在整条链走完后回调，`executedSeatIds` 是**真正执行了**
+   * 的人（拒绝的、中途阵亡的都不在里面）——将略要按它算「因此回复体力的角色数」。
+   */
+  armyOrderMulti: (
+    initiatorSeatId: string,
+    executorSeatIds: string[],
+    onDone: (state: GameState, executedSeatIds: string[]) => void,
+  ) => void;
+  /**
    * 视为使用一张【杀】（夏侯渊·神速那类）。调用方先把代价付掉。
    *
    * 与 castVirtualTrick 对应——那边是锦囊，这边是【杀】。

@@ -668,6 +668,15 @@ function drainResume(state: GameState): void {
  * 只有实回量 > 0 才跑钩子：满体力时「回复」没发生，就不该触发。
  */
 function healAndTrigger(state: GameState, player: Player, amount: number): number {
+  // 军令·翻面（`cannotHealThisTurn`）：「本回合不能回复体力」。
+  // ⚠️ 这个标记以前只被写、没被读——和同批另外两条军令条件一样（见 afterTurnEnd 的注释），
+  //    顺手把它补上，军令才算四条都真的生效。濒死求桃**不走这里**（respondDeathSave 直接
+  //    改 hp）：也就是「不能回复体力」挡不住救命的【桃】，这是本引擎的口径，等有明确
+  //    FAQ 再改。
+  if (player.flags.cannotHealThisTurn) {
+    pushLog(state, 'skill', `${player.name} 本回合不能回复体力。`);
+    return 0;
+  }
   const healed = healPlayer(player, amount);
   if (healed > 0) {
     runHooksPausable(state, 'afterHeal', player, { amount: healed }, () => {});
@@ -6862,6 +6871,69 @@ function makeSkillApi(
               );
             },
           );
+        },
+      );
+    },
+    armyOrderMulti: (initiatorSeatId, executorSeatIds, onDone) => {
+      const initiator = getPlayer(state, initiatorSeatId);
+      // 收口与 armyOrder 一致：先让技能结算收益，再把控制权还回去
+      const finish = (st: GameState, executed: string[]): void => {
+        onDone(st, executed);
+        if (st.pending === null && resumeTo) resumePlay(st, resumeTo);
+      };
+      if (!initiator) {
+        finish(state, []);
+        return;
+      }
+      // 发起者同样从随机两张里挑一条，然后**依次**问每个执行者（王平·将略）
+      const two = shuffle([...ARMY_ORDERS]).slice(0, 2);
+      askChoice(
+        state,
+        initiatorSeatId,
+        '【军令】：从两张里挑一条',
+        two.map((o) => ({ id: o.id, label: o.label })),
+        (st, _p, tokenId) => {
+          const token = ARMY_ORDERS.find((o) => o.id === tokenId);
+          if (!token) {
+            finish(st, []);
+            return;
+          }
+          const executed: string[] = [];
+          // 一个人一个人地问：军令效果本身会挂起（伤害→濒死、弃牌要挑牌），
+          // 所以下一步必须等 applyArmyOrder 的 after 回调，不能写在循环里。
+          const step = (st2: GameState, i: number): void => {
+            const seatId = executorSeatIds[i];
+            const executor = seatId ? getPlayer(st2, seatId) : undefined;
+            if (!seatId || !executor) {
+              finish(st2, executed);
+              return;
+            }
+            // 中途阵亡的人跳过（军令可能把前一个人打死，也可能有人被移除）
+            if (!executor.alive) {
+              step(st2, i + 1);
+              return;
+            }
+            askChoice(
+              st2,
+              seatId,
+              `【军令】${initiator.name} 令你执行：${token.label}。是否执行？`,
+              [
+                { id: 'yes', label: '执行军令' },
+                { id: 'no', label: '不执行' },
+              ],
+              (st3, p3, picked) => {
+                if (picked !== 'yes') {
+                  pushLog(st3, 'skill', `${p3.name} 拒绝执行军令。`);
+                  step(st3, i + 1);
+                  return;
+                }
+                pushLog(st3, 'skill', `${p3.name} 执行军令：${token.label}。`);
+                executed.push(seatId);
+                applyArmyOrder(st3, token.id, initiatorSeatId, seatId, () => step(st3, i + 1));
+              },
+            );
+          };
+          step(st, 0);
         },
       );
     },

@@ -770,7 +770,15 @@ const QUAN: RosterEntry[] = [
     primitives: ['pick_cards'],
     note: '取 **2019 修订版**（＝三国杀官网现行文本）：恩怨①「其他角色对你使用【桃】时其摸一张牌」（2018 初版是「你获得他人至少两张牌后其摸一张」，未采用）+ 恩怨②「受伤后来源交一张手牌或失去 1 点体力」；眩惑「交给你一张手牌并弃置一张牌，然后本回合获得武圣/咆哮/龙胆/铁骑/烈弓/狂骨之一（不能选场上已有的）」。眩惑与【黄天】同一档：**反向**技能挂在 legal/onUseSkill 的外部技能表上；六个技能都用国战版（借来的烈弓按国战条件判、咆哮带「第二张杀摸一张」），授予走 grantTempSkill。恩怨①只可能在濒死求桃时触发，靠 afterHeal 新增的 payload.taoSaverId 派发，且与【救援】一致只认实体【桃】（红牌当桃、酒当桃不算）。已知读法：发动者必须是已确定势力的角色（暗将无势力，与【黄天】同口径）。',
   },
-  { id: 'wangping', name: '王平', faction: 'shu', pack: 'quan', status: 'todo' },
+  {
+    id: 'wangping',
+    name: '王平',
+    faction: 'shu',
+    pack: 'quan',
+    status: 'done',
+    primitives: ['army_order', 'maxhp_change'],
+    note: '将略（限定技，**三国杀官网现行文本**）：出牌阶段选一条「军令」，与你势力相同的其他角色均可执行；你和每个执行者体力上限+1且回复1点体力，然后你摸X张（X＝因此回复体力的角色数）。⚠️ 2018 印刷版那句「未确定势力的角色可以在此时明置武将牌」线上已删，本实现按现行文本（暗将不能借机明置，也不在名单里——暗将没有势力）。新原语 api.armyOrderMulti（一条军令问多个人的变体，与 armyOrder 共用挑令流程）；「先加上限再回血」按官方原文顺序，所以满血参与者也能回这 1 点；X 用 api.heal 的实际回复量来数（被军令翻面者不能回复体力就不算）。顺带把 healAndTrigger 里 never-read 的 cannotHealThisTurn（军令·翻面）补上——在此之前「本回合不能回复体力」是空话。',
+  },
   {
     id: 'wuguotai',
     name: '吴国太',

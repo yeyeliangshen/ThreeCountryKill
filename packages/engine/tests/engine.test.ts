@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   applyIntent,
   attackRange,
@@ -15892,5 +15892,198 @@ describe('国战 · 法正（恩怨 / 眩惑）', () => {
     state.turn = { seatIndex: state.seatOrder.indexOf(C), phase: 'play' };
     state.pending = { kind: 'play', seatId: C };
     expect(toSnapshot(state, C).prompt?.legalSkillIds ?? []).not.toContain('xuanhuo');
+  });
+});
+
+/** 王平·将略（限定技：一条军令问所有同势力角色，参与者各 +1 上限并回血，王平摸 X 张） */
+describe('国战 · 王平·将略', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  /** 军令是「从六条里随机抽两张」，测试里把随机数钉死，让抽到的那两条固定 */
+  function fixedDraw() {
+    return vi.spyOn(Math, 'random').mockReturnValue(0);
+  }
+
+  /** 从两张里挑出「失去 1 点体力」那条（效果确定，方便断言成环） */
+  function pickLoseHp(state: GameState): void {
+    const p = state.pending;
+    if (p?.kind !== 'choice') throw new Error(`预期在挑军令，实际是 ${p?.kind}`);
+    const opt = p.options.find((o) => o.label.includes('失去 1 点体力'));
+    if (!opt) {
+      throw new Error(`这次没抽到「失去 1 点体力」：${p.options.map((o) => o.label).join(' / ')}`);
+    }
+    ok(act(state, p.seatId, { type: 'chooseOption', optionId: opt.id }));
+  }
+
+  it('执行的队友各自 +1 上限并回血，王平摸 X 张（X＝因此回血的角色数）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wangping', faction: 'shu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(toSnapshot(state, A).prompt?.legalSkillIds).toContain('jianglue');
+    const mock = fixedDraw();
+    try {
+      ok(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
+      pickLoseHp(state);
+      // 依次问每个同势力角色：乙不执行、丙执行
+      expect(state.pending?.kind).toBe('choice');
+      if (state.pending?.kind === 'choice') {
+        expect(state.pending.seatId).toBe(B);
+        expect(state.pending.title).toContain('军令');
+      }
+      ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+      expect(state.pending?.kind).toBe('choice');
+      if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+      ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+      // 丙执行「失去 1 点体力」→ 3；紧接着将略收尾给他 +1 上限并回 1 点 → 4。
+      // 整条链是**同步**走完的（军令效果没有需要等待的询问），所以这里直接看最终值。
+      // 将略收尾：甲与丙各 +1 上限并回 1 点 → 2 人因此回血 → 甲摸 2 张
+      expect(a.maxHp).toBe(5);
+      expect(a.hp).toBe(5);
+      expect(c.maxHp).toBe(5);
+      expect(c.hp).toBe(4);
+      expect(b.maxHp).toBe(4);
+      expect(b.hp).toBe(4);
+      expect(a.hand.length).toBe(2);
+      expect(state.log.some((e) => e.message.includes('拒绝执行军令'))).toBe(true);
+      expect(state.log.some((e) => e.message.includes('2 名角色体力上限+1'))).toBe(true);
+      expect(state.pending).toEqual({ kind: 'play', seatId: A });
+      // 限定技：一局只能一次
+      fail(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
+    } finally {
+      mock.mockRestore();
+    }
+  });
+
+  it('军令效果自带询问时，整条链也不会卡住', () => {
+    // 抽到的第一条是「摸一张然后交给发起者两张」那种要选牌的效果——一路走完之后
+    // 必须回到王平的出牌阶段（这是最容易出问题的地方，参考劝进那条用例）
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wangping', faction: 'shu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), sha('b2')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const mock = fixedDraw();
+    try {
+      ok(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
+      // 挑第一条（不指定是哪条，交给通用驱动器走完）
+      if (state.pending?.kind === 'choice') {
+        ok(
+          act(state, A, {
+            type: 'chooseOption',
+            optionId: state.pending.options[0]!.id,
+          }),
+        );
+      }
+      ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+      let guard = 0;
+      while (state.pending && guard++ < 12) {
+        const p = state.pending;
+        if (p.kind === 'choice') {
+          ok(act(state, p.seatId, { type: 'chooseOption', optionId: p.options[0]!.id }));
+        } else if (p.kind === 'pickCards') {
+          ok(
+            act(state, p.seatId, {
+              type: 'pickCards',
+              cardIds: p.cards.slice(0, Math.max(p.min, 0)).map((c) => c.id),
+            }),
+          );
+        } else {
+          break;
+        }
+      }
+      expect(state.pending).toEqual({ kind: 'play', seatId: A });
+      expect(a.maxHp).toBe(5); // 王平自己也算「你」
+      expect(state.log.some((e) => e.message.includes('执行军令'))).toBe(true);
+    } finally {
+      mock.mockRestore();
+    }
+  });
+
+  it('暗将（未确定势力）既不能发动将略，也不在名单里', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wangping', faction: 'shu', hand: [], revealed: false },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('jianglue');
+    // 反过来：王平明置、队友暗置 → 队友不在名单里（2018 印刷版那句「未确定势力的角色
+    // 可以在此时明置」没有实现，见武将注释）
+    const state2 = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wangping', faction: 'shu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [], revealed: false },
+      ],
+      A,
+    );
+    expect(toSnapshot(state2, A).prompt?.legalSkillIds ?? []).not.toContain('jianglue');
+  });
+});
+
+/** 军令·翻面那条「本回合不能回复体力」——以前只写标记不读，顺手补上后单独立个用例 */
+describe('军令 · 不能回复体力', () => {
+  it('挂着「本回合不能回复体力」时，吃桃回不了血；回合结束清掉', () => {
+    const state = makeGame([
+      { seatId: A, name: '张三', heroId: 'vanilla', hand: [tao('a1')], hp: 2 },
+      { seatId: B, name: '李四', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.flags.cannotHealThisTurn = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    expect(a.hp).toBe(2); // 桃打出去了，但血没回
+    expect(state.log.some((e) => e.message.includes('本回合不能回复体力'))).toBe(true);
+    // 回合结束后标记由 clearTurnScoped 清掉
+    ok(act(state, A, { type: 'endPhase' })); // 甲手牌已空 → 直接过弃牌阶段，轮到乙
+    expect(a.flags.cannotHealThisTurn).toBe(false);
   });
 });
