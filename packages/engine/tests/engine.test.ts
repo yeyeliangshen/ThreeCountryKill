@@ -15553,3 +15553,84 @@ describe('国战 · 崔琰毛玠（征辟 / 奉迎）', () => {
     expect(b.hand.length).toBeGreaterThan(0);
   });
 });
+
+/** 孙策·魂殇：体力不大于 1 时本回合获得英姿与英魂（临时授予，回合结束清掉） */
+describe('国战 · 孙策·魂殇（临时授予技能）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+    swap?: boolean,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    void swap;
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('魂殇（副将技）：体力≤1 时本回合获得英姿与英魂，回合结束清掉', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      // 孙策放副将位（魂殇是副将技）；主将用白板，免得别的钩子插进来
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ], A);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.deputyHeroId = 'sunce';
+    b.maxHp = 4;
+    b.hp = 1; // 「体力值不大于 1」
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙
+    skipRevealAsk(state);
+    // 魂殇生效 → 临时技能在身
+    const granted = b.tempGrantedSkills.map((g) => g.skillName);
+    expect(granted).toContain('英姿');
+    expect(granted).toContain('英魂');
+    expect(state.log.some((e) => e.message.includes('魂殇'))).toBe(true);
+    // 英魂：已损失体力 3（4-1）→ 问是否令一名其他角色摸/弃 3 张
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('英魂');
+    // 结束回合 → 临时技能清空
+    if (state.pending?.kind === 'choice') ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    ok(act(state, B, { type: 'endPhase' })); // 结束出牌阶段
+    // 乙体力只有 1、手牌却摸到 2 张 → 弃牌阶段要弃掉超出的部分，弃完回合才真的结束
+    if (state.pending?.kind === 'discard') {
+      const first = b.hand[0]!.id;
+      ok(act(state, B, { type: 'discard', cardIds: [first] }));
+    }
+    expect(b.tempGrantedSkills).toEqual([]);
+  });
+
+  it('魂殇：体力大于 1 时不发动', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ], A);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.deputyHeroId = 'sunce';
+    b.hp = 3;
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(b.tempGrantedSkills).toEqual([]);
+    expect(state.log.some((e) => e.message.includes('魂殇'))).toBe(false);
+  });
+});

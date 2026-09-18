@@ -338,6 +338,11 @@ export interface SkillApi {
   /** 授予技能：默认给技能使用者，传 toSeatId 就给那个人（糜夫人·存嗣把勇决给队友） */
   grantSkill: (heroId: string, skillName: string, toSeatId?: string) => void;
   /**
+   * 授予技能，**只到本回合结束**（孙策·魂殇「本回合拥有英姿和英魂」、
+   * 法正·眩惑「获得武圣等之一直到回合结束」）。回合结束时自动清掉。
+   */
+  grantTempSkill: (heroId: string, skillName: string, toSeatId?: string) => void;
+  /**
    * 令某角色执行一次「军令」（董昭·劝进那类）。
    *
    * 流程：**发起者**先从随机两张军令里挑一张交给执行者，执行者再决定是否执行；

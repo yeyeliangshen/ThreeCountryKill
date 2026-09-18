@@ -311,6 +311,11 @@ export interface Player {
    * 只记来源武将 id 与技能名，具体怎么摘见 heroes.grantedHeroes。
    */
   grantedSkills: { heroId: string; skillName: string }[];
+  /**
+   * 「**本回合**获得的技能」（与永久的 grantedSkills 平行，回合结束时清空）。
+   * 孙策·魂殇（本回合拥有英姿/英魂）、法正·眩惑（获得武圣等之一直到回合结束）用它。
+   */
+  tempGrantedSkills: { heroId: string; skillName: string }[];
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）

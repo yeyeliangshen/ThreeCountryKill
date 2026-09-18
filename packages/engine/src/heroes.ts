@@ -4678,6 +4678,23 @@ const SUNCE: Hero = {
   deputySlotHalfYang: true,
   hooks: [
     {
+      // 魂殇：准备阶段，若你的体力值不大于 1，你本回合拥有「英姿」和「英魂」。
+      // 两者都是**临时**授予（回合结束自动清掉）。「英魂」的触发点也是准备阶段，
+      // 与魂殇同一个时机——按同时触发处理：授完就在这同一阶段直接结算一次。
+      timing: 'turnStart',
+      skillId: '魂殇',
+      handler: (ctx) => {
+        const me = ctx.player;
+        if (me.hp > 1) return;
+        ctx.api.grantTempSkill('zhouyu', '英姿', me.seatId);
+        ctx.api.grantTempSkill('sunjian', '英魂', me.seatId);
+        pushLog(ctx.state, 'skill', `${me.name} 的【魂殇】生效：本回合拥有【英姿】和【英魂】。`);
+        // 立刻结算一次英魂（用孙坚那张武将牌上的钩子）
+        const hun = getHero('sunjian')?.hooks?.find((h) => h.skillId === '英魂');
+        if (hun) hun.handler(ctx);
+      },
+    },
+    {
       // 自己**使用**【决斗】或红色【杀】指定目标后
       timing: 'useCard',
       skillId: '激昂',
@@ -4738,7 +4755,7 @@ const SUNCE: Hero = {
     },
     {
       name: '魂殇',
-      desc: '副将技，此武将牌减少半个阴阳鱼；准备阶段，若你的体力值不大于1，你本回合拥有「英姿」和「英魂」。（「本回合临时拥有技能」的机制还没做，暂时不可用）',
+      desc: '副将技，此武将牌减少半个阴阳鱼；准备阶段，若你的体力值不大于1，你本回合拥有「英姿」和「英魂」。',
     },
   ],
 };
@@ -9554,7 +9571,8 @@ function nullifyHero(h: Hero): Hero {
  */
 export function grantedHeroes(state: GameState, p: Player): Hero[] {
   const out: Hero[] = [];
-  for (const g of p.grantedSkills ?? []) {
+  // 永久授予的 + 本回合临时授予的（tempGrantedSkills，回合结束时清空）
+  for (const g of [...(p.grantedSkills ?? []), ...(p.tempGrantedSkills ?? [])]) {
     const src = getHeroForMode(g.heroId, state.mode);
     if (!src) continue;
     const srcRaw = src as unknown as Record<string, unknown>;

@@ -1355,6 +1355,8 @@ function afterTurnEnd(state: GameState): void {
       // 所以「本回合不能使用或打出手牌」实际上是永久生效的——顺手一起修了。
       p.flags.cannotPlayCardsThisTurn = false;
       p.flags.cannotPlayColor = null;
+      // 「直到回合结束」的临时技能（孙策·魂殇 / 法正·眩惑）
+      p.tempGrantedSkills = [];
       p.flags.cannotHealThisTurn = false;
       // 奋迅的「你至其距离视为 1」
       p.flags.distanceToOneThisTurn = null;
@@ -6854,6 +6856,23 @@ function makeSkillApi(
         },
       );
     },
+    grantTempSkill: (heroId, skillName, toSeatId) => {
+      const target = toSeatId
+        ? getPlayer(state, toSeatId)
+        : opts?.actor
+          ? getPlayer(state, opts.actor)
+          : undefined;
+      if (!target) return;
+      if (
+        target.tempGrantedSkills.some((g) => g.heroId === heroId && g.skillName === skillName)
+      ) {
+        return;
+      }
+      target.tempGrantedSkills.push({ heroId, skillName });
+      pushLog(state, 'skill', `${target.name} 本回合获得了技能【${skillName}】。`, {
+        seat: target.seatId,
+      });
+    },
     grantSkill: (heroId, skillName, toSeatId) => {
       // 默认给技能使用者（姜维·志继给自己）；传了 toSeatId 就给那个人（糜夫人·存嗣给目标）
       const actor = toSeatId
@@ -7240,6 +7259,7 @@ export function createGame(
     usedOncePerGame: {},
     prelitSkills: [],
     removedHeroIds: [],
+    tempGrantedSkills: [],
     tian: [],
     qianhuan: [],
     hun: [],
