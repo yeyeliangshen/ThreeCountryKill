@@ -18817,6 +18817,39 @@ describe('国战 · 君主将（特性）', () => {
     expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
   });
 
+  it('君威（君曹操）：弃一张牌从场外取得【六龙骖驾】，进攻距离 -3', () => {
+    // 八人局：甲(0) 与 戊(4) 的基础距离是 4，装上六龙骖驾后应当减 3
+    const ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    const state = createGame(
+      ids.map((seatId) => ({ seatId, name: seatId, heroId: 'vanilla' })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const id of ids) {
+      const p = state.players.find((x) => x.seatId === id)!;
+      p.heroId = 'vanilla';
+      p.faction = 'wei';
+      p.heroRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = [];
+      p.flags = emptyFlags();
+    }
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    a.heroId = 'juncaocao';
+    a.hand = [mk('a1', 'shan', 'spade', 3)];
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    const before = distance(state, 'A', 'E');
+    expect(before).toBe(4);
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
+    ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
+    expect(a.equipment.treasure?.equipName).toBe('liulong');
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true); // 代价进弃牌堆
+    expect(distance(state, 'A', 'E')).toBe(before - 3);
+  });
+
   it('建安·五子良将纛：魏将准备阶段换一个技能，代价是封锁一张暗置武将牌', () => {
     // 甲：君曹操（魏，明置）＝发纛的人；乙：张辽（明置）+ 于禁（暗置）
     // 乙是魏势力 → 准备阶段会出现【建安】的询问；「不能选择场上已有的同名技能」——

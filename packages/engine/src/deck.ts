@@ -401,3 +401,21 @@ export function lordEquipFeilong(): Card {
     destroyOnLeave: true,
   };
 }
+
+/**
+ * 【六龙骖驾】（君主将专属宝物，♥K）：**你计算与其他角色的距离 -3**。
+ *
+ * 只能通过君曹操的【君威】从**游戏外**取得；离开装备区即销毁（`Card.destroyOnLeave`）。
+ * ⚠️ 网上另有「它会替换坐骑、且不能再使用坐骑牌」的说法——用户提供的牌面文本里**没有**这一条，
+ *    本实现按用户文本：只有「距离 -3」，也不影响坐骑牌的使用。
+ */
+export function lordEquipLiulong(): Card {
+  return {
+    id: 'lord-liulong',
+    type: 'treasure',
+    suit: 'heart',
+    rank: 13,
+    equipName: 'liulong',
+    destroyOnLeave: true,
+  };
+}

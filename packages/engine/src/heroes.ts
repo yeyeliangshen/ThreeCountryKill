@@ -23,7 +23,7 @@ import type {
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
 import { addMarker } from './markers';
-import { drawOne, lordEquipFeilong } from './deck';
+import { drawOne, lordEquipFeilong, lordEquipLiulong } from './deck';
 import { attackRange, canTarget, distance } from './distance';
 
 import {
@@ -3380,6 +3380,38 @@ function lordHero(
   };
 }
 
+/**
+ * 【君威】（君主技，四位君主共用同一句式）：
+ * 「出牌阶段，若场上没有【你的专属装备】，你可以弃置一张牌，从游戏外使用之。
+ *   当你死亡时，与你势力相同的角色各失去1点体力。」
+ * （死亡那半句是君主将的固定特性，由引擎统一实现，不在这个技能里。）
+ * 每位君主的差别只有「专属装备是哪一张」，所以做成工厂，四位君主共用一份实现。
+ */
+function junweiSkill(equipName: string, equipLabel: string, makeEquip: () => Card): ActiveSkill {
+  return {
+    id: 'junwei',
+    name: '君威',
+    minTargets: 0,
+    maxTargets: 0,
+    needsCards: true, // 弃置一张牌作为代价（点手牌）
+    canUse: (state, player) => !lordEquipOnField(state, equipName) && player.hand.length > 0,
+    execute: (state, player, intent, api) => {
+      const ids = intent.cardIds ?? [];
+      if (ids.length !== 1) return '请弃置一张牌作为代价';
+      const cost = removeCard(player.hand, ids[0]!);
+      if (!cost) return '这张牌不在你手里';
+      toDiscard(state, cost);
+      pushLog(
+        state,
+        'skill',
+        `${player.name} 发动【君威】：弃置【${cardLabel(cost)}】，从游戏外使用【${equipLabel}】。`,
+      );
+      // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）
+      api.giveEquipTo(makeEquip(), player.seatId);
+    },
+  };
+}
+
 /** 场上（任何人的装备区）有没有这张专属装备——【君威】的发动条件 */
 function lordEquipOnField(state: GameState, equipName: string): boolean {
   return state.players.some((p) =>
@@ -3397,7 +3429,7 @@ const JUN_CAOCAO: Hero = lordHero(
   'juncaocao',
   '君曹操',
   'wei',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【建安】（五子良将纛）与【挥鞭】已实现；【君威】（专属装备【六龙骖驾】）未实现——缺该坐骑的效果文本。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【六龙骖驾】）、【建安】（五子良将纛）、【挥鞭】已实现；【总御】未实现——它的完整文本还没核到。',
   {
     // 建安（君主技）：明置时获得「五子良将纛」——魏势力角色在准备阶段可以换一个五子良将技能。
     // 引擎按这个字段把选项发给同势力角色（见 askLordBanner）。
@@ -3408,9 +3440,14 @@ const JUN_CAOCAO: Hero = lordHero(
         name: '建安',
         desc: '君主技。当你明置后，与你势力相同的角色可以在自己的准备阶段弃置一张牌，并令自己的一张暗置武将牌暂时不能明置，以获得「五子良将」中的一个技能（不能选择场上已有的同名技能），直到你的下个回合开始。',
       },
-      { name: '挥鞭', desc: '出牌阶段限一次，你可以对一名魏势力角色造成 1 点伤害并令其摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。' },
+      {
+        name: '挥鞭',
+        desc: '出牌阶段限一次，你可以对一名魏势力角色造成 1 点伤害并令其摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。',
+      },
     ],
     activeSkills: [
+      // 【君威】（专属装备【六龙骖驾】，♥K 宝物：你计算与其他角色的距离 -3）
+      junweiSkill('liulong', '六龙骖驾', lordEquipLiulong),
       {
         // 官方口径（用户核对后提供）：「出牌阶段限一次，对一名魏势力角色造成 1 点伤害并令其
         // 摸两张牌，然后令另一名已受伤的魏势力角色回复 1 点体力。」
@@ -3479,35 +3516,9 @@ const JUN_LIUBEI: Hero = lordHero(
   'junliubei',
   '君刘备',
   'shu',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】已实现（含专属装备【飞龙夺凤】）；「章武」「励众」未实现。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（含专属装备【飞龙夺凤】）与【励众】已实现；「章武」未实现——它要「视为使用国战标记」，标记被使用时的时机限制还没核到。',
   {
-    activeSkills: [
-      {
-        // 官方原文（移动版 WIKI）：「出牌阶段，若场上没有【飞龙夺凤】，你可以弃置一张牌，
-        // 从游戏外使用之。当你死亡时，蜀势力角色各失去1点体力。」
-        // （死亡那半句是君主将的固定特性，已由引擎统一实现，不在这个技能里。）
-        id: 'junwei',
-        name: '君威',
-        minTargets: 0,
-        maxTargets: 0,
-        needsCards: true, // 弃置一张牌作为代价（点手牌）
-        canUse: (state, player) => !lordEquipOnField(state, 'feilong') && player.hand.length > 0,
-        execute: (state, player, intent, api) => {
-          const ids = intent.cardIds ?? [];
-          if (ids.length !== 1) return '请弃置一张牌作为代价';
-          const cost = removeCard(player.hand, ids[0]!);
-          if (!cost) return '这张牌不在你手里';
-          toDiscard(state, cost);
-          pushLog(
-            state,
-            'skill',
-            `${player.name} 发动【君威】：弃置【${cardLabel(cost)}】，从游戏外使用【飞龙夺凤】。`,
-          );
-          // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）
-          api.giveEquipTo(lordEquipFeilong(), player.seatId);
-        },
-      },
-    ],
+    activeSkills: [junweiSkill('feilong', '飞龙夺凤', lordEquipFeilong)],
     hooks: [
       {
         // 官方原文（移动版 WIKI）：「锁定技，每轮结束时，你令与你势力相同的角色中本轮造成过伤害

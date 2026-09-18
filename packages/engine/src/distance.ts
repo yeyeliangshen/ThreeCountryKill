@@ -40,6 +40,9 @@ export function distance(state: GameState, fromId: string, toId: string): number
   let d = baseDistance(state, fromId, toId);
   const to = getPlayer(state, toId);
   if (from?.equipment.minusMount) d -= 1;
+  // 【六龙骖驾】（君主将专属宝物）：你计算与其他角色的距离 -3。
+  // 与 −1马 同一根轴（都算「进攻距离」），只是数值更大；据用户提供的牌面文本实现。
+  if (from?.equipment.treasure?.equipName === 'liulong') d -= 3;
   if (to?.equipment.plusMount) d += 1;
   // 飞影（曹洪·鹤翼授予同队列者）：别人计算与他的距离 +1
   if (to && hasFeiying(state, to)) d += 1;

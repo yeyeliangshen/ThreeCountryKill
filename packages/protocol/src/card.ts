@@ -206,6 +206,7 @@ export const EQUIP_NAME: Record<string, string> = {
   // ⚠️ 其余三件（六龙骖驾 / 定澜夜明珠 / 盟军大纛）的效果文本 WIKI 无页面、搜索配额用尽，
   //    查清之前不登记、也不实现——不猜。
   feilong: '飞龙夺凤',
+  liulong: '六龙骖驾',
   // 防具
   bagua: '八卦阵',
   renwang: '仁王盾',
