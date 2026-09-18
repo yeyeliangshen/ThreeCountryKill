@@ -103,7 +103,12 @@ button:disabled {
     inset 0 0 140px rgba(90, 62, 22, 0.28),
     0 0 90px rgba(0, 0, 0, 0.8);
   border-radius: 16px;
+  /* ⚠️ 这里必须是 clip，不能是 hidden：hidden 会让 .app 变成一个**滚动容器**，
+     里面窄屏底部吸附用的 `position: sticky` 就会失效（它只认最近的可滚动祖先）。
+     clip 保留同样的裁切效果，但不制造滚动容器。老浏览器不认就退化成普通文档流——
+     底部那块不粘住而已，不会坏。 */
   overflow: hidden;
+  overflow: clip;
 }
 /* 视口窄于桌宽时桌子已铺满整屏，圆角只会在四个角留出小缺口，去掉更干净。
    临界值取 --table-max 略加一点，这样只有当两侧真的露出房间底色时才用圆角。
@@ -683,11 +688,22 @@ button:disabled {
   .skill-bar {
     order: 4;
   }
-  .prompt {
+  /* ⚠️ 排序要落在 .dock 上：它是新的外层容器，prompt/hand 现在是它的子元素，
+     给子元素写 order 不再影响整列的顺序（踩过一次：.dock 没写 order = 0，整块排到了最前面）。 */
+  .dock {
     order: 5;
   }
-  .hand {
-    order: 6;
+  /* 操作区 + 手牌整块吸附在屏幕底部：手机竖屏时上半部分（对手/记录/武将面板/技能栏）
+     一长，原来要往下滚才能看见自己的牌。吸附之后按钮和牌永远在眼前，
+     底部用羊皮纸色垫底 + 一点上缘阴影，滚上来的内容不会从字缝里透出来。 */
+  .dock {
+    position: sticky;
+    bottom: 0;
+    z-index: 6;
+    background: linear-gradient(to top, rgba(221, 202, 159, 0.97) 76%, rgba(221, 202, 159, 0.88));
+    box-shadow: 0 -6px 14px rgba(60, 40, 10, 0.2);
+    border-radius: 10px 10px 0 0;
+    padding: 2px 6px 6px;
   }
   /* 窄屏下单列：两层容器都“消失”，记录/面板回到 .game 的列里 */
   .board,
@@ -709,11 +725,16 @@ button:disabled {
     flex: 1;
     min-width: 0;
   }
-  /* 操作区 + 手牌一起压到底部：按钮（出牌 / 结束出牌 / 各种选择）要紧贴手牌上方——
-     以前只把 .hand 压到底，按钮就悬在牌桌中上、离自己的牌很远，看着很怪。
-     锚点放在 .prompt 上，两块自然贴在一起（手牌是最后一项，仍在最下面）。 */
-  .board .prompt {
+  /* 操作区 + 手牌（.dock 整块）压到牌桌底部：按钮（出牌 / 结束出牌 / 各种选择）
+     要紧贴手牌上方——以前只把 .hand 压到底，按钮就悬在牌桌中上、离自己的牌很远。
+     窄屏那套 sticky 吸附在宽屏不适用（牌桌本来就一屏排得下），在这里关掉。 */
+  .board .dock {
     margin-top: auto;
+    position: static;
+    background: none;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
   }
   .side {
     display: flex;
