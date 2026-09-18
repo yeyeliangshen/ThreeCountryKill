@@ -3743,13 +3743,60 @@ describe('国战标记（阶段 2）', () => {
         revealed: true,
         hand: [sha('h1')],
       },
-      { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        revealed: true, // 两张都明置 → 没有暗置武将牌可看
+        hand: [],
+      },
     ]);
     giveMarker(state, A, 'xianqu');
-    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [] }));
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [B] }));
     const a = player(state, A);
     expect(a.hand.length).toBe(4);
     expect(a.markers.xianqu).toBeUndefined();
+    // 官方还有「并观看其没有明置的副将牌」——乙两张都明置了，所以给出「没有暗置武将牌」
+    expect(state.pending?.kind).toBe('viewCards');
+    if (state.pending?.kind === 'viewCards') {
+      expect(state.pending.seatId).toBe(A); // 只有发动者能看到
+      expect(state.pending.note).toContain('没有暗置');
+    }
+  });
+
+  it('先驱：观看对方暗置的武将牌（两张都暗着时由发动者挑一张）', () => {
+    const state = makeGz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'lvbu',
+        deputyHeroId: 'diaochan',
+        faction: 'qun',
+        revealed: true,
+        hand: [],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'xuchu',
+        deputyHeroId: 'zhenji',
+        faction: 'wei',
+        revealed: false, // 主副将都暗置
+        hand: [],
+      },
+    ]);
+    giveMarker(state, A, 'xianqu');
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [B] }));
+    // 两张都暗着 → 先问「观看哪一张」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    const opt = state.pending.options.find((o) => o.id.includes('zhenji'));
+    expect(opt).toBeTruthy();
+    ok(act(state, A, { type: 'chooseOption', optionId: opt!.id }));
+    expect(state.pending?.kind).toBe('viewCards');
+    if (state.pending?.kind === 'viewCards') expect(state.pending.note).toContain('甄姬');
   });
 
   it('先驱：手牌已达 4 张时一张也不摸', () => {
@@ -3766,7 +3813,7 @@ describe('国战标记（阶段 2）', () => {
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
     ]);
     giveMarker(state, A, 'xianqu');
-    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [] }));
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [B] }));
     expect(player(state, A).hand.length).toBe(5);
     expect(player(state, A).markers.xianqu).toBeUndefined();
   });
