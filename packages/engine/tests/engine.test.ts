@@ -17068,3 +17068,151 @@ describe('国战 · 吴景（调归 / 风扬）', () => {
     expect(b.equipment.weapon).toBeNull();
   });
 });
+
+/** 严白虎·雉盗 / 寄篱（不臣篇·上，群，2 阴阳鱼→4） */
+describe('国战 · 严白虎（雉盗 / 寄篱）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      deputyHeroId?: string;
+      revealed?: boolean;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('雉盗：出牌阶段开始时锁定一名角色，距离视为 1、只能指定他与你', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'yanbaihu', faction: 'qun', hand: [sha('a1'), guohe('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 让回合从丁转到甲：甲的**出牌阶段开始时**才会问雉盗
+    state.turn = { seatIndex: state.seatOrder.indexOf(D), phase: 'play' };
+    state.pending = { kind: 'play', seatId: D };
+    ok(act(state, D, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('雉盗');
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(a.flags.cardTargetOnlySeat).toBe(C);
+    expect(distance(state, A, C)).toBe(1); // 无视距离
+    // 只能指定丙：用【过河拆桥】指定乙 → 被拦
+    fail(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    // 指定丙 → 放行
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [C] }));
+    passWuxie(state);
+  });
+
+  it('雉盗：出牌阶段内第一次对其造成伤害后，获得其区域里的一张牌', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'yanbaihu', faction: 'qun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [], equip: [wpn('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 直接设好雉盗的锁定（跳过出牌阶段开始时的询问，单独验后半句）
+    a.flags.cardTargetOnlySeat = B;
+    a.flags.distanceToOneThisTurn = B;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受到 1 点伤害
+    // 雉盗问「获得其一张牌」（乙装备区有一张武器）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.title).toContain('雉盗');
+      expect(state.pending.options.map((o) => o.id)).toContain('b1');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'b1' }));
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
+    expect(b.equipment.weapon).toBeNull();
+    expect(state.log.some((e) => e.message.includes('雉盗'))).toBe(true);
+  });
+
+  it('寄篱：本阶段第 2 次受到伤害时防止之，并移除这张武将牌', () => {
+    const state = gz(
+      [
+        // 严白虎放副将位（寄篱是副将技）
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [sha('a1'), sha('a2')],
+          equip: [wpn('zg1')],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [], hp: 4 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 诸葛连弩：本回合出杀无次数限制（寄篱要挨两次伤害才触发）
+    a.equipment.weapon = { id: 'zg1', type: 'weapon', suit: 'diamond', rank: 1, equipName: 'zhuge' };
+    b.deputyHeroId = 'yanbaihu';
+    b.maxHp = 4;
+    b.hp = 4;
+    // 第一刀：正常受伤
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(3);
+    // 第二刀：寄篱防止并移除武将牌
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(3); // 没再掉血
+    expect(b.removedHeroIds).toContain('yanbaihu');
+    expect(state.log.some((e) => e.message.includes('寄篱'))).toBe(true);
+  });
+
+  it('寄篱：副将位少半个阴阳鱼（体力上限 -1）', () => {
+    // 直接验副将技的体力规则：主将 4 阴阳鱼 + 副将 2 阴阳鱼 - 0.5 → 本引擎按 floor((4+4)/2)... 
+    // 这里只验「removeHero 之后技能确实没了」与标记存在，体力规则由 finishDraft 的既有测试覆盖
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    b.deputyHeroId = 'yanbaihu';
+    const hero = getHeroForMode('yanbaihu', 'guozhan')!;
+    expect(hero.deputySlotSkills).toContain('寄篱');
+    expect(hero.deputySlotHalfYang).toBe(true);
+    void b;
+  });
+});

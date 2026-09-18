@@ -856,7 +856,12 @@ const BUCHEN: RosterEntry[] = [
     name: '严白虎',
     faction: 'qun',
     pack: 'buchen',
-    status: 'verify',
+    status: 'partial',
+    missing: [
+      '寄篱的「此牌结算两次」（红色基本牌/普通锦囊唯一目标 → 结算结束后使用者对你再使用一次）',
+    ],
+    primitives: ['pick_cards', 'slot_skills', 'remove_hero'],
+    note: '雉盗 + 寄篱（不臣篇·上，群，国战牌面 2 阴阳鱼 → 4，称号·豺牙落涧；文本已核）。取 **2021 移动版**口径：寄篱是副将技（deputySlotSkills + deputySlotHalfYang，2022 版去掉了副将技标签与 -1 阴阳鱼；2021 线下实体卡把「再使用一次」写成「此牌结算两次」，同义）。雉盗：距离用现成的 flags.distanceToOneThisTurn，「只能指定他与你」用新标记 flags.cardTargetOnlySeat 并在 engine.onPlayCard 统一拦（zhidaoTargetsBlocked，AOE 那类不指定目标却会打到别人的牌也一并拦）；「第一次对其造成伤害后获得其区域里的一张牌」挂 afterDamageDealt + flags.zhidaoHitDone，拿牌走 takeOneOfTargetCards。寄篱的减伤+移除：damageDealt 里读「本阶段已受伤次数」——计数记在 flags.damageCountKey/count（键＝`回合座位:阶段名`，所以不用给每个阶段转换点加重置代码），第 2 次设 damagePrevented 并 removeHeroCard。⚠️ 缺口：寄篱的「此牌结算两次」**尚未实现**（这是 partial 的原因）。实现计划：给 TrickContext/AttackContext 各加一个 `jiliSecond` 守卫位；在「成为唯一目标」的两处（othersBecomeTarget 判锦囊、becomeTarget 判红杀）判断并置位；于【杀】的收尾（afterAttackSettled）与单目标锦囊各自的 resumePlay 出口（过拆/顺手/无中生有/决斗/火攻/水淹七军，共约 8 处）改为调用一个 endTrickResolve()：若 jiliSecond 未消费就再跑一次同一张牌的结算。之所以没直接做：锦囊的「结算完成」时机目前只有【调虎离山】那一条路有派发（见吴景·调归），其余出口要小心挂起中的重入，改动面 ~8–49 处，需要单独的测试矩阵。',
   },
 ];
 

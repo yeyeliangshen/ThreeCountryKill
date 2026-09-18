@@ -117,6 +117,7 @@ export interface HeroVariant {
   spadeAsHeart?: Hero['spadeAsHeart'];
   virtualYuxi?: Hero['virtualYuxi'];
   fengyang?: Hero['fengyang'];
+  jili?: Hero['jili'];
 }
 
 export interface Hero {
@@ -336,6 +337,11 @@ export interface Hero {
    */
   spadeAsHeart?: boolean;
   /**
+   * 严白虎·寄篱（副将技，锁定技）：成为红色基本牌/红色普通锦囊牌的**唯一目标**后，
+   * 这张牌结算两次（＝使用者对你再使用一次同名牌）。
+   */
+  jili?: boolean;
+  /**
    * 吴景·风扬（阵法技，锁定技）：与你势力不同或未确定势力的角色，不能弃置或获得
    * **与你处于同一队列**的角色装备区里的牌。判定收在 `heroes.fengyangBlocksEquip`，
    * 由引擎在「拿走/弃置他人装备牌」的几处收口调用。
@@ -413,7 +419,9 @@ export type FieldSkill =
   /** 袁术·庸肆：场上没有实体【玉玺】时视为装备着【玉玺】 */
   | 'virtualYuxi'
   /** 吴景·风扬：同队列角色的装备区里的牌不受异势力角色弃置/获得 */
-  | 'fengyang';
+  | 'fengyang'
+  /** 严白虎·寄篱：成为红色基本牌/普通锦囊的唯一目标后，此牌结算两次 */
+  | 'jili';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -439,6 +447,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'spadeAsHeart',
   'virtualYuxi',
   'fengyang',
+  'jili',
   'gainsUsedNanman',
   'xingleBasicDiscard',
   'grantsFeiyingToQueue',
@@ -4723,6 +4732,166 @@ function weidiTargets(state: GameState, player: Player): Player[] {
  *   几处收口调用它（过河拆桥/顺手牵羊的选牌、反馈那类转牌、麒麟弓/寒冰剑的弃牌）。
  *   「移动」类（巧变/谋断/勇进/甘露）不受限——官方只说「弃置或获得」，移动是另一种动作。
  */
+/**
+ * 严白虎 —— 雉盗 / 寄篱（不臣篇·上，群，**2 阴阳鱼 → 4**，称号·豺牙落涧；已核）。
+ *
+ * 雉盗（锁定技）：出牌阶段开始时，你选择一名其他角色，直到回合结束，你计算与其的距离视为 1
+ *   且你不能使用牌指定除你与你与其外的角色为目标，然后当你于出牌阶段内第一次对其造成伤害后，
+ *   你获得其区域里的一张牌。
+ * 寄篱（**副将技**，锁定技）：你计算体力上限时减少 1 个单独的阴阳鱼。当你成为红色基本牌或
+ *   红色普通锦囊牌的唯一目标后，在此牌结算结束后，此牌的使用者对你再使用一次相同牌名的牌。
+ *   当你受到伤害时，若你于当前阶段内受到过伤害的次数为 1，你防止此伤害，然后移除该武将牌。
+ *   ⚠️ 版本差异：2021 线下实体卡把中间那句写成「此牌结算两次」（同义）；2022 版（2023 典藏）
+ *   去掉了「副将技」标签与「减少 1 个阴阳鱼」——本实现取 **2021 移动版**口径（副将技齐全），
+ *   并在 roster note 里记了另两版。
+ *
+ * 实现要点：
+ * - 雉盗的两个限制：距离用现成的 `flags.distanceToOneThisTurn`（丁奉·奋迅那套）；
+ *   「只能指定他与你」用新标记 `flags.cardTargetOnlySeat`，在 engine.onPlayCard 里统一拦
+ *   （`zhidaoTargetsBlocked`）——显式目标直接查，AOE 那类「不用指定目标却会打到别人」的牌
+ *   在「除你与他还有别的存活角色」时也不许用。
+ * - 「第一次对其造成伤害后」挂 afterDamageDealt（派给来源），用 `flags.zhidaoHitDone` 记一次，
+ *   并且要求当前是**出牌阶段**；拿牌走现成的 `takeOneOfTargetCards`（手牌随机、明牌可选）。
+ * - 寄篱的减伤+移除：在 `damageDealt`（扣血前）读「本阶段已受过几次伤」——
+ *   计数记在 `flags.damageCountKey/damageCount`（键＝`回合座位:阶段名`，所以不用给每个阶段
+ *   转换点加重置代码）。第 2 次直接 `flags.damagePrevented = true` 并移除这张武将牌。
+ */
+const YANBAIHU: Hero = {
+  id: 'yanbaihu',
+  name: '严白虎',
+  faction: 'qun',
+  jili: true,
+  // 国战牌面 2 阴阳鱼 → 4（走副将位时寄篱再减 1）
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  deputySlotSkills: ['寄篱'],
+  deputySlotHalfYang: true,
+  hooks: [
+    {
+      timing: 'playPhase',
+      skillId: '雉盗',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+        if (others.length === 0) return;
+        const lock = (target: Player): void => {
+          me.flags.distanceToOneThisTurn = target.seatId;
+          me.flags.cardTargetOnlySeat = target.seatId;
+          me.flags.zhidaoHitDone = false;
+          pushLog(
+            ctx.state,
+            'skill',
+            `${me.name} 的【雉盗】：本回合锁定 ${target.name}（距离视为 1、只能指定他与你）。`,
+          );
+        };
+        if (others.length === 1) {
+          lock(others[0]!);
+          return;
+        }
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '【雉盗】：选择本回合锁定的一名其他角色',
+          others.map((p) => ({ id: p.seatId, label: p.name })),
+          (_st, _p, id) => {
+            const t = getPlayer(ctx.state, id);
+            if (t) lock(t);
+          },
+        );
+      },
+    },
+    {
+      // 雉盗后半句：出牌阶段内第一次对他造成伤害后，获得他区域里的一张牌
+      timing: 'afterDamageDealt',
+      skillId: '雉盗',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const locked = me.flags.cardTargetOnlySeat;
+        if (!locked || me.flags.zhidaoHitDone) return;
+        if (ctx.state.turn.phase !== 'play') return;
+        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        if (!payload?.damage || payload.attack?.targetId !== locked) return;
+        const victim = getPlayer(ctx.state, locked);
+        if (!victim) return;
+        me.flags.zhidaoHitDone = true;
+        takeOneOfTargetCards(ctx.state, me, victim, ctx.api, '雉盗', () => {
+          pushLog(
+            ctx.state,
+            'skill',
+            `${me.name} 的【雉盗】：对其造成伤害后，获得了 ${victim.name} 的一张牌。`,
+          );
+        });
+      },
+    },
+    {
+      // 寄篱：本阶段第 2 次受到伤害 → 防止并移除这张武将牌
+      timing: 'damageDealt',
+      skillId: '寄篱',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const payload = ctx.payload as { damage?: number } | undefined;
+        if (!payload?.damage) return;
+        if (me.flags.damageCount !== 1) return; // 只在「本阶段已经受过 1 次」时触发
+        me.flags.damagePrevented = true;
+        pushLog(
+          ctx.state,
+          'skill',
+          `【寄篱】：${me.name} 本阶段第 2 次受到伤害，防止此伤害并移除【寄篱】。`,
+        );
+        ctx.api.removeHeroCard(me.seatId, 'yanbaihu');
+      },
+    },
+  ],
+  skills: [
+    {
+      name: '雉盗',
+      desc: '锁定技，出牌阶段开始时，你选择一名其他角色，直到回合结束，你计算与其的距离视为 1 且你不能使用牌指定除你与你与其外的角色为目标，然后当你于出牌阶段内第一次对其造成伤害后，你获得其区域里的一张牌。',
+    },
+    {
+      name: '寄篱',
+      desc: '副将技，锁定技，你计算体力上限时减少 1 个单独的阴阳鱼。当你成为红色基本牌或红色普通锦囊牌的唯一目标后，在此牌结算结束后，此牌的使用者对你再使用一次相同牌名的牌。当你受到伤害时，若你于当前阶段内受到过伤害的次数为 1，你防止此伤害，然后移除该武将牌。',
+    },
+  ],
+};
+
+/**
+ * 严白虎·雉盗的目标限制：本回合「不能使用牌指定除你与你与其外的角色」。
+ *
+ * 显式目标直接查 `intent.targetIds`；像【南蛮入侵】【万箭齐发】【桃园结义】那种
+ * **不用指定目标、却会打到别人**的牌，只有在「除你与他之外没有别的存活角色」时才放行——
+ * 否则它们实际指定的就是别人。
+ */
+export function zhidaoTargetsBlocked(
+  state: GameState,
+  player: Player,
+  card: Card,
+  targetIds: string[],
+): boolean {
+  const locked = player.flags.cardTargetOnlySeat;
+  if (!locked) return false;
+  const allowed = new Set([player.seatId, locked]);
+  if (targetIds.some((id) => !allowed.has(id))) return true;
+  const aoeLike: ReadonlySet<string> = ZHIDAO_AOE_TRICKS;
+  if (!aoeLike.has(card.type)) return false;
+  return state.players.some((p) => p.alive && !allowed.has(p.seatId));
+}
+
+/** 「不用指定目标却会打到别人」的锦囊（雉盗用；将来加新的群体牌要往这里补） */
+const ZHIDAO_AOE_TRICKS: ReadonlySet<string> = new Set([
+  'nanman',
+  'wanjian',
+  'taoyuan',
+  'wugu',
+  'lianjun',
+  'lutong',
+  'yiyi',
+  'chiling',
+]);
+
 const WUJING: Hero = {
   id: 'wujing',
   name: '吴景',
@@ -10557,6 +10726,7 @@ export const HEROES: Hero[] = [
   WUGUOTAI,
   YUANSHU,
   WUJING,
+  YANBAIHU,
   YONGJUE,
   CAOHONG,
   JIANGQIN,

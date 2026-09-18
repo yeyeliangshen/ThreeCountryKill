@@ -177,6 +177,19 @@ export interface PlayerFlags {
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
+   * 严白虎·雉盗：本回合「只能指定他与你」的那名角色（null = 没有这个限制）。
+   * 与 distanceToOneThisTurn 同源，随回合清空。
+   */
+  cardTargetOnlySeat: string | null;
+  /**
+   * 寄篱的「同一阶段内受到伤害的次数」：阶段用 `回合座位:阶段名` 作键，
+   * 键变了就当这是本阶段的第 1 次。这样不必给每个阶段转换点都加重置代码。
+   */
+  damageCountKey: string;
+  damageCount: number;
+  /** 严白虎·雉盗：这个出牌阶段是否已经「第一次对其造成伤害」领过牌了 */
+  zhidaoHitDone: boolean;
+  /**
    * 吴景·调归：「这次【调虎离山】用之前的队列人数」——技能发出锦囊时记下，
    * 结算完成后（afterUse）拿来比「是否**因此**形成队列」。null 表示没有待结算的调归。
    */
@@ -237,6 +250,10 @@ export function emptyFlags(): PlayerFlags {
     cannotHealThisTurn: false,
     revealRewarded: false,
     queueSizeBeforeTrick: null,
+    cardTargetOnlySeat: null,
+    damageCountKey: '',
+    damageCount: 0,
+    zhidaoHitDone: false,
     xietianziPending: false,
     discardedInDiscardPhase: false,
     removedFromSeating: false,

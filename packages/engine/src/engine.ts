@@ -86,6 +86,7 @@ import {
   xuanhuoFor,
   hasYuxi,
   fengyangBlocksEquip,
+  zhidaoTargetsBlocked,
   ROLE_NAME,
   type ActiveSkill,
   type Hero,
@@ -1380,8 +1381,9 @@ function afterTurnEnd(state: GameState): void {
       // 「直到回合结束」的临时技能（孙策·魂殇 / 法正·眩惑）
       p.tempGrantedSkills = [];
       p.flags.cannotHealThisTurn = false;
-      // 奋迅的「你至其距离视为 1」
+      // 奋迅的「你至其距离视为 1」＋严白虎·雉盗的「只能指定他与你」
       p.flags.distanceToOneThisTurn = null;
+      p.flags.cardTargetOnlySeat = null;
     }
   };
   // 挟天子以令诸侯：本回合结束前若在弃牌阶段弃过牌，追加一个额外回合。
@@ -2570,6 +2572,16 @@ function runDamagedHooks(
   damage: number,
   after: () => void,
 ): void {
+  // 「本阶段内受到过几次伤害」的账本（严白虎·寄篱要判「第 2 次」）。
+  // 键 = 「当前回合座位:阶段」，键一变就当这是本阶段的第 1 次——比给每个阶段转换点
+  // 都写一段重置代码可靠（阶段转换散在好几处）。记在**扣血之后**这一次伤害上。
+  const key = `${state.seatOrder[state.turn.seatIndex] ?? ''}:${state.turn.phase}`;
+  if (victim.flags.damageCountKey !== key) {
+    victim.flags.damageCountKey = key;
+    victim.flags.damageCount = 1;
+  } else {
+    victim.flags.damageCount += 1;
+  }
   runHooksPausable(state, 'afterDamage', victim, { attack, damage }, () => {
     runAnyDamagedHooks(state, victim, attack, damage, () => {
       runDamageDealtHooksP(state, attack, damage, after);
@@ -3363,6 +3375,10 @@ function onPlayCard(
   const card = resolved.card;
   // 「本回合不能使用或打出手牌」（军令 seal / 势备篇调虎离山）+ 马岱·潜袭的颜色限制
   {
+    // 严白虎·雉盗：本回合只能指定「你与他」（含 AOE 那类不指定目标却会打到别人的牌）
+    if (zhidaoTargetsBlocked(state, player, card, intent.targetIds)) {
+      return err('【雉盗】：本回合只能指定你与你锁定的那名角色');
+    }
     const blocked = blockedForPlay(player, card);
     if (blocked) return err(blocked);
   }
