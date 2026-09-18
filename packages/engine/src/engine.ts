@@ -151,7 +151,11 @@ export function askPickCards(
     seatId,
     title,
     cards,
-    min,
+    // ⚠️ 兜底：池子比 min 少时按池子来。询问是**跨步**的——发起时算好的「能选几张」
+    //    到回答时可能已经不成立（手牌被拿走、亮出的池子被分完），而 min 大于池子长度
+    //    是**答不上来**的：fuzz 里出现过一局 20000 步纹丝不动（【恩怨】要求交一张手牌、
+    //    池子却是空的）。真该做的是各处在发起前检查付得起——这条只是别把整局卡死。
+    min: Math.min(min, cards.length),
     max,
     resolve,
     returnTo: opts?.returnTo,
@@ -4644,8 +4648,12 @@ function yiyiResolveCurrent(state: GameState, ctx: TrickContext): void {
     max: count,
     resolve: (st, player, picked) => {
       for (const c of picked) {
-        removeCard(player.hand, c.id);
-        toDiscard(st, c);
+        // ⚠️ 池子是**当时手牌的快照**：等这张牌被选出来，它可能已经不在手里了——
+        //    问话挂起期间别的流程把它拿走过（实测：别人【屯田】判定时这张牌被【鬼才】
+        //    打出去替判、进了弃牌堆）。以前 `removeCard` 不看返回值、`toDiscard` 无条件推，
+        //    同一张牌于是在弃牌堆里出现两份（模糊测试的重复牌检查在 1500 局里报出来的）。
+        const taken = removeCard(player.hand, c.id);
+        if (taken) toDiscard(st, taken);
       }
       pushLog(st, 'trick', `${player.name} 因【以逸待劳】弃置了 ${picked.length} 张牌。`);
       ctx.responderIndex++;

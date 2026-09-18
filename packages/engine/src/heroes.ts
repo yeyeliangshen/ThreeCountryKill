@@ -4207,6 +4207,13 @@ const FAZHENG: Hero = {
               makeLoseHp(st, p);
               return;
             }
+            // ⚠️ 手牌可能在这条询问挂起期间没了（别人顺手拿走/自己刚交出去）——那就只剩
+            //    「失去 1 点体力」这一条。不重查的话会发一个「一张都没有却要求选 1 张」的
+            //    询问：谁也答不上来，整局卡死（模糊测试 20000 步不动，seed=1329）。
+            if (p.hand.length === 0) {
+              makeLoseHp(st, p);
+              return;
+            }
             ctx.api.askPickCards(
               st,
               p.seatId,

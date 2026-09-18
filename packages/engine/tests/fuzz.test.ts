@@ -99,6 +99,49 @@ describe('随机对局不变式：牌不会同时挂在两处、也不会被流�
   }, 180000);
 });
 
+describe('随机对局不变式：曾经出过问题的种子（回归）', () => {
+  /**
+   * 这几个种子在更深的扫描里抓出过真 bug，各自的现场记在这里：
+   * - `seed=1145` / `seed=1313`：【以逸待劳】的选择池是「当时手牌的快照」，等牌被选中时
+   *   它可能已经不在手里（问话挂起期间被【鬼才】打出去替判），于是同一张牌在弃牌堆里两份。
+   * - `seed=1329`：【恩怨】要求「交给对方一张手牌」，但那张询问挂起期间来源的手牌已经没了
+   *   ——发出去的询问要求选 1 张、池子却是空的，谁也答不上来：整局 20000 步纹丝不动。
+   * 三条都已修（`askPickCards` 的 min 兜底 + 【恩怨】答话时重查手牌），这里钉住。
+   */
+  it('1145 / 1313 / 1329 跑满 6000 步：不重复、不长期缺席、能分出胜负', () => {
+    const problems: string[] = [];
+    for (const seed of [1145, 1313, 1329]) {
+      const rand = rng(seed * 977);
+      const state = riskyGame(seed);
+      const watch = makeCardWatch(allCardIds(state));
+      let steps = 0;
+      try {
+        while (!state.gameOver && steps < 6000) {
+          step(state, rand);
+          steps++;
+          if (!state.pending) {
+            if (state.gameOver) break;
+            problems.push(`seed=${seed} 第 ${steps} 步：控制权丢了`);
+            break;
+          }
+          if (state.pending.kind !== 'play' && state.pending.kind !== 'discard') continue;
+          const bad = checkDuplicate(state) ?? watch.observe(state);
+          if (bad) {
+            problems.push(`seed=${seed} 第 ${steps} 步：${bad}`);
+            break;
+          }
+        }
+        if (!state.gameOver) problems.push(`seed=${seed} 跑了 ${steps} 步还没结束（卡死了？）`);
+      } catch (e) {
+        problems.push(`seed=${seed} 第 ${steps} 步抛错：${(e as Error).message}`);
+      }
+    }
+    if (problems.length > 0)
+      console.log('发现问题：' + String.fromCharCode(10) + problems.join(String.fromCharCode(10)));
+    expect(problems).toEqual([]);
+  }, 300000);
+});
+
 // ⚠️ 这条网还压着一个**没修完**的问题（数据丢失那半已经拦住，见下）：
 //
 // 询问只有一个槽（`state.pending`），而「钩子先问玩家、再按回答决定」是跨步的。
