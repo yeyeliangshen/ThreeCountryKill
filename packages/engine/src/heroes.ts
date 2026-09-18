@@ -23,7 +23,7 @@ import type {
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
 import { addMarker } from './markers';
-import { drawOne, lordEquipFeilong, lordEquipLiulong } from './deck';
+import { drawOne, lordEquipFeilong, lordEquipLiulong, lordEquipMengjun } from './deck';
 import { attackRange, canTarget, distance } from './distance';
 
 import {
@@ -3387,7 +3387,11 @@ function lordHero(
  * （死亡那半句是君主将的固定特性，由引擎统一实现，不在这个技能里。）
  * 每位君主的差别只有「专属装备是哪一张」，所以做成工厂，四位君主共用一份实现。
  */
-function junweiSkill(equipName: string, equipLabel: string, makeEquip: () => Card): ActiveSkill {
+function junweiSkill(
+  equipName: string,
+  equipLabel: string,
+  makeEquip: (seq: number) => Card,
+): ActiveSkill {
   return {
     id: 'junwei',
     name: '君威',
@@ -3406,8 +3410,9 @@ function junweiSkill(equipName: string, equipLabel: string, makeEquip: () => Car
         'skill',
         `${player.name} 发动【君威】：弃置【${cardLabel(cost)}】，从游戏外使用【${equipLabel}】。`,
       );
-      // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）
-      api.giveEquipTo(makeEquip(), player.seatId);
+      // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）。
+      // 号从 state 上取：同一个种子重放出来的 id 必须一致（见 GameState.lordEquipSeq）
+      api.giveEquipTo(makeEquip(state.lordEquipSeq++), player.seatId);
     },
   };
 }
@@ -3640,11 +3645,168 @@ const JUN_SUNQUAN: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【定澜夜明珠】、常规技能暂未实现。',
 );
 
+/**
+ * 【会盟】（君袁绍，锁定技；用户核对后的转述，与移动版 WIKI 原文一致）：
+ * 「当场上一个势力的角色数从0变为其他数字或者从其他数字变为0时，你摸一张牌。」
+ *
+ * 口径：
+ * - 「一个势力的角色数」＝ **已确定势力**（明置）的存活角色数，见 `knownFactionCount`
+ *   （未确定势力的角色不属于任何势力；野心家/中立不算一个势力）。⚠️ 待核对：官方没写明置还是
+ *   真实势力，本实现取明置口径，理由与备选口径见 docs/guozhan-roster.md §5.60。
+ * - 两个方向的转换都由引擎在**明置**（revealHeroCard）与**阵亡**（doDeath）两处派发，
+ *   payload 里带着 from/to，技能自己判断是不是「0 ↔ 非0」。
+ * - 锁定技：不询问，直接摸（明置之后才生效——暗置的武将牌没有技能，引擎的钩子收集本就如此）。
+ */
+function askHuimeng(ctx: HookContext): void {
+  const payload = ctx.payload as { faction?: Faction; from?: number; to?: number } | undefined;
+  const from = payload?.from ?? 0;
+  const to = payload?.to ?? 0;
+  const appeared = from === 0 && to > 0;
+  const vanished = from > 0 && to === 0;
+  if (!appeared && !vanished) return;
+  const name = payload?.faction ? (FACTION_NAME[payload.faction] ?? payload.faction) : '某势力';
+  const card = drawOne(ctx.state);
+  if (card) ctx.player.hand.push(card);
+  pushLog(
+    ctx.state,
+    'skill',
+    `【会盟】：${name} 的角色数从 ${from} 变为 ${to}，${ctx.player.name} ${card ? '摸一张牌' : '无牌可摸'}。`,
+    { seat: ctx.player.seatId },
+  );
+}
+
+/**
+ * 【授锋】（君袁绍；用户核对后的转述，与移动版 WIKI 原文一致）：
+ * 「当一名角色于其出牌阶段使用首张伤害牌结算结束后，你可以交给其一张牌（若该角色为你则跳过
+ *   此操作），然后获得此伤害牌。」
+ *
+ * 口径：
+ * - 「首张伤害牌」由引擎判定（`GameState.firstDamageCard`：本回合出牌阶段用掉的第一张
+ *   伤害牌，在使用的那一刻登记）；「结算结束后」由引擎在锦囊/【杀】两个出口派发。
+ * - 交给的「一张牌」＝ 自己的手牌或装备区（与反馈/刚烈同一口径）。给的是**别人**时，
+ *   手里连装备区都没牌就发不了（没法给）；目标是自己则跳过这一步。
+ * - 「然后获得此伤害牌」从**弃牌堆**里按 id 取回（与曹操·奸雄同一做法）。牌已经不在弃牌堆
+ *   （被奸雄收走、或是丈八凑出来的虚拟牌）时拿不到，只记日志。⚠️ 官方对这两种情形怎么处理
+ *   还没核到（见 §5.60 的待核对）。
+ * - 「伤害牌」的集合见 protocol 的 `DAMAGE_CARD_TYPES`。
+ */
+function askShoufeng(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { card?: Card; userSeatId?: string } | undefined;
+  const card = payload?.card;
+  const user = payload?.userSeatId ? getPlayer(state, payload.userSeatId) : undefined;
+  if (!card || !user) return;
+  const isSelf = user.seatId === me.seatId;
+  const cost = handAndEquipOf(me);
+  if (!isSelf && cost.length === 0) return; // 连一张牌都拿不出 → 发不了
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    isSelf
+      ? `【授锋】：你使用了首张伤害牌【${cardLabel(card)}】，是否获得之？`
+      : `【授锋】：${user.name} 于出牌阶段使用了首张伤害牌【${cardLabel(card)}】，是否交给其一张牌，然后获得此牌？`,
+    [
+      { id: 'yes', label: isSelf ? '获得此牌' : '交给其一张牌，并获得此牌' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      if (isSelf) {
+        shoufengGain(st, p, card);
+        return;
+      }
+      const pool = handAndEquipOf(p);
+      if (pool.length === 0) {
+        shoufengGain(st, p, card);
+        return;
+      }
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        `【授锋】：选择要交给 ${user.name} 的一张牌`,
+        pool,
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const give = chosen[0];
+          if (!give) {
+            shoufengGain(st2, p2, card);
+            return;
+          }
+          // 走 API 而不是自己 splice：交出去的可能是装备，要触发失去装备那类技能
+          ctx.api.transferCard(p2.seatId, give, user.seatId, () => {
+            pushLog(
+              st2,
+              'skill',
+              `${p2.name} 发动【授锋】，交给 ${user.name} 【${cardLabel(give)}】。`,
+              { seat: p2.seatId },
+            );
+            shoufengGain(st2, p2, card);
+          });
+        },
+      );
+    },
+  );
+}
+
+/** 【授锋】的后半句：从弃牌堆取回那张伤害牌（取不到只记日志） */
+function shoufengGain(state: GameState, me: Player, card: Card): void {
+  const idx = state.discard.findIndex((c) => c.id === card.id);
+  if (idx < 0) {
+    pushLog(
+      state,
+      'skill',
+      `【授锋】：【${cardLabel(card)}】已不在弃牌堆（可能已被别的技能获得，或本来就是虚拟牌），无法获得。`,
+    );
+    return;
+  }
+  const [taken] = state.discard.splice(idx, 1);
+  if (!taken) return;
+  me.hand.push(taken);
+  pushLog(state, 'skill', `${me.name} 发动【授锋】，获得【${cardLabel(taken)}】。`, {
+    seat: me.seatId,
+  });
+}
+
+/**
+ * 君袁绍。三条技能都按用户核对后提供的口径实现：
+ * 【君威】（专属装备【盟军大纛】）、【会盟】（锁定技，势力角色数 0↔非0 时摸一张）、
+ * 【授锋】（首张伤害牌结算结束后给一张、再把这张伤害牌收回）。
+ *
+ * ⚠️ 待核对：专属装备【盟军大纛】的**花色/点数/类型**没核到（WIKI 没有这张牌的页面、
+ *    移动版公告只写了效果），本实现按同族的「宝物」记录、花色点数用占位值（见 deck.ts）。
+ */
 const JUN_YUANSHAO: Hero = lordHero(
   'junyuanshao',
   '君袁绍',
   'qun',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。君威与专属装备【盟军大纛】、常规技能暂未实现。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【盟军大纛】）、【会盟】、【授锋】已实现。',
+  {
+    skills: [
+      { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
+      {
+        name: '君威',
+        desc: '出牌阶段，若场上没有【盟军大纛】，你可以弃置一张牌，然后从游戏外使用一张【盟军大纛】。当你死亡时，与你势力相同的角色各失去 1 点体力。',
+      },
+      {
+        name: '会盟',
+        desc: '锁定技，当场上一个势力的角色数从 0 变为其他数字或者从其他数字变为 0 时，你摸一张牌。',
+      },
+      {
+        name: '授锋',
+        desc: '当一名角色于其出牌阶段使用首张伤害牌结算结束后，你可以交给其一张牌（若该角色为你则跳过此操作），然后获得此伤害牌。',
+      },
+    ],
+    activeSkills: [
+      // 【君威】（专属装备【盟军大纛】：受到伤害时可弃两张牌防止之，离开装备区即销毁）
+      junweiSkill('mengjun', '盟军大纛', lordEquipMengjun),
+    ],
+    hooks: [
+      { timing: 'factionCountChanged', skillId: '会盟', locked: true, handler: (ctx) => askHuimeng(ctx) },
+      { timing: 'cardResolved', skillId: '授锋', handler: (ctx) => askShoufeng(ctx) },
+    ],
+  },
 );
 
 const MASU: Hero = {
@@ -11510,6 +11672,20 @@ export function poolForMode(mode: GameMode): Hero[] {
  * - 胜负判定 / 野心家判定：势力选将时就定下了，暗置只是别人不知道；
  * - 鏖战那种客观残局条件：同样是数真实势力（见 isAoyu）。
  */
+/**
+ * 「场上一个**已确定势力**的存活角色数」——君袁绍·会盟用的计数。
+ *
+ * 口径与 `effectiveFaction` 一致（暗置角色没有确定势力、不属于任何势力），
+ * 野心家/中立不算「一个势力」（与 bigFactions、isAoyu 的排除一致）。
+ *
+ * ⚠️ 待核对：官方技能只写「场上一个势力的角色数」，没写按明置算还是按武将牌本身的势力算。
+ *    本实现取**明置**口径，理由与备选口径见 docs/guozhan-roster.md §5.60。
+ */
+export function knownFactionCount(state: GameState, faction: Faction | null): number {
+  if (!faction || faction === 'ambitionist' || faction === 'neutral') return 0;
+  return state.players.filter((p) => p.alive && effectiveFaction(state, p) === faction).length;
+}
+
 export function effectiveFaction(state: GameState, player: Player): Faction | null {
   if (state.mode !== 'guozhan') return player.faction;
   return player.heroRevealed || player.deputyRevealed ? player.faction : null;

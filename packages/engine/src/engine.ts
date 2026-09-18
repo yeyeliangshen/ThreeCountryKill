@@ -10,6 +10,7 @@ import type {
 } from '@sgs/protocol';
 import {
   CARD_TYPE_NAME,
+  DAMAGE_CARD_TYPES,
   EQUIP_NAME,
   cardLabel,
   isDelayedTrick,
@@ -51,6 +52,7 @@ import {
   equipActiveSkills,
   equipExtraDraw,
   feilongAfterShaDamage,
+  mengjunDajun,
   setEquipAskHooks,
   tengjiaNullifiesAoe,
   tryBaguaDodge,
@@ -87,6 +89,7 @@ import {
   huangtianFor,
   xuanhuoFor,
   hasYuxi,
+  knownFactionCount,
   sameKnownFaction,
   skillOnField,
   fengyangBlocksEquip,
@@ -577,6 +580,13 @@ function markCardUsed(state: GameState, timing: Timing, player: Player, payload?
     ((payload as { attack?: AttackContext } | undefined)?.attack
       ? [(payload as { attack?: AttackContext }).attack!.targetId]
       : []);
+  // 【授锋】的「首张伤害牌」（君袁绍）就在这里登记：此刻正是「使用」的那一刻，
+  // 而且上面几条过滤（自己回合 + 出牌阶段 + 使用者）正好就是「于其出牌阶段使用」。
+  // ⚠️ 不能等结算结束再数——青龙偃月刀那种「第一张【杀】还没结算完又用出第二张」的情况下，
+  //    第二张的结算会先结束，按结算顺序数会把第二张当首张（见 GameState.firstDamageCard）。
+  if (state.firstDamageCard === null && DAMAGE_CARD_TYPES.has(card.type)) {
+    state.firstDamageCard = { seatId: player.seatId, cardId: card.id, resolved: false };
+  }
   if (targets.length > 0) {
     const mine = effectiveFaction(state, player);
     const bad = targets.some((tid) => {
@@ -982,6 +992,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.damagedThisTurn = [];
   // 【雄驰】的「每回合第一次」同样按**每个回合**重算（不是只有自己的回合）
   state.xiongchiDoneSeats = [];
+  // 【授锋】的「本回合出牌阶段的首张伤害牌」也是按回合算的
+  state.firstDamageCard = null;
   // 「本回合杀死过角色的人」同理（戚乱是在每个回合结束时检查的）
   state.killedThisTurn = [];
   // 「本回合从牌堆摸到过的牌」也只在**本回合**内有效（袁术·伪帝）
@@ -2670,6 +2682,24 @@ function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
     });
     return;
   }
+  // 【授锋】的「这张【杀】整个结算结束」也在这个出口（reason：这里才是真收尾，
+  // 寄篱重跑与青龙偃月刀那类连环出杀都排在它前面）。账本里是别的牌就不打扰。
+  const first = state.firstDamageCard;
+  if (first && !first.resolved && attack.cardId !== '' && first.cardId === attack.cardId) {
+    first.resolved = true;
+    const card =
+      state.discard.find((c) => c.id === attack.cardId) ??
+      state.deck.find((c) => c.id === attack.cardId);
+    if (card) {
+      runAllPlayersHooks(
+        state,
+        'cardResolved',
+        { card, userSeatId: attack.sourceId },
+        () => resumePlay(state, state.seatOrder[state.turn.seatIndex]!),
+      );
+      return;
+    }
+  }
   // 技能驱动的连环出杀（贾诩·乱武）在这里接着往下走；普通出杀回到出牌阶段
   if (attack.afterSettled) {
     const after = attack.afterSettled;
@@ -2969,7 +2999,10 @@ function damageStep(
   target.flags.damagePrevented = false;
   target.flags.damageReduce = 0;
   const finishDamage = (): void => {
-    runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
+    // 宝物【盟军大纛】（君主专属）：**受到伤害时**弃两张牌防止此伤害。它是装备牌的效果，
+    // 不走英雄钩子，所以和【飞龙夺凤】一样在这里显式派发；装备持有者自己决定要不要弃。
+    mengjunDajun(state, target, () =>
+      runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
       const prevented = target.flags.damagePrevented;
       const reduced = target.flags.damageReduce;
       target.flags.damagePrevented = false;
@@ -2987,11 +3020,12 @@ function damageStep(
         apply(0, true);
         return;
       }
-      withHuxinjing(state, attack, finalDmg, (hxPrevented) => {
-        if (!hxPrevented) target.hp -= finalDmg;
-        apply(finalDmg, hxPrevented);
-      });
-    });
+        withHuxinjing(state, attack, finalDmg, (hxPrevented) => {
+          if (!hxPrevented) target.hp -= finalDmg;
+          apply(finalDmg, hxPrevented);
+        });
+      }),
+    );
   };
   // 先给**来源**一个机会（张任·穿心那种「防止自己造成的伤害」），再走目标那边
   const dmgSource =
@@ -3657,6 +3691,9 @@ function lordVictimsOf(state: GameState, dying: Player): Player[] {
 
 function doDeath(state: GameState, dyingId: string, killerId?: string): void {
   const dying = getPlayerOrThrow(state, dyingId);
+  // ⚠️ 必须在下面那几行之前问：阵亡会把「明置」标志翻成 false→true（国战亮双将），
+  //    而【会盟】要的是「他**生前**在不在明置计数里」。
+  const wasDetermined = dying.heroRevealed || dying.deputyRevealed;
   dying.alive = false;
   dying.hp = 0;
   // 国战：阵亡时亮双将
@@ -3678,37 +3715,53 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
     pushLog(state, 'death', `${dying.name} 阵亡${roleText}${factionText}。`);
     // 走可挂起版本：蔡文姬·断肠要在死亡时问「让凶手失去哪张武将牌的技能」
     runHooksPausable(state, 'death', dying, { killerId }, () => {
-      // 「濒死结算结束后」的第三个出口：这回是真的没了（alive=false）。
-      // 补益/汲魂都要求「存活」所以这里不会真的发动，但时机本身要派发出去。
-      dispatchNearDeathResolved(state, dying.seatId, false, killerId, () => {
-        // 清牌：行殇没拿走的才进弃牌堆
-        const cleanup = (): void => {
-          for (const c of dying.hand) toDiscard(state, c);
-          dying.hand = [];
-          const eq = dying.equipment;
-          for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
-            if (c) toDiscard(state, c);
-          }
-          dying.equipment = emptyEquipment();
-          for (const c of dying.judgment) toDiscard(state, c);
-          dying.judgment = [];
-          // 判定阶段手里还攥着的那叠（典型：自己的【闪电】把自己劈死）：也归他，一并弃置。
-          // 不处理的话它们谁都不在、再也回不来（见 GameState.judgmentInFlight）
-          const ledger = state.judgmentInFlight;
-          if (ledger && ledger.seatId === dying.seatId) {
-            for (const c of ledger.cards) toDiscard(state, c);
-            state.judgmentInFlight = null;
-          }
+      // 【会盟】：这个人的势力（已明置口径）是不是正好**一个都不剩**了。
+      // to 是此刻的数，from 加上他自己就是死前的数（thus 两个方向都能如实报出来）。
+      const to = knownFactionCount(state, dying.faction);
+      const from = to + (wasDetermined ? 1 : 0);
+      const afterDeath = (): void => {
+        // 「濒死结算结束后」的第三个出口：这回是真的没了（alive=false）。
+        // 补益/汲魂都要求「存活」所以这里不会真的发动，但时机本身要派发出去。
+        dispatchNearDeathResolved(state, dying.seatId, false, killerId, () => {
+          // 清牌：行殇没拿走的才进弃牌堆
+          const cleanup = (): void => {
+            for (const c of dying.hand) toDiscard(state, c);
+            dying.hand = [];
+            const eq = dying.equipment;
+            for (const c of EQUIP_SLOTS.map((s) => eq[s])) {
+              if (c) toDiscard(state, c);
+            }
+            dying.equipment = emptyEquipment();
+            for (const c of dying.judgment) toDiscard(state, c);
+            dying.judgment = [];
+            // 判定阶段手里还攥着的那叠（典型：自己的【闪电】把自己劈死）：也归他，一并弃置。
+            // 不处理的话它们谁都不在、再也回不来（见 GameState.judgmentInFlight）
+            const ledger = state.judgmentInFlight;
+            if (ledger && ledger.seatId === dying.seatId) {
+              for (const c of ledger.cards) toDiscard(state, c);
+              state.judgmentInFlight = null;
+            }
 
-          if (checkWin(state)) return;
-          // 回到当前回合玩家（伤害来源）的出牌阶段
-          resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
-        };
-        // 君主阵亡：**与你势力相同的角色各失去 1 点体力**（官方君主将的固定特性之一）。
-        // 失去体力可能把人打进濒死，所以逐个来：谁进了濒死就把「剩下的」压进续接队列，
-        // 等那串濒死结算完了接着掉（同一次同步执行里连开两串濒死会把 pending 覆盖掉）。
-        lordDeathLoss(state, dying, 0, cleanup);
-      });
+            if (checkWin(state)) return;
+            // 回到当前回合玩家（伤害来源）的出牌阶段
+            resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+          };
+          // 君主阵亡：**与你势力相同的角色各失去 1 点体力**（官方君主将的固定特性之一）。
+          // 失去体力可能把人打进濒死，所以逐个来：谁进了濒死就把「剩下的」压进续接队列，
+          // 等那串濒死结算完了接着掉（同一次同步执行里连开两串濒死会把 pending 覆盖掉）。
+          lordDeathLoss(state, dying, 0, cleanup);
+        });
+      };
+      if (from > 0 && to === 0) {
+        runAllPlayersHooks(
+          state,
+          'factionCountChanged',
+          { faction: dying.faction, from, to },
+          afterDeath,
+        );
+        return;
+      }
+      afterDeath();
     });
   };
 
@@ -3726,7 +3779,12 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
 
 // 装备特效（equip.ts）需要发问，但那边不能反向 import 本文件（循环依赖）→ 注入进去。
 // askChoice / askPickCards 是函数声明（会提升），放在模块顶层调用即可。
-setEquipAskHooks({ askChoice, askPickCards });
+setEquipAskHooks({
+  askChoice,
+  askPickCards,
+  // 【盟军大纛】弃两张牌要走这条：里面可能有装备，得触发失去装备那类技能
+  discardCards: discardOwnCards,
+});
 
 export function applyIntent(state: GameState, seatId: string, intent: Intent): ApplyResult {
   // 手牌清空检测要在任何变更之前取快照，否则拿不到「原来是几张」
@@ -4571,8 +4629,23 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
       return;
     }
   }
+  // 「这张牌整个结算结束」的出口（锦囊侧）。两张牌都用这个出口：
+  // ①【授锋】的 cardResolved（只看账本里那张首张伤害牌）；②【调虎离山】的 afterUse。
   // ⚠️ 这里必须是 resumePlay：本函数自己就是它的替代品，调自己会无限递归
-  resumePlay(state, ctx.sourceId);
+  const finish = (): void => resumePlay(state, ctx.sourceId);
+  const first = state.firstDamageCard;
+  if (first && !first.resolved && first.cardId === ctx.card.id) {
+    // 首张伤害牌只派发一次（账本留着他那张的 id，同一回合的第二张不算首张）
+    first.resolved = true;
+    runAllPlayersHooks(
+      state,
+      'cardResolved',
+      { card: ctx.card, userSeatId: ctx.sourceId },
+      finish,
+    );
+    return;
+  }
+  finish();
 }
 
 function resolveTrick(state: GameState, ctx: TrickContext): void {
@@ -7313,6 +7386,8 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     });
     return false;
   }
+  // 这一翻之前他有没有确定的势力（会盟要看「某个势力的角色数是不是从 0 变成了别的数」）
+  const wasDetermined = player.heroRevealed || player.deputyRevealed;
   const mainHero = getHero(player.heroId);
   const deputyHero = getHero(player.deputyHeroId);
   const isLordPair = !!mainHero?.isLord || !!deputyHero?.isLord;
@@ -7340,7 +7415,20 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
   if (changed) {
     onHeroRevealed(state, player);
     // 「当你明置此武将牌后」（糜夫人·闺秀）：把 payload 交给钩子，技能自己判断是不是自己那张
-    runHooksPausable(state, 'heroRevealed', player, { heroId: hero.id }, () => {});
+    runHooksPausable(state, 'heroRevealed', player, { heroId: hero.id }, () => {
+      // 【会盟】：他这一翻让某个势力**首次出现在场上**（0 → 1）时派发。
+      // 只有「本来没有确定势力」的人翻牌才可能发生这件事——第二张牌翻过来时势力早就定了。
+      if (wasDetermined) return;
+      const to = knownFactionCount(state, player.faction);
+      if (to === 1) {
+        runAllPlayersHooks(
+          state,
+          'factionCountChanged',
+          { faction: player.faction, from: 0, to },
+          () => {},
+        );
+      }
+    });
   }
   return changed;
 }
@@ -8478,6 +8566,8 @@ export function createGame(
     judgmentInFlight: null,
     damageThisRound: {},
     xiongchiDoneSeats: [],
+    lordEquipSeq: 0,
+    firstDamageCard: null,
     extraTurns: [],
   };
   pushLog(state, 'start', '游戏开始，随机发将。');

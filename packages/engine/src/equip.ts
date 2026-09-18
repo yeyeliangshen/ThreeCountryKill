@@ -35,13 +35,26 @@ let askPickCardsForEquip: (
   opts?: { returnTo?: string; secret?: boolean },
 ) => void = () => {};
 
-/** 引擎启动时把 askChoice / askPickCards 注进来（engine.ts 顶层调用一次） */
+/**
+ * 「让某人弃掉自己的一批牌」——【盟军大纛】要用（弃的两张里可能有装备，得触发失去装备那类技能）。
+ * 同样靠注入避开循环依赖。
+ */
+let discardCardsForEquip: (
+  state: GameState,
+  owner: Player,
+  cards: Card[],
+  after: () => void,
+) => void = (_s, _o, _c, after) => after();
+
+/** 引擎启动时把 askChoice / askPickCards / discardCards 注进来（engine.ts 顶层调用一次） */
 export function setEquipAskHooks(h: {
   askChoice: typeof askChoiceForEquip;
   askPickCards: typeof askPickCardsForEquip;
+  discardCards: typeof discardCardsForEquip;
 }): void {
   askChoiceForEquip = h.askChoice;
   askPickCardsForEquip = h.askPickCards;
+  discardCardsForEquip = h.discardCards;
 }
 
 /** 攻击方武器是否无视目标防具（青釭剑） */
@@ -287,6 +300,81 @@ export function equipActiveSkills(state: GameState, player: Player): ActiveSkill
   if (state.mode !== 'guozhan') return [];
   if (player.equipment.treasure?.equipName !== 'muniu') return [];
   return [MUNIU_SKILL];
+}
+
+/**
+ * 【盟军大纛】（君主专属宝物）——
+ * 「当你受到伤害时，你可以弃置两张牌（弃置的其中一张牌可以是盟军大纛），然后你防止此伤害。
+ *   当此牌离开装备区时，销毁之。」（用户核对后提供的牌面文本）
+ *
+ * 口径：
+ * - 「受到伤害时」＝ 扣血之前（`damageStep` 的 damageDealt 时机）。防止走的是同一条通道：
+ *   设 `holder.flags.damagePrevented = true`，引擎在钩子跑完之后读到就整条伤害作废
+ *   （不扣血、不跑伤害后钩子、不进濒死）——与小乔·天香、护心镜一致。
+ * - 弃的两张牌取自**持有者自己的**手牌＋装备区；其中一张可以是这张宝物本身
+ *   （于是它离开装备区 → `destroyOnLeave` 把它移出游戏）。手牌＋装备区一共不足两张时发不了。
+ * - 它不是英雄技能，所以和【飞龙夺凤】一样由 engine 在伤害结算里显式派发。
+ * - ⚠️ 待核对：同一时机可能有多个「受到伤害时」技能（天香等），本引擎固定让宝物先问；
+ *   官方是按当前回合角色的选择决定结算顺序的（本仓库对同时机一律用固定顺序，见 roster）。
+ */
+export function mengjunDajun(state: GameState, holder: Player, after: () => void): void {
+  if (holder.equipment.treasure?.equipName !== 'mengjun') {
+    after();
+    return;
+  }
+  const pool: Card[] = [
+    ...holder.hand,
+    ...(EQUIP_SLOTS.map((s) => holder.equipment[s]).filter(Boolean) as Card[]),
+  ];
+  if (pool.length < 2) {
+    after();
+    return;
+  }
+  askChoiceForEquip(
+    state,
+    holder.seatId,
+    '【盟军大纛】：是否弃置两张牌，以防止此伤害？',
+    [
+      { id: 'yes', label: '发动（弃两张牌，防止此伤害）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') {
+        after();
+        return;
+      }
+      const cards = [...p.hand, ...(EQUIP_SLOTS.map((s) => p.equipment[s]).filter(Boolean) as Card[])];
+      if (cards.length < 2) {
+        // 期间牌被弄走了（理论上轮不到，兜底）
+        after();
+        return;
+      }
+      askPickCardsForEquip(
+        st,
+        p.seatId,
+        '【盟军大纛】：选择要弃置的两张牌（其中一张可以是本宝物）',
+        cards,
+        2,
+        2,
+        (st2, p2, chosen) => {
+          if (chosen.length < 2) {
+            after();
+            return;
+          }
+          pushLog(
+            st2,
+            'skill',
+            `${p2.name} 发动【盟军大纛】：弃置两张牌，防止此伤害。`,
+            { seat: p2.seatId },
+          );
+          discardCardsForEquip(st2, p2, chosen, () => {
+            p2.flags.damagePrevented = true;
+            after();
+          });
+        },
+      );
+    },
+  );
 }
 
 /**

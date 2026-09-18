@@ -41,6 +41,10 @@ export const RISKY = [
   'lvfan', // 调度（依次问同势力角色）
   'wangping', // 将略（一条军令问多人）
   'lukang', // 恪守/筑围（减伤 + 判定）
+  // 君主将：君主技那条线（从游戏外取专属装备、装备牌自己的触发效果）很值得烧
+  'juncaocao', // 君主旗/雄驰/征戎（虚拟伤害 + 从牌堆找【杀】）+ 专属宝物【六龙骖驾】
+  'junliubei', // 励众（roundEnd 账本）+ 专属宝物【飞龙夺凤】
+  'junyuanshao', // 会盟（势力人数 0↔非0）+ 授锋（首张伤害牌账本）+ 专属宝物【盟军大纛】
 ];
 
 /**
@@ -148,6 +152,17 @@ export function step(state: GameState, rand: () => number): void {
       }
       if (roll < 0.85 && skills.length > 0) {
         const skillId = skills[Math.floor(rand() * skills.length)]!;
+        // 先试「带一张牌发动」——君威/制衡那类技能要付牌的代价，不递牌就永远发动不了
+        // （君主将的专属装备因此一直没被烧到过）。失败再退回不带牌的写法。
+        if (cards.length > 0) {
+          const withCard = applyIntent(state, p.seatId, {
+            type: 'useSkill',
+            skillId,
+            cardIds: [cards[Math.floor(rand() * cards.length)]!],
+            targetIds: [],
+          });
+          if (withCard.ok) return;
+        }
         if (!applyIntent(state, p.seatId, { type: 'useSkill', skillId, targetIds: [] }).ok) {
           applyIntent(state, p.seatId, { type: 'endPhase' });
         }

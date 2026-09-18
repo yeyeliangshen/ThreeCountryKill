@@ -19049,6 +19049,225 @@ describe('国战 · 君主将（特性）', () => {
     expect(b.grantedSkills).toEqual([]);
   });
 
+  /** 直接摆一个中局座位（国战：势力与是否明置都要自己写） */
+  function seatSet(
+    state: GameState,
+    seatId: string,
+    heroId: string,
+    faction: Faction,
+    hand: Card[],
+    hp = 4,
+    revealed = true,
+  ) {
+    const p = state.players.find((x) => x.seatId === seatId)!;
+    p.heroId = heroId;
+    p.faction = faction;
+    p.heroRevealed = revealed;
+    p.deputyRevealed = false;
+    p.maxHp = 4;
+    p.hp = hp;
+    p.hand = hand;
+    p.flags = emptyFlags();
+    return p;
+  }
+
+  /** 君袁绍的【授锋】会问「是否给牌并收回那张伤害牌」——不关心它的用例一律拒掉 */
+  function declineShoufeng(state: GameState, seatId: string) {
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('授锋'))
+      ok(act(state, seatId, { type: 'chooseOption', optionId: 'no' }));
+  }
+
+  it('君威·盟军大纛：受伤时弃两张牌防止此伤害，宝物本身也能当其中一张（然后销毁）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junyuanshao' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junyuanshao', 'qun', [shan('a1'), juedou('a2'), tao('a3')]);
+    seatSet(state, 'B', 'guanyu', 'shu', [sha('b1')]);
+    seatSet(state, 'C', 'zhangliao', 'wei', []);
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+    const p = (id: string) => state.players.find((x) => x.seatId === id)!;
+
+    // ① 发动【君威】：弃一张牌，从游戏外取得【盟军大纛】
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
+    ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
+    expect(p('A').equipment.treasure?.equipName).toBe('mengjun');
+    expect(state.discard.some((c) => c.id === 'a1')).toBe(true); // 代价进弃牌堆
+
+    // ② 甲用【决斗】打乙：乙出【杀】，甲出不来 → 甲吃 1 点伤害 → 触发【盟军大纛】
+    ok(act(state, 'A', { type: 'playCard', cardId: 'a2', targetIds: ['B'] }));
+    passWuxie(state);
+    ok(act(state, 'B', { type: 'respondCard', cardId: 'b1' }));
+    ok(act(state, 'A', { type: 'pass' })); // 甲没有【杀】
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('盟军大纛');
+
+    // ③ 弃两张：手里剩下的【桃】＋宝物自己（装备区只有它）
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('pickCards');
+    const banner = p('A').equipment.treasure!; // 【盟军大纛】（id 带发号，不能写死）
+    ok(act(state, 'A', { type: 'pickCards', cardIds: ['a3', banner.id] }));
+    expect(p('A').hp).toBe(4); // 伤害被防止
+    expect(p('A').equipment.treasure).toBeNull();
+    // 「离开装备区即销毁」：不进弃牌堆，而是移出游戏
+    expect(state.discard.some((c) => c.id === banner.id)).toBe(false);
+    expect(state.discard.some((c) => c.id === 'a3')).toBe(true);
+
+    // ④ 决斗结算完 → 甲（君袁绍）的首张伤害牌是【决斗】，会问【授锋】——本用例拒掉
+    declineShoufeng(state, 'A');
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'A' });
+  });
+
+  it('会盟：某势力首次出现在场上（0→1）、最后一个角色阵亡（1→0）时各摸一张', () => {
+    // 甲＝君袁绍（群）、乙＝关羽（蜀）、丙＝赵云（蜀）、丁＝张辽（魏）
+    const state = gzDeal({
+      A: ['junyuanshao', 'lvbu'],
+      B: ['guanyu', 'zhangfei'],
+      C: ['zhaoyun', 'liubei'],
+      D: ['zhangliao', 'xiahoudun'],
+    });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'junyuanshao', deputyHeroId: 'lvbu' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    ok(act(state, 'C', { type: 'pickHero', heroId: 'zhaoyun', deputyHeroId: 'liubei' }));
+    ok(act(state, 'D', { type: 'pickHero', heroId: 'zhangliao', deputyHeroId: 'xiahoudun' }));
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    // 其余三家空手，省得每回合都要走弃牌阶段
+    for (const id of ['B', 'C', 'D']) state.players.find((x) => x.seatId === id)!.hand = [];
+    // 【会盟】发作几次就看日志：摸到几张牌受摸牌阶段影响，不如直接数它
+    const huimeng = () => state.log.filter((l) => l.message.includes('会盟')).length;
+    // 日志里写的是「摸一张牌」还是「无牌可摸」，顺手把它当断言用
+    const drewByHuimeng = () =>
+      state.log.some((l) => l.message.includes('会盟') && l.message.includes('摸一张牌'));
+
+    // ① 甲明置：群 0→1 → 【会盟】摸一张（锁定技，不问）
+    expect(state.pending?.kind).toBe('choice'); // 第一回合（甲）准备阶段的明置询问
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'all' }));
+    expect(huimeng()).toBe(1);
+    expect(drewByHuimeng()).toBe(true); // 摸到了（不是「无牌可摸」）
+    a.hand = []; // 免得甲这一回合的弃牌阶段还要弃牌
+
+    // ② 乙明置：蜀 0→1 → 再摸一张
+    ok(act(state, 'A', { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, 'B', { type: 'chooseOption', optionId: 'all' }));
+    expect(huimeng()).toBe(2);
+
+    // ③ 丙明置：蜀 1→2 —— 不是 0 ↔ 非0，不摸
+    ok(act(state, 'B', { type: 'endPhase' }));
+    ok(act(state, 'C', { type: 'chooseOption', optionId: 'all' }));
+    expect(huimeng()).toBe(2);
+
+    // ④ 丁明置：魏 0→1 → 摸一张
+    ok(act(state, 'C', { type: 'endPhase' }));
+    ok(act(state, 'D', { type: 'chooseOption', optionId: 'all' }));
+    expect(huimeng()).toBe(3);
+
+    // ⑤ 阵亡方向：丁（魏，唯一的魏）用【杀】打死丙 —— 蜀 2→1 不触发
+    const c = state.players.find((x) => x.seatId === 'C')!;
+    const d = state.players.find((x) => x.seatId === 'D')!;
+    c.hp = 1;
+    d.hand = [sha('d1'), juedou('d2')];
+    // 丁是张辽：摸牌阶段会问【突袭】——本用例拒掉
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('突袭'))
+      ok(act(state, 'D', { type: 'chooseOption', optionId: 'no' }));
+    ok(act(state, 'D', { type: 'playCard', cardId: 'd1', targetIds: ['C'] }));
+    ok(act(state, 'C', { type: 'pass' })); // 丙没手牌，不闪
+    passDeathSaves(state);
+    declineShoufeng(state, 'A'); // 丁的首张伤害牌（【杀】）——拒掉
+    expect(c.alive).toBe(false);
+    expect(huimeng()).toBe(3); // 蜀还剩乙 → 没到 0
+
+    // ⑥ 再打死乙（蜀最后一个）：蜀 1→0 → 甲摸一张
+    const b = state.players.find((x) => x.seatId === 'B')!;
+    b.hp = 1;
+    ok(act(state, 'D', { type: 'playCard', cardId: 'd2', targetIds: ['B'] })); // 【决斗】
+    passWuxie(state);
+    ok(act(state, 'B', { type: 'pass' })); // 乙没【杀】
+    passDeathSaves(state);
+    expect(b.alive).toBe(false);
+    expect(huimeng()).toBe(4);
+  });
+
+  it('授锋：出牌阶段的首张伤害牌结算结束后，给其一张牌并收回这张牌', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junyuanshao' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junyuanshao', 'qun', [tao('a1'), shan('a2')]);
+    seatSet(state, 'B', 'guanyu', 'shu', [wuzhong('b1'), sha('b2'), juedou('b3')]);
+    seatSet(state, 'C', 'zhangliao', 'wei', []);
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+    const p = (id: string) => state.players.find((x) => x.seatId === id)!;
+
+    // ① 乙先开【无中生有】：不是伤害牌，不占「首张伤害牌」的名额
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b1', targetIds: [] }));
+    passWuxie(state);
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'B' });
+
+    // ② 乙的头一张伤害牌：【杀】丙 → 结算结束后问甲（君袁绍）
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b2', targetIds: ['C'] }));
+    ok(act(state, 'C', { type: 'pass' })); // 丙没手牌，不闪
+    expect(p('C').hp).toBe(3);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('授锋');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'yes' }));
+    // 交给乙一张牌（手牌＋装备区一起挑，本用例只有手牌）
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, 'A', { type: 'pickCards', cardIds: ['a1'] }));
+    expect(p('B').hand.some((c) => c.id === 'a1')).toBe(true); // 交出去的牌到了乙手里
+    expect(p('A').hand.some((c) => c.id === 'b2')).toBe(true); // 那张【杀】被甲收回
+    expect(state.discard.some((c) => c.id === 'b2')).toBe(false);
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'B' });
+
+    // ③ 同一出牌阶段的第二张伤害牌（【决斗】）：不再是首张 → 不问
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b3', targetIds: ['C'] }));
+    passWuxie(state);
+    ok(act(state, 'C', { type: 'pass' })); // 丙没【杀】可出
+    expect(p('C').hp).toBe(2);
+    expect(state.pending).toEqual({ kind: 'play', seatId: 'B' });
+
+    // ④ 甲自己使用首张伤害牌：跳过给牌那一步，直接问是否获得此牌
+    const state2 = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junyuanshao' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state2.draft = null;
+    seatSet(state2, 'A', 'junyuanshao', 'qun', [sha('a9')]);
+    seatSet(state2, 'C', 'zhangliao', 'wei', []);
+    state2.turn = { seatIndex: 0, phase: 'play' };
+    state2.pending = { kind: 'play', seatId: 'A' };
+    state2.log = [];
+    ok(act(state2, 'A', { type: 'playCard', cardId: 'a9', targetIds: ['C'] }));
+    ok(act(state2, 'C', { type: 'pass' }));
+    expect(state2.pending?.kind).toBe('choice');
+    if (state2.pending?.kind !== 'choice') return;
+    expect(state2.pending.title).toContain('授锋');
+    ok(act(state2, 'A', { type: 'chooseOption', optionId: 'yes' }));
+    expect(state2.players.find((x) => x.seatId === 'A')!.hand.some((c) => c.id === 'a9')).toBe(true);
+  });
+
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
     // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
     const state = createGame(

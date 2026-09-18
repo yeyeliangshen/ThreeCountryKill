@@ -149,7 +149,28 @@ export type Timing =
    */
   | 'pindianRevealed'
   | 'death' // 死亡
-  | 'roundEnd'; // 一轮结束（座次绕回首位；君主·励众在这里结算）
+  | 'roundEnd' // 一轮结束（座次绕回首位；君主·励众在这里结算）
+  /**
+   * **一张「伤害牌」使用完、整个结算结束时**（派给**所有存活角色**，
+   * payload: { card, userSeatId }）。
+   *
+   * 君袁绍·授锋挂这里（「当一名角色于其出牌阶段使用首张伤害牌结算结束后」）。
+   * 「首张」由引擎判定：一本账记着**本回合出牌阶段**用掉的第一张伤害牌
+   * （`GameState.firstDamageCard`，见 markCardUsed），只有它的结算结束才派发这个时机
+   * （账本上打 `resolved` 标记，同一张牌在重跑路径上不会派发两次）。
+   * 派发点有两个：锦囊走 `endTrickResolution`、【杀】走 `afterAttackSettledTail`。
+   */
+  | 'cardResolved'
+  /**
+   * **一个势力的角色数从 0 变成别的数（或反过来）时**（派给**所有存活角色**，
+   * payload: { faction, from, to }）。
+   *
+   * 君袁绍·会盟挂这里。计数口径＝**已确定势力**（明置）的存活角色数，与 effectiveFaction
+   * 同一口径：未确定势力的角色不属于任何势力。派发点：明置（revealHeroCard）与阵亡（doDeath）。
+   * ⚠️ 待核对：WIKI 与官方公告都没写这个「角色数」按明置算还是按武将牌本身的势力算
+   *    （后者是胜负/鏖战的口径），本实现按前者，理由见 docs/guozhan-roster.md §5.60。
+   */
+  | 'factionCountChanged';
 
 /**
  * 回复体力后的载荷。

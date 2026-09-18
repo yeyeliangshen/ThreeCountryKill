@@ -44,6 +44,31 @@ export type CardType = BasicCardType | EquipSlot | TrickType | DelayedTrickType;
  */
 export const RECASTABLE_CARD_TYPES: ReadonlySet<CardType> = new Set<CardType>(['tiesuo', 'zhibi']);
 
+/**
+ * 「伤害牌」：**使用之后可能造成伤害**的牌。
+ *
+ * 用于君袁绍·授锋（「当你于其出牌阶段使用首张伤害牌结算结束后」，原文见
+ * docs/guozhan-roster.md §5.60）。本引擎里符合这个描述的只有下面这些：
+ *   【杀】（含火杀/雷杀，属性只是伤害的属性）、【决斗】（拼杀，输的一方吃伤害）、
+ *   【南蛮入侵】【万箭齐发】（不响应就吃伤害）、【火攻】（火焰伤害）、
+ *   【水淹七军】（雷电伤害）【火烧连营】（火焰伤害）。
+ *
+ * ⚠️ 明确**不算**的：延时锦囊【闪电】（它确实会造成伤害，但那是判定阶段结算的，
+ * 不是「于其出牌阶段使用并结算完」——本仓库的授锋在「这张牌结算结束」那一刻触发，
+ * 闪电永远等不到）；【借刀杀人】（它本身不造成伤害，只是让别人去用【杀】）。
+ * ⚠️ 待核对：官方对「伤害牌」的完整定义（势备篇/君临天下各包是否还有算进来的锦囊）
+ *   还没核到，这里按本引擎实有卡牌的伤害能力枚举。
+ */
+export const DAMAGE_CARD_TYPES: ReadonlySet<CardType> = new Set<CardType>([
+  'sha',
+  'juedou',
+  'nanman',
+  'wanjian',
+  'huogong',
+  'shuiyan',
+  'huoshao',
+]);
+
 export function isRecastable(card: Card): boolean {
   return RECASTABLE_CARD_TYPES.has(card.type);
 }
@@ -203,10 +228,12 @@ export const EQUIP_NAME: Record<string, string> = {
   wuliu: '吴六剑',
   sanjian: '三尖两刃刀',
   // 君主将专属装备（只能通过【君威】从游戏外取得，离开装备区即销毁）
-  // ⚠️ 其余三件（六龙骖驾 / 定澜夜明珠 / 盟军大纛）的效果文本 WIKI 无页面、搜索配额用尽，
-  //    查清之前不登记、也不实现——不猜。
+  // ⚠️ 仍缺【定澜夜明珠】（君孙权）的完整技能表；它的效果文本已核到一半
+  //    （移动版公告：【定澜夜明珠】「锁定技，你每回合首次弃置牌后，摸一张牌。」），
+  //    但君孙权另外两条技能没核到，所以整只武将还没做。
   feilong: '飞龙夺凤',
   liulong: '六龙骖驾',
+  mengjun: '盟军大纛',
   // 防具
   bagua: '八卦阵',
   renwang: '仁王盾',

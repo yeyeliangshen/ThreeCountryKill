@@ -391,9 +391,9 @@ export function drawOne(state: GameState): Card | null {
  * ⚠️ 另外三件（【六龙骖驾】【定澜夜明珠】【盟军大纛】）的 WIKI 没有页面、搜索配额也用尽了，
  *    效果文本**待核对**——在查清之前不实现（本仓库不猜规则文本）。
  */
-export function lordEquipFeilong(): Card {
+export function lordEquipFeilong(seq: number): Card {
   return {
-    id: 'lord-feilong',
+    id: `lord-feilong#${seq}`,
     type: 'treasure',
     suit: 'spade',
     rank: 2,
@@ -409,13 +409,34 @@ export function lordEquipFeilong(): Card {
  * ⚠️ 网上另有「它会替换坐骑、且不能再使用坐骑牌」的说法——用户提供的牌面文本里**没有**这一条，
  *    本实现按用户文本：只有「距离 -3」，也不影响坐骑牌的使用。
  */
-export function lordEquipLiulong(): Card {
+export function lordEquipLiulong(seq: number): Card {
   return {
-    id: 'lord-liulong',
+    id: `lord-liulong#${seq}`,
     type: 'treasure',
     suit: 'heart',
     rank: 13,
     equipName: 'liulong',
+    destroyOnLeave: true,
+  };
+}
+
+/**
+ * 【盟军大纛】（君袁绍的君主专属装备）——
+ * 「当你受到伤害时，你可以弃置两张牌（弃置的其中一张牌可以是盟军大纛），然后你防止此伤害。
+ *   当此牌离开装备区时，销毁之。」（用户核对后提供的牌面文本）
+ *
+ * ⚠️ **待核对**：牌面只核到效果，**花色/点数/装备类型**都没核到（WIKI 没有这张牌的页面，
+ *    移动版公告也只写了效果）。按四位君主的专属装备同属「宝物」这一族先记 `treasure`，
+ *    花色点数用占位值 ♣2 —— 查到以后改这一个函数即可（专属装备是场外牌，花色点数在
+ *    本引擎里只影响拼点/判定那类场景，日常对局用不到）。
+ */
+export function lordEquipMengjun(seq: number): Card {
+  return {
+    id: `lord-mengjun#${seq}`,
+    type: 'treasure',
+    suit: 'club',
+    rank: 2,
+    equipName: 'mengjun',
     destroyOnLeave: true,
   };
 }
