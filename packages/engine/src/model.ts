@@ -376,6 +376,14 @@ export interface AttackContext {
   /** 需要的闪数（默认1，吕布·无双=2，马超·铁骑/黄忠·烈弓=Infinity 不可闪避） */
   requiredShan?: number;
   /**
+   * 这张【杀】一共指定了几个目标（playSha 填）。严白虎·寄篱只认「**唯一**目标」，
+   * 而逐个结算时攻击上下文是每人一份，光看自己这份分不出是不是唯一目标。
+   */
+  totalTargets?: number;
+  /** 严白虎·寄篱：这张【杀】要再结算一次 + 「已经重跑过」的守卫（见 TrickContext 同名注释） */
+  jiliSecond?: boolean;
+  jiliDone?: boolean;
+  /**
    * 这张【杀】已经被改过目标（大乔·流离）。
    * 只允许改一次，否则两个都会改目标的技能能让它来回弹、死循环。
    */
@@ -424,6 +432,12 @@ export interface TrickContext {
   responderIndex: number;
   // 决斗：当前该谁出杀（target=目标方，source=来源方）
   duelTurn?: 'target' | 'source';
+  /**
+   * 严白虎·寄篱：这张牌要**再结算一次**（成为唯一目标时由技能置位），
+   * 以及「已经重跑过了」的守卫（防止无限递归）。
+   */
+  jiliSecond?: boolean;
+  jiliDone?: boolean;
   /**
    * 决斗：当前响应方在「这一次响应」里已经打出的【杀】数。
    * 对手含无双时每次要出两张【杀】，凑满才换手（见 heroDuelShaRequired）。
@@ -619,6 +633,11 @@ export interface GameState {
    * 拿走（顺手牵羊那类）后，新持有者也会被算作「从牌堆获得过牌」——要做准就得再记「谁摸的」。
    */
   gainedFromDeckThisTurn: string[];
+  /**
+   * 严白虎·寄篱「此牌结算两次」的去重账本：已经触发过重跑的牌 id。
+   * 第二次结算时技能钩子会再次看到这张牌，靠它跳过（否则无限递归）。随回合清空。
+   */
+  jiliReranCards: string[];
   /**
    * 「未加入游戏的武将牌堆」：选将结束后剩下的武将 id（变包的**变更副将**从这堆里
    * 连续亮将，直到亮出与主将势力相同者）。

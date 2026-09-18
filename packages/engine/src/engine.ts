@@ -800,6 +800,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.killedThisTurn = [];
   // 「本回合从牌堆摸到过的牌」也只在**本回合**内有效（袁术·伪帝）
   state.gainedFromDeckThisTurn = [];
+  // 寄篱「这张牌已经重跑过」同样只在**本回合**内有效（严白虎）
+  state.jiliReranCards = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
   state.discardThisTurn = [];
   // 武将牌翻面朝上：跳过这一个回合，翻回正面（据守/放逐的代价）
@@ -1667,6 +1669,8 @@ function startAttack(
     // 于是她的黑桃杀能破【仁王盾】（官方 FAQ：仁王盾是否生效看杀属于谁）
     cardColor: colorSeenAs(state, source, card),
     requiredShan: 1,
+    // 本次【杀】一共指定了几个目标（严白虎·寄篱只认「唯一目标」）
+    totalTargets: ordered.length,
     // 【方天画戟】：其余目标排在这里，逐个结算
     fangtianQueue: ordered.slice(1),
     // 国战版「一人闪则其余无效」；军争版各目标独立结算
@@ -2204,6 +2208,22 @@ function afterAttackSettled(state: GameState, attack: AttackContext): void {
 
 /** 【杀】结算的真正收尾（attackSettled 钩子之后） */
 function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
+  // 严白虎·寄篱：「成为红色【杀】的唯一目标 → 此牌结算两次」。
+  // 重跑就是**同一张杀**再走一遍完整流程（可再闪、再受伤），与方天画戟逐个结算同一套路：
+  // 换一份 attack 副本、把 dodged/requiredShan 复位，并带 jiliDone 防递归
+  // （技能侧还有按牌 id 的去重账本 state.jiliReranCards）。
+  const jiliTarget = attack.jiliSecond && !attack.jiliDone ? getPlayer(state, attack.targetId) : undefined;
+  if (jiliTarget && jiliTarget.alive) {
+    attack.jiliDone = true;
+    pushLog(state, 'skill', `【寄篱】：此【杀】对 ${jiliTarget.name} 再结算一次。`);
+    becomeTargetFor(state, jiliTarget, {
+      ...attack,
+      dodged: false,
+      requiredShan: 1,
+      redirected: false,
+    });
+    return;
+  }
   // 技能驱动的连环出杀（贾诩·乱武）在这里接着往下走；普通出杀回到出牌阶段
   if (attack.afterSettled) {
     const after = attack.afterSettled;
@@ -3522,7 +3542,32 @@ function playTao(
     action: 'tao',
   });
   runHooks(state, 'useCard', player, { card });
+  // 严白虎·寄篱：自己对自己用的**红色**基本牌也是「唯一目标」→ 此牌结算两次
+  // （自己出牌阶段用【桃】回 2 点；【酒】那种靠标记生效的牌，重跑一次不叠加，
+  //   见 Hero 注释里记的已知简化）
+  jiliResolveSelfBasic(state, player, card);
   return { ok: true };
+}
+
+/**
+ * 严白虎·寄篱的「红色基本牌对自己结算两次」。
+ *
+ * 只在**自己**使用时补一次效果（濒死求桃那条路在 respondDeathSave 里单独处理）。
+ * 只处理【桃】（回血可以真叠加）；【酒】是靠 `flags.jiuActive` 布尔标记生效的，
+ * 重跑不会让伤害再 +1——这是本引擎的口径，已记为已知简化。
+ */
+function jiliResolveSelfBasic(state: GameState, player: Player, card: Card): void {
+  if (cardColorOf(card) !== 'red') return;
+  if (card.type !== 'tao') return;
+  if (!effectiveHeroes(state, player).some((h) => h.jili === true)) return;
+  if (state.jiliReranCards.includes(card.id)) return;
+  state.jiliReranCards.push(card.id);
+  const healed = healAndTrigger(state, player, 1);
+  pushLog(
+    state,
+    'skill',
+    `【寄篱】：这张【桃】对 ${player.name} 再结算一次，回复 ${healed} 点体力。`,
+  );
 }
 
 function playJiu(
@@ -3904,6 +3949,35 @@ function trickFullyNegatedForSingleTarget(state: GameState, ctx: TrickContext): 
 }
 
 /** 无懈可击询问结束后的锦囊结算 */
+/**
+ * 单目标锦囊「结算完成」的收口（原来是直接 resumePlay）。
+ *
+ * 多出来的一步是严白虎·寄篱：「当你成为红色基本牌或红色普通锦囊牌的**唯一目标**后，
+ * 在此牌结算结束后，此牌的使用者对你再使用一次相同牌名的牌」——也就是这张牌**结算两次**。
+ * `ctx.jiliSecond` 由技能在他成为目标时置位，走到这里就把同一张牌再走一遍完整流程
+ * （第二次会重新开无懈窗口，符合「再使用一次」的口径；`targetCardId` 不再沿用，
+ * 因为过河拆桥/顺手牵羊第二遍时原来那张明牌已经被拿走了，让使用者重新选）。
+ *
+ * 防递归有两道：本 ctx 的 `jiliDone`，以及技能侧按**牌 id** 记的账本 `state.jiliReranCards`
+ * （第二次结算时钩子会再次看到这张牌，靠它跳过）。
+ */
+function endTrickResolution(state: GameState, ctx: TrickContext): void {
+  if (ctx.jiliSecond && !ctx.jiliDone) {
+    ctx.jiliDone = true;
+    const source = getPlayer(state, ctx.sourceId);
+    if (source && source.alive) {
+      const targetName =
+        (ctx.targetIds ?? []).map((id) => getPlayer(state, id)?.name ?? '').filter(Boolean).join('、') ||
+        '目标';
+      pushLog(state, 'skill', `【寄篱】：此牌对 ${targetName} 再结算一次。`);
+      startTrickResolution(state, source, ctx.card, ctx.targetIds ?? [], undefined);
+      return;
+    }
+  }
+  // ⚠️ 这里必须是 resumePlay：本函数自己就是它的替代品，调自己会无限递归
+  resumePlay(state, ctx.sourceId);
+}
+
 function resolveTrick(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId);
   if (!source || !source.alive) {
@@ -3916,7 +3990,7 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       // 【无懈可击·国】抵消的是「来源」这一个目标
       if (negatedByWuxie(ctx, ctx.sourceId)) {
         pushLog(state, 'trick', `【无中生有】已被【无懈可击·国】抵消。`);
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       for (let i = 0; i < 2; i++) {
@@ -3924,7 +3998,7 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
         if (c) source.hand.push(c);
       }
       pushLog(state, 'trick', `${source.name} 摸了 2 张牌。`);
-      resumePlay(state, ctx.sourceId);
+      endTrickResolution(state, ctx);
       return;
     }
     case 'taoyuan': {
@@ -3935,40 +4009,40 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
           pushLog(state, 'tao', `${p.name} 回复 ${healed} 点体力。`);
         }
       }
-      resumePlay(state, ctx.sourceId);
+      endTrickResolution(state, ctx);
       return;
     }
     case 'guohe':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveGuohe(state, ctx);
       return;
     case 'shunshou':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveShunshou(state, ctx);
       return;
     case 'juedou':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveJuedou(state, ctx);
       return;
     case 'huogong':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveHuogong(state, ctx);
       return;
     case 'jiedao':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveJiedao(state, ctx);
@@ -3978,7 +4052,7 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       return;
     case 'yuanjiao':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveYuanjiao(state, ctx);
@@ -3991,7 +4065,7 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       return;
     case 'zhibi':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveZhibi(state, ctx);
@@ -4001,7 +4075,7 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       return;
     case 'shuiyan':
       if (trickFullyNegatedForSingleTarget(state, ctx)) {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       resolveShuiYan(state, ctx);
@@ -4028,13 +4102,13 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
         // 没有响应者（全都不受影响，例如只剩祝融且她免疫）也算「结算结束」——
         // 巨象照样要拿到这张牌
         giveResolvedNanman(state, ctx);
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
         return;
       }
       enterTrickResponse(state, ctx);
       return;
     default:
-      resumePlay(state, ctx.sourceId);
+      endTrickResolution(state, ctx);
   }
 }
 
@@ -4042,7 +4116,7 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
 function resolveGuohe(state: GameState, ctx: TrickContext): void {
   const target = getPlayer(state, ctx.targetId!);
   if (!target || !target.alive) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
@@ -4055,13 +4129,13 @@ function resolveGuohe(state: GameState, ctx: TrickContext): void {
     );
     // 拆掉的是装备 → 目标失去装备区的一张牌（枭姬）
     if (got.fromEquip) {
-      fireEquipLost(state, target, got.card, () => resumePlay(state, ctx.sourceId));
+      fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
       return;
     }
   } else {
     pushLog(state, 'trick', `${target.name} 没有牌可拆。`);
   }
-  resumePlay(state, ctx.sourceId);
+  endTrickResolution(state, ctx);
 }
 
 /** 顺手牵羊：获得目标 1 张牌 */
@@ -4069,7 +4143,7 @@ function resolveShunshou(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId)!;
   const target = getPlayer(state, ctx.targetId!);
   if (!target || !target.alive) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
@@ -4081,13 +4155,13 @@ function resolveShunshou(state: GameState, ctx: TrickContext): void {
       `${source.name} 从 ${target.name} 处获得了【${cardLabel(got.card)}】。`,
     );
     if (got.fromEquip) {
-      fireEquipLost(state, target, got.card, () => resumePlay(state, ctx.sourceId));
+      fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
       return;
     }
   } else {
     pushLog(state, 'trick', `${target.name} 没有牌可偷。`);
   }
-  resumePlay(state, ctx.sourceId);
+  endTrickResolution(state, ctx);
 }
 
 /** 从目标的牌中选取一张（优先指定明牌区，否则随机手牌，再否则随机装备/判定） */
@@ -4153,7 +4227,7 @@ function resolveJuedou(state: GameState, ctx: TrickContext): void {
   const targetId = ctx.responders[0]!;
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const need = duelShaRequired(state, ctx, targetId);
@@ -4188,12 +4262,12 @@ function resolveHuogong(state: GameState, ctx: TrickContext): void {
   const targetId = ctx.responders[0]!;
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   if (target.hand.length === 0) {
     pushLog(state, 'trick', `${target.name} 没有手牌，【火攻】无效。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   pushLog(state, 'trick', `${target.name} 需展示一张手牌。`);
@@ -4206,7 +4280,7 @@ function resolveJiedao(state: GameState, ctx: TrickContext): void {
   const holder = getPlayer(state, holderId);
   if (!holder || !holder.alive || !holder.equipment.weapon) {
     pushLog(state, 'trick', `目标无武器，【借刀杀人】无效。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   pushLog(state, 'trick', `${holder.name} 需打出【杀】或交出武器。`);
@@ -4240,7 +4314,7 @@ function resolveTiesuo(state: GameState, ctx: TrickContext): void {
       action: 'tiesuo',
     });
   }
-  resumePlay(state, ctx.sourceId);
+  endTrickResolution(state, ctx);
 }
 
 /** 【远交近攻】：目标摸一张，然后你摸三张 */
@@ -4249,7 +4323,7 @@ function resolveYuanjiao(state: GameState, ctx: TrickContext): void {
   const target = getPlayer(state, ctx.targetIds?.[0] ?? '');
   if (!target || !target.alive) {
     pushLog(state, 'trick', `【远交近攻】的目标已不在场。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const first = drawOne(state);
@@ -4267,7 +4341,7 @@ function resolveYuanjiao(state: GameState, ctx: TrickContext): void {
     `${source.name} 使用了【远交近攻】：${target.name} 摸 1 张牌，${source.name} 摸 ${mine} 张牌。`,
     { seat: source.seatId, action: 'yuanjiao' },
   );
-  resumePlay(state, ctx.sourceId);
+  endTrickResolution(state, ctx);
 }
 
 /**
@@ -4304,7 +4378,7 @@ function resolveYiyi(state: GameState, ctx: TrickContext): void {
  */
 function yiyiStep(state: GameState, ctx: TrickContext): void {
   if (ctx.responderIndex >= ctx.responders.length) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const t = getPlayer(state, ctx.responders[ctx.responderIndex]!);
@@ -4393,7 +4467,7 @@ function wuguStep(
       toDiscard(state, ...remaining.slice());
       remaining.length = 0;
     }
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const p = getPlayer(state, ctx.responders[ctx.responderIndex]!);
@@ -4497,7 +4571,7 @@ function resolveHuoShao(state: GameState, ctx: TrickContext): void {
 function huoShaoStep(state: GameState, ctx: TrickContext): void {
   const idx = ctx.responderIndex;
   if (idx >= ctx.responders.length) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const target = getPlayer(state, ctx.responders[idx]!);
@@ -4604,7 +4678,7 @@ function chilingNext(state: GameState, ctx: TrickContext): void {
 function chilingStep(state: GameState, ctx: TrickContext): void {
   const idx = ctx.responderIndex;
   if (idx >= ctx.responders.length) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const target = getPlayer(state, ctx.responders[idx]!);
@@ -4727,7 +4801,7 @@ function lianjunMemberPart(
   if (names.length > 0) {
     pushLog(state, 'trick', `${names.join('、')} 因【联军盛宴】各摸一张牌并重置武将牌。`);
   }
-  resumePlay(state, ctx.sourceId);
+  endTrickResolution(state, ctx);
 }
 
 /**
@@ -4757,7 +4831,7 @@ function resolveLianjun(state: GameState, ctx: TrickContext): void {
   const faction = rep ? effectiveFaction(state, rep) : null;
   if (!rep || !rep.alive || !faction) {
     pushLog(state, 'trick', `【联军盛宴】的目标势力已不存在，此牌无效。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const members = state.players.filter(
@@ -4814,7 +4888,7 @@ function resolveXietianzi(state: GameState, ctx: TrickContext): void {
   // 被无懈可击抵消：他这一个回合什么也没发生（牌已经用掉了）
   if (negatedByWuxie(ctx, player.seatId)) {
     pushLog(state, 'trick', `【挟天子以令诸侯】对 ${player.name} 的效果已被【无懈可击】抵消。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   player.flags.xietianziPending = true;
@@ -4844,7 +4918,7 @@ function resolveLutong(state: GameState, ctx: TrickContext): void {
   if (options.length === 0) {
     // 谁都没到 2 人 → 既没有大势力也没有小势力，这张牌无从结算
     pushLog(state, 'trick', `场上没有大势力，【勠力同心】无效。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   askChoice(state, source.seatId, '【勠力同心】：对哪一类角色使用？', options, (st, _p, picked) => {
@@ -4879,7 +4953,7 @@ function resolveLutong(state: GameState, ctx: TrickContext): void {
       `【勠力同心】对${wantBig ? '大' : '小'}势力：${parts.join('，') || '没有角色受影响'}。`,
       { seat: source.seatId, action: 'lutong' },
     );
-    resumePlay(st, ctx.sourceId);
+    endTrickResolution(st, ctx);
   });
 }
 
@@ -4922,7 +4996,7 @@ function resolveTiaoHu(state: GameState, ctx: TrickContext): void {
   //    将来若有别的技能需要「牌结算完之后」，再把它推广到 resolveTrick 的所有出口
   //    （那里有 49 处 resumePlay，一次性改动静太大）。
   runHooksPausable(state, 'afterUse', source, { card: ctx.card, trickCtx: ctx }, () =>
-    resumePlay(state, ctx.sourceId),
+    endTrickResolution(state, ctx),
   );
 }
 
@@ -4934,13 +5008,13 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId)!;
   const target = getPlayer(state, ctx.targetIds?.[0] ?? '');
   if (!target || !target.alive) {
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const eqCards = EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[];
   if (eqCards.length === 0) {
     pushLog(state, 'trick', `${target.name} 的装备区已经没有牌了。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   askChoice(
@@ -4957,7 +5031,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
         let i = 0;
         const step = (): void => {
           if (i >= eqCards.length) {
-            resumePlay(st, ctx.sourceId);
+            endTrickResolution(st, ctx);
             return;
           }
           const card = eqCards[i++]!;
@@ -4994,7 +5068,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
           );
         }
         if (prevented) {
-          resumePlay(st, ctx.sourceId);
+          endTrickResolution(st, ctx);
           return;
         }
         runDamagedHooks(st, p, attack, dmg, () => {
@@ -5003,7 +5077,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
             enterNearDeath(st, attack);
             return;
           }
-          runChainSpread(st, () => resumePlay(st, ctx.sourceId));
+          runChainSpread(st, () => endTrickResolution(st, ctx));
         });
       });
     },
@@ -5074,7 +5148,7 @@ function resolveZhibi(state: GameState, ctx: TrickContext): void {
   const target = getPlayer(state, ctx.targetIds?.[0] ?? '');
   if (!target || !target.alive) {
     pushLog(state, 'trick', `【知己知彼】的目标已不在场。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const hidden: { id: string; name: string }[] = [];
@@ -5088,7 +5162,7 @@ function resolveZhibi(state: GameState, ctx: TrickContext): void {
   const options = [{ id: 'hand', label: `观看 ${target.name} 的手牌（${target.hand.length} 张）` }];
   for (const h of hidden) options.push({ id: `hero:${h.id}`, label: `观看武将牌「${h.name}」` });
   const finish = (): void => {
-    if (state.pending === null) resumePlay(state, ctx.sourceId);
+    if (state.pending === null) endTrickResolution(state, ctx);
   };
   askChoice(
     state,
@@ -5191,7 +5265,7 @@ function enterTrickResponse(state: GameState, ctx: TrickContext): void {
   if (ctx.responderIndex >= ctx.responders.length) {
     // 群体锦囊整个结算完了：祝融·巨象在这个时机把【南蛮入侵】捞走
     giveResolvedNanman(state, ctx);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   const rId = ctx.responders[ctx.responderIndex]!;
@@ -5340,7 +5414,7 @@ function afterDuelShaPlayed(state: GameState, responderId: string, ctx: TrickCon
   const newResponder = getPlayer(state, newResponderId);
   if (!newResponder || !newResponder.alive) {
     // 对方已死 → 本方胜，无伤害
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return;
   }
   pushLog(state, 'trick', `轮到 ${newResponder.name} 打出【杀】或受 1 点伤害。`);
@@ -5382,7 +5456,7 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
       if (victim.hp <= 0) {
         enterNearDeath(state, attack);
       } else {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
       }
     };
     runDamagedHooks(state, victim, attack, dmg, tail);
@@ -5445,11 +5519,11 @@ function respondHuogongCard(
       if (target.hp <= 0) {
         enterNearDeath(state, attack);
       } else {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
       }
     };
     if (prevented) {
-      resumePlay(state, ctx.sourceId);
+      endTrickResolution(state, ctx);
       return;
     }
     runDamagedHooks(state, target, attack, dmg, tail);
@@ -5461,12 +5535,12 @@ function passHuogong(state: GameState, seatId: string, ctx: TrickContext): Apply
   if (!ctx.revealedSuit) {
     // 目标拒绝展示 → 火攻无效（无伤害）
     pushLog(state, 'trick', `${getPlayer(state, seatId)!.name} 拒绝展示，【火攻】无效。`);
-    resumePlay(state, ctx.sourceId);
+    endTrickResolution(state, ctx);
     return { ok: true };
   }
   // 来源拒绝弃牌 → 无伤害
   pushLog(state, 'trick', `${getPlayer(state, seatId)!.name} 拒绝弃牌，【火攻】无效。`);
-  resumePlay(state, ctx.sourceId);
+  endTrickResolution(state, ctx);
   return { ok: true };
 }
 
@@ -5555,7 +5629,7 @@ function passJiedao(state: GameState, seatId: string, ctx: TrickContext): ApplyR
     toDiscard(state, weapon);
   }
   // 交出武器 = 失去装备区的一张牌（枭姬）
-  fireEquipLost(state, holder, weapon, () => resumePlay(state, ctx.sourceId));
+  fireEquipLost(state, holder, weapon, () => endTrickResolution(state, ctx));
   return { ok: true };
 }
 
@@ -5605,11 +5679,11 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
       if (victim.hp <= 0) {
         enterNearDeath(state, attack);
       } else {
-        resumePlay(state, ctx.sourceId);
+        endTrickResolution(state, ctx);
       }
     };
     if (prevented) {
-      resumePlay(state, ctx.sourceId);
+      endTrickResolution(state, ctx);
       return;
     }
     runDamagedHooks(state, victim, attack, dmg, tail);
@@ -6457,6 +6531,22 @@ function respondDeathSave(
     { amount: heal, taoSaverId: card.type === 'tao' && saver.seatId !== dying.seatId ? saver.seatId : undefined },
     () => {},
   );
+  // 严白虎·寄篱：别人（或他自己）用**红色**【桃】把他从濒死救回来，这张牌同样结算两次
+  // ——第二遍就是再回复 1 点。记账本防止重复。
+  if (
+    card.type === 'tao' &&
+    cardColorOf(card) === 'red' &&
+    effectiveHeroes(state, dying).some((h) => h.jili === true) &&
+    !state.jiliReranCards.includes(card.id)
+  ) {
+    state.jiliReranCards.push(card.id);
+    const more = healAndTrigger(state, dying, 1);
+    pushLog(
+      state,
+      'skill',
+      `【寄篱】：这张【桃】对 ${dying.name} 再结算一次，回复 ${more} 点体力。`,
+    );
+  }
   // 救活：先派发「濒死结算结束后」（左慈·汲魂 / 吴国太·补益），再把控制权还回去
   dispatchNearDeathResolved(state, dying.seatId, true, pending.killerId, () => {
     resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
@@ -7684,6 +7774,7 @@ export function createGame(
     damagedThisTurn: [],
     killedThisTurn: [],
     gainedFromDeckThisTurn: [],
+    jiliReranCards: [],
     heroPool: [],
     discardThisTurn: [],
     xianquSeat: null,

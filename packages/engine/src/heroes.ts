@@ -5028,6 +5028,48 @@ const YANBAIHU: Hero = {
       },
     },
     {
+      // 寄篱①：成为**红色即时锦囊**的唯一目标 → 置「此牌结算两次」
+      // （单目标锦囊在 startTrickResolution 里给所有存活角色派发 othersBecomeTarget，
+      //   所以目标本人也收得到自己的那一条；多人目标不会走这条派发）
+      timing: 'othersBecomeTarget',
+      skillId: '寄篱',
+      locked: true,
+      handler: (ctx) => {
+        const payload = ctx.payload as
+          | { targetId?: string; card?: Card; trickCtx?: TrickContext }
+          | undefined;
+        if (payload?.targetId !== ctx.player.seatId) return;
+        const card = payload.card;
+        const tctx = payload.trickCtx;
+        if (!card || !tctx) return;
+        if (cardColor(card) !== 'red') return;
+        if (!isInstantTrick(card)) return; // 只认「普通锦囊」，延时锦囊不算
+        if (tctx.jiliSecond || tctx.jiliDone) return;
+        if (ctx.state.jiliReranCards.includes(card.id)) return; // 已经重跑过这张牌
+        tctx.jiliSecond = true;
+        ctx.state.jiliReranCards.push(card.id);
+      },
+    },
+    {
+      // 寄篱②：成为**红色【杀】**的**唯一**目标 → 同样置「结算两次」。
+      // 「唯一目标」看 attack.totalTargets（playSha 填；方天画戟那种多目标不算）。
+      timing: 'becomeTarget',
+      skillId: '寄篱',
+      locked: true,
+      handler: (ctx) => {
+        const payload = ctx.payload as { attack?: AttackContext } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.asType !== 'sha') return;
+        if (attack.targetId !== ctx.player.seatId) return;
+        if (attack.cardColor !== 'red') return;
+        if ((attack.totalTargets ?? 1) !== 1) return; // 只认唯一目标
+        if (attack.jiliSecond || attack.jiliDone) return;
+        if (ctx.state.jiliReranCards.includes(attack.cardId)) return;
+        attack.jiliSecond = true;
+        ctx.state.jiliReranCards.push(attack.cardId);
+      },
+    },
+    {
       // 寄篱：本阶段第 2 次受到伤害 → 防止并移除这张武将牌
       timing: 'damageDealt',
       skillId: '寄篱',

@@ -17371,3 +17371,147 @@ describe('国战 · 徐庶（诛害 / 举荐）', () => {
     expect(state.log.some((e) => e.message.includes('举荐'))).toBe(false);
   });
 });
+
+/** 严白虎·寄篱的「此牌结算两次」（红色基本牌/普通锦囊的唯一目标） */
+describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      deputyHeroId?: string;
+      hp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      if (s.deputyHeroId) p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  /** 严白虎放副将位（寄篱是副将技） */
+  const yanbaihu = (seatId: string, name: string, extra: Record<string, unknown> = {}) => ({
+    seatId,
+    name,
+    heroId: 'vanilla',
+    deputyHeroId: 'yanbaihu',
+    faction: 'qun' as Faction,
+    ...extra,
+  });
+
+  it('红色【杀】：唯一目标 → 结算两次（第二次的伤害被寄篱的减伤条款挡掉并移除武将牌）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'heart')] },
+        yanbaihu(B, '乙') as never,
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 第一遍：不出闪 → 受 1 点（4→3）
+    expect(b.hp).toBe(3);
+    // 第二遍：又一轮「等出闪」
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    // 这一遍的伤害是本阶段第 2 次 → 寄篱防止并移除武将牌
+    expect(b.hp).toBe(3);
+    expect(b.removedHeroIds).toContain('yanbaihu');
+    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('寄篱'))).toBe(true);
+  });
+
+  it('黑色【杀】不触发；多目标的【杀】也不触发', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade')] },
+        yanbaihu(B, '乙') as never,
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(b.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(false);
+    expect(b.removedHeroIds).toHaveLength(0);
+  });
+
+  it('红色【过河拆桥】：唯一目标 → 结算两次（第二遍重新选一张）', () => {
+    const state = gz(
+      [
+        // 寄篱只认**红色**牌，所以这里手工造一张红桃【过河拆桥】
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [mk('a1', 'guohe', 'heart')] },
+        yanbaihu(B, '乙', { hand: [mk('b1', 'tao', 'heart')], equip: [wpn('b2')] }) as never,
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'b2' }));
+    passWuxie(state);
+    // 第一遍拆掉了武器；第二遍重新结算（这张牌已经不在装备区 → 拆手牌）
+    expect(b.equipment.weapon).toBeNull();
+    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+    expect(b.hand.length).toBe(0);
+  });
+
+  it('红色【桃】对自己使用：回 2 点体力（此牌结算两次）', () => {
+    const state = gz([yanbaihu(A, '甲', { hand: [mk('a1', 'tao', 'heart')], hp: 2 }) as never], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    expect(a.hp).toBe(4); // 2 → 3（第一次）→ 4（寄篱再结算一次）
+    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+  });
+
+  it('别人用红色【桃】把他从濒死救回来：也结算两次', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade'), mk('a2', 'tao', 'heart')] },
+        yanbaihu(B, '乙', { hp: 1 }) as never,
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力 0 → 濒死
+    expect(state.pending?.kind).toBe('respondDeath');
+    // 求桃轮询：从濒死者起 → [乙, 丙, 甲]
+    ok(act(state, B, { type: 'pass' })); // 乙自己不出桃
+    ok(act(state, C, { type: 'pass' })); // 丙也不出桃
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲用红桃救
+    expect(b.hp).toBe(2); // 救回 1 点 + 寄篱再结算一次 1 点
+    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+  });
+});
