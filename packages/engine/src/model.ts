@@ -755,6 +755,14 @@ export interface GameState {
    */
   lordEquipSeq: number;
   /**
+   * 「本回合用过哪些国战标记」——君刘备·章武要「视为使用1枚**与你势力相同的角色本回合使用过**
+   * 的国战标记」，所以每次真用掉一枚就记一笔（记在**用的人**头上）。
+   *
+   * 与 `damagedThisTurn` / `killedThisTurn` 一样是每回合清空的账本（`startTurn` 里清）。
+   * 同一枚被同一人用多次就记多条，章武那边按标记 id 去重成选项。
+   */
+  markerUsesThisTurn: { seatId: string; markerId: MarkerId }[];
+  /**
    * 【授锋】的「本回合出牌阶段用掉的第一张伤害牌」（君袁绍）。
    *
    * 「首张」必须记在**使用的那一刻**（引擎在 `markCardUsed` 里顺手登记），不能等结算结束

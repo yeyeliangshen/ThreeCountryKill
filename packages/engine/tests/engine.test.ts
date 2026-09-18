@@ -19453,6 +19453,77 @@ describe('国战 · 君主将（特性）', () => {
     expect(s3.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
   });
 
+  it('章武：结束阶段可以「视为使用」一枚本回合同势力角色用过的国战标记', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junliubei' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junliubei', 'shu', [], 3); // 已受伤 → 后面好观察「回复 1 点」
+    seatSet(state, 'B', 'guanyu', 'shu', [mk('b1', 'tao')]);
+    seatSet(state, 'C', 'zhangliao', 'wei', []);
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    const b = state.players.find((x) => x.seatId === 'B')!;
+    b.markers.zhulian = 1; // 乙手里有一枚【珠联璧合】
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+
+    // 乙（蜀）在自己的出牌阶段用掉这枚标记
+    expect(toSnapshot(state, 'B').prompt?.legalSkillIds).toContain('mark_zhulian');
+    ok(act(state, 'B', { type: 'useSkill', skillId: 'mark_zhulian', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, 'B', { type: 'chooseOption', optionId: 'draw' }));
+    expect(b.markers.zhulian).toBeUndefined(); // 标记用掉了
+    expect(state.markerUsesThisTurn).toEqual([{ seatId: 'B', markerId: 'zhulian' }]);
+
+    // 乙的结束阶段 → 甲（君刘备）的【章武】可以「视为使用」它
+    ok(act(state, 'B', { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('章武');
+    expect(state.pending.options.map((o) => o.id)).toEqual(['zhulian', 'no']);
+    a.hand = [];
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'zhulian' }));
+    // 珠联璧合二选一：这回选回复体力（甲 3 → 4）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'heal' }));
+    expect(a.hp).toBe(4);
+    expect(a.hand.length).toBe(0); // 「视为使用」不摸牌也不消耗标记
+    expect(state.log.some((l) => l.message.includes('【章武】视为使用【珠联璧合】'))).toBe(true);
+
+    // 对照：丙（魏）用掉标记时，甲在丙的结束阶段不会被问（不是「与你势力相同」的角色用的）
+    const state2 = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junliubei' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state2.draft = null;
+    seatSet(state2, 'A', 'junliubei', 'shu', [], 4);
+    seatSet(state2, 'B', 'guanyu', 'shu', []);
+    seatSet(state2, 'C', 'zhangliao', 'wei', [mk('c1', 'tao')]);
+    const c2 = state2.players.find((x) => x.seatId === 'C')!;
+    c2.markers.zhulian = 1;
+    state2.turn = { seatIndex: 2, phase: 'play' };
+    state2.pending = { kind: 'play', seatId: 'C' };
+    state2.log = [];
+    ok(act(state2, 'C', { type: 'useSkill', skillId: 'mark_zhulian', targetIds: [] }));
+    ok(act(state2, 'C', { type: 'chooseOption', optionId: 'draw' }));
+    ok(act(state2, 'C', { type: 'endPhase' }));
+    const askedZhangwu =
+      state2.pending?.kind === 'choice' && state2.pending.title.includes('章武');
+    expect(askedZhangwu).toBe(false);
+  });
+
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
     // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
     const state = createGame(

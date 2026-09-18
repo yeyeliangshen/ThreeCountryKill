@@ -14,6 +14,7 @@ import {
 import type {
   Card,
   CardType,
+  MarkerId,
   DamageAttribute,
   Faction,
   GameMode,
@@ -24,7 +25,7 @@ import type {
 } from '@sgs/protocol';
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, Player, TrickContext } from './model';
-import { addMarker } from './markers';
+import { addMarker, noteMarkerUsed, useXianqu, useYinyangyu, useZhulian } from './markers';
 import {
   drawOne,
   lordEquipDinglan,
@@ -3608,17 +3609,113 @@ const JUN_CAOCAO: Hero = lordHero(
 );
 
 /**
- * 君刘备。【君威】与专属装备【飞龙夺凤】已按 WIKI 原文核实并实现；
- * 「章武」「励众」缺机制（国战标记的使用 / 轮次）暂未做。
+ * 【章武】（君刘备；用户核对后提供的官方文本）：
+ * 「一名角色的结束阶段，你可以视为使用1枚与你势力相同的角色本回合使用过的国战标记。」
+ *
+ * 口径与待核对（见 docs/guozhan-roster.md §5.62）：
+ * - 「一名角色的结束阶段」＝ **任何**角色的结束阶段，包括他自己的。引擎把结束阶段拆成两个
+ *   时机（`turnEnd` 只发给回合玩家、`othersTurnEnd` 发给其余人），所以两个都挂。
+ * - 「本回合使用过的国战标记」看账本 `state.markerUsesThisTurn`（真用掉一枚就记一笔、
+ *   记在**用的人**头上，`startTurn` 清空）；只认**与你势力相同**（已确定势力口径）的角色用过的。
+ *   同一枚被用过多次只出一个选项——「视为使用」的效果与是谁用的无关。
+ * - 「视为使用」＝ 照那枚标记的效果结算一遍，**不消耗任何标记**（君刘备手里有没有都无所谓）。
+ * - 【先驱】本来就要「选择一名其他角色」（观看其暗置武将牌），视为使用时同样先问这个目标。
+ * - ⚠️ 待核对：【阴阳鱼】在**弃牌阶段**的那条用法（弃置 → 本回合手牌上限 +2）本仓库还没做，
+ *   所以账本里也只会出现出牌阶段那一版。
+ */
+function askZhangwu(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const faction = effectiveFaction(state, me);
+  if (!faction) return;
+  // 本回合「与你势力相同的角色」用过的标记，按标记 id 去重
+  const used: MarkerId[] = [];
+  for (const u of state.markerUsesThisTurn) {
+    const user = getPlayer(state, u.seatId);
+    if (!user || effectiveFaction(state, user) !== faction) continue;
+    if (!used.includes(u.markerId)) used.push(u.markerId);
+  }
+  if (used.length === 0) return; // 这回合同势力没用过标记 → 不弹询问
+  const NAME: Record<string, string> = {
+    xianqu: '先驱',
+    yinyangyu: '阴阳鱼',
+    zhulian: '珠联璧合',
+  };
+  const via = (id: MarkerId): string => `【章武】视为使用【${NAME[id] ?? id}】：`;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【章武】：视为使用一枚本回合同势力角色用过的国战标记？',
+    [
+      ...used.map((id) => ({ id, label: `视为使用【${NAME[id] ?? id}】` })),
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'no') return;
+      if (picked === 'yinyangyu') {
+        noteMarkerUsed(st, p.seatId, 'yinyangyu');
+        useYinyangyu(st, p, via('yinyangyu'));
+        return;
+      }
+      if (picked === 'zhulian') {
+        noteMarkerUsed(st, p.seatId, 'zhulian');
+        // 钩子里不能传 returnTo（引擎会把被打断的流程记进续接队列）
+        useZhulian(st, p, ctx.api, via('zhulian'));
+        return;
+      }
+      if (picked === 'xianqu') {
+        const others = st.players.filter((x) => x.alive && x.seatId !== p.seatId);
+        if (others.length === 0) {
+          noteMarkerUsed(st, p.seatId, 'xianqu');
+          useXianqu(st, p, undefined, ctx.api, via('xianqu'));
+          return;
+        }
+        ctx.api.askChoice(
+          st,
+          p.seatId,
+          '【章武】视为使用【先驱】：观看哪名其他角色的暗置武将牌？',
+          others.map((x) => ({ id: x.seatId, label: x.name })),
+          (st2, p2, seatId) => {
+            noteMarkerUsed(st2, p2.seatId, 'xianqu');
+            useXianqu(st2, p2, getPlayer(st2, seatId), ctx.api, via('xianqu'));
+          },
+        );
+      }
+    },
+  );
+}
+
+/**
+ * 君刘备。三条技能都实现了：【君威】（专属装备【飞龙夺凤】）、【章武】（结束阶段「视为使用」
+ * 一枚本回合同势力角色用过的国战标记）、【励众】（锁定技，每轮结束时给本轮造成伤害最多的
+ * 同势力角色各一枚「先驱」）。
  */
 const JUN_LIUBEI: Hero = lordHero(
   'junliubei',
   '君刘备',
   'shu',
-  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（含专属装备【飞龙夺凤】）与【励众】已实现；「章武」未实现——它要「视为使用国战标记」，标记被使用时的时机限制还没核到。',
+  '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【飞龙夺凤】）、【章武】、【励众】都已实现。',
   {
+    skills: [
+      { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
+      {
+        name: '君威',
+        desc: '出牌阶段，若场上没有【飞龙夺凤】，你可以弃置一张牌，然后从游戏外使用一张【飞龙夺凤】。当你死亡时，与你势力相同的角色各失去 1 点体力。',
+      },
+      {
+        name: '章武',
+        desc: '一名角色的结束阶段，你可以视为使用 1 枚与你势力相同的角色本回合使用过的国战标记。',
+      },
+      {
+        name: '励众',
+        desc: '锁定技，每轮结束时，你令与你势力相同的角色中本轮造成过伤害且造成伤害值最多的角色各获得 1 枚「先驱」标记。',
+      },
+    ],
     activeSkills: [junweiSkill('feilong', '飞龙夺凤', lordEquipFeilong)],
     hooks: [
+      // 章武：「一名角色的结束阶段」——自己那份走 turnEnd、别人的走 othersTurnEnd
+      { timing: 'turnEnd', skillId: '章武', handler: (ctx) => askZhangwu(ctx) },
+      { timing: 'othersTurnEnd', skillId: '章武', handler: (ctx) => askZhangwu(ctx) },
       {
         // 官方原文（移动版 WIKI）：「锁定技，每轮结束时，你令与你势力相同的角色中本轮造成过伤害
         // 且造成伤害值最多的角色各获得 1 枚『先驱』标记。」

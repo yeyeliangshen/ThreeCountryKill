@@ -996,6 +996,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.xiongchiDoneSeats = [];
   // 【授锋】的「本回合出牌阶段的首张伤害牌」也是按回合算的
   state.firstDamageCard = null;
+  // 「本回合用过哪些国战标记」（章武）
+  state.markerUsesThisTurn = [];
   // 「本回合杀死过角色的人」同理（戚乱是在每个回合结束时检查的）
   state.killedThisTurn = [];
   // 「本回合从牌堆摸到过的牌」也只在**本回合**内有效（袁术·伪帝）
@@ -8593,6 +8595,7 @@ export function createGame(
     xiongchiDoneSeats: [],
     lordEquipSeq: 0,
     firstDamageCard: null,
+    markerUsesThisTurn: [],
     extraTurns: [],
   };
   pushLog(state, 'start', '游戏开始，随机发将。');
