@@ -902,8 +902,12 @@ describe('国战模式', () => {
     const pairA = findSameFactionPair(state.draft!.deals[A]!)!;
     const mainHero = getHero(pairA.main)!;
     const deputyHero = getHero(pairA.deputy)!;
-    // 官方规则：向下取整。珠联璧合不再加成体力上限（改为发标记），所以这里与组合无关
-    const expectedHp = Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2);
+    // 官方规则：向下取整。珠联璧合不再加成体力上限（改为发标记），所以这里与组合无关；
+    // 但**副将位减半个阴阳鱼**的技能（孙策·魂殇 / 严白虎·寄篱 / 徐庶·举荐）要减 1——
+    // 随机发将可能正好发到这些组合，所以期望值必须把这一条算进去。
+    const deputyHalfYang = getHeroForMode(pairA.deputy, 'guozhan')?.deputySlotHalfYang === true;
+    const expectedHp =
+      Math.floor((mainHero.maxHp + deputyHero.maxHp) / 2) - (deputyHalfYang ? 1 : 0);
     ok(act(state, A, { type: 'pickHero', heroId: pairA.main, deputyHeroId: pairA.deputy }));
     const pairB = findSameFactionPair(state.draft!.deals[B]!)!;
     ok(act(state, B, { type: 'pickHero', heroId: pairB.main, deputyHeroId: pairB.deputy }));
@@ -17513,5 +17517,111 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲用红桃救
     expect(b.hp).toBe(2); // 救回 1 点 + 寄篱再结算一次 1 点
     expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+  });
+});
+
+/** 技能判定也走「判定牌生效前」：鬼才/鬼道能改判、天妒能收牌 */
+describe('国战 · 技能判定接入改判时机', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      deputyHeroId?: string;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      if (s.deputyHeroId) p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('鬼才可以改【刚烈】的判定：红桃被换成黑牌 → 刚烈照样生效', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1'), sha('a2')] },
+        { seatId: B, name: '乙', heroId: 'xiahoudun', faction: 'wei', hand: [] },
+        // 丙＝司马懿（鬼才）
+        {
+          seatId: C,
+          name: '丙',
+          heroId: 'simayi',
+          faction: 'wei',
+          hand: [mk('c1', 'shan', 'spade', 7)],
+        },
+      ],
+      A,
+    );
+    // 判定牌是红桃（原样生效的话刚烈无效）
+    state.deck = [mk('j1', 'tao', 'heart', 3)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 乙不出闪 → 受伤 → 刚烈判定
+    // 鬼才被问到：技能判定同样经过「判定牌生效前」这个时机
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(C);
+      expect(state.pending.title).toContain('鬼才');
+    }
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, C, { type: 'pickCards', cardIds: ['c1'] }));
+    // 换成黑桃 → 刚烈生效 → 伤害来源（甲）被要求选一项
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'discard' }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] }));
+    expect(state.log.some((e) => e.message.includes('替换判定牌'))).toBe(true);
+  });
+
+  it('天妒能收走**技能判定**的判定牌（夏侯惇+郭嘉的双将）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+        // 乙＝夏侯惇 + 郭嘉：刚烈的判定是**乙**做的，所以他能天妒收牌
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'xiahoudun',
+          deputyHeroId: 'guojia',
+          faction: 'wei',
+          hand: [],
+        },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'shan', 'spade', 8)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤 → 刚烈判定（黑桃）→ 天妒收走
+    // 判定牌进了乙手里（天妒）；刚烈对黑桃也生效 → 甲被问选一项
+    expect(b.hand.some((c) => c.id === 'j1')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('天妒'))).toBe(true);
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      ok(act(state, A, { type: 'chooseOption', optionId: 'damage' }));
+    }
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
   });
 });

@@ -257,6 +257,29 @@ export interface SkillApi {
    */
   replaceJudgeCard: (card: Card) => void;
   /**
+   * 走一次**技能判定**（雷击 / 铁骑 / 刚烈 / 屯田 / 潜袭 / 悲歌 / 恪守…）。
+   *
+   * 官方：**所有**判定都要经过「判定牌生效前」这个时机——鬼才（司马懿）与鬼道（张角）都能
+   * 打出手牌替换判定牌，天妒（郭嘉）也能收走**自己**的判定牌。以前这些技能各自 `drawOne`
+   * 就完事，于是改判系技能对它们一律无效（roster 里把这条记成了简化）。
+   *
+   * `onDone(最终判定牌 | null)`：牌的去向已经处理好（没人收走就进弃牌堆，天妒收走就给天妒），
+   * 技能直接读这张牌的花色/点数即可。牌堆耗尽时给 null。
+   */
+  judge: (
+    skillName: string,
+    onDone: (card: Card | null, canTake: boolean) => void,
+    opts?: {
+      /** 判定者（默认是技能使用者）。雷击/悲歌是**别人**判定（雷击指定的人 / 受伤者）。 */
+      judgeSeatId?: string;
+      /**
+       * 这张判定牌由调用方自己安置（邓艾·屯田要把它当「田」收到武将牌上）。
+       * 但**天妒**可能先把它收走了——那时代码拿到 `canTake = false`，不能再用这张牌。
+       */
+      keepCard?: boolean;
+    },
+  ) => void;
+  /**
    * 改写本次拼点里**你那张牌**的点数。**只能在 `pindianRevealed` 的钩子里调用**。
    *
    * 与 replaceJudgeCard 同一套路：钩子常常要先问玩家（+3 还是 -3），那时拿不到返回值，

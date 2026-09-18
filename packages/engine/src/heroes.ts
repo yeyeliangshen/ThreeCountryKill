@@ -528,7 +528,13 @@ const MACHAO: Hero = {
   faction: 'shu',
   maxHp: 4,
   gender: 'male',
-  // 铁骑：使用【杀】指定目标后，翻判定牌→红色则不可闪避
+  // 铁骑：使用【杀】指定目标后，翻判定牌→红色则不可闪避。
+  //
+  // ⚠️ 这里**仍然是裸判定**（没走 api.judge）：铁骑挂在 `useCard` 上，而 useCard 是
+  // **同步分发**的时机——判定要经过「判定牌生效前」，鬼才/鬼道在那里会发问，同步时机上
+  // 发问会被后续流程静默覆盖（本引擎的老坑）。所以「鬼才改不了铁骑的判定」是本引擎已知的
+  // 一处简化，等 useCard 转成可挂起版本再一并解决；其余技能判定（刚烈/屯田/潜袭/悲歌/
+  // 恪守/雷击）都已经走 api.judge 了。
   hooks: [
     {
       timing: 'useCard',
@@ -966,64 +972,17 @@ const XIAHOUDUN: Hero = {
         if (!payload?.attack || !payload.damage) return;
         const source = getPlayer(ctx.state, payload.attack.sourceId);
         if (!source || source.seatId === ctx.player.seatId) return; // 无来源或自伤不触发
-        const judgeCard = drawOne(ctx.state);
-        if (!judgeCard) return;
-        pushLog(
-          ctx.state,
-          'skill',
-          `${ctx.player.name} 发动【刚烈】，判定牌：${cardLabel(judgeCard)}。`,
-        );
-        toDiscard(ctx.state, judgeCard);
-        // 判定的**所属**是发动技能的人（夏侯惇），不是被刚烈的目标——
-        // 官方口径：铁骑/刚烈这类「技能拥有者判定」的判定牌不受小乔·红颜影响。
-        if (cardAsSeenBy(ctx.state, ctx.player, judgeCard).suit === 'heart') {
-          pushLog(ctx.state, 'skill', '判定为红桃，【刚烈】无效。');
-          return;
-        }
-        const holder = ctx.player;
-        const discardsNum = Math.min(2, source.hand.length);
-        // 没有手牌时选项一等于什么都没做，就不摆出来了
-        const options: { id: string; label: string }[] = [
-          { id: 'damage', label: `受到 ${holder.name} 造成的 1 点伤害` },
-        ];
-        if (discardsNum > 0) {
-          options.unshift({
-            id: 'discard',
-            label: `弃置${discardsNum === 2 ? '两' : '一'}张手牌`,
-          });
-        }
-        ctx.api.askChoice(
-          ctx.state,
-          source.seatId,
-          `${holder.name} 对你发动了【刚烈】：请选择一项`,
-          options,
-          (st, p, picked) => {
-            if (picked === 'discard') {
-              // 由来源**自己挑**要弃哪两张（选牌原语）
-              const hand = p.hand.slice();
-              const need = Math.min(2, hand.length);
-              ctx.api.askPickCards(
-                st,
-                p.seatId,
-                '请选择要弃置的手牌',
-                hand,
-                need,
-                need,
-                (st2, p2, chosen) => {
-                  for (const c of chosen) {
-                    removeCard(p2.hand, c.id);
-                    toDiscard(st2, c);
-                  }
-                  pushLog(st2, 'skill', `${p2.name} 弃置了 ${chosen.length} 张手牌。`);
-                },
-              );
-              return;
-            }
-            pushLog(st, 'skill', `${p.name} 选择受到 1 点伤害。`);
-            // 伤害由刚烈持有者造成（不是来源自己）
-            ctx.api.dealDamage(p, 1, holder.seatId);
-          },
-        );
+        // 统一技能判定（鬼才/鬼道可改判、天妒可收牌）；判定者＝夏侯惇本人
+        ctx.api.judge('刚烈', (judgeCard) => {
+          if (!judgeCard) return;
+          // 判定的**所属**是发动技能的人（夏侯惇），不是被刚烈的目标——
+          // 官方口径：铁骑/刚烈这类「技能拥有者判定」的判定牌不受小乔·红颜影响。
+          if (cardAsSeenBy(ctx.state, ctx.player, judgeCard).suit === 'heart') {
+            pushLog(ctx.state, 'skill', '判定为红桃，【刚烈】无效。');
+            return;
+          }
+          ganglieEffect(ctx, source);
+        });
       },
     },
   ],
@@ -1034,6 +993,54 @@ const XIAHOUDUN: Hero = {
     },
   ],
 };
+
+/** 刚烈判定不为红桃之后的效果（伤害来源二选一） */
+function ganglieEffect(ctx: HookContext, source: Player): void {
+  const holder = ctx.player;
+  const discardsNum = Math.min(2, source.hand.length);
+  // 没有手牌时选项一等于什么都没做，就不摆出来了
+  const options: { id: string; label: string }[] = [
+    { id: 'damage', label: `受到 ${holder.name} 造成的 1 点伤害` },
+  ];
+  if (discardsNum > 0) {
+    options.unshift({
+      id: 'discard',
+      label: `弃置${discardsNum === 2 ? '两' : '一'}张手牌`,
+    });
+  }
+        ctx.api.askChoice(
+    ctx.state,
+    source.seatId,
+    `${holder.name} 对你发动了【刚烈】：请选择一项`,
+    options,
+    (st, p, picked) => {
+      if (picked === 'discard') {
+        // 由来源**自己挑**要弃哪两张（选牌原语）
+        const hand = p.hand.slice();
+        const need = Math.min(2, hand.length);
+        ctx.api.askPickCards(
+          st,
+          p.seatId,
+          '请选择要弃置的手牌',
+          hand,
+          need,
+          need,
+          (st2, p2, chosen) => {
+            for (const c of chosen) {
+              removeCard(p2.hand, c.id);
+              toDiscard(st2, c);
+            }
+            pushLog(st2, 'skill', `${p2.name} 弃置了 ${chosen.length} 张手牌。`);
+          },
+        );
+        return;
+      }
+      pushLog(st, 'skill', `${p.name} 选择受到 1 点伤害。`);
+      // 伤害由刚烈持有者造成（不是来源自己）
+      ctx.api.dealDamage(p, 1, holder.seatId);
+    },
+  );
+}
 
 const XUCHU: Hero = {
   id: 'xuchu',
@@ -3173,24 +3180,30 @@ const DENGAI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            const judge = drawOne(st);
-            if (!judge) return;
-            pushLog(
-              st,
-              'skill',
-              `${p.name} 发动【屯田】，判定牌：${cardLabel(judge)}。`,
-            );
-            if (judge.suit === 'heart') {
-              toDiscard(st, judge);
-              pushLog(st, 'skill', '判定为红桃，此牌不能作为「田」。');
-              return;
-            }
-            judge.tian = true;
-            p.tian.push(judge);
-            pushLog(
-              st,
-              'skill',
-              `【屯田】判定牌置于武将牌上作为「田」（现有 ${p.tian.length} 张）。`,
+            // 统一技能判定：鬼才/鬼道可改判。判定牌要留着自己收「田」，所以 keepCard，
+            // 但天妒可能先把它收走——那就不能用它当「田」了。
+            ctx.api.judge(
+              '屯田',
+              (judge, canTake) => {
+                if (!judge) return;
+                if (judge.suit === 'heart') {
+                  toDiscard(st, judge);
+                  pushLog(st, 'skill', '【屯田】判定为红桃，此牌不能作为「田」。');
+                  return;
+                }
+                if (!canTake) {
+                  pushLog(st, 'skill', '【屯田】的判定牌已被【天妒】取走，无法作为「田」。');
+                  return;
+                }
+                judge.tian = true;
+                p.tian.push(judge);
+                pushLog(
+                  st,
+                  'skill',
+                  `【屯田】判定牌置于武将牌上作为「田」（现有 ${p.tian.length} 张）。`,
+                );
+              },
+              { keepCard: true },
             );
           },
         );
@@ -3524,31 +3537,32 @@ const MADAI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            const judge = drawOne(st);
-            if (!judge) return;
-            const color: 'red' | 'black' = cardColor(judge) === 'red' ? 'red' : 'black';
-            toDiscard(st, judge);
-            pushLog(
-              st,
-              'skill',
-              `${p.name} 发动【潜袭】，判定牌：${cardLabel(judge)}（${color === 'red' ? '红色' : '黑色'}）。`,
-            );
-            ctx.api.askChoice(
-              st,
-              p.seatId,
-              `【潜袭】：令谁本回合不能使用或打出${color === 'red' ? '红色' : '黑色'}手牌？`,
-              targets.map((x) => ({ id: x.seatId, label: x.name })),
-              (st2, _p2, targetId) => {
-                const t = getPlayer(st2, targetId);
-                if (!t) return;
-                t.flags.cannotPlayColor = color;
-                pushLog(
-                  st2,
-                  'skill',
-                  `${t.name} 本回合不能使用或打出${color === 'red' ? '红色' : '黑色'}手牌。`,
-                );
-              },
-            );
+            // 统一技能判定（鬼才/鬼道可改判）
+            ctx.api.judge('潜袭', (judge) => {
+              if (!judge) return;
+              const color: 'red' | 'black' = cardColor(judge) === 'red' ? 'red' : 'black';
+              pushLog(
+                st,
+                'skill',
+                `${p.name} 发动【潜袭】，判定牌：${cardLabel(judge)}（${color === 'red' ? '红色' : '黑色'}）。`,
+              );
+              ctx.api.askChoice(
+                st,
+                p.seatId,
+                `【潜袭】：令谁本回合不能使用或打出${color === 'red' ? '红色' : '黑色'}手牌？`,
+                targets.map((x) => ({ id: x.seatId, label: x.name })),
+                (st2, _p2, targetId) => {
+                  const t = getPlayer(st2, targetId);
+                  if (!t) return;
+                  t.flags.cannotPlayColor = color;
+                  pushLog(
+                    st2,
+                    'skill',
+                    `${t.name} 本回合不能使用或打出${color === 'red' ? '红色' : '黑色'}手牌。`,
+                  );
+                },
+              );
+            });
           },
         );
       },
@@ -5606,15 +5620,15 @@ function lukangJudgePart(ctx: HookContext): void {
   // 官方口径是「没有与你势力相同的其他角色」，暗置的自己没有确定势力，这里按**没有**处理
   // （也就是暗置时那半句不触发）——与其它势力类技能一致。
   if (!mine || mates.length > 0) return;
-  const judge = drawOne(ctx.state);
-  if (!judge) return;
-  toDiscard(ctx.state, judge);
-  pushLog(ctx.state, 'skill', `${me.name} 发动【恪守】，判定牌：${cardLabel(judge)}。`);
-  if (cardColor(judge) === 'red') {
-    const c = drawOne(ctx.state);
-    if (c) me.hand.push(c);
-    pushLog(ctx.state, 'skill', `判定为红色，${me.name} 摸了 1 张牌。`);
-  }
+  // 统一技能判定：鬼才/鬼道可改判、天妒可收牌
+  ctx.api.judge('恪守', (judge) => {
+    if (!judge) return;
+    if (cardColor(judge) === 'red') {
+      const c = drawOne(ctx.state);
+      if (c) me.hand.push(c);
+      pushLog(ctx.state, 'skill', `【恪守】判定为红色，${me.name} 摸了 1 张牌。`);
+    }
+  });
 }
 
 /** 筑围认的牌：【杀】或（会）造成伤害的锦囊 */
@@ -8797,6 +8811,9 @@ const GUOJIA: Hero = {
         const payload = ctx.payload as { judgeCard?: Card; judgedId?: string } | undefined;
         if (!payload?.judgeCard) return;
         if (payload.judgedId !== ctx.player.seatId) return; // 只收**自己**的判定牌
+        pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【天妒】，收下这张判定牌。`, {
+          seat: ctx.player.seatId,
+        });
         return { gainJudgeCard: true };
       },
     },
@@ -10143,61 +10160,59 @@ const CAIWENJI: Hero = {
               (st2, _p2, chosen) => {
                 const cost = chosen[0];
                 if (cost) ctx.api.discardCard(me.seatId, cost);
-                const judgeCard = drawOne(st2);
-                if (!judgeCard) return;
-                pushLog(
-                  st2,
-                  'skill',
-                  `${me.name} 发动【悲歌】，判定牌：${cardLabel(judgeCard)}。`,
-                  { seat: me.seatId, action: 'skill' },
-                );
-                toDiscard(st2, judgeCard);
                 const source = attack.sourceId ? getPlayer(st2, attack.sourceId) : undefined;
-                // 判定是**受伤者**做的（「谁判定，判定牌就属于谁」）
-                switch (cardAsSeenBy(st2, victim, judgeCard).suit) {
-                  case 'heart': {
-                    const healed = ctx.api.heal(victim, 1);
-                    pushLog(st2, 'skill', `【悲歌】红桃：${victim.name} 回复 ${healed} 点体力。`);
-                    break;
-                  }
-                  case 'diamond': {
-                    for (let i = 0; i < 2; i++) {
-                      const c = drawOne(st2);
-                      if (c) victim.hand.push(c);
+                // 统一技能判定，判定者＝**受伤者**（「谁判定，判定牌就属于谁」）
+                ctx.api.judge(
+                  '悲歌',
+                  (judgeCard) => {
+                    if (!judgeCard) return;
+                    switch (cardAsSeenBy(st2, victim, judgeCard).suit) {
+                      case 'heart': {
+                        const healed = ctx.api.heal(victim, 1);
+                        pushLog(st2, 'skill', `【悲歌】红桃：${victim.name} 回复 ${healed} 点体力。`);
+                        break;
+                      }
+                      case 'diamond': {
+                        for (let i = 0; i < 2; i++) {
+                          const c = drawOne(st2);
+                          if (c) victim.hand.push(c);
+                        }
+                        pushLog(st2, 'skill', `【悲歌】方块：${victim.name} 摸两张牌。`);
+                        break;
+                      }
+                      case 'club': {
+                        // 伤害来源弃置两张牌（手牌随机，与仓库口径一致）
+                        if (!source) break;
+                        for (let i = 0; i < 2; i++) {
+                          const pool2 = [
+                            ...source.hand,
+                            ...(EQUIP_SLOTS.map((slot) => source.equipment[slot]).filter(
+                              Boolean,
+                            ) as Card[]),
+                          ];
+                          if (pool2.length === 0) break;
+                          ctx.api.discardCard(
+                            source.seatId,
+                            pool2[Math.floor(Math.random() * pool2.length)]!,
+                          );
+                        }
+                        pushLog(st2, 'skill', `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`);
+                        break;
+                      }
+                      case 'spade': {
+                        if (!source) break;
+                        source.flipped = !source.flipped;
+                        pushLog(
+                          st2,
+                          'skill',
+                          `【悲歌】黑桃：${source.name} ${source.flipped ? '翻面' : '翻回正面'}。`,
+                        );
+                        break;
+                      }
                     }
-                    pushLog(st2, 'skill', `【悲歌】方块：${victim.name} 摸两张牌。`);
-                    break;
-                  }
-                  case 'club': {
-                    // 伤害来源弃置两张牌（手牌随机，与仓库口径一致）
-                    if (!source) break;
-                    for (let i = 0; i < 2; i++) {
-                      const pool2 = [
-                        ...source.hand,
-                        ...(EQUIP_SLOTS.map((slot) => source.equipment[slot]).filter(
-                          Boolean,
-                        ) as Card[]),
-                      ];
-                      if (pool2.length === 0) break;
-                      ctx.api.discardCard(
-                        source.seatId,
-                        pool2[Math.floor(Math.random() * pool2.length)]!,
-                      );
-                    }
-                    pushLog(st2, 'skill', `【悲歌】梅花：${source?.name ?? '来源'} 弃置两张牌。`);
-                    break;
-                  }
-                  case 'spade': {
-                    if (!source) break;
-                    source.flipped = !source.flipped;
-                    pushLog(
-                      st2,
-                      'skill',
-                      `【悲歌】黑桃：${source.name} ${source.flipped ? '翻面' : '翻回正面'}。`,
-                    );
-                    break;
-                  }
-                }
+                  },
+                  { judgeSeatId: victim.seatId },
+                );
               },
             );
           },
@@ -10709,22 +10724,21 @@ const ZHANGJIAO: Hero = {
               (st2, _p2, targetSeatId) => {
                 const target = getPlayer(st2, targetSeatId);
                 if (!target || !target.alive) return;
-                const judgeCard = drawOne(st2);
-                if (!judgeCard) return;
-                toDiscard(st2, judgeCard);
-                pushLog(
-                  st2,
-                  'skill',
-                  `${me.name} 发动【雷击】，${target.name} 判定：${cardLabel(judgeCard)}。`,
-                  { seat: me.seatId, action: 'skill' },
+                // 统一技能判定，判定者＝**被指定的角色**（官方：雷击由张角指定的人判定）——
+                // 所以鬼才/鬼道替他改判，天妒（他自己是郭嘉时）也能收走这张牌。
+                ctx.api.judge(
+                  '雷击',
+                  (judgeCard) => {
+                    if (!judgeCard) return;
+                    // 小乔的黑桃判定牌视为红桃，所以雷击劈不中她。
+                    if (cardAsSeenBy(st2, target, judgeCard).suit !== 'spade') {
+                      pushLog(st2, 'skill', `【雷击】判定不是黑桃，无效。`);
+                      return;
+                    }
+                    ctx.api.dealDamage(target, 2, me.seatId, 'thunder');
+                  },
+                  { judgeSeatId: target.seatId },
                 );
-                // 判定由**被指定的角色**做（官方：张角雷击指定的被判定者）——
-                // 小乔的黑桃判定牌视为红桃，所以雷击劈不中她。
-                if (cardAsSeenBy(st2, target, judgeCard).suit !== 'spade') {
-                  pushLog(st2, 'skill', `判定不是黑桃，【雷击】无效。`);
-                  return;
-                }
-                ctx.api.dealDamage(target, 2, me.seatId, 'thunder');
               },
             );
           },

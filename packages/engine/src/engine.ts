@@ -616,7 +616,15 @@ function runHooks(state: GameState, timing: Timing, player: Player, payload?: un
   markDamaged(state, timing, player, payload);
   markCardUsed(state, timing, player, payload);
   const hooks = collectTimingHooks(state, player, timing, true);
-  const ctx: HookContext = { state, player, timing, payload, api: makeSkillApi(state) };
+  // ⚠️ actor 必须给：`api.judge` / `api.grantSkill` 这类「默认作用于技能使用者」的接口
+  //    靠它认人（useCard / beforeResolve 这些时机走的是这条同步分发）。
+  const ctx: HookContext = {
+    state,
+    player,
+    timing,
+    payload,
+    api: makeSkillApi(state, { actor: player.seatId }),
+  };
   for (const h of hooks) {
     const res = h.handler(ctx);
     if (res && res.cancel) return false;
@@ -1132,7 +1140,8 @@ function judgmentStep(state: GameState, player: Player, judgments: Card[], index
  */
 function askBeforeJudge(
   state: GameState,
-  trick: Card,
+  // 技能判定（api.judge）没有对应的延时锦囊，payload.trick 就是 undefined
+  trick: Card | undefined,
   judgeCard: Card,
   judgedId: string,
   onDone: (finalCard: Card, gainer: Player | undefined) => void,
@@ -1174,7 +1183,7 @@ function judgeHookStep(
   state: GameState,
   list: { player: Player; hook: HookRegistration }[],
   k: number,
-  trick: Card,
+  trick: Card | undefined,
   cur: Card,
   judgedId: string,
   gainer: Player | undefined,
@@ -6868,6 +6877,31 @@ function makeSkillApi(
     replaceJudgeCard: (card) => {
       // 没有 judgeBox 说明不在判定流程里，静默忽略
       if (judgeBox) judgeBox.replacement = card;
+    },
+    judge: (skillName, onDone, judgeOpts) => {
+      const judgeSeat = judgeOpts?.judgeSeatId ?? opts?.actor;
+      const judge = judgeSeat ? getPlayer(state, judgeSeat) : undefined;
+      if (!judge || !judge.alive) {
+        onDone(null, false);
+        return;
+      }
+      const raw = drawOne(state);
+      if (!raw) {
+        onDone(null, false);
+        return;
+      }
+      pushLog(state, 'judge', `${judge.name} 的【${skillName}】判定：${cardLabel(raw)}。`);
+      // 判定牌**属于判定者**，所以鬼才/鬼道换上来的牌也算他的；天妒能把它收走
+      // （judgedId＝判定者）。keepCard 时把牌留给调用方安置（屯田收「田」），
+      // 其余情况统一由 disposeJudgeCard 处理（天妒拿走 / 进弃牌堆）。
+      askBeforeJudge(state, undefined, raw, judge.seatId, (finalCard, gainer) => {
+        if (!judgeOpts?.keepCard) {
+          disposeJudgeCard(state, finalCard, gainer);
+          onDone(finalCard, false);
+          return;
+        }
+        onDone(finalCard, !gainer);
+      });
     },
     setPindianRank: (rank) => {
       // 没有 pindianBox 说明不在拼点流程里，静默忽略
