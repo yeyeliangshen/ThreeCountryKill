@@ -363,8 +363,12 @@ button:disabled {
   cursor: pointer;
   white-space: nowrap;
 }
-.hero-swap:hover {
+.hero-swap:hover:not(:disabled) {
   background: var(--panel-2);
+}
+.hero-swap:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .hero-card {
   text-align: left;

@@ -715,6 +715,9 @@ export function Game() {
                   const isDeputy = deputyPick === id;
                   const variantId = lordVariantOf(id);
                   const variant = variantId ? getHero(variantId) : undefined;
+                  // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
+                  // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
+                  const swapBlocked = isDeputy && !!variant?.isLord;
                   return (
                     <div key={dealtId} className="hero-cell">
                       <button
@@ -736,8 +739,13 @@ export function Game() {
                       {variant && (
                         <button
                           className="hero-swap"
+                          disabled={swapBlocked}
                           onClick={() => swapHeroVersion(dealtId)}
-                          title={`换成 ${variant.name}`}
+                          title={
+                            swapBlocked
+                              ? '君主将只能作主将：先把它选到主将位再换'
+                              : `换成 ${variant.name}`
+                          }
                         >
                           {variant.isLord ? '👑 换成君主将' : '换成标准版'}
                         </button>
