@@ -878,8 +878,10 @@ const SIMAYI: Hero = {
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
+                // ⚠️ 只从手里摘出来，**不要**在这里 toDiscard：这张牌会成为**新的判定牌**，
+                // 判定结算完由 disposeJudgeCard 统一处置（进弃牌堆，或被天妒收走）。
+                // 以前这里顺手弃了一次，于是同一张牌在弃牌堆里出现两次（模糊测试抓到的）。
                 removeCard(p2.hand, card.id);
-                toDiscard(st2, card);
                 pushLog(
                   st2,
                   'skill',
@@ -6663,7 +6665,15 @@ function step2(
   fire(state, player, spec, next, api);
 }
 
-/** 把手牌全部当材料打出去，然后可以变更一次副将 */
+/**
+ * 把手牌全部当材料打出去，然后可以变更一次副将。
+ *
+ * ⚠️ **先问「是否变更副将」、再打出那张虚拟锦囊**——官方原文是「使用……然后你可以变更副将」，
+ * 顺序上是反的，但这里必须反过来：虚拟锦囊可能是【挟天子以令诸侯】那类**会结束出牌阶段**
+ * 的牌，一旦先打出去，回合就推进到下家、出牌阶段已经结束，这个询问就落在了一个**已经结束的
+ * 流程**上（答完之后 pending 变 null，整局静默卡死——模糊测试抓到过）。
+ * 变更副将本身与那张锦囊的结算互不影响，所以提前问不改变结果，只把顺序里的风险去掉。
+ */
 function fire(
   state: GameState,
   player: Player,
@@ -6671,27 +6681,33 @@ function fire(
   targets: string[],
   api: SkillApi,
 ): void {
-  const materials = player.hand.slice();
-  const suit = materials[0]?.suit ?? 'spade';
-  for (const c of materials) removeCard(player.hand, c.id);
-  toDiscard(state, ...materials);
-  pushLog(
-    state,
-    'skill',
-    `${player.name} 用 ${materials.length} 张手牌当【${CARD_TYPE_NAME[spec.type]}】使用。`,
-  );
-  api.castVirtualTrick(player.seatId, { type: spec.type, suit }, targets);
-  if (!player.deputyHeroId) return;
+  const play = (): void => {
+    const materials = player.hand.slice();
+    const suit = materials[0]?.suit ?? 'spade';
+    for (const c of materials) removeCard(player.hand, c.id);
+    toDiscard(state, ...materials);
+    pushLog(
+      state,
+      'skill',
+      `${player.name} 用 ${materials.length} 张手牌当【${CARD_TYPE_NAME[spec.type]}】使用。`,
+    );
+    api.castVirtualTrick(player.seatId, { type: spec.type, suit }, targets);
+  };
+  if (!player.deputyHeroId) {
+    play();
+    return;
+  }
   api.askChoice(
     state,
     player.seatId,
-    '【奇策】：是否变更一次副将？',
+    '【奇策】：是否变更一次副将？（之后打出这张虚拟锦囊）',
     [
       { id: 'yes', label: '变更副将' },
       { id: 'no', label: '不变更' },
     ],
-    (st, p, choice) => {
+    (_st, p, choice) => {
       if (choice === 'yes') api.changeDeputyHero(p.seatId);
+      play();
     },
   );
 }
@@ -10880,8 +10896,10 @@ const ZHANGJIAO: Hero = {
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
+                // ⚠️ 只从手里摘出来，**不要**在这里 toDiscard：这张牌会成为**新的判定牌**，
+                // 判定结算完由 disposeJudgeCard 统一处置（进弃牌堆，或被天妒收走）。
+                // 以前这里顺手弃了一次，于是同一张牌在弃牌堆里出现两次（模糊测试抓到的）。
                 removeCard(p2.hand, card.id);
-                toDiscard(st2, card);
                 pushLog(
                   st2,
                   'skill',

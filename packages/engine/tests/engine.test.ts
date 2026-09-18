@@ -18254,3 +18254,110 @@ describe('国战 · useCard 可挂起（铁骑改判 / 激昂发问）', () => {
     expect(b.hand.length).toBe(1);
   });
 });
+
+/**
+ * 模糊测试（tests/fuzz.test.ts）抓到的一类真 bug：**同一张牌进弃牌堆两次**。
+ * 这里把两个现场各写成一个确定性用例。
+ */
+describe('判定牌替换：一张牌只能进弃牌堆一次', () => {
+  /** 这张牌在**全场**出现几次（牌堆/弃牌堆/手牌/装备/判定/田/千幻，含木牛流马的扣置） */
+  function countEverywhere(state: GameState, id: string): number {
+    let n = state.deck.filter((c) => c.id === id).length + state.discard.filter((c) => c.id === id).length;
+    for (const p of state.players) {
+      n += p.hand.filter((c) => c.id === id).length;
+      for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount', 'treasure'] as const) {
+        const c = p.equipment[slot];
+        if (!c) continue;
+        if (c.id === id) n += 1;
+        n += (c.cargo ?? []).filter((x) => x.id === id).length;
+      }
+      n += p.judgment.filter((c) => c.id === id).length;
+      n += p.tian.filter((c) => c.id === id).length;
+      n += p.qianhuan.filter((c) => c.id === id).length;
+    }
+    return n;
+  }
+
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; hand?: Card[] }[],
+    actor?: string,
+    deck: Card[] = [],
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = hero.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.deck = deck.slice();
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('鬼才替判：打出的那张牌只该进弃牌堆一次（它成了新的判定牌）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        // 乙＝司马懿（鬼才）手里一张替换牌
+        { seatId: B, name: '乙', heroId: 'simayi', hand: [mk('c1', 'sha', 'spade', 7)] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      ],
+      A,
+      [mk('j1', 'tao', 'heart', 3)],
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.judgment.push(lebu('l1')); // 甲的判定区：乐不思蜀 → 回合开始判定
+    // 让回合从丙转到甲
+    state.turn = { seatIndex: state.seatOrder.indexOf(C), phase: 'play' };
+    state.pending = { kind: 'play', seatId: C };
+    ok(act(state, C, { type: 'endPhase' }));
+    // 甲的判定：鬼才被问（判定牌是红桃，乐不思蜀会因此无效）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('鬼才');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['c1'] }));
+    // 关键不变式：这两张牌**各自在全场只出现一次**（以前替换牌会被弃两次）
+    // ⚠️ 不能只看弃牌堆：牌堆空了会重洗，弃牌堆可能已经被洗回牌堆里
+    expect(countEverywhere(state, 'c1')).toBe(1);
+    expect(countEverywhere(state, 'j1')).toBe(1);
+    expect(state.log.some((e) => e.message.includes('替换判定牌'))).toBe(true);
+  });
+
+  it('鬼道替判：同理只进一次（张角）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        { seatId: B, name: '乙', heroId: 'zhangjiao', hand: [mk('c1', 'sha', 'spade', 7)] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      ],
+      A,
+      [mk('j1', 'tao', 'heart', 3)],
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.judgment.push(lebu('l1'));
+    state.turn = { seatIndex: state.seatOrder.indexOf(C), phase: 'play' };
+    state.pending = { kind: 'play', seatId: C };
+    ok(act(state, C, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('鬼道');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['c1'] }));
+    expect(countEverywhere(state, 'c1')).toBe(1);
+    expect(countEverywhere(state, 'j1')).toBe(1);
+  });
+});
