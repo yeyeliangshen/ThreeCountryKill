@@ -3273,6 +3273,7 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
   // 「失去牌」也走快照比对：把每个人「手牌 + 装备区」的牌 id 记下来，意图跑完再看少了谁
   // ——比在二十多处移牌的地方逐处挂钩子可靠得多（与 checkHandEmptied 同一套思路）。
   const ownedBefore = state.players.map((p) => ownedCardIds(p));
+  const turnSeatBefore = state.turn.seatIndex;
   const result = applyIntentInner(state, seatId, intent);
   if (result.ok) {
     // 询问结束后接着跑被打断的流程。控制流的唯一收口，别在别处再调 drainResume。
@@ -3280,6 +3281,24 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
     // 「这张牌是谁从牌堆摸到的」（袁术·伪帝）：要跟 ownedBefore 比，才能区分「自己摸的」和
     // 「别人摸出来、被顺手牵羊拿走的」——所以和失去牌的检测放在一起。
     attributeDeckGains(state, ownedBefore);
+    // 兜底：续接排空之后如果**什么都不挂起**，而回合还停在同一个人的出牌阶段语境里，
+    // 就把出牌阶段还给回合玩家。
+    //
+    // 为什么要这一道：技能自己的链条（例如吕范·调度「按座次依次问同势力角色」）里，某一步
+    // 「移动装备」会**嵌套**触发别人的钩子（枭姬那类会发问），实测那次嵌套询问结束之后
+    // **整条外层链的续接都没有跑**（探针都没触发）——结果是 `pending` 停在 null、玩家再也
+    // 动不了、整局静默卡死。这类「问到一半把控制权弄丢」是这套引擎最贵的一类 bug，所以
+    // 在这里放一道兜底，把「卡死」降级成「控制权还给该动的人」。
+    // 两个限定条件都很重要：① 回合座次没变（变了说明这个意图正常结束了回合，别乱塞 pending）；
+    // ② 阶段是出牌阶段（判定/摸牌/弃牌阶段各有自己的推进方式，不该由这里插手）。
+    if (
+      state.pending === null &&
+      !state.gameOver &&
+      state.turn.phase === 'play' &&
+      state.turn.seatIndex === turnSeatBefore
+    ) {
+      state.pending = { kind: 'play', seatId: state.seatOrder[state.turn.seatIndex]! };
+    }
     // 手牌清空检测放最后：续接都跑完了才是这一手意图的真正终态
     checkHandEmptied(state, handBefore);
     checkCardsLost(state, ownedBefore);

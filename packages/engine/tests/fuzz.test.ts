@@ -10,8 +10,8 @@
 // ⚠️ 驱动在 ./fuzzHarness（定位器也要用它——两边必须是同一份代码）。
 import { describe, it, expect } from 'vitest';
 import { checkDuplicate, riskyGame, rng, step } from './fuzzHarness';
-describe('随机对局不变式（待修，暂不挡 CI）', () => {
-  it.skip('60 局随机对局里都不出现重复牌', () => {
+describe('随机对局不变式：待修，暂不挡 CI', () => {
+  it.skip('60 局随机对局里任何一步都有 pending', () => {
     const problems: string[] = [];
     for (let seed = 1; seed <= 60; seed++) {
       const rand = rng(seed * 977);
@@ -21,11 +21,15 @@ describe('随机对局不变式（待修，暂不挡 CI）', () => {
         while (!state.gameOver && steps < 4000) {
           step(state, rand);
           steps++;
-          // ⚠️ 只在**稳定时刻**查（出牌/弃牌阶段的 pending）：结算中途有些牌本来就会
+          // ① 控制权不能丢：任何一步跑完都必须有 pending（或已经分出胜负）
+          if (!state.pending) {
+            problems.push(`seed=${seed} 第 ${steps} 步：控制权丢了（pending=null）`);
+            break;
+          }
+          // ② ⚠️ 重复牌只在**稳定时刻**查（出牌/弃牌阶段的 pending）：结算中途有些牌本来就会
           //    短暂地同时挂在两处（例如「亮出一池牌逐个拿」时池子与区域的重叠）。
-          const pend = state.pending;
           const bad =
-            pend && (pend.kind === 'play' || pend.kind === 'discard')
+            state.pending.kind === 'play' || state.pending.kind === 'discard'
               ? checkDuplicate(state)
               : null;
           if (bad) {
