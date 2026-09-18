@@ -24,6 +24,7 @@ import {
 import { MARKER_DESC, MARKER_SKILL_PREFIX, markerActiveSkills } from './markers';
 import { equipActiveSkills } from './equip';
 import { huangtianFor, xuanhuoFor } from './heroes';
+import type { Card } from '@sgs/protocol';
 import {
   activeHeroes,
   canUseAsCard,
@@ -32,6 +33,7 @@ import {
   factionHelpers,
   lianhengTargets,
   lianjunFactionOk,
+  isTianCard,
   usableCardsOf,
 } from './engine';
 import { distance } from './distance';
@@ -138,6 +140,16 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
   return null;
 }
 
+/**
+ * 「像手牌一样使用/打出」的候选牌：手牌 + 木牛流马的辎，**不含「田」**。
+ *
+ * 「田」只有两个去处（见 `isTianCard`）：通过【急袭】当【顺手牵羊】、或被【资粮】交出去。
+ * 所以响应类提示（出闪/出杀/出桃/无懈）的候选一律用它，不能拿「田」里的牌来响应。
+ */
+function handLikeOf(player: Player): Card[] {
+  return usableCardsOf(player).filter((c) => !isTianCard(c));
+}
+
 function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   // 「本回合不能使用或打出手牌」：手牌一张都不可用（技能与结束阶段照常）
@@ -153,6 +165,23 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   const seen = new Set<string>();
   for (const card of noCards ? [] : usable) {
     if (seen.has(card.id)) continue;
+    // 「田」不是手牌：只能通过【急袭】当【顺手牵羊】用，其余用法一律不给（见 isTianCard）
+    if (isTianCard(card)) {
+      const canShunshouViaTian =
+        canUseAsCard(state, player, card, 'shunshou') &&
+        state.players.some(
+          (p) =>
+            p.alive &&
+            p.seatId !== seatId &&
+            !heroBlocksBeingTarget(state, p, card, player) &&
+            (heroIgnoresTrickDistance(heroes) || distance(state, seatId, p.seatId) <= 1),
+        );
+      if (canShunshouViaTian) {
+        legalCardIds.push(card.id);
+        seen.add(card.id);
+      }
+      continue;
+    }
     // 装备牌：总是可使用
     if (isEquipCard(card)) {
       legalCardIds.push(card.id);
@@ -404,7 +433,8 @@ function zhangbaHint(player: Player): string {
  * `need === 'sha'` 且装备着【丈八蛇矛】时，**任何两张**牌都能凑成【杀】，所以整手牌都可点。
  */
 function respondCandidates(state: GameState, player: Player, need: CardType): string[] {
-  const cards = usableCardsOf(player);
+  // 「田」不能当手牌响应（见 handLikeOf）
+  const cards = handLikeOf(player);
   if (need === 'sha' && canZhangba(player, cards.length)) return cards.map((c) => c.id);
   return cards
     .filter((c) => c.type === need || canUseAsCard(state, player, c, need))
@@ -439,7 +469,7 @@ function buildRespondShaPrompt(
 ): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
-  const legalCardIds = usableCardsOf(player)
+  const legalCardIds = handLikeOf(player)
     .filter((c) => c.type === 'shan' || canUseAsCard(state, player, c, 'shan'))
     .map((c) => c.id);
   const required = attack.requiredShan ?? 1;
@@ -509,7 +539,7 @@ function buildRespondDeathPrompt(state: GameState, seatId: string, dyingId: stri
   const player = getPlayerOrThrow(state, seatId);
   const dying = getPlayerOrThrow(state, dyingId);
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
-  const legalCardIds = usableCardsOf(player)
+  const legalCardIds = handLikeOf(player)
     .filter((c) => c.type === 'tao' || c.type === 'jiu' || canUseAsCard(state, player, c, 'tao'))
     .map((c) => c.id);
   return {
@@ -585,7 +615,7 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
       break;
     case 'wanjian':
       message = `【万箭齐发】：打出【闪】或弃权（受 1 点伤害）`;
-      legalCardIds = usableCardsOf(player)
+      legalCardIds = handLikeOf(player)
         .filter((c) => c.type === 'shan' || canUseAsCard(state, player, c, 'shan'))
         .map((c) => c.id);
       break;
@@ -646,7 +676,7 @@ function buildWuxiePrompt(state: GameState, seatId: string, ctx: TrickContext): 
     kind: 'wuxieQueue',
     message,
     // 卧龙诸葛亮·看破：黑色手牌当【无懈可击】
-    legalCardIds: usableCardsOf(player)
+    legalCardIds: handLikeOf(player)
       .filter((c) => isWuxieLike(c) || canUseAsCard(state, player, c, 'wuxie'))
       .map((c) => c.id),
     legalTargetIds: [],

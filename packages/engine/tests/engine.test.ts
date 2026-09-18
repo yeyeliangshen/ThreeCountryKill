@@ -14599,6 +14599,73 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
   });
 
+  // 「田」只有两个去处：急袭当【顺手牵羊】、资粮交给同势力角色（项目口径）。
+  // 下面四条把「其余用法」逐个钉死——以前「田」能当它本身那张牌用、能当手牌打出、还能重铸。
+  it('「田」不能重铸（它只该走急袭 / 资粮两个去处）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'dengai', deputyHeroId: 'xuchu', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const tian = mk('t1', 'tiesuo', 'spade', 5); // 铁索连环本来是**可重铸**的牌
+    tian.tian = true;
+    a.tian.push(tian);
+    expect(act(state, A, { type: 'recast', cardId: 't1' }).ok).toBe(false);
+    expect(a.tian).toHaveLength(1); // 田还在，也没进弃牌堆
+    expect(state.discard.some((c) => c.id === 't1')).toBe(false);
+  });
+
+  it('「田」不能当它本身那张牌使用（只能当【顺手牵羊】）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'dengai', deputyHeroId: 'xuchu', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [shan('b1')] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const tian = mk('t1', 'sha', 'spade', 5); // 一张【杀】成了「田」
+    tian.tian = true;
+    a.tian.push(tian);
+    // 当【杀】用：不行
+    expect(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [B] }).ok).toBe(false);
+    expect(a.tian).toHaveLength(1);
+    // 当【顺手牵羊】用：可以（急袭）
+    expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('t1');
+    ok(act(state, A, { type: 'playCard', cardId: 't1', as: 'shunshou', targetIds: [B] }));
+    passWuxie(state);
+    expect(a.tian).toHaveLength(0);
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
+  });
+
+  it('「田」不能当手牌打出：响应【杀】时不能拿「田」里的【闪】', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'sha', 'spade', 6)] },
+      { seatId: B, name: '乙', heroId: 'dengai', faction: 'wei', hand: [] },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    const tian = mk('t1', 'shan', 'heart', 2); // 一张【闪】成了「田」
+    tian.tian = true;
+    b.tian.push(tian);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    expect(toSnapshot(state, B).prompt?.legalCardIds ?? []).not.toContain('t1'); // 提示里不给
+    expect(act(state, B, { type: 'respondCard', cardId: 't1' }).ok).toBe(false); // 硬打也不行
+    expect(b.tian).toHaveLength(1);
+  });
+
+  it('邓艾当**副将**时【急袭】（主将技）不生效：「田」连【顺手牵羊】都当不了', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'xuchu', deputyHeroId: 'dengai', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const tian = mk('t1', 'sha', 'spade', 5);
+    tian.tian = true;
+    a.tian.push(tian);
+    expect(toSnapshot(state, A).prompt?.legalCardIds ?? []).not.toContain('t1');
+    expect(act(state, A, { type: 'playCard', cardId: 't1', as: 'shunshou', targetIds: [B] }).ok).toBe(
+      false,
+    );
+  });
+
   it('资粮（副将技）：同势力角色受伤后，可以把「田」交给他', () => {
     const state = gz(
       [
@@ -18536,5 +18603,27 @@ describe('制蛮：拿走判定区的牌要摘干净', () => {
     expect(a.hand.some((c) => c.id === 'sd1')).toBe(true);
     expect(b.judgment.some((c) => c.id === 'sd1')).toBe(false);
     expect(b.judgment).toHaveLength(0);
+  });
+});
+
+/**
+ * 结构检查：带 canUseAs 的武将必须在 skillFields 里登记「提供这个转化能力的技能名」。
+ *
+ * 为什么要这条：`conversionSkillName()` 靠 skillFields 反查「转化技是哪个技能给的」，
+ * 而「主将技/副将技按位置过滤」（邓艾·急袭：当副将时「田」就不能当【顺手牵羊】）
+ * 就建立在它上面——漏登记 = 位置限制悄悄失效。
+ * 一个武将可以登记多个（卧龙诸葛亮的火计 / 看破都提供转化）。
+ */
+describe('结构 · 武将定义自洽', () => {
+  it('每个带 canUseAs 的武将都登记了提供它的技能名', () => {
+    const bad: string[] = [];
+    for (const h of HEROES) {
+      if (!h.canUseAs) continue;
+      const names = Object.entries(h.skillFields ?? {})
+        .filter(([, fields]) => fields.includes('canUseAs'))
+        .map(([name]) => name);
+      if (names.length === 0) bad.push(`${h.id}(${h.name})`);
+    }
+    expect(bad).toEqual([]);
   });
 });

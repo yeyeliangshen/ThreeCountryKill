@@ -198,6 +198,25 @@ export function usableCardsOf(player: Player): Card[] {
   return [...player.hand, ...muniuCargoOf(player), ...player.tian];
 }
 
+/**
+ * 这张牌是不是武将牌上的「田」（邓艾·屯田）。
+ *
+ * 「田」**不是手牌**：它只有两个去处——① 通过【急袭】（主将技）当【顺手牵羊】使用；
+ * ② 被【资粮】（副将技）交给同势力角色。所以它**不能当它本身那张牌使用或打出**
+ * （不能拿一张「田」里的【闪】去响应【杀】、不能拿「田」里的【桃】救人），也**不能重铸**。
+ * 凡是「像手牌一样用」的判定都要先把它挡掉。
+ */
+export function isTianCard(card: Card): boolean {
+  return card.tian === true;
+}
+
+/** 「田」不能这样用时的报错文案（能用时返回 null） */
+function tianBlocked(card: Card): string | null {
+  return isTianCard(card)
+    ? '「田」不能当手牌使用或打出（只能通过【急袭】当【顺手牵羊】）'
+    : null;
+}
+
 /** 在「可使用/可打出」的范围里找一张牌（手牌优先，其次扣置区） */
 export function findUsableCard(player: Player, cardId: string): Card | undefined {
   return (
@@ -293,6 +312,9 @@ function resolveUsedCard(
     if (materials.some((c) => c.id === id)) return { error: '两张牌不能是同一张' };
     const c = findUsableCard(player, id);
     if (!c) return { error: '你没有这张牌' };
+    // 「田」不是手牌，凑不进【丈八蛇矛】的两张里
+    const tianErr = tianBlocked(c);
+    if (tianErr) return { error: tianErr };
     materials.push(c);
   }
   // 官方文本是「**两张**手牌」，多一张少一张都不行
@@ -384,6 +406,29 @@ export function blockedForPlay(player: Player, card: Card): string | null {
   return null;
 }
 
+/**
+ * 转化技现在能不能用：它如果是**主将技/副将技**，那张武将牌得在对应位置上
+ * （邓艾的【急袭】是主将技——邓艾当副将时，「田」就当不了【顺手牵羊】了）。
+ * 与钩子那边的口径一致（那边在 collectTimingHooks 里按技能过滤）。
+ */
+function conversionAvailable(state: GameState, player: Player, hero: Hero): boolean {
+  if (state.mode !== 'guozhan') return true;
+  // 一个武将可能有**多个**提供转化能力的技能（卧龙诸葛亮：火计 / 看破），
+  // 这里逐个看：只要有哪个转化技是主将技/副将技、而那张武将牌不在对应位置上，就不给用。
+  // ⚠️ 已知口径：同一个人「一个转化技是主将技、另一个不是」的情况目前不存在
+  //    （真出现时要按**牌→类型**分开判，那时得给技能也补一份「提供哪个类型转化」的信息）。
+  const names = Object.entries(hero.skillFields ?? {})
+    .filter(([, fields]) => fields.includes('canUseAs'))
+    .map(([name]) => name);
+  if (names.length === 0) return true;
+  const blocked = names.some((name) => {
+    if (hero.mainSlotSkills?.includes(name)) return player.heroId !== hero.id;
+    if (hero.deputySlotSkills?.includes(name)) return player.deputyHeroId !== hero.id;
+    return false;
+  });
+  return !blocked;
+}
+
 export function canUseAsCard(
   state: GameState,
   player: Player,
@@ -391,14 +436,24 @@ export function canUseAsCard(
   type: CardType,
 ): boolean {
   const heroes = activeHeroes(state, player);
-  if (heroes.some((h) => heroCanUseAs(h, card, type, state, player))) return true;
+  if (
+    heroes.some(
+      (h) => conversionAvailable(state, player, h) && heroCanUseAs(h, card, type, state, player),
+    )
+  ) {
+    return true;
+  }
   // 国战暗置：**预亮过**的转化技可以先用（真正打出去时由 revealForConversion 明置，
   // 见「发动技能时必须明置该武将」）。没预亮就当作不会——暗置武将没有技能。
   if (
-    unrevealedHeroes(state.mode, player).some((h) => heroCanUseAs(h, card, type, state, player))
+    unrevealedHeroes(state.mode, player).some(
+      (h) => conversionAvailable(state, player, h) && heroCanUseAs(h, card, type, state, player),
+    )
   ) {
     const skillName = conversionSkillName(
-      unrevealedHeroes(state.mode, player).find((h) => heroCanUseAs(h, card, type, state, player))!,
+      unrevealedHeroes(state.mode, player).find(
+        (h) => conversionAvailable(state, player, h) && heroCanUseAs(h, card, type, state, player),
+      )!,
     );
     // 用转化技必须先明置那张武将牌，所以被祸水封锁时这条也用不了
     if (skillName && player.prelitSkills.includes(skillName) && canRevealNow(state, player)) {
@@ -3551,6 +3606,10 @@ function onPlayCard(
   const resolved = resolveUsedCard(state, player, intent);
   if ('error' in resolved) return err(resolved.error);
   const card = resolved.card;
+  // 「田」不是手牌：只能用【急袭】当【顺手牵羊】（转化合法性由下面那道 canUseAsCard 检查）
+  if (isTianCard(card) && intent.as !== 'shunshou') {
+    return err('「田」只能通过【急袭】当【顺手牵羊】使用');
+  }
   // 「本回合不能使用或打出手牌」（军令 seal / 势备篇调虎离山）+ 马岱·潜袭的颜色限制
   {
     // 严白虎·雉盗：本回合只能指定「你与他」（含 AOE 那类不指定目标却会打到别人的牌）
@@ -3616,6 +3675,8 @@ function canRecastCard(
   player: Player,
   card: import('@sgs/protocol').Card,
 ): boolean {
+  // 「田」不能重铸（它只有急袭 / 资粮两个去处，见 isTianCard）
+  if (isTianCard(card)) return false;
   if (isRecastable(card)) return true;
   return canUseAsCard(state, player, card, 'tiesuo') || canUseAsCard(state, player, card, 'zhibi');
 }
@@ -5881,6 +5942,11 @@ function respondWanjianShan(
   const responder = getPlayerOrThrow(state, seatId);
   const card = findUsableCard(responder, intent.cardId);
   if (!card) return err('你没有这张牌');
+  {
+    // 「田」不是手牌（只能用【急袭】当【顺手牵羊】、或被【资粮】交出去）
+    const tianErr = tianBlocked(card);
+    if (tianErr) return err(tianErr);
+  }
   if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
     return err('万箭齐发需打出【闪】');
   // 靠转化技出的这张【闪】要明置（甄姬·倾国 / 赵云·龙胆）
@@ -6104,6 +6170,11 @@ function onRespondWuxie(
   const responder = getPlayerOrThrow(state, seatId);
   const card = findUsableCard(responder, intent.cardId);
   if (!card) return err('你没有这张牌');
+  {
+    // 「田」不是手牌（只能用【急袭】当【顺手牵羊】、或被【资粮】交出去）
+    const tianErr = tianBlocked(card);
+    if (tianErr) return err(tianErr);
+  }
   // 接受【无懈可击】/【无懈可击·国】，或武将可转化的牌（卧龙诸葛亮·看破：黑色手牌当无懈）
   if (!isWuxieLike(card) && !canUseAsCard(state, responder, card, 'wuxie'))
     return err('只能使用【无懈可击】');
@@ -6267,6 +6338,11 @@ function respondSha(
   const responder = getPlayerOrThrow(state, seatId);
   const card = findUsableCard(responder, intent.cardId);
   if (!card) return err('你没有这张牌');
+  {
+    // 「田」不是手牌（只能用【急袭】当【顺手牵羊】、或被【资粮】交出去）
+    const tianErr = tianBlocked(card);
+    if (tianErr) return err(tianErr);
+  }
   // 接受【闪】，或武将可转化的牌（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
   // 暗置武将要预亮过对应的转化技才能这么出，出了就明置（canUseAsCard 已含这层判断）
   if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
@@ -6655,6 +6731,11 @@ function respondDeathSave(
   const saver = getPlayerOrThrow(state, seatId);
   const card = findUsableCard(saver, intent.cardId);
   if (!card) return err('你没有这张牌');
+  {
+    // 「田」不是手牌（只能用【急袭】当【顺手牵羊】、或被【资粮】交出去）
+    const tianErr = tianBlocked(card);
+    if (tianErr) return err(tianErr);
+  }
   // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
   if (card.type !== 'tao' && card.type !== 'jiu' && !canUseAsCard(state, saver, card, 'tao'))
     return err('只能用【桃】（或【酒】当桃）救人');

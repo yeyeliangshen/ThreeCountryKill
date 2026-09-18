@@ -3224,7 +3224,10 @@ const DENGAI: Hero = {
   // 屯田：距离 -「田」数；急袭是主将技（并让那张牌少半个阴阳鱼）
   distanceMinusPerTian: true,
   lockedFields: ['distanceMinusPerTian'],
-  skillFields: { 屯田: ['distanceMinusPerTian'] },
+  // ⚠️ **急袭也要登记**：它提供 canUseAs，而「主将技/副将技按位置过滤」要靠
+  //    `conversionSkillName()` 反查出「这个转化技是哪个技能给的」——漏登记就会被当成
+  //    「没有位置限制的转化技」，于是邓艾当副将时也能拿「田」当【顺手牵羊】。
+  skillFields: { 屯田: ['distanceMinusPerTian'], 急袭: ['canUseAs'] },
   mainSlotSkills: ['急袭'],
   mainSlotHalfYang: true,
   deputySlotSkills: ['资粮'],
