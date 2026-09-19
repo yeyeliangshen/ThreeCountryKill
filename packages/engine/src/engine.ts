@@ -91,6 +91,7 @@ import {
   isBigFaction,
   isMalePlayer,
   isSmallFaction,
+  isSmallFactionCharacter,
   effectiveFaction,
   factionAliveCount,
   skillNameForField,
@@ -5909,8 +5910,9 @@ function resolveLutong(state: GameState, ctx: TrickContext): void {
       if (!p.alive) return false;
       if (negatedByWuxie(ctx, p.seatId)) return false; // 已被【无懈可击·国】抵消
       const f = effectiveFaction(st, p);
-      if (f === null) return false; // 暗置 → 没有势力，不属于任何一类
-      return wantBig ? isBigFaction(st, f) : isSmallFaction(st, f);
+      // 大势力：只有已确定势力者才可能是大势力角色；
+      // 小势力：「除大势力角色外的**所有**角色」——**未确定势力（暗置）的也算**（用户口径）
+      return wantBig ? f !== null && isBigFaction(st, f) : isSmallFactionCharacter(st, p);
     });
     const chainedNames: string[] = [];
     const drawnNames: string[] = [];
@@ -6859,7 +6861,7 @@ function wuxieScopeCandidates(state: GameState, ctx: TrickContext): string[] {
       return alivePlayers(state)
         .filter((p) => {
           const f = effectiveFaction(state, p);
-          return f !== null && (isBigFaction(state, f) || isSmallFaction(state, f));
+          return (f !== null && isBigFaction(state, f)) || isSmallFactionCharacter(state, p);
         })
         .map((p) => p.seatId);
     default:

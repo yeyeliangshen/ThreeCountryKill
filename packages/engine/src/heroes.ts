@@ -10163,44 +10163,58 @@ const XUNYU: Hero = {
       skillId: '节命',
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
-        if (!payload?.damage) return;
+        // 【节命】官方触发词是「当你受到**1点**伤害后」：一次受到 2 点要**依次触发两次**
+        // （官方攻略明确：可以依次发动多次，甚至可以分别选不同目标）。
+        // ⚠️ 与遗计/放逐/反馈/智愚/恩怨/刚烈那几条「当你受到伤害后」**不同**——那些只触发一次，
+        //    现行国战文本（含 2025-09-19 调整）已确认，别一起改。
+        const points = payload?.damage ?? 0;
+        if (points <= 0) return;
         const others = ctx.state.players.filter((p) => p.alive);
         if (others.length === 0) return;
-        ctx.api.askChoice(
-          ctx.state,
-          ctx.player.seatId,
-          '是否发动【节命】？',
-          [
-            { id: 'yes', label: '发动（令一名角色把牌补到体力上限）' },
-            { id: 'no', label: '不发动' },
-          ],
-          (st, p, picked) => {
-            if (picked !== 'yes') return;
-            ctx.api.askChoice(
-              st,
-              p.seatId,
-              '【节命】：选择要让谁补牌',
-              st.players.filter((x) => x.alive).map((x) => ({ id: x.seatId, label: x.name })),
-              (st2, _p2, whoId) => {
-                const who = getPlayer(st2, whoId);
-                if (!who) return;
-                const limit = Math.min(5, who.maxHp);
-                let got = 0;
-                while (who.hand.length < limit) {
-                  const c = drawOne(st2);
-                  if (!c) break;
-                  who.hand.push(c);
-                  got++;
-                }
-                pushLog(
-                  st2,
-                  'skill',
-                  `${p.name} 发动【节命】，${who.name} 补了 ${got} 张牌（至 ${limit} 张）。`,
-                );
-              },
-            );
-          },
-        );
+        const step = (st0: GameState, left: number): void => {
+          if (left <= 0) return;
+          ctx.api.askChoice(
+            st0,
+            ctx.player.seatId,
+            left > 1 ? `是否发动【节命】？（本笔伤害还剩 ${left} 点）` : '是否发动【节命】？',
+            [
+              { id: 'yes', label: '发动（令一名角色把牌补到体力上限）' },
+              { id: 'no', label: '不发动' },
+            ],
+            (st, p, picked) => {
+              if (picked !== 'yes') {
+                step(st, left - 1); // 每一点各自「可以」：这一点不发，后面照问
+                return;
+              }
+              ctx.api.askChoice(
+                st,
+                p.seatId,
+                '【节命】：选择要让谁补牌',
+                st.players.filter((x) => x.alive).map((x) => ({ id: x.seatId, label: x.name })),
+                (st2, _p2, whoId) => {
+                  const who = getPlayer(st2, whoId);
+                  if (who) {
+                    const limit = Math.min(5, who.maxHp);
+                    let got = 0;
+                    while (who.hand.length < limit) {
+                      const c = drawOne(st2);
+                      if (!c) break;
+                      who.hand.push(c);
+                      got++;
+                    }
+                    pushLog(
+                      st2,
+                      'skill',
+                      `${p.name} 发动【节命】，${who.name} 补了 ${got} 张牌（至 ${limit} 张）。`,
+                    );
+                  }
+                  step(st2, left - 1);
+                },
+              );
+            },
+          );
+        };
+        step(ctx.state, points);
       },
     },
   ],
@@ -10857,7 +10871,7 @@ const GUOJIA: Hero = {
     { name: '天妒', desc: '当你的判定牌生效后，你可以获得之。' },
     {
       name: '遗计',
-      desc: '当你受到伤害后，你可以摸两张牌，然后可以将摸到的牌交给一名其他角色。（官方为「受到1点伤害后」逐点触发，本实现每次伤害事件触发一次）',
+      desc: '当你受到伤害后，你可以摸两张牌，然后可以将摸到的牌交给一名其他角色。（国战现行规则：**按一次伤害事件**触发一次，不按点数——与节命的「受到1点伤害后」不同）',
     },
   ],
 };
@@ -13780,7 +13794,20 @@ export function armorCancelsFireTrick(state: GameState, target: Player, card: Ca
  */
 export function immuneToChaining(state: GameState, player: Player): boolean {
   if (player.equipment.armor?.equipName !== 'mingguang') return false;
-  return isSmallFaction(state, effectiveFaction(state, player));
+  return isSmallFactionCharacter(state, player);
+}
+
+/**
+ * 「**小势力角色**」判定（【勠力同心】【明光铠】共用，官方势备篇）：
+ *   大势力＝人数最多且大于 1 的势力；**存在大势力时**「除大势力角色外的**所有**角色均称为小势力角色」。
+ * ⚠️ 关键：这里的「所有角色」**不要求已确定势力**——暗置/未确定势力的角色**也算小势力角色**；
+ *    但**不存在大势力**时这套定义整体不成立（谁都不是小势力角色）。
+ */
+export function isSmallFactionCharacter(state: GameState, player: Player): boolean {
+  const bigs = bigFactions(state);
+  if (bigs.length === 0) return false;
+  const f = effectiveFaction(state, player);
+  return f === null ? true : !bigs.includes(f);
 }
 
 export function heroBlocksBeingTarget(
