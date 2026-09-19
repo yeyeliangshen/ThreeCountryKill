@@ -4690,6 +4690,10 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
         resumePlay(state, pending.returnTo);
       }
             // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
+      // 这条询问处理完了：唤醒在等它的那些待办（`Map<requestId, waiter[]>`，见 requestResumePlay）。
+      // ⚠️ 目前**没有**注册者（`requestResumePlay` 还没接线），所以这一句是空转——
+      //    先把「唤醒点」补齐，将来切换成请求式收尾时不用再回头找这几处。
+      completePendingRequest(state, pendingIdOf(pending));
       drainResume(state);
       return { ok: true };
     }
@@ -4729,6 +4733,10 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       // 输入槽空了 → 唤醒被挡住的收尾待办，再排空续接队列。
       // ⚠️ 这两句以前只写在 `if (p.after)` 分支里（我加唤醒语义时的疏漏）→ 走 returnTo 的那条
       //    分支不会立刻唤醒，被挡住的续接要拖到下一次询问/意图结束才醒（不是死锁，但会延迟）。
+      // 这条询问处理完了：唤醒在等它的那些待办（`Map<requestId, waiter[]>`，见 requestResumePlay）。
+      // ⚠️ 目前**没有**注册者（`requestResumePlay` 还没接线），所以这一句是空转——
+      //    先把「唤醒点」补齐，将来切换成请求式收尾时不用再回头找这几处。
+      completePendingRequest(state, pendingIdOf(p));
       drainResume(state);
       return { ok: true };
     }
@@ -4770,6 +4778,10 @@ function onPickCards(
     resumePlay(state, pending.returnTo);
   }
         // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
+      // 这条询问处理完了：唤醒在等它的那些待办（`Map<requestId, waiter[]>`，见 requestResumePlay）。
+      // ⚠️ 目前**没有**注册者（`requestResumePlay` 还没接线），所以这一句是空转——
+      //    先把「唤醒点」补齐，将来切换成请求式收尾时不用再回头找这几处。
+      completePendingRequest(state, pendingIdOf(pending));
       drainResume(state);
       return { ok: true };
 }
