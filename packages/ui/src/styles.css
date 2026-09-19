@@ -89,6 +89,15 @@ button:disabled {
   max-width: var(--table-max);
   margin: 0 auto;
   min-height: 100%;
+  /*
+   * 安全区（刘海 / 圆角 / 手势条 / 电视过扫）：关键 UI 从屏幕边缘内缩，别被裁掉。
+   * 取自工作区 skill `game-ui-ux` 的「Respect the safe area」——手机上尤其是横屏时，
+   * 底部那排按钮（出牌/结束回合）正好在 home indicator 上。没有安全区的设备 env() 为 0。
+   */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -1501,6 +1510,19 @@ button:disabled {
   background: #3a1e20;
   color: #d47a6a;
 }
+/*
+ * 键盘/手柄可达性：所有可交互元素在键盘 tab 时都要看得见焦点。
+ * （取自 skill `game-ui-ux` 的「Make every screen keyboard/gamepad navigable」——
+ *  原来只有登录页那条 input:focus，牌桌上用键盘完全看不出选到了哪个按钮。）
+ */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
 /* 宝物（势备篇的第 5 个装备槽）：紫色，和另外四槽区分开 */
 .equip-treasure {
   background: #2e1e3a;
