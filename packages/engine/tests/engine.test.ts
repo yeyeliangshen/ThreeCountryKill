@@ -24274,11 +24274,11 @@ describe('国战 · 黄祖（袭射）', () => {
     expect(state.log.some((e) => e.message.includes('袭射'))).toBe(false);
   });
 
-  // ⚠️ 暂 skip：这条要验证的两件事都还没跑通——
-  //    ① `othersTurnStart` 派给「其他角色」时的 **payload 形状**（我按 `{ turnSeatId }` 写，
-  //       实际拿到的是 play，说明要么时机没派到黄祖、要么 payload 字段名不同）；
-  //    ② 袭射②的换将（已补挂 `othersTurnEnd` ✓）与「暗副将 + 势力不退回 null」的实际行为。
-  //    下一轮先查 ①（看 othersTurnStart 的派发点与 payload），再打开这条。
+  // ⚠️ 仍 skip，但**驱动方式已修正**（本轮进展）：必须让黄祖自己结束回合，下一个才是乙；
+  //    用丙结束的话下家是黄祖自己 → 测的是「自己的准备阶段」，袭射根本不发动。
+  //    修正后已经能推进到「袭射询问 → 打死乙」这一段，卡在 `乙没死`（`passDeathSaves` 之后仍 alive）——
+  //    下一轮查：1 血目标挨 1 点后濒死队列的实际形态（可能 pending 不是 respondDeath，
+  //    或伤害链在袭射的异步收尾里还没走完）。
   it.skip('袭射②：该回合结束时（**别人的回合**）可换副将；换出暗副将后势力不退回 null', () => {
     const weapon: Card = { id: 'w1', type: 'weapon', suit: 'spade', rank: 1, equipName: 'qinggang', range: 2 };
     const state = gz(
@@ -24287,13 +24287,14 @@ describe('国战 · 黄祖（袭射）', () => {
         { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 1, maxHp: 4 },
         { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 4, maxHp: 4 },
       ],
-      C,
+      A,
     );
     const a = pick(state, A);
     a.determinedFaction = 'qun';
     state.heroPool = ['zhangfei', 'xuchu', 'guanyu']; // 换将要有牌可换
-    // 丙结束 → 轮到乙 → 乙的**准备阶段**：袭射在这里发动（打死 1 血的乙）
-    ok(act(state, C, { type: 'endPhase' }));
+    // ⚠️ 必须让**黄祖自己**（座次在乙之前）结束回合，下一个才是乙；用丙结束的话下家是黄祖自己，
+    //    那测的是「自己的准备阶段」（袭射不发动），当然拿不到询问。
+    ok(act(state, A, { type: 'endPhase' }));
     const ask = state.pending;
     if (ask?.kind !== 'choice') throw new Error(`预期袭射询问，实际是 ${ask?.kind}`);
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
