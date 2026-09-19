@@ -15312,6 +15312,60 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     expect(state.log.some((e) => e.message.includes('役鬼'))).toBe(true);
   });
 
+  it('役鬼：**双势力**「魂」同时对应两个牌面势力（§5.121）——魏/吴目标都合法', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '左慈', heroId: 'zuoci' },
+        { seatId: B, name: '乙', heroId: 'vanilla' },
+        { seatId: C, name: '丙', heroId: 'vanilla' },
+        { seatId: D, name: '丁', heroId: 'vanilla' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const spec: [string, string, Faction, number][] = [
+      [A, 'zuoci', 'qun', 3],
+      [B, 'vanilla', 'wei', 4],
+      [C, 'vanilla', 'wu', 4],
+      [D, 'vanilla', 'shu', 4],
+    ];
+    for (const [seatId, heroId, faction, hp] of spec) {
+      const pl = state.players.find((x) => x.seatId === seatId)!;
+      const hero = getHero(heroId)!;
+      pl.heroId = heroId;
+      pl.deputyHeroId = 'vanilla';
+      pl.faction = faction;
+      pl.heroRevealed = true;
+      pl.deputyRevealed = true;
+      pl.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      pl.hp = hp;
+      pl.hand = [];
+      pl.flags = emptyFlags();
+    }
+    const a1 = state.players.find((x) => x.seatId === A)!;
+    a1.hun = ['tangzi']; // 唐咨 = 魏/吴双势力牌
+    // ⚠️ 役鬼的【杀】**还受距离约束**（hunTargets 的定位是「势力限制 + 距离等既有合法性」）——
+    //    4 人环里 s0→s2 距离 2，所以给左慈一把大范围武器，免得吴玩家被距离滤掉。
+    a1.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'spade', rank: 12, equipName: 'fangtian', range: 4 };
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    state.log = [];
+    const r = act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] });
+    expect(r.ok, r.ok ? '' : r.error).toBe(true);
+    const pick = state.pending;
+    if (pick?.kind !== 'choice') throw new Error(`预期选牌名，实际是 ${pick?.kind}`);
+    const shaOpt = pick.options.find((o) => o.id === 'sha');
+    if (!shaOpt) throw new Error(`没有【杀】选项：${pick.options.map((o) => o.id).join(',')}`);
+    const r2 = act(state, A, { type: 'chooseOption', optionId: 'sha' });
+    expect(r2.ok, r2.ok ? '' : r2.error).toBe(true);
+    const tg = state.pending;
+    const ids = tg?.kind === 'choice' ? tg.options.map((o) => o.id) : [];
+    expect(ids).toContain(B); // 魏
+    expect(ids).toContain(C); // 吴
+    expect(ids).not.toContain(D); // 蜀
+  });
+
   it('役鬼：移去一张魂视为使用【杀】（只能打符合势力限制的目标）', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
