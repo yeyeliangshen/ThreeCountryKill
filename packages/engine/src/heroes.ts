@@ -13219,7 +13219,6 @@ const TANGZI: Hero = {
 };
 
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('wenqin', '文钦', 'wei', 'wu', 4),
   dualHero('panjun', '潘濬', 'shu', 'wu', 3),
   dualHero('sufei', '苏飞', 'wu', 'qun', 4),
   dualHero('xuyou', '许攸', 'wei', 'qun', 3),
@@ -14464,6 +14463,169 @@ const PENGYANG: Hero = {
   ],
 };
 
+/**
+ * 文钦 —— 矜伐（不臣篇·下，**魏/吴双势力**，2 阴阳鱼 → 4；移动版现行口径，见 §5.109）。
+ *
+ * 【矜伐】（出牌阶段限一次）：弃置**自己的一张牌**（手牌或装备区都行，没有类型限制）
+ *   → 选择一名**有牌**的其他角色（0 手牌但有装备也算）→ 由**该角色**二选一：
+ *   A. 文钦获得其一张牌（谁被指定谁选分支、具体拿哪张由**文钦**选）；
+ *   B. 该角色**交给**文钦一张**装备牌**（装备区里的也算；**交哪张由该角色自己选**）
+ *      —— 若交出的装备是**黑桃**，该角色**视为对文钦使用一张纯虚拟的普通【杀】**
+ *      （`physicalCardIds = []`：**绝不能**把刚交过来的那件装备当这张杀的实体子牌，
+ *        所以【奸雄】【授锋】【求安】都拿不到任何实体牌；属性是**普通**，不继承装备的属性）。
+ *
+ * 权限关系（用户口径，最容易写错的一处）：**分支由被指定的角色选**，但「A 里拿哪张」在文钦、
+ *   「B 里交哪张装备」在被指定的角色。
+ * 另外：选项必须**按当前状态动态生成**——没有可获得牌就没有 A、没有可交出的装备牌就没有 B；
+ *   只剩一个合法分支时**直接执行**，不给「选一个执行不了的选项白逃」的机会。
+ * ⚠️ 产生的那张【杀】是**技能指定的 CardUse**（使用者与目标都被技能定死），所以创建时不再受
+ *   普通出杀的**距离**与**次数**限制（`api.castVirtualSha` 走 `resolvePlayedSha`，本身既不查距离
+ *   也不占次数）；但后续的【闪】、防具、伤害增减、成为杀目标/造成伤害后等事件**全部照常**。
+ */
+function askJinfa(state: GameState, me: Player, api: SkillApi): string | undefined {
+  const pool = handAndEquipOf(me);
+  if (pool.length === 0) return '【矜伐】需要弃置一张牌';
+  const targets = state.players.filter(
+    (t) => t.alive && t.seatId !== me.seatId && handAndEquipOf(t).length > 0,
+  );
+  if (targets.length === 0) return '没有「有牌」的其他角色';
+  api.askPickCards(
+    state,
+    me.seatId,
+    '【矜伐】：弃置你自己的一张牌（手牌或装备区都行）',
+    pool,
+    1,
+    1,
+    (st, p, chosen) => {
+      const cost = chosen[0];
+      if (!cost) return;
+      // 走 API 弃置：装备区的牌会正常触发「失去装备」那套
+      api.discardCards(p.seatId, [cost], () => {
+        const cands = st.players.filter(
+          (t) => t.alive && t.seatId !== p.seatId && handAndEquipOf(t).length > 0,
+        );
+        if (cands.length === 0) return;
+        api.askChoice(
+          st,
+          p.seatId,
+          '【矜伐】：选择一名有牌的其他角色',
+          cands.map((t) => ({ id: t.seatId, label: `${t.name}（${t.hand.length} 手牌）` })),
+          (st2, p2, tid) => {
+            const target = getPlayer(st2, tid);
+            if (!target || !target.alive) return;
+            const giveable = handAndEquipOf(target).filter((c) => isEquipCard(c));
+            // 选项按当前状态动态生成（A：有可获得牌；B：真的有可交出的装备牌）
+            const opts = [
+              { id: 'A', label: `令 ${p2.name} 获得你的一张牌` },
+              ...(giveable.length > 0
+                ? [{ id: 'B', label: `你交给 ${p2.name} 一张装备牌` }]
+                : []),
+            ];
+            const runB = (st3: GameState, t3: Player): void => {
+              const equips = handAndEquipOf(t3).filter((c) => isEquipCard(c));
+              if (equips.length === 0) return;
+              api.askPickCards(
+                st3,
+                t3.seatId,
+                `【矜伐】：选择交给 ${p2.name} 的一张装备牌`,
+                equips,
+                1,
+                1,
+                (st4, t4, picked) => {
+                  const equip = picked[0];
+                  if (!equip) return;
+                  // 「交给」走 transferCard：装备区里的那张会正常触发失去装备
+                  api.transferCard(t4.seatId, equip, p2.seatId, () => {
+                    pushLog(
+                      st4,
+                      'skill',
+                      `${t4.name} 因【矜伐】交给 ${p2.name} 【${cardLabel(equip)}】。`,
+                      { seat: t4.seatId },
+                    );
+                    // 看的是**这张装备牌自己的花色**；黑桃 → 该角色视为对文钦使用纯虚拟普通【杀】
+                    if (equip.suit !== 'spade') return;
+                    pushLog(
+                      st4,
+                      'skill',
+                      `【矜伐】：交出的【${cardLabel(equip)}】是黑桃，${t4.name} 视为对 ${p2.name} 使用一张普通【杀】。`,
+                      { seat: t4.seatId },
+                    );
+                    // ⚠️ 纯虚拟牌：subcards=[]、不继承装备的属性；装备留在文钦那里
+                    api.castVirtualSha(t4.seatId, p2.seatId, { logKind: 'skill' });
+                  });
+                },
+              );
+            };
+            if (opts.length === 1) {
+              // 只剩 A：直接执行，不给「选一个执行不了的选项白逃」
+              takeOneOfTargetCards(st2, p2, target, api, '矜伐', () => {
+                pushLog(st2, 'skill', `${p2.name} 的【矜伐】：获得了 ${target.name} 的一张牌。`, {
+                  seat: p2.seatId,
+                });
+              });
+              return;
+            }
+            api.askChoice(
+              st2,
+              target.seatId,
+              `【矜伐】：${p2.name} 令你选择一项`,
+              opts,
+              (st3, t3, pick) => {
+                if (pick === 'B') {
+                  runB(st3, t3);
+                  return;
+                }
+                const owner = getPlayer(st3, p2.seatId);
+                const victim = getPlayer(st3, t3.seatId);
+                if (!owner || !victim) return;
+                takeOneOfTargetCards(st3, owner, victim, api, '矜伐', () => {
+                  pushLog(st3, 'skill', `${owner.name} 的【矜伐】：获得了 ${victim.name} 的一张牌。`, {
+                    seat: owner.seatId,
+                  });
+                });
+              },
+            );
+          },
+        );
+      });
+    },
+  );
+  return undefined;
+}
+
+const WENQIN: Hero = {
+  id: 'wenqin',
+  name: '文钦',
+  pack: 'buchen',
+  faction: 'wei',
+  secondFaction: 'wu',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'jinfa',
+      name: '矜伐',
+      oncePerTurn: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (state, player) =>
+        handAndEquipOf(player).length > 0 &&
+        state.players.some(
+          (t) => t.alive && t.seatId !== player.seatId && handAndEquipOf(t).length > 0,
+        ),
+      execute: (state, player, _intent, api) => askJinfa(state, player, api),
+    },
+  ],
+  skills: [
+    {
+      name: '矜伐',
+      desc: '出牌阶段限一次，你可以弃置一张牌并选择一名有牌的其他角色，令其选择一项：你获得其一张牌；或其交给你一张装备牌，若此牌为黑桃，其视为对你使用一张普通【杀】。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -14495,6 +14657,7 @@ export const HEROES: Hero[] = [
   XIAHOUBA,
   SUNCHEN,
   PENGYANG,
+  WENQIN,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

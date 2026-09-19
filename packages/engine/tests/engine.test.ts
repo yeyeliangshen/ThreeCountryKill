@@ -19512,6 +19512,145 @@ describe('国战 · 彭羕（达命 / 嚣逆）', () => {
   });
 });
 
+
+/**
+ * 文钦（不臣篇·下；魏/吴双势力）——【矜伐】（文档 §5.109）。
+ * 锁：成本可以是装备区的牌；选项按当前状态动态生成（没有可交装备就没有 B，且不给「白逃」的窗口）；
+ * B 分支交出的**黑桃装备**会产生一张**全新的纯虚拟普通【杀】**（装备仍归文钦，绝不是这张杀的实体牌）。
+ */
+describe('国战 · 文钦（矜伐）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+      maxHp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('矜伐：文钦没手牌但有装备也能发动（成本可以是装备区的牌）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'wenqin', faction: 'wei', hand: [], equip: [wpn('a9')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [mk('b1', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'jinfa', targetIds: [] }));
+    // 弃掉装备区那把武器（走 API 弃置 → 正常触发失去装备）
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a9'] }));
+    expect(a.equipment.weapon).toBeNull();
+    expect(state.discard.some((c) => c.id === 'a9')).toBe(true);
+    // 选目标乙（没装备 → 只有 A 分支 → 直接执行）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('矜伐');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    if (state.pending?.kind === 'choice') {
+      // 「获得其一张牌」可能先问一句（手牌随机/明牌可选）
+      ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    }
+    expect(a.hand.length).toBe(1);
+    expect(state.players.find((p) => p.seatId === B)!.hand.length).toBe(0);
+  });
+
+  it('矜伐：目标有装备 → 出现 B 分支；交出**黑桃**装备 → 装备归文钦，另产生纯虚拟【杀】', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'wenqin', faction: 'wei', hand: [mk('a1', 'tao', 'heart')] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        faction: 'wu',
+        hand: [],
+        equip: [{ id: 'b9', type: 'weapon', suit: 'spade', rank: 5, equipName: 'qinggang' }],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'jinfa', targetIds: [] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] })); // 弃一张手牌作为成本
+    // 选目标乙
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // **由乙选择分支**（这是权限关系的关键）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      const ids = state.pending.options.map((o) => o.id);
+      expect(ids).toContain('A');
+      expect(ids).toContain('B'); // 乙有装备 → B 合法
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'B' }));
+    // **由乙自己选交哪张装备**
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b9'] }));
+    // 装备归文钦，且**没有被当成那张杀的实体牌**
+    expect(a.hand.some((c) => c.id === 'b9')).toBe(true);
+    expect(b.equipment.weapon).toBeNull();
+    // 黑桃 → 乙视为对文钦使用一张普通【杀】：走完整流程 → **文钦可以出闪**
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, A, { type: 'pass' }));
+    expect(a.hp).toBe(3); // 4 - 1（普通杀 1 点）
+    expect(state.log.some((e) => e.message.includes('矜伐'))).toBe(true);
+  });
+
+  it('矜伐：交出**非黑桃**装备 → 交完即止，不产生【杀】', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'wenqin', faction: 'wei', hand: [mk('a1', 'tao', 'heart')] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        faction: 'wu',
+        hand: [],
+        equip: [{ id: 'b9', type: 'armor', suit: 'heart', rank: 2, equipName: 'bagua' }],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'jinfa', targetIds: [] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'B' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b9'] }));
+    expect(a.hand.some((c) => c.id === 'b9')).toBe(true);
+    expect(state.pending?.kind).not.toBe('respondSha'); // 红桃装备 → 不产生杀
+    expect(a.hp).toBe(4);
+  });
+});
+
 /** 技能判定也走「判定牌生效前」：鬼才/鬼道能改判、天妒能收牌 */
 describe('国战 · 技能判定接入改判时机', () => {
   function gz(
