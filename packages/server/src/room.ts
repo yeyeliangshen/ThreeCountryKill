@@ -2,10 +2,15 @@
 import type { GameMode, Intent, RoomSummary, ServerMessage, SeatView } from '@sgs/protocol';
 import {
   applyIntent,
+  configFromPreset,
   createGame,
+  DEFAULT_GUOZHAN_PRESET,
+  freezeConfig,
   toSnapshot,
+  validateGuozhanConfig,
   type ApplyResult,
   type GameState,
+  type GuozhanRoomConfig,
   type SeatSetup,
 } from '@sgs/engine';
 import type { WebSocket } from 'ws';
@@ -52,10 +57,15 @@ export class Room {
   pendingMode: GameMode = 'melee';
   /** 测试用：选将不限（房主可开） */
   freePick = false;
-  /** 房主是否开了势备篇（开局前可改，和 freePick 同一套） */
-  shibei = false;
+  /**
+   * 国战扩展开关（开局前房主可改，和 freePick 同一套；**开局后冻结**）。
+   * 新建房间用 `DEFAULT_GUOZHAN_PRESET`（线上默认「标准国战」）。
+   */
+  config: GuozhanRoomConfig = configFromPreset(DEFAULT_GUOZHAN_PRESET);
   game: GameState | null = null;
   started = false;
+  /** 开局那一刻的配置快照（只读）；`started` 之后一切以此为准 */
+  frozenConfig: Readonly<GuozhanRoomConfig> | null = null;
 
   constructor(roomCode: string, maxSeats = 8) {
     this.roomCode = roomCode;
@@ -300,11 +310,22 @@ export class Room {
     return { ok: true };
   }
 
-  /** 房主切换「势备篇（+52 张）」 */
-  setShibei(seatId: string, shibei: boolean): { ok: true } | { ok: false; error: string } {
-    if (this.started) return { ok: false, error: '游戏已开始' };
+  /**
+   * 房主改「国战扩展开关」。
+   *
+   * ⚠️ 两条硬规矩（用户给定）：① 只有房主能改；② **开局后不许改**——武将池、势力锦囊、
+   * 野心家状态都没法中途迁移，所以 `started` 之后一律拒绝（配置在开局那一刻冻结）。
+   * ⚠️ 配置来自网络，先过 `validateGuozhanConfig`（类型只是编译期的）。
+   */
+  setGuozhanConfig(
+    seatId: string,
+    config: unknown,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.started) return { ok: false, error: '游戏已开始，扩展开关不能再改' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能改这个设置' };
-    this.shibei = !!shibei;
+    const valid = validateGuozhanConfig(config);
+    if (!valid.ok) return { ok: false, error: `扩展配置不合法：${valid.errors.join('；')}` };
+    this.config = config as GuozhanRoomConfig;
     return { ok: true };
   }
 
@@ -314,7 +335,6 @@ export class Room {
     mode: GameMode,
     heroDealCount?: number,
     freePick?: boolean,
-    shibei?: boolean,
   ): { ok: true } | { ok: false; error: string } {
     if (this.started) return { ok: false, error: '游戏已开始' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能开始游戏' };
@@ -333,16 +353,21 @@ export class Room {
     // freePick 是房主在开局前用 setFreePick 设过的状态，开局消息里可以不带。
     // 带 `!!freePick` 会把「设过但没带」冲成 false，开关就白点了。
     if (freePick !== undefined) this.freePick = !!freePick;
-    // 同理：不带 shibei 就别动已设好的状态（写成 !!shibei 会把开关冲掉）
-    if (shibei !== undefined) this.shibei = !!shibei;
     this.game = createGame(setups, this.roomCode, {
       mode,
       heroDealCount,
       freePick: this.freePick,
-      shibei: this.shibei,
+      // 扩展开关用房间里存的那份（房主在大厅设过），**开局即冻结**
+      config: this.frozenConfig ?? this.config,
     });
     this.started = true;
+    this.frozenConfig = freezeConfig(this.config);
     return { ok: true };
+  }
+
+  /** 对外广播/开局用的配置：开局后是冻结的那份 */
+  currentConfig(): Readonly<GuozhanRoomConfig> {
+    return this.frozenConfig ?? this.config;
   }
 
   /** 意图驱动：applyIntent 原子变更权威状态 */
@@ -387,7 +412,8 @@ export class Room {
           mySeatId: s.seatId,
           mode: this.pendingMode,
           freePick: this.freePick,
-          shibei: this.shibei,
+          config: this.currentConfig() as GuozhanRoomConfig,
+
         });
       }
     }

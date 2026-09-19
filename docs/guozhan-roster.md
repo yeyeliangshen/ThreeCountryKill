@@ -2665,6 +2665,37 @@ interface GuozhanExtension {
 牌堆 108/160、不传 config = 全开、旧布尔写法兼容）；两条按旧默认写的既有用例同步更新。
 engine 818 项全绿。
 
+### 5.79 扩展开关第③④步：服务端房间状态 + 大厅三个开关
+
+按 §5.77 ⑨ 的顺序做第③④步（一起做，否则中间状态不自洽）：
+
+**类型下沉**：`GuozhanRoomConfig` 等类型移到 **protocol**（房间状态、联机广播、重连恢复都要
+序列化它，而 protocol 是最底层）；引擎的 `config.ts` 再导出它们，只留预设/校验/冻结。
+
+**协议**：`setShibei { shibei: boolean }` 换成 **`setGuozhanConfig { config }`**；
+`lobby` 服务端消息里的 `shibei: boolean` 换成 **`config`**；`startGame` 里的 `shibei` 换成
+`config?`——但**服务端会忽略客户端传的 config**，一律用房间里存的那份（配置是房间状态，
+不是开局参数，避免各客户端各传各的）。
+
+**服务端 `Room`**：
+- `config` 字段，新建房间用 `configFromPreset(DEFAULT_GUOZHAN_PRESET)` → **默认「标准国战」**；
+- `setGuozhanConfig(seatId, config)`：① 只有房主能改；② **开局后一律拒绝**（配置要冻结）；
+  ③ 先过 `validateGuozhanConfig`（联机时配置是网络数据）；
+- 开局：`createGame(..., { config: this.frozenConfig ?? this.config })`，然后
+  `this.frozenConfig = freezeConfig(this.config)`——**开局那一刻冻结**，之后 `currentConfig()`
+  返回冻结的那份（广播/重连都用它）。
+
+**界面**：大厅原有那一个「势备篇（+52 张）」勾选框扩成**三个扩展开关**（势备篇 / 不臣篇（占位）/
+君临天下（君主将））+ **[标准国战] [全扩展2026]** 两个预设按钮；store 侧 `setGuozhanConfig` +
+`setExtension(key, value)`（只改一个开关、其余保持）。
+
+测试：`room.test.ts` 新增 4 条（新房间默认标准、非房主被拒、脏配置被拒且不改脏现有配置、
+开局后拒绝修改且生效的是冻结那份）。engine 818 / ui 13 / server 34 全绿，typecheck / build 全绿。
+
+**下一步（第⑤⑥步）**：把 `ShibeiExtension` / `BuchenExtension` / `Junlintianxia2026Extension`
+按 §5.77 ④ 的接口拆出来，然后**单独一遍**全仓搜 `if (shibei)` / `isLord` 之类的遗留散落判断
+并迁进扩展模块。
+
 ## 6. 批次表
 
 每批验收标准：技能逐条对照官方文本；有测试；简化处如实标注；`pnpm test` + `pnpm typecheck` + `pnpm build` 全绿。

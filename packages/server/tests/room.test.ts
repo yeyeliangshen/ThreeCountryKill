@@ -344,4 +344,55 @@ describe('Room · 已开局的房间进不去', () => {
     room.game = { gameOver: true } as never;
     expect(room.canLeave()).toBe(true);
   });
+
+  describe('房间 · 国战扩展开关（第③步）', () => {
+    const cfg = (ext: Partial<Record<'shibei' | 'buchen' | 'junlintianxia', string>>) => ({
+      schemaVersion: 1 as const,
+      extensions: {
+        shibei: (ext.shibei ?? 'off') as 'off' | 'current',
+        buchen: (ext.buchen ?? 'off') as 'off' | 'current',
+        junlintianxia: (ext.junlintianxia ?? 'off') as 'off' | '2026',
+      },
+    });
+
+    it('新房间默认是「标准国战」（三个扩展全关）', () => {
+      const room = new Room('8888');
+      expect(room.currentConfig().extensions).toEqual({
+        shibei: 'off',
+        buchen: 'off',
+        junlintianxia: 'off',
+      });
+    });
+
+    it('只有房主能改；非房主被拒', () => {
+      const room = new Room('8888');
+      room.claimSeat('1', fakeWs(), '甲');
+      room.claimSeat('2', fakeWs(), '乙');
+      expect(room.setGuozhanConfig('2', cfg({ shibei: 'current' })).ok).toBe(false);
+      expect(room.setGuozhanConfig('1', cfg({ shibei: 'current' })).ok).toBe(true);
+      expect(room.currentConfig().extensions.shibei).toBe('current');
+    });
+
+    it('配置不合法时被拒（联机时它是网络数据）', () => {
+      const room = new Room('8888');
+      room.claimSeat('1', fakeWs(), '甲');
+      const bad = room.setGuozhanConfig('1', {
+        schemaVersion: 1,
+        extensions: { shibei: 'legacy', buchen: 'off', junlintianxia: 'off' },
+      });
+      expect(bad.ok).toBe(false);
+      expect(room.currentConfig().extensions.shibei).toBe('off'); // 没被改脏
+    });
+
+    it('开局后冻结：再改一律拒绝，且开局用的是冻结的那份', () => {
+      const room = new Room('8888');
+      room.claimSeat('1', fakeWs(), '甲');
+      room.claimSeat('2', fakeWs(), '乙');
+      expect(room.setGuozhanConfig('1', cfg({ junlintianxia: '2026' })).ok).toBe(true);
+      expect(room.startGame('1', 'guozhan', 7, true).ok).toBe(true);
+      const after = room.setGuozhanConfig('1', cfg({ junlintianxia: 'off' }));
+      expect(after.ok).toBe(false);
+      expect(room.currentConfig().extensions.junlintianxia).toBe('2026'); // 冻结生效
+    });
+  });
 });

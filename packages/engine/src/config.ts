@@ -1,44 +1,30 @@
-// 国战「规则扩展开关」——配置类型、预设、校验（用户给定的架构，见 docs/guozhan-roster.md §5.77）
+// 国战「规则扩展开关」——预设、校验、冻结（用户给定的架构，见 docs/guozhan-roster.md §5.77）
+//
+// 类型定义（GuozhanRoomConfig 等）在 **protocol**：房间状态、联机广播、重连恢复都要序列化它，
+// 而 protocol 是最底层。这里只放引擎/服务端用得上的东西：预设、校验器、冻结。
 //
 // 设计要点（都是用户明确要求的，改之前先看 §5.77）：
 // - **三个开关彼此独立**，不是互斥的「模式」；「全开」只是预设，不是另一套规则代码。
-// - 版本用**字符串枚举**而不是布尔：旧/新势备、旧/2023 不臣、旧/2026 君临都会碰到，
-//   布尔以后一定会含糊（`buchen: true` 到底是哪一版？）。
-// - **预设不许进入规则判断**：preset → 配置 → 校验 → 建局，底层只看配置里的版本字符串。
-// - 房间配置带 `schemaVersion`：以后存档/录像/重连恢复要迁移时才知道按哪一版解释。
+// - **预设不许进入规则判断**：preset → 配置 → 校验 → 建局，底层只看版本字符串。
 // - 房间开局后三个开关**冻结**（见 `freezeConfig`）——武将池、势力锦囊、野心家状态都
 //   没法中途迁移。
-
-/**
- * 配置 schema 版本。**加字段或改变量含义时必须 +1**，并在迁移里写明旧版本怎么读。
- * 现在只有 1：三个扩展开关 + 各自的版本字符串。
- */
-export const GUOZHAN_CONFIG_SCHEMA_VERSION = 1 as const;
-
-/** 势备篇：牌堆内容扩展（标准 108 + 势备 52） */
-export type ShibeiVersion = 'off' | 'current';
-/** 不臣篇：武将 + 特殊规则 + 特殊牌区域（野心家武将、暴露野心/建国、势力锦囊、府库） */
-export type BuchenVersion = 'off' | 'current';
-/** 君临天下：君主规则覆盖（君主化、【君威】、场外专属装备）。'2026' = 现行移动版口径 */
-export type JunlintianxiaVersion = 'off' | '2026';
-
-export interface GuozhanExtensions {
-  shibei: ShibeiVersion;
-  buchen: BuchenVersion;
-  junlintianxia: JunlintianxiaVersion;
-}
-
-export interface GuozhanRoomConfig {
-  schemaVersion: typeof GUOZHAN_CONFIG_SCHEMA_VERSION;
-  extensions: GuozhanExtensions;
-}
-
-/** 各开关允许的取值（校验器与界面都用它，避免两处各写一份） */
-export const GUOZHAN_VERSION_OPTIONS = {
-  shibei: ['off', 'current'],
-  buchen: ['off', 'current'],
-  junlintianxia: ['off', '2026'],
-} as const;
+//
+// 类型与取值表从 protocol 再导出，调用方只 import 这一个模块也能拿到全部东西。
+export {
+  GUOZHAN_CONFIG_SCHEMA_VERSION,
+  GUOZHAN_VERSION_OPTIONS,
+  type BuchenVersion,
+  type GuozhanExtensions,
+  type GuozhanRoomConfig,
+  type JunlintianxiaVersion,
+  type ShibeiVersion,
+} from '@sgs/protocol';
+import {
+  GUOZHAN_CONFIG_SCHEMA_VERSION,
+  GUOZHAN_VERSION_OPTIONS,
+  type GuozhanExtensions,
+  type GuozhanRoomConfig,
+} from '@sgs/protocol';
 
 /**
  * 预设。**它只负责生成配置**——绝不要写 `if (preset === 'full2026')` 这种判断，

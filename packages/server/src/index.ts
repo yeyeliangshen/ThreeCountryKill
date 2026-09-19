@@ -364,12 +364,12 @@ wss.on('connection', (ws: WebSocket) => {
         break;
       }
 
-      case 'setShibei': {
+      case 'setGuozhanConfig': {
         if (!room || !seatId) {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.setShibei(seatId, msg.shibei);
+        const res = room.setGuozhanConfig(seatId, msg.config);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;
@@ -383,7 +383,8 @@ wss.on('connection', (ws: WebSocket) => {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick, msg.shibei);
+        // 扩展开关是**房间状态**（房间里存的那份），不从开局消息里读——避免客户端各传各的
+        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;
