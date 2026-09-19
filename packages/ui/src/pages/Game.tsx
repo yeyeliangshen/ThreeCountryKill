@@ -765,6 +765,27 @@ export function Game() {
 
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
   if (snapshot.turn.phase === 'draft') {
+    /**
+     * ⚠️ 选将阶段**也会挂询问**：双势力组合要在此时**由玩家选势力**（引擎给一条 `choice`）。
+     * 这里以前不管 prompt 直接渲染选将面板 —— 那条询问就永远点不到，玩家确认完武将后
+     * 界面一直停在选将页（实测卡死）。所以先把「非选将的询问」摆在最上面，答完再回选将列表。
+     */
+    if (prompt && prompt.kind !== 'pickHero') {
+      return (
+        <div className="draft">
+          <div className="draft-title">选将阶段 · 询问</div>
+          <div className={`prompt prompt-${prompt.kind}`}>
+            <div className="prompt-msg">{prompt.message}</div>
+            {prompt.kind === 'choice' &&
+              prompt.choiceOptions?.map((o) => (
+                <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
+                  {o.label}
+                </button>
+              ))}
+          </div>
+        </div>
+      );
+    }
     const options = prompt?.kind === 'pickHero' ? (prompt.legalHeroIds ?? []) : [];
     // 「君主↔标准版」里白捡的那些（没人拿走才在列表里，见 protocol 的 draftVariants）
     const variants = prompt?.kind === 'pickHero' ? (prompt.draftVariants ?? []) : [];

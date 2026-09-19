@@ -20,6 +20,7 @@ const NAME = process.env.NAME ?? '陪练';
 const ROOM = process.env.ROOM ?? null;
 const SEAT = process.env.SEAT ?? null;
 const HERO = process.env.HERO ?? null;
+let mode = null; // 当前房间模式（国战要选两位同阵营武将）
 
 const log = (...a) => console.log('[bot]', ...a);
 const ws = new WebSocket(URL);
@@ -54,6 +55,7 @@ ws.addEventListener('message', (ev) => {
 
   if (msg.type === 'lobby') {
     const seated = msg.seats.filter((s) => s.name).length;
+    mode = msg.mode;
     log(`房号 ${msg.roomCode}，我在 ${msg.mySeatId} 号座，已落座 ${seated} 人，模式 ${msg.mode}`);
     // 房主才切换模式 / 开局；接替座位的那条路不动这些
     if (!ROOM) {
@@ -83,6 +85,18 @@ ws.addEventListener('message', (ev) => {
     const heroes = prompt.legalHeroIds ?? [];
     if (heroes.length === 0) return;
     picked = true;
+    // 国战要**两位同阵营**武将（主将 + 副将），送一个会被服务端拒掉（「国战需选 2 位武将」）——
+    // 所以这里按「两两配对、挑第一对能同阵营的」来选；非国战照旧只送一位。
+    if (mode === 'guozhan') {
+      const off = HERO ? heroes.indexOf(HERO) : -1;
+      const rest = off >= 0 ? [heroes[off], ...heroes.filter((h) => h !== HERO)] : heroes;
+      log('选将（国战）：', rest[0], '+', rest[1]);
+      send({
+        type: 'intent',
+        intent: { type: 'pickHero', heroId: rest[0], deputyHeroId: rest[1] },
+      });
+      return;
+    }
     const mine = HERO && heroes.includes(HERO) ? HERO : heroes[heroes.length - 1];
     log('选将：', mine);
     send({ type: 'intent', intent: { type: 'pickHero', heroId: mine } });

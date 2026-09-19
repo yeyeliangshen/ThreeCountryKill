@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { applyIntent, configFromPreset, createGame, determineDualFaction, effectiveFaction, getHero } from '../src';
+import {
+  applyIntent,
+  configFromPreset,
+  createGame,
+  determineDualFaction,
+  effectiveFaction,
+  getHero,
+  toSnapshot,
+} from '../src';
 
 const act = (s: ReturnType<typeof createGame>, seat: string, i: Parameters<typeof applyIntent>[2]) =>
   applyIntent(s, seat, i);
@@ -57,6 +65,11 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     );
     const res = act(state, 'A', { type: 'pickHero', heroId: 'mengda', deputyHeroId: 'xiahouba' });
     expect(res.ok, res.ok ? '' : res.error).toBe(true);
+    // ⚠️ 回归：选将阶段的**询问必须盖过 pickHero 提示**——以前 buildPrompt 只要 state.draft
+    //    在就一律回 pickHero，客户端于是既看不到也答不了这条询问（实测界面卡在选将页，§5.133）。
+    const prompt = toSnapshot(state, 'A').prompt;
+    expect(prompt?.kind).toBe('choice');
+    expect(prompt?.choiceOptions?.map((o) => o.id).sort()).toEqual(['shu', 'wei']);
     const ask = state.pending;
     if (ask?.kind !== 'choice') throw new Error(`预期选势力询问，实际是 ${ask?.kind}`);
     expect(ask.title).toContain('选势力');
