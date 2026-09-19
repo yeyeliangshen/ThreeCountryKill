@@ -114,6 +114,20 @@ export interface PlayerFlags {
    */
   targetedOtherFactionThisTurn: boolean;
   /**
+   * 刘琦·屯江：本回合的**出牌阶段**里有没有**指定过其他角色**（不看势力，看人）为目标。
+   * 由 markCardUsed 登记「有明确目标」的那些；AOE 那类目标由规则定死的牌
+   * （南蛮/万箭/桃园/五谷…）在 startTrickResolution 里按「真正会影响谁」补登记。
+   * 装备牌、对自己用的【桃】、无中生有都不会置位。随回合清零（emptyFlags）。
+   */
+  targetedOtherThisTurn: boolean;
+  /**
+   * 刘琦·问计：本回合被【问计】**标记的那张实体牌**的 id（null＝本回合没有）。
+   *
+   * ⚠️ 记的是**实体牌**不是牌名：交来的那张【杀】享受强化，手里同名的另一张按普通牌处理。
+   * 该牌享受：无距离限制、无使用次数限制、其他角色不能响应（见 engine 里的三处判定）。
+   */
+  wenjiCardId: string | null;
+  /**
    * 左慈·役鬼：「本回合内已以此法使用过哪些牌名」（按牌名限一次，回合开始清零）。
    */
   hunUsedNames: string[];
@@ -262,6 +276,8 @@ export function emptyFlags(): PlayerFlags {
     lostCardsThisPhase: 0,
     hunUsedNames: [],
     targetedOtherFactionThisTurn: false,
+    targetedOtherThisTurn: false,
+    wenjiCardId: null,
     distanceLimitlessToSeat: null,
     limitedToReset: [],
     cardsUsedOrPlayed: 0,
@@ -515,6 +531,15 @@ export interface TrickContext {
    * 会重新开无懈窗口——它是**一次全新的卡牌使用**（见 engine 的 useVirtualSameNameCard）。
    */
   jiliUse?: boolean;
+  /**
+   * 刘琦·问计：这张牌不能被**其他角色**响应（使用者自己不受限）。
+   *
+   * 它一次拦掉三类响应：① 无懈窗口（openWuxieWindow 直接跳过）；
+   * ② 群体锦囊的「依次响应」（南蛮出杀 / 万箭出闪）→ 直接按弃权结算；
+   * ③ 决斗的「对方打出【杀】」与借刀杀人的「打出【杀】或交武器」→ 直接走弃权那一支。
+   * 【杀】的响应走另一条通道（AttackContext.requiredShan = Infinity，与铁骑/烈弓同一处判定）。
+   */
+  unrespondable?: boolean;
   /** 寄篱第二张牌的目标（他成为目标那一刻记下来，结算收尾时用） */
   jiliTargetId?: string;
   /**

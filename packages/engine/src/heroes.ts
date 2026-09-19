@@ -3904,6 +3904,35 @@ export function factionGrantedActiveSkills(state: GameState, player: Player): Ac
 }
 
 /**
+ * 刘琦·问计：这张牌是不是本回合被【问计】**标记的那张实体牌**。
+ *
+ * 标记的是**实体牌 id**（不是牌名）——交来一张具体的【杀】，只有这一张无距离/无次数/
+ * 不能被响应；手里同名的另一张【杀】按普通牌处理（用户口径，见 docs/guozhan-roster.md §5.88）。
+ */
+export function wenjiMarked(player: Player, cardId: string): boolean {
+  return !!player.flags.wenjiCardId && player.flags.wenjiCardId === cardId;
+}
+
+/**
+ * 全场**已确定势力**的数量（刘琦·屯江的 X）——国战公共规则函数，不写死在技能里。
+ *
+ * 口径（用户要求做成公共函数）：
+ * - 只数**存活**角色；每人只按其**已确定势力**计一次（`effectiveFaction`：暗置＝未确定＝无势力）；
+ * - 同一势力多人算 1；君主的势力照常算；野心家按 `effectiveFaction` 的返回值算一类。
+ * ⚠️ 待核对：移动版对「多个独立野心家」「2023 新建立的势力」如何计入「全场势力数」
+ *    没有单独 FAQ（用户也说明未查到）。将来核到细则只改这一处。
+ */
+export function currentFactionCount(state: GameState): number {
+  const seen = new Set<string>();
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    const f = effectiveFaction(state, p);
+    if (f) seen.add(f);
+  }
+  return seen.size;
+}
+
+/**
  * 【据江】（君孙权，锁定技）「若吴势力不为大势力，与你势力相同的角色指定你为目标的
  * **非伤害牌**额外结算一次（装备牌、延时锦囊牌和势力锦囊牌除外）」
  *
@@ -11971,12 +12000,217 @@ function dualHero(
   };
 }
 
+/** 势力显示名（未确定势力＝两张武将牌都暗着）——【问计】的选项与日志用它 */
+function factionNameOf(state: GameState, p: Player): string {
+  const f = effectiveFaction(state, p);
+  return f ? (FACTION_NAME[f] ?? f) : '未确定势力';
+}
+
+/**
+ * 刘琦·【问计】。出牌阶段开始时，可以令一名其他角色交给你一张牌：
+ * - 其**已确定势力且与你不同** → 你交给其一张**其他**牌（不能就是刚收到的那张；
+ *   没有其他牌可交时**就不交**——不凭空造牌，也不把刚收到的牌当「其他牌」）；
+ * - 否则（**未确定势力**，或与你同势力）→ 把你收到的那张**实体牌**记为本回合的
+ *   【问计】牌：你使用**这一张**无距离限制、无使用次数限制，且其他角色不能响应。
+ *
+ * ⚠️ 未确定势力（两张武将牌都暗着）走**友好**分支：不能按后台印面势力判断
+ *    （与会盟、野心家同一口径——隐藏武将的势力不参与公开的势力规则）。
+ */
+function askWenji(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const candidates = state.players.filter(
+    (p) => p.alive && p.seatId !== me.seatId && handAndEquipOf(p).length > 0,
+  );
+  if (candidates.length === 0) return; // 没人有牌可交 → 不弹空询问
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【问计】：是否令一名其他角色交给你一张牌？',
+    [
+      ...candidates.map((p) => ({ id: p.seatId, label: `${p.name}（${factionNameOf(state, p)}）` })),
+      { id: 'no', label: '不发动' },
+    ],
+    (st, self, picked) => {
+      if (picked === 'no') return;
+      const giver = getPlayer(st, picked);
+      if (!giver || !giver.alive) return;
+      const pool = handAndEquipOf(giver);
+      if (pool.length === 0) return;
+      ctx.api.askPickCards(
+        st,
+        giver.seatId,
+        `【问计】：选择交给 ${self.name} 的一张牌`,
+        pool,
+        1,
+        1,
+        (st2, giver2, chosen) => {
+          const received = chosen[0];
+          if (!received) return;
+          // ⚠️ 询问是**跨步**的：发起时算好的池子，到回答时可能已经不成立（牌被别的链条
+          //    拿走/弃掉——模糊测试撞到过：交牌者的「失去牌」钩子又弹出询问，回来时这张牌
+          //    已经不在他手上了）。所以落点先验证「这张牌此刻还在不在交牌者手上」，
+          //    不在就当这次交牌作废——不凭空造牌，也不把已经不存在的牌再搬一次
+          //    （否则 transferCard 按 id 找不到可移除的牌、却仍然往目标手里推一份 → 一牌两地）。
+          if (!handAndEquipOf(giver2).some((c) => c.id === received.id)) {
+            pushLog(
+              st2,
+              'skill',
+              `【问计】：${giver2.name} 原本要交的那张牌已经不在其手上了，作罢。`,
+              { seat: giver2.seatId },
+            );
+            return;
+          }
+          // 走 API 搬牌而不是自己 splice：交出来的可能是装备，要触发「失去装备」那类技能
+          ctx.api.transferCard(giver2.seatId, received, self.seatId, () => {
+            pushLog(
+              st2,
+              'skill',
+              `${self.name} 发动【问计】，${giver2.name} 交给其【${cardLabel(received)}】。`,
+              { seat: self.seatId },
+            );
+            const mine = effectiveFaction(st2, self);
+            const theirs = effectiveFaction(st2, giver2);
+            // 未确定势力（暗置）按**友好**分支；同势力也是友好分支
+            if (theirs === null || (mine !== null && theirs === mine)) {
+              self.flags.wenjiCardId = received.id;
+              pushLog(
+                st2,
+                'skill',
+                `【问计】：${giver2.name}${theirs === null ? '未确定势力' : '与刘琦同势力'}——本回合刘琦使用【${cardLabel(received)}】无距离与次数限制，且其他角色不能响应。`,
+                { seat: self.seatId },
+              );
+              return;
+            }
+            // 已确定势力且不同 → 回礼一张**其他牌**（刚收到的那张不算「其他牌」）
+            const back = handAndEquipOf(self).filter((c) => c.id !== received.id);
+            if (back.length === 0) {
+              pushLog(
+                st2,
+                'skill',
+                `【问计】：${giver2.name} 与刘琦势力不同，但刘琦没有其他牌可交（不交）。`,
+                { seat: self.seatId },
+              );
+              return;
+            }
+            ctx.api.askPickCards(
+              st2,
+              self.seatId,
+              `【问计】：${giver2.name} 与你势力不同，选择交给其一张其他牌`,
+              back,
+              1,
+              1,
+              (st3, self3, picked2) => {
+                const backCard = picked2[0];
+                if (!backCard) return;
+                // 同上：池子是发起时的快照，落点再验一次「这张牌还在不在自己手上」
+                if (!handAndEquipOf(self3).some((c) => c.id === backCard.id)) {
+                  pushLog(
+                    st3,
+                    'skill',
+                    `【问计】：${self3.name} 原本要回礼的那张牌已经不在其手上了，回礼作罢。`,
+                    { seat: self3.seatId },
+                  );
+                  return;
+                }
+                ctx.api.transferCard(self3.seatId, backCard, giver2.seatId, () => {
+                  pushLog(
+                    st3,
+                    'skill',
+                    `【问计】：${self3.name} 交给 ${giver2.name} 【${cardLabel(backCard)}】。`,
+                    { seat: self3.seatId },
+                  );
+                });
+              },
+            );
+          });
+        },
+      );
+    },
+  );
+}
+
+/**
+ * 刘琦·【屯江】。结束阶段，若你于**本回合的出牌阶段内**使用过至少一张牌、且这些牌
+ * **一张都没有指定其他角色为目标**，你可以摸 X 张牌（X＝全场势力数）。
+ *
+ * 两个条件都用回合内的记账（都在 useCard 那个统一入口登记，随回合清零）：
+ * - `usedCardsInPlayPhase`（引擎既有）：本回合出牌阶段用过的牌（含装备、对自己用的【桃】）；
+ * - `targetedOtherThisTurn`（刘琦这版加的）：本回合有没有指定过**其他角色**——
+ *   AOE 那类目标由规则定死的牌也算（按「真正会影响谁」判定，不看牌名）。
+ */
+function askTunjiang(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (me.flags.usedCardsInPlayPhase.length === 0) return; // 什么都没用过 → 不满足
+  if (me.flags.targetedOtherThisTurn) return; // 指定过其他角色 → 不满足
+  const x = currentFactionCount(state);
+  if (x <= 0) return; // 全场没有已确定势力 → 摸 0 张，不必问
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【屯江】：是否摸 ${x} 张牌（全场势力数）？`,
+    [
+      { id: 'yes', label: `发动，摸 ${x} 张` },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, self, picked) => {
+      if (picked !== 'yes') return;
+      // X 按**结算那一刻**的全场势力数（询问期间可能有人明置或阵亡）
+      const n = currentFactionCount(st);
+      let got = 0;
+      for (let i = 0; i < n; i++) {
+        const c = drawOne(st);
+        if (!c) break;
+        self.hand.push(c);
+        got++;
+      }
+      pushLog(st, 'skill', `${self.name} 发动【屯江】，摸了 ${got} 张牌（全场势力数 ${n}）。`, {
+        seat: self.seatId,
+      });
+    },
+  );
+}
+
+/**
+ * 刘琦（不臣篇·上；**双势力 群/蜀**，国战牌面 1.5 阴阳鱼 → 体力上限 3）。
+ *
+ * 技能按**用户给出的等价规则实现文本**实现（2026-09 核对；来源与口径见
+ * docs/guozhan-roster.md §5.88，含移动版 WIKI 引文）。本仓库不逐字复制牌面文本。
+ * 双势力：主将/副将都可以放；最终势力由组合关系决定（`determineDualFaction`），
+ * 确定之后【问计】判「与你势力相同」读的是 `effectiveFaction`——不会因为牌面印着
+ * 「群/蜀」就同时把群和蜀都当自己势力。
+ */
+const LIUQI: Hero = {
+  id: 'liuqi',
+  name: '刘琦',
+  pack: 'buchen',
+  faction: 'qun',
+  secondFaction: 'shu',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    { timing: 'playPhase', skillId: '问计', handler: askWenji },
+    { timing: 'turnEnd', skillId: '屯江', handler: askTunjiang },
+  ],
+  skills: [
+    {
+      name: '问计',
+      desc: '出牌阶段开始时，你可以令一名其他角色交给你一张牌：若其已确定势力且与你不同，你交给其一张其他牌；否则本回合你使用此牌无距离和次数限制，且其他角色不能响应。',
+    },
+    {
+      name: '屯江',
+      desc: '结束阶段，若你于本回合的出牌阶段内使用过牌且未指定过其他角色为目标，你可以摸 X 张牌（X 为全场势力数）。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
   dualHero('mengda', '孟达', 'wei', 'shu', 4),
   dualHero('tangzi', '唐咨', 'wei', 'wu', 4),
   dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu', 4),
   dualHero('zhanglu', '张鲁', 'wei', 'qun', 3),
-  dualHero('liuqi', '刘琦', 'qun', 'shu', 3),
   dualHero('shixie', '士燮', 'wu', 'qun', 3),
   dualHero('xiahouba', '夏侯霸', 'wei', 'shu', 4),
   dualHero('wenqin', '文钦', 'wei', 'wu', 4),
@@ -12016,6 +12250,7 @@ const BUCHEN_AMBITIONIST: Hero[] = [
 
 export const HEROES: Hero[] = [
   ...BUCHEN_DUAL,
+  LIUQI,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

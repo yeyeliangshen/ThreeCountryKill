@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  currentFactionCount,
   applyIntent,
   attackRange,
   baseDistance,
@@ -20247,5 +20248,280 @@ describe('结构 · 武将定义自洽', () => {
       if (names.length === 0) bad.push(`${h.id}(${h.name})`);
     }
     expect(bad).toEqual([]);
+  });
+});
+
+/**
+ * 刘琦（不臣篇·上；**双势力 群/蜀**，国战牌面 1.5 阴阳鱼 → 体力上限 3）——【问计】+【屯江】。
+ *
+ * 口径（用户给的等价规则实现文本，见 docs/guozhan-roster.md §5.88）：
+ * ①【问计】标记的是**那张实体牌**（不是牌名）：只有它无距离/无次数/不能被响应，
+ *   手里同名的另一张【杀】按普通牌处理；
+ * ② 目标**未确定势力**（两张武将牌都暗着）算**友好**分支——不能偷看后台印面势力；
+ * ③ 目标已确定势力且与刘琦不同 → 刘琦回礼一张**其他**牌（不凭空造牌，也不算刚收到那张）；
+ * ④【屯江】要求本回合出牌阶段**用过牌**、且**一张都没指定其他角色**（群体牌也算指定）。
+ */
+describe('国战 · 刘琦（问计 / 屯江）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+      /** false = 两张武将牌都暗着（未确定势力） */
+      revealed?: boolean;
+      /** 双势力武将最终确定下来的势力 */
+      determined?: Faction;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      if (s.determined) p.determinedFaction = s.determined;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  /** 把回合交给 `prevSeat` 并结束其出牌阶段 → 下家（刘琦）的出牌阶段开始时派发 playPhase */
+  function toNextTurn(state: ReturnType<typeof createGame>, prevSeat: string) {
+    state.turn = { seatIndex: state.seatOrder.indexOf(prevSeat), phase: 'play' };
+    state.pending = { kind: 'play', seatId: prevSeat };
+    ok(act(state, prevSeat, { type: 'endPhase' }));
+    skipRevealAsk(state);
+  }
+
+  it('问计：目标未确定势力（暗置）走友好分支 —— 标记那张**实体牌**，无距离/无次数/不能被响应', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '刘琦',
+        heroId: 'liuqi',
+        faction: 'qun',
+        determined: 'qun',
+        hand: [sha('a1'), sha('a2')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        faction: 'shu',
+        revealed: false,
+        hand: [sha('b1')],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [mk('c1', 'shan', 'heart')] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    toNextTurn(state, D);
+    // 出牌阶段开始时问【问计】
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('问计');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 乙（暗置＝未确定势力）自己选交给刘琦哪张牌
+    expect(state.pending?.kind).toBe('pickCards');
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(a.flags.wenjiCardId).toBe('b1');
+    expect(a.hand.some((x) => x.id === 'b1')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('未确定势力'))).toBe(true);
+
+    // ① 无距离限制：丙在距离 2 上、刘琦没有武器（范围 1）——被标记的那张照样能打
+    ok(act(state, A, { type: 'playCard', cardId: 'b1', targetIds: [C] }));
+    // ② 不能被其他角色响应：丙手里有【闪】也不问（直接进伤害结算）
+    expect(state.pending?.kind).not.toBe('respondSha');
+    expect(c.hp).toBe(3);
+    expect(c.hand.some((x) => x.id === 'c1')).toBe(true); // 【闪】还在手里
+    // ③ 换一张**同名**的普通【杀】：距离限制照旧（证明强化是「按实体牌」而不是「按牌名」）
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    // 普通【杀】打距离 1 的乙 → 正常走「等出闪」（说明上一步不是流程坏了）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    // ④ 无使用次数限制：普通【杀】已计入 1 次，另一张普通【杀】就出不去了
+    fail(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+  });
+
+  it('问计：已确定势力且与刘琦不同 → 回礼一张「其他牌」，不收强化', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '刘琦',
+        heroId: 'liuqi',
+        faction: 'qun',
+        determined: 'qun',
+        hand: [mk('a1', 'shan', 'heart')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    toNextTurn(state, D);
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 不同势力 → 轮到刘琦选一张「其他牌」：池子里不能有刚收到的那张
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.title).toContain('其他牌');
+      expect(state.pending.cards.map((x) => x.id)).not.toContain('b1');
+    }
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    expect(b.hand.some((x) => x.id === 'a1')).toBe(true); // 回礼到了
+    expect(a.hand.some((x) => x.id === 'b1')).toBe(true); // 收到的牌留在手里
+    expect(a.flags.wenjiCardId).toBeNull(); // 但**没有**强化
+  });
+
+  it('问计：已确定势力且与刘琦**同势力** → 同样收强化', () => {
+    const state = gz([
+      { seatId: A, name: '刘琦', heroId: 'liuqi', faction: 'qun', determined: 'qun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'qun', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    toNextTurn(state, D);
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(a.flags.wenjiCardId).toBe('b1');
+    expect(state.log.some((e) => e.message.includes('同势力'))).toBe(true);
+  });
+
+  it('问计：被标记的**锦囊**同样不能被响应 —— 不开无懈窗口', () => {
+    const state = gz([
+      { seatId: A, name: '刘琦', heroId: 'liuqi', faction: 'qun', determined: 'qun', hand: [] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        faction: 'shu',
+        revealed: false,
+        hand: [mk('b1', 'guohe', 'heart')],
+      },
+      {
+        seatId: C,
+        name: '丙',
+        heroId: 'vanilla',
+        faction: 'wei',
+        hand: [mk('c1', 'wuxie', 'heart')],
+        equip: [wpn('c2')],
+      },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    const c = state.players.find((p) => p.seatId === C)!;
+    toNextTurn(state, D);
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 用这张被标记的【过河拆桥】拆丙的武器：丙手里有【无懈可击】也开不出窗口
+    ok(act(state, A, { type: 'playCard', cardId: 'b1', targetIds: [C], targetCardId: 'c2' }));
+    expect(state.pending?.kind).not.toBe('wuxieQueue');
+    expect(c.equipment.weapon).toBeNull();
+    expect(c.hand.some((x) => x.id === 'c1')).toBe(true); // 【无懈可击】没被问、还在手里
+  });
+
+  it('屯江：本回合出牌阶段用过牌、且没指定别人 → 结束阶段摸「全场势力数」张', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '刘琦',
+        heroId: 'liuqi',
+        faction: 'qun',
+        determined: 'qun',
+        hand: [mk('a1', 'tao', 'heart')],
+        hp: 2,
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    toNextTurn(state, D);
+    // 本组没人是「有牌可交」的候选 → 【问计】不弹空询问，直接进正常出牌
+    // 只对自己用一张【桃】（没有指定任何其他角色）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    expect(a.hp).toBe(3);
+    const before = a.hand.length;
+    ok(act(state, A, { type: 'endPhase' }));
+    // 结束阶段：【屯江】——群/魏/蜀/吴 ＝ 4
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('屯江');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hand.length).toBe(before + 4);
+    expect(state.log.some((e) => e.message.includes('全场势力数 4'))).toBe(true);
+  });
+
+  it('屯江：指定过其他角色（群体锦囊也算）→ 结束阶段不询问', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '刘琦',
+        heroId: 'liuqi',
+        faction: 'qun',
+        determined: 'qun',
+        hand: [mk('a1', 'nanman', 'spade')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    toNextTurn(state, D);
+    // 【南蛮入侵】：目标由规则定死（intent 里没有目标），照样算「指定过其他角色」
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    for (const seat of [B, C, D]) {
+      if (state.pending?.kind === 'respondTrick') ok(act(state, seat, { type: 'pass' }));
+    }
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('屯江')).toBe(false);
+  });
+
+  it('屯江：出牌阶段一张牌都没用 → 不询问', () => {
+    const state = gz([
+      { seatId: A, name: '刘琦', heroId: 'liuqi', faction: 'qun', determined: 'qun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    toNextTurn(state, D);
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('屯江')).toBe(false);
+  });
+
+  it('屯江的 X 走公共规则函数：未确定势力的人不算，已确定势力去重计数', () => {
+    const state = gz([
+      { seatId: A, name: '刘琦', heroId: 'liuqi', faction: 'qun', determined: 'qun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', revealed: false, hand: [] },
+    ], A);
+    // 已确定势力：群（刘琦）、魏（乙＋丙，同一势力算 1）；丁还暗着 → 不计
+    expect(currentFactionCount(state)).toBe(2);
   });
 });

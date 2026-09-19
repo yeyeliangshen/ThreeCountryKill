@@ -10,7 +10,7 @@ import type {
 } from '@sgs/protocol';
 import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
 import { applyDeckExtensions, applyPoolExtensions } from './extensions';
-import { determineDualFaction } from './heroes';
+import { determineDualFaction, wenjiMarked } from './heroes';
 
 import {
   CARD_TYPE_NAME,
@@ -582,6 +582,7 @@ function markDamaged(state: GameState, timing: Timing, player: Player, payload?:
  * 用神速打出的虚拟杀，都不算「你于出牌阶段内使用过的牌」。
  */
 function markCardUsed(state: GameState, timing: Timing, player: Player, payload?: unknown): void {
+  // 刘琦·屯江要问的是「本回合出牌阶段有没有指定过其他角色」——就登记在这个统一入口里
   if (timing !== 'useCard') return;
   if (state.turn.phase !== 'play') return;
   if (state.seatOrder[state.turn.seatIndex] !== player.seatId) return;
@@ -624,6 +625,10 @@ function markCardUsed(state: GameState, timing: Timing, player: Player, payload?
     });
     if (bad) player.flags.targetedOtherFactionThisTurn = true;
   }
+  // 刘琦·屯江：指定过**其他角色**（不看势力）。
+  // ⚠️ AOE 那类目标由规则定死的牌（南蛮/万箭/桃园/五谷…）在 intent 里根本没有 targetIds，
+  //    所以它们的目标在 startTrickResolution 里按「真正会影响谁」补登记；这里只管有明确目标的。
+  if (targets.some((tid) => tid !== player.seatId)) player.flags.targetedOtherThisTurn = true;
   player.flags.usedCardsInPlayPhase.push({
     // 红颜：小乔用掉的黑桃要按红桃记账，否则克己（颜色不同）与谋断（四种花色）会算错
     suit: suitSeenAs(state, player, card),
@@ -1959,7 +1964,9 @@ function playSha(
       const t = getPlayer(state, source.flags.distanceLimitlessToSeat!);
       return !!t && unrevealedHeroes(state.mode, t).length > 0;
     })();
-  if (!limitless && source.flags.shaCountThisTurn >= maxSha)
+  // 刘琦·问计：被标记的那张**实体牌**「无使用次数限制」——既不受上限约束，也不计入次数
+  const wenji = wenjiMarked(source, card.id);
+  if (!limitless && !wenji && source.flags.shaCountThisTurn >= maxSha)
     return err('本回合出杀数已达上限');
   // 目标数规则：方天画戟（同名两模式两套）+ 丁奉·短兵（额外一名距离 1 的）
   const rule = shaTargetRule(state, source, card);
@@ -1983,7 +1990,11 @@ function playSha(
     // 锁定技（空城等）：不能成为此牌的目标
     if (heroBlocksBeingTarget(state, target, card, source)) return err('该角色不能成为此牌的目标');
     // 距离校验：攻击范围 ≥ 距离（天义拼点赢则本回合无视距离）
-    if (!source.flags.ignoreShaDistanceThisTurn && !canTarget(state, source.seatId, targetId))
+    if (
+      !source.flags.ignoreShaDistanceThisTurn &&
+      !wenji &&
+      !canTarget(state, source.seatId, targetId)
+    )
       return err('目标超出攻击范围');
     // 短兵多出来的那一名必须是**距离 1** 的角色（方天画戟给的名额不受这条约束）
     if (rule && rule.extraAtRange1 > 0 && index >= rule.baseMax) {
@@ -2102,8 +2113,10 @@ function startAttack(
   const target = getPlayerOrThrow(state, targetId);
   // 【丈八蛇矛】的虚拟杀在这里收的是两张 material 手牌（见 consumeCard）
   consumeCard(state, source, card);
-  // 青龙偃月刀追加的【杀】不计入本回合出杀次数
-  if (opts?.countTowardLimit !== false) source.flags.shaCountThisTurn++;
+  // 青龙偃月刀追加的【杀】不计入本回合出杀次数；刘琦·问计标记的那张也不计
+  // （「无使用次数限制」= 用它不消耗本回合的出杀数，否则等于只是「白送一次」）
+  if (opts?.countTowardLimit !== false && !wenjiMarked(source, card.id))
+    source.flags.shaCountThisTurn++;
 
   // 酒 buff：本回合下一张杀伤害 +1
   let damage = 1;
@@ -2126,7 +2139,9 @@ function startAttack(
     // 颜色按**使用者**的口径看：小乔·红颜把她的黑桃【杀】变成红桃，
     // 于是她的黑桃杀能破【仁王盾】（官方 FAQ：仁王盾是否生效看杀属于谁）
     cardColor: colorSeenAs(state, source, card),
-    requiredShan: 1,
+    // 刘琦·问计：被标记的那张实体牌「不能被其他角色响应」→ 走「不可闪避」那条通道
+    // （与铁骑/烈弓同一处判定：跳过出闪询问，八卦阵/护驾那类代打也一并跳过）
+    requiredShan: wenjiMarked(source, card.id) ? Infinity : 1,
     // 本次【杀】一共指定了几个目标（严白虎·寄篱只认「唯一目标」）
     totalTargets: ordered.length,
     // 【方天画戟】：其余目标排在这里，逐个结算
@@ -4383,9 +4398,10 @@ function playDelayedTrick(
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) return err('目标无效');
   if (heroBlocksBeingTarget(state, target, card, player)) return err('该角色不能成为此牌的目标');
-  // 奇才：使用锦囊牌无距离限制
+  // 奇才：使用锦囊牌无距离限制；刘琦·问计标记的那张实体牌同样无距离限制
   if (
     !heroIgnoresTrickDistance(activeHeroes(state, player)) &&
+    !wenjiMarked(player, card.id) &&
     distance(state, player.seatId, targetId) > 1
   )
     return err('目标超出距离1');
@@ -4436,6 +4452,7 @@ function playTrick(
     if (
       type === 'shunshou' &&
       !heroIgnoresTrickDistance(activeHeroes(state, player)) &&
+      !wenjiMarked(player, card.id) &&
       distance(state, player.seatId, tid) > 1
     )
       return err('顺手牵羊目标超出距离 1');
@@ -4610,6 +4627,18 @@ function startTrickResolution(
   // ⚠️ 目标列表用 `wuxieScopeCandidates`（「这张牌真正会影响谁」的既有算法）算，
   //    不能用 intent 里那串：无中生有/桃园/五谷这类目标由规则定死的锦囊，intent 常常是空的
   //    （出牌阶段 UI 也不需要玩家点目标），而据江要判的正是「有没有指定我」。
+  // 刘琦·屯江：「本回合出牌阶段有没有指定过其他角色为目标」。
+  // AOE 那类牌的目标由规则定死、intent 里没有目标 → 这里按「这张牌真正会影响谁」
+  // （wuxieScopeCandidates，与据江同一套算法）登记；只看影响到谁，不写死牌名。
+  if (
+    state.seatOrder[state.turn.seatIndex] === player.seatId &&
+    state.turn.phase === 'play' &&
+    wuxieScopeCandidates(state, ctx).some((sid) => sid !== player.seatId)
+  ) {
+    player.flags.targetedOtherThisTurn = true;
+  }
+  // 刘琦·问计：被标记的那张实体牌不能被**其他角色**响应（无懈窗口与各类响应一起拦）
+  if (wenjiMarked(player, card.id)) ctx.unrespondable = true;
   const afterTargets = (): void =>
     runAllPlayersHooks(
       state,
@@ -4655,6 +4684,11 @@ function canUseWuxie(state: GameState, player: Player): boolean {
  * 但打出无懈之后的**抵消轮**里会把他加回来（那时他需要能保住自己的锦囊，见 onRespondWuxie）。
  */
 function openWuxieWindow(state: GameState, ctx: TrickContext, onDone: () => void): void {
+  // 刘琦·问计：这张牌不能被其他角色响应 → 连无懈窗口都不开
+  if (ctx.unrespondable) {
+    onDone();
+    return;
+  }
   const source = getPlayer(state, ctx.sourceId);
   const start = source ? nextSeatAfter(state, source.seatId) : state.seatOrder[0]!;
   const queue = aliveSeatsFrom(state, start).filter(
@@ -5053,6 +5087,13 @@ function resolveJuedou(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
+  // 刘琦·问计：其他角色不能响应 → 决斗的目标打不出【杀】，直接按弃权结算。
+  // （决斗轮到**使用者本人**时不受影响——他不是「其他角色」）
+  if (ctx.unrespondable && targetId !== ctx.sourceId) {
+    pushLog(state, 'resolve', `${target.name} 不能响应【决斗】，直接结算。`);
+    passDuel(state, targetId, ctx);
+    return;
+  }
   const need = duelShaRequired(state, ctx, targetId);
   pushLog(
     state,
@@ -5104,6 +5145,12 @@ function resolveJiedao(state: GameState, ctx: TrickContext): void {
   if (!holder || !holder.alive || !holder.equipment.weapon) {
     pushLog(state, 'trick', `目标无武器，【借刀杀人】无效。`);
     endTrickResolution(state, ctx);
+    return;
+  }
+  // 刘琦·问计：其他角色不能响应 → 武器持有者打不出【杀】，直接交出武器
+  if (ctx.unrespondable && holderId !== ctx.sourceId) {
+    pushLog(state, 'resolve', `${holder.name} 不能响应【借刀杀人】，直接交出武器。`);
+    passJiedao(state, holderId, ctx);
     return;
   }
   pushLog(state, 'trick', `${holder.name} 需打出【杀】或交出武器。`);
@@ -6118,6 +6165,16 @@ function respondForCurrent(state: GameState, ctx: TrickContext, rId: string): vo
   if (negatedByWuxie(ctx, rId)) {
     pushLog(state, 'resolve', `${r.name} 已被【无懈可击】抵消，不再响应。`);
     advanceTrick(state, ctx);
+    return;
+  }
+  // 刘琦·问计：不能被响应的是**其他角色**（使用者自己照常响应）→ 直接按「弃权」结算
+  if (ctx.unrespondable && rId !== ctx.sourceId) {
+    pushLog(
+      state,
+      'resolve',
+      `${r.name} 不能对【${CARD_TYPE_NAME[ctx.card.type as import('@sgs/protocol').CardType]}】作出响应，直接结算。`,
+    );
+    passAoeTrick(state, rId, ctx);
     return;
   }
   pushLog(

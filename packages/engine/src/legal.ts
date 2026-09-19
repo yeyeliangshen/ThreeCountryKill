@@ -18,6 +18,7 @@ import {
   heroIgnoresTrickDistance,
   suitSeenAs,
   unrevealedHeroes,
+  wenjiMarked,
   type ActiveSkill,
   type Hero,
 } from './heroes';
@@ -167,10 +168,14 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   // 【木牛流马】扣置的牌可以「如手牌般使用」，所以可用牌是 usableCardsOf 而不是 hand
   const usable = usableCardsOf(player);
   const heroes = activeHeroes(state, player);
-  // 诸葛连弩：本回合可出无限杀
+  // 诸葛连弩：本回合可出无限杀（陆抗·筑围的次数加成也要算进来——原来只有引擎算、
+  // 界面漏了，结果是加了加成反倒点不动）
   const hasZhuge = player.equipment.weapon?.equipName === 'zhuge';
-  const maxSha = hasZhuge ? Infinity : Math.max(1, ...heroes.map(heroShaLimit));
+  const maxSha = hasZhuge
+    ? Infinity
+    : Math.max(1, ...heroes.map(heroShaLimit)) + player.flags.shaLimitBonus;
   const canSha = player.flags.shaCountThisTurn < maxSha;
+  // 刘琦·问计标记的那张实体牌「无使用次数限制」——按**牌**放行（见下面循环里的要杀分支）
   const legalCardIds: string[] = [];
   const seen = new Set<string>();
   for (const card of noCards ? [] : usable) {
@@ -215,7 +220,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
             p.seatId !== seatId &&
             !p.judgment.some((t) => t.type === trickType) &&
             !heroBlocksBeingTarget(state, p, card, player) &&
-            (noDistance || distance(state, seatId, p.seatId) <= 1),
+            (noDistance || wenjiMarked(player, card.id) || distance(state, seatId, p.seatId) <= 1),
         );
         if (hasTarget) {
           legalCardIds.push(card.id);
@@ -224,8 +229,10 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       }
       continue;
     }
-    // 杀（或可转化的红牌 / 鏖战桃当杀）——受出杀上限限制
-    if (canSha && (card.type === 'sha' || canUseAsCard(state, player, card, 'sha'))) {
+    // 杀（或可转化的红牌 / 鏖战桃当杀）——受出杀上限限制；
+    // 被【问计】标记的那一张不受上限约束（但必须是这张牌本身）
+    const shaOk = canSha || wenjiMarked(player, card.id);
+    if (shaOk && (card.type === 'sha' || canUseAsCard(state, player, card, 'sha'))) {
       legalCardIds.push(card.id);
       seen.add(card.id);
       continue;
@@ -260,7 +267,9 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
             p.alive &&
             p.seatId !== seatId &&
             !heroBlocksBeingTarget(state, p, card, player) &&
-            (heroIgnoresTrickDistance(heroes) || distance(state, seatId, p.seatId) <= 1),
+            (heroIgnoresTrickDistance(heroes) ||
+              wenjiMarked(player, card.id) ||
+              distance(state, seatId, p.seatId) <= 1),
         );
       } else if (trickType === 'jiedao') {
         // 需要一个有武器的其他玩家
@@ -356,7 +365,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
           p.seatId !== seatId &&
           !p.judgment.some((t) => t.type === trickType) &&
           !heroBlocksBeingTarget(state, p, asTrick, player) &&
-          (noDistance || distance(state, seatId, p.seatId) <= 1),
+          (noDistance || wenjiMarked(player, card.id) || distance(state, seatId, p.seatId) <= 1),
       );
       if (hasTarget) {
         legalCardIds.push(card.id);
