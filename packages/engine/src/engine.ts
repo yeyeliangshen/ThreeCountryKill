@@ -2185,7 +2185,11 @@ function resumePlay(
       myUse: String(since.useId ?? 'n/a'),
     };
     state.blockedTakeovers.push(rec);
-    if (process.env.SGS_TRACE_TAKEOVER) {
+    // 用 globalThis 取 process（client 包没有 Node 类型，直接写 process 会编译不过）
+    const env = (
+      globalThis as { process?: { env?: Record<string, string | undefined> } }
+    ).process?.env;
+    if (env?.SGS_TRACE_TAKEOVER) {
       console.log('[takeover-blocked]', JSON.stringify(rec));
     }
   }

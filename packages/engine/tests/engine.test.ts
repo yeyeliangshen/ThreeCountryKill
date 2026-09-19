@@ -24200,3 +24200,82 @@ describe('国战 · 基础奖惩（同势力击杀）', () => {
     expect(state.log.some((e) => e.message.includes('不执行奖惩'))).toBe(true);
   });
 });
+
+/** 黄祖·【袭射】（不臣篇·下最后一位；钩子已生效，本轮补最关键的几条口径） */
+describe('国战 · 黄祖（袭射）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[]; hp?: number; weapon?: Card }[],
+    actor: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = 'vanilla';
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      if (s.weapon) p.equipment.weapon = s.weapon;
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: state.seatOrder.indexOf(actor), phase: 'play' };
+    state.pending = { kind: 'play', seatId: actor };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+
+  it('成本只能来自**装备区**：手牌里的装备牌不能当成本 → 直接不问', () => {
+    // 黄祖：装备区为空，但**手牌里有一张装备牌**（不能当成本）
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '黄祖',
+          heroId: 'huangzu',
+          faction: 'qun',
+          hand: [{ id: 'w1', type: 'weapon', suit: 'spade', rank: 1, equipName: 'qinggang', range: 2 }],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      ],
+      B,
+    );
+    ok(act(state, B, { type: 'endPhase' })); // 乙结束 → 轮到黄祖；黄祖自己的准备阶段不发动
+    skipRevealAsk(state);
+    // 走一圈回到乙的回合开始 → 这时才该问黄祖，但装备区是空的 → 不问
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.log.some((e) => e.message.includes('袭射'))).toBe(false);
+  });
+
+  it('目标体力**小于**黄祖时不能响应（严格小于：相等仍可响应）', () => {
+    const weapon: Card = { id: 'w1', type: 'weapon', suit: 'spade', rank: 1, equipName: 'qinggang', range: 2 };
+    // 黄祖 4 血、乙 3 血 → 3 < 4 → 乙**不能出闪**，直接吃伤害
+    const state = gz(
+      [
+        { seatId: A, name: '黄祖', heroId: 'huangzu', faction: 'qun', hp: 4, weapon },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 3, maxHp: 4, hand: [shan('b1')] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 黄祖结束 → 乙的准备阶段：袭射在这里问黄祖
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期袭射询问，实际是 ${ask?.kind}`);
+    expect(ask.title).toContain('袭射');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 乙手里有闪，但体力 3 < 黄祖 4 → 不能响应 → 直接掉 1 血
+    expect(pick(state, B).hp).toBe(2);
+    expect(state.log.some((e) => e.message.includes('使用【闪】'))).toBe(false);
+    // 成本进弃牌堆，装备区清空
+    expect(pick(state, A).equipment.weapon).toBeNull();
+  });
+});
