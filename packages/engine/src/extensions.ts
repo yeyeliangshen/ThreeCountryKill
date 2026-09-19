@@ -77,10 +77,11 @@ export const BuchenExtension: GuozhanExtension = {
   id: 'buchen',
   // 常驻启用：它的动作是「关掉时把不臣篇武将踢出池」，条件留在模块内部（同君临天下那条）
   enabled: () => true,
+  // 「不开启不臣篇 → 选不到任何不臣篇武将」：按**包**整包过滤。
+  // ⚠️ 单势力那 4 位（徐庶/吴景/严白虎/董昭）以前漏掉了——只按双势力/野心家过滤是不够的，
+  //    用户明确要求「不开启不臣篇就应当选不到不臣篇的武将」。
   modifyGeneralPool: (pool, ext) =>
-    ext.buchen === 'off'
-      ? pool.filter((h) => !h.secondFaction && h.faction !== 'ambitionist')
-      : pool,
+    ext.buchen === 'off' ? pool.filter((h) => h.pack !== 'buchen') : pool,
 };
 
 /** 全部扩展模块（顺序 = 应用顺序） */

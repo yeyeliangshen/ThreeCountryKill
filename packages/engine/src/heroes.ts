@@ -234,6 +234,14 @@ export interface Hero {
    */
   canonicalId?: string;
   /**
+   * **这张武将牌属于哪个扩展包**（与 roster 的 `pack` 同口径）。
+   *
+   * 用途：扩展开关按它整包过滤——例如 `buchen: 'off'` 时，所有 `pack: 'buchen'` 的武将
+   * （不论单势力、双势力还是野心家）都不进选将池。用户要求：「不开启不臣篇，
+   * 就应当选不到不臣篇的武将」。
+   */
+  pack?: string;
+  /**
    * **双势力武将牌**的第二个势力（不臣篇）。用户给定规则要点：
    * - 2023 改版后**主将、副将都可以**（旧规则「只能副将」作废）；
    * - 势力要**确定**，确定后整局都按那一个势力算（不是两个都算）——
@@ -5706,6 +5714,7 @@ const XUSHU: Hero = {
   id: 'xushu',
   name: '徐庶',
   faction: 'shu',
+  pack: 'buchen', // 不臣篇（buchen 开关关闭时不进选将池）
   // 国战牌面 2 阴阳鱼 → 4（走副将位时举荐再减 1）
   maxHp: 4,
   gender: 'male',
@@ -5879,6 +5888,7 @@ const YANBAIHU: Hero = {
   id: 'yanbaihu',
   name: '严白虎',
   faction: 'qun',
+  pack: 'buchen', // 不臣篇（buchen 开关关闭时不进选将池）
   jili: true,
   // 国战牌面 2 阴阳鱼 → 4（走副将位时寄篱再减 1）
   maxHp: 4,
@@ -6056,6 +6066,7 @@ const WUJING: Hero = {
   id: 'wujing',
   name: '吴景',
   faction: 'wu',
+  pack: 'buchen', // 不臣篇（buchen 开关关闭时不进选将池）
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -9868,6 +9879,7 @@ const DONGZHAO: Hero = {
   id: 'dongzhao',
   name: '董昭',
   faction: 'wei',
+  pack: 'buchen', // 不臣篇（buchen 开关关闭时不进选将池）
   // 国战牌上印的是 **1.5 阴阳鱼**，而引擎吃的是身份局口径的体力值：
   // 阴阳鱼数 = 身份局体力 ÷ 2，所以这里要填 3（半天前填成 1.5 是错的）。
   // 校验：董昭(3) + 许褚(4) → floor(3.5) = 3，与官方「1.5+2 阴阳鱼 → 上限 3」一致。
@@ -11907,6 +11919,7 @@ function dualHero(
   return {
     id,
     name,
+    pack: 'buchen', // 不臣篇
     faction: f1,
     secondFaction: f2,
     // 用户给出的国战牌面阴阳鱼数 ×2（本仓库体力是整数的口径）：2 阴阳鱼 → 4，1.5 → 3
@@ -11944,6 +11957,7 @@ function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
     name,
+    pack: 'buchen', // 不臣篇
     faction: 'ambitionist',
     maxHp: hp,
     gender: 'male',

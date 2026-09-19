@@ -60,6 +60,31 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     if (!res.ok) expect(res.error).toContain('两个可选势力');
   });
 
+  it('buchen 开关整包管住：off 时**所有**不臣篇武将（含单势力那 4 位）都不进选将池', () => {
+    const seats = [
+      { seatId: 'A', name: '甲', heroId: 'vanilla' },
+      { seatId: 'B', name: '乙', heroId: 'vanilla' },
+    ];
+    const pool = (cfg: ReturnType<typeof configFromPreset>) =>
+      createGame(seats, 'T', { mode: 'guozhan', freePick: true, config: cfg }).draft!.deals['A']!;
+    const off = pool(configFromPreset('standard'));
+    // 单势力不臣篇武将（以前漏掉的）
+    for (const id of ['xushu', 'yanbaihu', 'wujing', 'dongzhao']) {
+      expect(off, `标准国战不该发到 ${id}`).not.toContain(id);
+    }
+    // 双势力 / 野心家
+    for (const id of ['mengda', 'xuyou', 'sp_simazhao']) {
+      expect(off, `标准国战不该发到 ${id}`).not.toContain(id);
+    }
+    // 但标准/其他包的武将照旧在池里
+    expect(off).toContain('guanyu');
+    expect(off).toContain('caocao');
+    // 开了就都在
+    const on = pool(configFromPreset('full2026'));
+    expect(on).toContain('xushu');
+    expect(on).toContain('dongzhao');
+  });
+
   it('buchen 开关管住双势力武将：off 时它们不进选将池', () => {
     const seats = [
       { seatId: 'A', name: '甲', heroId: 'vanilla' },
