@@ -394,6 +394,24 @@ export interface Player {
    * **君主的下个回合开始**，中间要跨过别人的回合，所以单开一条记录、由君主的回合开始清掉。
    * 同时记下为代价「暂时不能明置」的那张武将牌（封锁同寿命）。
    */
+  /**
+
+   * **已确定的势力**（双势力武将，不臣篇）。
+
+   *
+
+   * 用户给定口径：双势力武将牌要「确定势力」，确定之后**整局都按那一个势力算**，
+
+   * 不会因为重新暗置之类切回另一个。判定规则见 `heroes.determineDualFaction()`，
+
+   * 读取一律走 `effectiveFaction()`（那里优先用它）。
+
+   * 单势力武将不用填它（退回「明置即确定」的旧判定，两者等价）。
+
+   */
+
+  determinedFaction?: Faction | null;
+
   lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
 }
 

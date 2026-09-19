@@ -66,13 +66,21 @@ export const Junlintianxia2026Extension: GuozhanExtension = {
 /**
  * 不臣篇：武将 + 特殊规则 + 特殊牌区域。
  *
- * ⚠️ **当前是占位**：不臣篇的武将（野心家武将、双势力武将）、势力锦囊、府库/特殊区、
- * 暴露野心/建立新势力都还没实装（缺官方文本），所以这里除了「开关存在」之外什么都不做。
- * 刻意不写空分支——等有内容时再往这个模块里加，别先撒一堆 `if (ext.buchen === 'current')`。
+ * 已实装的部分：**双势力武将的势力确定规则**（`heroes.determineDualFaction`，
+ * 2023 口径）与**这 12 张双势力武将牌的登记**。关掉本扩展时它们不进选将池。
+ *
+ * ⚠️ 仍是占位/未实装的部分：野心家武将（SP司马昭/公孙渊/孙綝/界钟会）、势力锦囊
+ * （号令天下/克复中原/固国安邦/文和乱武）、府库/特殊区、暴露野心/建立新势力、
+ * 以及 23 名不臣篇武将的技能文本——都缺官方文本，刻意不写空分支，等有内容再加。
  */
 export const BuchenExtension: GuozhanExtension = {
   id: 'buchen',
-  enabled: (ext) => ext.buchen !== 'off',
+  // 常驻启用：它的动作是「关掉时把不臣篇武将踢出池」，条件留在模块内部（同君临天下那条）
+  enabled: () => true,
+  modifyGeneralPool: (pool, ext) =>
+    ext.buchen === 'off'
+      ? pool.filter((h) => !h.secondFaction && h.faction !== 'ambitionist')
+      : pool,
 };
 
 /** 全部扩展模块（顺序 = 应用顺序） */

@@ -234,6 +234,16 @@ export interface Hero {
    */
   canonicalId?: string;
   /**
+   * **双势力武将牌**的第二个势力（不臣篇）。用户给定规则要点：
+   * - 2023 改版后**主将、副将都可以**（旧规则「只能副将」作废）；
+   * - 势力要**确定**，确定后整局都按那一个势力算（不是两个都算）——
+   *   落在 `Player.determinedFaction` 上，见 `determineDualFaction()`；
+   * - 判定规则（2023）：与普通单势力武将组合 → **自动跟随那个势力**；两张双势力只有一个
+   *   共同势力 → **自动取共同势力**；有两个共同势力 / 与野心家武将组合 → **玩家自己选**
+   *   （后两种的选势力界面还没做，本仓库先**拒绝这种组合**并报错，不猜也不默认）。
+   */
+  secondFaction?: Faction;
+  /**
    * 「这个武将给**同势力角色**授予一个出牌阶段技能」——值是那条技能的 id（目前只有君孙权的督授）。
    * 与 `lordBanner` 同一类：引擎按它去场上找提供者（见 `factionGrantedActiveSkills`）。
    */
@@ -11879,7 +11889,44 @@ function fenji(ctx: HookContext, who: Player): void {
   );
 }
 
+
+/**
+ * 不臣篇的**双势力武将**（用户给定的 2023 口径下的势力配对）。
+ *
+ * ⚠️ 只登记了「两个势力」这一项已知信息：这些武将的**技能文本还没核到**，所以 `skills` 为空、
+ *    `maxHp` 是按国战常见值暂填 4（待核对），请在 roster 里按「部分实现」看待它们。
+ *    它们只在 `buchen: 'current'` 时进选将池（见 extensions.ts 的 BuchenExtension）。
+ */
+function dualHero(id: string, name: string, f1: Faction, f2: Faction): Hero {
+  return {
+    id,
+    name,
+    faction: f1,
+    secondFaction: f2,
+    maxHp: 4, // ⚠️ 待核对：国战牌面的阴阳鱼数还没核到
+    gender: 'male',
+    modes: ['guozhan'],
+    skills: [],
+  };
+}
+
+const BUCHEN_DUAL: Hero[] = [
+  dualHero('mengda', '孟达', 'wei', 'shu'),
+  dualHero('tangzi', '唐咨', 'wei', 'wu'),
+  dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu'),
+  dualHero('zhanglu', '张鲁', 'wei', 'qun'),
+  dualHero('liuqi', '刘琦', 'qun', 'shu'),
+  dualHero('shixie', '士燮', 'wu', 'qun'),
+  dualHero('xiahouba', '夏侯霸', 'wei', 'shu'),
+  dualHero('wenqin', '文钦', 'wei', 'wu'),
+  dualHero('pengyang', '彭羕', 'shu', 'qun'),
+  dualHero('panjun', '潘濬', 'shu', 'wu'),
+  dualHero('sufei', '苏飞', 'wu', 'qun'),
+  dualHero('xuyou', '许攸', 'wei', 'qun'),
+];
+
 export const HEROES: Hero[] = [
+  ...BUCHEN_DUAL,
   JUN_CAOCAO,
   JUN_LIUBEI,
   JUN_SUNQUAN,
@@ -12033,10 +12080,12 @@ export function knownFactionCount(state: GameState, faction: Faction | null): nu
 
 export function effectiveFaction(state: GameState, player: Player): Faction | null {
   if (state.mode !== 'guozhan') return player.faction;
-  // 「已确定势力」的唯一判定点。⚠️ 现在用「明置过至少一张武将牌」来近似它——
-  // 双势力（要先确认势力）与新势力规则下这两者不等价，届时把这里换成显式状态即可
-  // （调用方一律走这个函数，没有别处自己写 heroRevealed，见 docs §5.71）。
-  return player.heroRevealed || player.deputyRevealed ? player.faction : null;
+  // 顺序要紧：**先看「有没有确定势力」**（暗置 = 未确定势力，谁都看不到），
+  // 再看**确定下来的是哪一个**——双势力武将填了 `determinedFaction` 就用它
+  // （见 determineDualFaction；确定后整局都按这一个势力算，不会因为重新暗置切回另一个），
+  // 没填的（单势力武将）等价于 `player.faction`。
+  if (!player.heroRevealed && !player.deputyRevealed) return null;
+  return player.determinedFaction ?? player.faction;
 }
 
 /**
@@ -12172,6 +12221,38 @@ export function heroCanonicalId(heroId: string | null | undefined): string | und
 export function sameHeroBody(a: string, b: string): boolean {
   const ca = heroCanonicalId(a);
   return !!ca && ca === heroCanonicalId(b);
+}
+
+/**
+ * 双势力武将的**确定势力**规则（2023 移动版口径，用户给定）。
+ *
+ * 输入是主将、副将两张牌，返回：
+ * - `{ kind: 'auto', faction }`：唯一能确定的势力 → 直接采用；
+ * - `{ kind: 'choice', options }`：有两个共同势力，或与野心家武将组合 → **要玩家自己选**；
+ * - `null`：跟双势力无关（两张都是单势力）→ 沿用原来的单势力逻辑。
+ */
+export function determineDualFaction(
+  main: Hero | undefined,
+  deputy: Hero | undefined,
+  mode: GameMode,
+): { kind: 'auto'; faction: Faction } | { kind: 'choice'; options: Faction[] } | null {
+  if (mode !== 'guozhan' || !main || !deputy) return null;
+  const factionsOf = (h: Hero): Faction[] =>
+    h.secondFaction ? [h.faction, h.secondFaction] : [h.faction];
+  const isWild = (h: Hero): boolean => h.faction === 'ambitionist';
+  const mainDual = !!main.secondFaction;
+  const deputyDual = !!deputy.secondFaction;
+  if (!mainDual && !deputyDual) return null; // 两张都是单势力 → 不归它管
+  // 与野心家武将组合 → 玩家自己选那张双势力牌的势力
+  if (isWild(main) || isWild(deputy)) {
+    const dual = mainDual ? main : deputy;
+    return { kind: 'choice', options: factionsOf(dual) };
+  }
+  const shared = factionsOf(main).filter((f) => factionsOf(deputy).includes(f));
+  if (shared.length === 1) return { kind: 'auto', faction: shared[0]! };
+  if (shared.length >= 2) return { kind: 'choice', options: shared };
+  // 没有任何共同势力：官方没写这种组合（两张双势力却没有共同势力），不猜
+  return null;
 }
 
 /** 这张武将牌可以换成的另一版（君主版 / 标准版）；没有对应版本时返回 undefined */

@@ -10,6 +10,8 @@ import type {
 } from '@sgs/protocol';
 import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
 import { applyDeckExtensions, applyPoolExtensions } from './extensions';
+import { determineDualFaction } from './heroes';
+
 import {
   CARD_TYPE_NAME,
   DAMAGE_CARD_TYPES,
@@ -8735,12 +8737,35 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     const mainHero = getHero(intent.heroId);
     const deputyHero = getHero(deputyId);
     if (!mainHero || !deputyHero) return err('武将不存在');
-    if (mainHero.faction !== deputyHero.faction) return err('国战需选 2 位同阵营武将');
+    // 同阵营校验：双势力武将牌有两面，只要**有共同势力**就算同阵营（2023 口径）
+    const pairOk = [mainHero.faction, mainHero.secondFaction]
+      .filter(Boolean)
+      .some((f) => f === deputyHero.faction || f === deputyHero.secondFaction);
+    if (!pairOk) return err('国战需选 2 位同阵营武将');
+    if (deputyHero.faction === 'ambitionist') return err('野心家武将只能作为主将');
     // 君主将只能作主将
     if (deputyHero.isLord) return err('君主将只能作为主将');
     player.heroId = intent.heroId;
     player.deputyHeroId = deputyId;
-    player.faction = mainHero.faction;
+    player.faction = mainHero.faction;
+    // 双势力：按 2023 规则确定势力（唯一共同势力自动确定；要玩家选的组合见下面直接拒绝）
+    const dual = determineDualFaction(mainHero, deputyHero, state.mode);
+    if (dual?.kind === 'auto') {
+      player.determinedFaction = dual.faction;
+      pushLog(
+        state,
+        'faction',
+        `${player.name} 的双势力武将确定为${FACTION_NAME[dual.faction] ?? dual.faction}。`,
+        { seat: player.seatId },
+      );
+    } else if (dual?.kind === 'choice') {
+      // 「两个共同势力」或「与野心家武将组合」要玩家自己选势力，选势力界面还没做。
+      // 用户口径：不要拿旧规则补空白 —— 所以直接**拒绝这组搭配**并说明原因。
+      return err(
+        `【${mainHero.name}】与【${deputyHero.name}】有两个可选势力、需要玩家自己确定，` +
+          '选势力界面尚未实现；请换一组搭配',
+      );
+    }
   } else {
     player.heroId = intent.heroId;
   }
