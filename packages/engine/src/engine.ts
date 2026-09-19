@@ -59,7 +59,13 @@ import {
   tryBaguaDodge,
 } from './equip';
 import { buildDeck, drawOne, shuffle } from './deck';
-import { addMarker, consumeMarker, markerActiveSkills, markerCount } from './markers';
+import {
+  addMarker,
+  consumeMarker,
+  markerActiveSkills,
+  markerCount,
+  noteMarkerUsed,
+} from './markers';
 import {
   FACTION_NAME,
   getHero,
@@ -1408,6 +1414,8 @@ function afterDiscardPhaseHooks(state: GameState, player: Player): void {
         if (picked === 'yes') {
           consumeMarker(p, 'yinyangyu');
           p.flags.handLimitBonus += 2;
+          // 这一步也是「用掉了一枚国战标记」，一样要给章武记账
+          noteMarkerUsed(st, p.seatId, 'yinyangyu');
           pushLog(st, 'marker', `${p.name} 弃置【阴阳鱼】，本回合手牌上限 +2。`);
         }
         beginDiscard(st, p);

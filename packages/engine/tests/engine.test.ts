@@ -19630,6 +19630,50 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.players.find((x) => x.seatId === 'A')!.hand.length).toBe(4); // 先驱：补至四张
   });
 
+  it('阴阳鱼（弃牌阶段）+ 章武：这条路用掉的标记也记进「本回合用过」的账本', () => {
+    // 甲＝君刘备（蜀）、乙＝关羽（蜀）——乙手里一张【阴阳鱼】，本回合手牌超上限触发那条用法
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junliubei' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junliubei', 'shu', []);
+    const b = seatSet(state, 'B', 'guanyu', 'shu', [
+      mk('b1', 'tao'),
+      mk('b2', 'tao'),
+      mk('b3', 'tao'),
+      mk('b4', 'tao'),
+      mk('b5', 'tao'),
+    ]);
+    seatSet(state, 'C', 'zhangliao', 'wei', []);
+    b.markers.yinyangyu = 1;
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+
+    // 乙结束出牌阶段 → 弃牌阶段：手牌 5 > 上限 4，且手里有阴阳鱼 → 先问一句
+    ok(act(state, 'B', { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('阴阳鱼');
+    ok(act(state, 'B', { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.flags.handLimitBonus).toBe(2);
+    expect(b.markers.yinyangyu).toBeUndefined();
+    expect(b.hand.length).toBe(5); // 上限 4+2=6 → 一张都不用弃
+    // 记账：这一步也算「本回合用掉了一枚国战标记」→ 甲（君刘备）的【章武】在乙的结束阶段能选它
+    expect(state.markerUsesThisTurn).toEqual([{ seatId: 'B', markerId: 'yinyangyu' }]);
+    // 弃牌阶段走完 → 结束阶段：甲（君刘备）的【章武】能选到这枚标记
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('章武');
+    expect(state.pending.options.map((o) => o.id)).toEqual(['yinyangyu', 'no']);
+  });
+
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
     // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
     const state = createGame(
