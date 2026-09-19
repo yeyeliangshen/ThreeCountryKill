@@ -18684,13 +18684,15 @@ describe('国战 · 张鲁（布施 / 米道）', () => {
     }
   });
 
-  // ⚠️ 根因已定位（文档 §5.104）：米道的钩子挂在**张鲁**身上、事件 `othersUseCard` 也确实派给了
-  //    其他玩家（两条出杀路径、且在 useCard 链之外），但**旁观者钩子发问在这层没有被「可挂起」
-  //    机制接住**——询问设好之后又被后面的流程（等出闪/结算）覆盖掉，用例里最终看到的是 play。
-  //    下一步：查 runHooksPausable/runHooksFrom 的暂停条件，补一个钩子层的定向用例。先跳过。
-  it.skip('米道：同势力角色用实体黑杀 → 交一张手牌、由张鲁改花色为红 → 仁王盾挡不住', () => {
+  // ✅ 已打开（原「暂缓」的理由不成立）：当时以为是「旁观者钩子发问没被可挂起机制接住」，
+  //    实测发现的真因是**用例搭错**——甲手上只有一张牌，打出去之后手牌为空，而引擎按 §5.94 的
+  //    口径「交不出手牌就根本不问米道」（`askMidao`：`if (user.hand.length === 0) return`）。
+  //    给甲第二张牌之后，询问、交牌、张鲁声明花色/属性一条链都正常跑通（钩子的挂起机制没问题）。
+  it('米道：同势力角色用实体黑杀 → 交一张手牌、由张鲁改花色为红 → 仁王盾挡不住', () => {
     const state = gz([
-      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade')] },
+      // 甲手上必须有**两张**：一张打出去的【杀】，一张留着交给张鲁
+      // （引擎口径见 §5.94：【米道】要交的是**手牌**，打出杀之后手牌为空就根本不问）
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade'), shan('a2')] },
       { seatId: B, name: '乙', heroId: 'zhanglu', faction: 'wei', hand: [] },
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'shan', 'heart')], equip: [armor('c9', 'renwang')] },
     ], A);
@@ -18701,7 +18703,7 @@ describe('国战 · 张鲁（布施 / 米道）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('米道');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(state.pending?.kind).toBe('pickCards');
-    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] })); // 把留下的那张交出去
     // 声明花色与属性（张鲁决定）：红桃 + 普通
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B); // 张鲁选
@@ -18954,7 +18956,9 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     expect(state.suzhiTriggers).toBe(1);
   });
 
-  // ⚠️ 根因已定位（文档 §5.104）：`cardDiscarded` 是**派给牌主**的（"你因弃置…" 那类技能用），
+  // ✅ 已打开（原「暂缓」的账目没算对）：见用例里的说明——② 与 ③ 共用 3 次额度，
+  //    「用锦囊 + 别人被拆牌」本来就是 **2 次**，旧断言写的 1 是漏了 ②。
+  //    背景（文档 §5.104）：`cardDiscarded` 是**派给牌主**的（"你因弃置…" 那类技能用），
   //    而夙智③是**旁观者**技能（"其他角色因弃置…"）——钩子挂在 SP司马昭身上，牌主是别人时
   //    根本收不到这个事件。修法：在 fireCardDiscarded 里补一圈「派给全场」的时机
   //    （与 othersUseCard / anyShanUsed 同一套写法）。先跳过，别把「假绿」当已验证。
@@ -18963,7 +18967,7 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
   //    ② 只把 guard 收在锦囊收尾（endTrickResolution 的 finish）→ 冒烟里 yuanshu/dongzhuo/dengai
   //       等固定种子对局直接判不出胜负。→ 收尾**确实需要**抢回 pending，修法要能区分
   //       「本次收尾自己刚产生的询问」与「更早的陈旧 pending」，且优先在**发问方**（弃置收口）解决。
-  it.skip('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
+  it('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'guohe', 'heart')], hp: 4, maxHp: 4 },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], equip: [wpn('b9')] },
@@ -18976,7 +18980,12 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('夙智');
     ok(act(state, A, { type: 'chooseOption', optionId: 'b9' }));
     expect(a.hand.some((c) => c.id === 'b9')).toBe(true);
-    expect(state.suzhiTriggers).toBe(1);
+    // ⚠️ 这里是**两次**额度：②「自己回合内使用锦囊」摸 1（过河拆桥本身）＋
+    //    ③「其他角色因弃置进弃牌堆」获得其中一张（被拆掉的武器）——三个子效果共用 3 次额度。
+    //    （旧版本用例写的是 1，是没把 ② 算进去。）
+    expect(state.suzhiTriggers).toBe(2);
+    expect(state.log.some((e) => e.message.includes('使用锦囊摸了一张牌'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('获得 乙 弃置的'))).toBe(true);
   });
 
   it('回合结束：本回合触发不足 3 次 → 获得【反馈】；3 次则不给', () => {
@@ -19934,11 +19943,10 @@ describe('国战 · 朱灵（决绝 / 方圆）', () => {
     expect(s2.pending?.kind === 'choice' && s2.pending.title.includes('决绝')).toBe(false);
   });
 
-  // ⚠️ 暂缓：这条跑不过，根因**不在朱灵**——决绝②落在 `turnEnd` 钩子上，而引擎的钩子链
-  //    只把 choice/pickCards/viewCards 当作「被问住了」，钩子里**间接打出来的濒死**
-  //    （respondDeath 求桃队列）不算：链条会继续往下跑（回合交接），把求桃询问顶掉，
-  //    被打死的人停在 0 体力却永远不死。修它要动钩子链 ↔ 濒死的收口次序（见 docs §5.111）。
-  it.skip('决绝②：这段伤害把前一个角色**打死**时，濒死/阵亡走完之后接着问下一个人（不顶掉求桃）', () => {
+  // ✅ 已打开：钩子链现在把「**本链自己**打出来的濒死求桃」也当作「被问住了」
+  //    （runHooksFrom 的暂停条件 + runHooksPausable 传进去的 `startedWith`），
+  //    求桃/阵亡整串走完之后由 drainResume 接着跑这条链 —— docs §5.111 的已知缺口至此关闭。
+  it('决绝②：这段伤害把前一个角色**打死**时，濒死/阵亡走完之后接着问下一个人（不顶掉求桃）', () => {
     const state = gz([
       // 朱灵 5 手牌 → 发动后体力 3、上限 3 → 弃 2 张（X=2）
       { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 5), hp: 4 },
@@ -23895,12 +23903,10 @@ describe('国战 · 许攸（成略 / 恃才）', () => {
     expect(pick(state, A).hand.length).toBe(before);
   });
 
-  // ⚠️ 仍 skip：锦囊侧的派发已经接上（`endTrickResolution` 的收尾派 `cardUseEnded`、
-  //    锦囊伤害也带 `ctx.cardUseId`），但这张用例还等不到询问——和 §5.118 ① 同一层
-  //    （**收尾覆盖 pending**），等那条修好它应该一起通。【杀】侧是好的（上面两条用例通过）。
-  // ⚠️ 仍 skip：围栏判断有效（一度通过），订阅式唤醒也接好了，但启用后冒烟仍挂 6 条 →
-  //    下一刀要先「测量」哪些收尾被挡、流程走向哪（docs §5.124.3），别再盲改。
-  it.skip('成略：**群体锦囊**（南蛮入侵）也算「目标数大于 1」——整张牌结算结束后才问', () => {
+  // ✅ 已打开：锦囊侧的派发（`endTrickResolution` 收尾派 `cardUseEnded`、锦囊伤害带
+  //    `ctx.cardUseId`）本来就接上了，卡住的只是「收尾覆盖 pending」那一层——
+  //    提交 C（伤害管线定死顺序 + 求桃交槽 + 钩子链不还原已作答的询问）之后它自己就通了。
+  it('成略：**群体锦囊**（南蛮入侵）也算「目标数大于 1」——整张牌结算结束后才问', () => {
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [mk('n1', 'nanman', 'spade')] },

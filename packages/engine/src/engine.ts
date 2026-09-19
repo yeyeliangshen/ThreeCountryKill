@@ -1091,6 +1091,11 @@ function runHooksPausable(
   //    没答过的那一格照旧要还（例：连营的询问插在「等乙出闪」中间，问完必须还回 respondSha）。
   const ambient =
     state.pending && !answeredPendings.has(state.pending) ? state.pending : null;
+  // 链**开始时**槽里的那一格：用来分辨「这次的询问是不是本链自己问出来的」。
+  // 只有本链自己打出来的**濒死求桃**才该让链停下来等（见 runHooksFrom 的暂停条件）——
+  // 链开始时就挂着的那一格（例如伤害结算期间正在等出桃，而伤害后钩子照样要跑）
+  // 不是本链的事，停下来只会把续接排进队列、谁也醒不了。
+  const startedWith = state.pending;
   // 这条链的令牌：跑完就置死，用来拦住「排到很后面才醒」的陈旧续接（见 runHooksFrom 的注释）
   const token: ChainToken = { alive: true };
   runHooksFrom(
@@ -1109,6 +1114,7 @@ function runHooksPausable(
     },
     attackBox,
     token,
+    startedWith,
   );
 }
 
@@ -1130,6 +1136,8 @@ function runHooksFrom(
   onDone: (cancelled: boolean) => void,
   attackBox?: AttackBox,
   token?: ChainToken,
+  /** 链**开始时**槽里的那一格（见 runHooksPausable）——分辨「这个待回答是不是本链造成的」 */
+  startedWith?: GameState['pending'],
 ): void {
   // ⚠️ 这条链可能**已经跑完**：它被询问打断、续接排到了很后面，中途棋局翻篇
   //    （回合结束、角色阵亡…），等续接终于排到，链其实早就走完了。
@@ -1159,22 +1167,29 @@ function runHooksFrom(
     //    没有 returnTo 可还（钩子链条得自己接着跑）。不认它的话，观看结束后 pending 会被
     //    置空、而链条那头以为没人打断继续往下走——玩家看完牌就卡在「谁的回合都不是」的状态里，
     //    或者被 returnTo 塞进某个人的出牌阶段（君刘备·章武「视为使用【先驱】」踩到过）。
+    //
+    // ⚠️ **濒死求桃（respondDeath）同样算「被问住了」**：钩子**间接**把某人打进濒死时
+    //    （钩子里打出的伤害 → `enterNearDeath` → 求桃队列），链条必须停下来等那一串走完。
+    //    不认它的话链条会继续往下跑（回合交接、下一个目标…），把求桃询问直接顶掉——
+    //    表现就是「被打的人停在 0 体力却永远不死」（docs §5.111 记了很久的已知缺口）。
+    //    提交 B 把濒死链 continuation 化之后这里才有解：求桃走完 → `done()` → 收尾 →
+    //    `drainResume` 把这条挂起的钩子链接着跑（以前濒死链内部自己 resumePlay，
+    //    和挂起的钩子链抢控制权，冒烟里大量对局卡在 4000 步不结束）。
     if (
       state.pending?.kind === 'choice' ||
       state.pending?.kind === 'pickCards' ||
-      state.pending?.kind === 'viewCards'
+      state.pending?.kind === 'viewCards' ||
+      // 濒死求桃：**必须是本链自己打出来的**（链开始时槽里不是它）才停。
+      // 反例（实测踩过）：伤害/死亡那几串钩子是在「已经在等出桃」的窗口里跑的，
+      // 它们要是也停下来，续接会排进队列又永远没人唤醒——冒烟里一局攒了 4920 条队列、
+      // 局面停在 0 体力的人身上再也推不动。
+      (state.pending?.kind === 'respondDeath' && state.pending !== startedWith)
     ) {
       pushResume(state, () =>
-        runHooksFrom(state, player, timing, payload, hooks, k + 1, onDone, attackBox, token),
+        runHooksFrom(state, player, timing, payload, hooks, k + 1, onDone, attackBox, token, startedWith),
       );
       return;
     }
-    // ⚠️ 已知缺口（本轮没修，见 docs §5.111）：钩子**间接**把某人打进**濒死**时
-    //    （pending 变成 respondDeath 求桃队列）这里仍然直接接着跑，后面的流程
-    //    （回合交接、下一张牌）会把求桃询问顶掉：被顶的人停在 0 体力却永远不死。
-    //    试过在这里认 respondDeath 并把续接挂到 ongoingSkillChain——冒烟/模糊测试里
-    //    大量对局卡在 4000 步不结束（钩子链的续接与濒死收口的次序纠缠在一起），
-    //    所以先如实留在这里，等单独一轮把「钩子链 ↔ 濒死」的收口理清再修。
   }
   onDone(false);
 }
@@ -3652,7 +3667,9 @@ function afterDamageSettled(
   damage: number,
   finished: () => void,
 ): void {
-  if (victim.hp <= 0) {
+  // `alive`：已经阵亡的人**不再进濒死**（重复进会给死人再开一条求桃队列，
+  // 而 doDeath 不拦「已经死过」——实测就是靠这条从「死人反复求桃」的死循环里出来的）。
+  if (victim.hp <= 0 && victim.alive) {
     enterNearDeath(state, attack, () => runDamagedHooks(state, victim, attack, damage, finished));
     return;
   }
