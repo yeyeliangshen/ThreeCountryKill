@@ -685,6 +685,14 @@ export type Pending =
       askIndex: number;
       /** 把濒死者打到 0 的人，阵亡时要用来触发「杀死角色后」的技能（行殇） */
       killerId?: string;
+      /**
+       * 这一串濒死（求桃 / 阵亡）**整个走完之后**的续接——由发起濒死的那个流程传进来。
+       *
+       * 濒死系统自己不再决定「回到谁的出牌阶段」（见 docs §5.127）：它只负责调用 `done()`，
+       * 控制权交回调用方。分岔到 pendig 里之后（求桃要等玩家回答），`done` 就挂在 pending 上，
+       * 由回答分支（respondDeathSave / onPass）取出来用。
+       */
+      done: () => void;
     }
   // 弃牌阶段：弃到上限
   | { kind: 'discard'; seatId: string; count: number }

@@ -4421,3 +4421,60 @@ function onPickHero(state, seatId, intent) {
 `pickHero` 的**路由条件**（是不是「必须是选将阶段 / draft 存在 / pendingSeats 含该座位」这类前置条件
 不满足时，会拿**另一个 intent 对象**去调 `onPickHero`）。查清后再照 §5.126 的五步重放实现
 （实现与用例本轮都写过、已回退，可直接重放）。
+
+### 5.127 输入槽所有权（二）：提交 A「按 requestId 唤醒 + turnSeq 世代」+ 提交 B「濒死链 continuation 化」
+
+用户 2026-09 对 §5.124 那七到九次失败的两处关键修正，本轮按 **A → B → C** 三个提交落地。
+A、B 已进仓库（`f4adc29`、紧随其后的一条），C（伤害管线重排）在下一轮。
+
+#### 5.127.1 提交 A：`pendingWaiters` 改成「按 requestId 完成唤醒」+ `turnSeq` 世代围栏
+
+原方案（§5.124 第五次尝试）是**订阅「pending 被 set/clear」**——用户指出这是错的口径：
+真正该等的事件不是「槽空了」，而是「**挡住我的那一条询问处理完了**」。两者在嵌套里不等价：
+槽空了可能只是因为内层询问换了个人问，我那一条其实还没醒。
+
+- `GameState.pendingWaiters: Map<number, (() => void)[]>`（requestId → 等待者）。
+  `waitPendingResolved(st, requestId, waiter)` 登记、`completePendingRequest(st, requestId)` 在
+  **回答 handler 全部跑完、旧 request 正式完成时**唤醒（`runResume` 逐个跑）。
+- `GameState.turnSeq`：`startTurn` 开头 `state.turnSeq++`。**迟到请求不许抢未来回合的控制权**——
+  这是「世代围栏」，与 pending 的 CAS 是两层不同的保护：CAS 管「槽有没有被别人碰过」，
+  `turnSeq` 管「这一枪是不是已经过了回合交接」。
+- `ResumePlayRequest { sourceId, turnSeq }` + `requestResumePlay(state, req)`：
+  过期放弃（`turnSeq` 不符）→ 目标不是当前回合玩家放弃 → 槽空就取 → 有人等回答就**只登记等待**
+  （`waitPendingResolved`，醒来后重跑同一个 request，直到取到槽或过期）。
+  它是「请求 / 提交」拆分的**请求**半边；不可延迟的控制迁移（`gameOver` / `endTurn` /
+  强制死亡结算）仍走 `takeOverPendingIfUnchanged` 那种强制路径。
+- **本轮未接线**（零行为变化，只是把设施备好）：三处回答路径上旧的 `runPendingWaiters(state)`
+  先收敛成 `drainResume(state)`；接线时在 `ack` / `chooseOption` / `pickCards` 三处各补一次
+  `completePendingRequest(state, <刚答完那条的 requestId>)`。
+
+#### 5.127.2 提交 B：濒死 / 死亡链 **continuation 化**（`done` 由调用方传）
+
+架构约束（用户原话）：「**中间子流程（nearDeath / death / damage / trick resolution /
+skill chain / chain damage）禁止直接 `resumePlay()`，只能 `done()`**；只有最外层 continuation
+决定回出牌阶段 / 结束回合。」
+
+改法（本轮**只做所有权移交，行为逐字不变**）：
+
+1. `enterNearDeath(state, attack, done)`：本人 `nearDeath` → 旁人 `otherNearDeath` → 求桃 / 阵亡，
+   最后调 `done()`。链内**一处 resumePlay 都没有**（可用 `grep` 自查：`enterNearDeath` 到
+   「意图分发」那一段 `resumePlay(` 出现 0 次）。
+2. `afterNearDeath(state, attack, dying, done)`：被技能救回时 `dispatchNearDeathResolved(..., done)`；
+   没救回则 `enterDeathQueue(state, dying, killerId, done)`。
+3. `enterDeathQueue(...)` 把 `done` **存进 `Pending`**（`respondDeath.done`）——求桃要等玩家回答，
+   分岔到 pending 之后由回答分支取出来用：`respondDeathSave`（被【桃】救回）走
+   `dispatchNearDeathResolved(..., pending.done)`；`onPass`（队列问完）走
+   `doDeath(state, pending.dyingId, pending.killerId, pending.done)`。
+4. `doDeath(state, dyingId, killerId, done)`：清完牌 → `checkWin` → `done()`（删掉链内的 resumePlay）。
+   `api.kill`（技能直接杀死）显式传 `() => resumeTurnPlay(state)`——它是技能，不是濒死链。
+5. 16 个调用点全部显式传续接。本轮统一传新增的 `resumeTurnPlay(state)`
+   （＝ `resumePlay(state, state.seatOrder[state.turn.seatIndex]!)`，与重构前链内那两处**逐字等价**），
+   所以行为不变、951 条用例（947 通过 + 4 skip）全绿。
+   **各流程自己的下一步**（锦囊的下一个目标 `advanceTrick` / 敕令的下一位 `chilingNext` /
+   火烧连营的下一人 `huoShaoStep` / 判定阶段接着走 …）留到提交 C 逐个替换——
+   那些才是「最外层 continuation 决定去向」真正兑现的地方。
+
+遗留（如实记）：**行为等价的证伪手段目前只有用例**——本轮是纯重构，没有新行为可以断言；
+因此本轮补了一条**架构守卫用例**（读源码断言那条链里不出现 `resumePlay`），
+真正的行为验证（「受伤后技能自己产生新 interactive pending 时 damage tail 不得覆盖成 play」）
+是提交 C 的跨 ②+③ 回归用例。

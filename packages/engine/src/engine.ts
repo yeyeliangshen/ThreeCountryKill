@@ -1483,7 +1483,7 @@ function afterJudgmentPhase(state: GameState, player: Player): void {
       damage: 3,
       dodged: false,
       attribute: 'thunder',
-    });
+    }, () => resumeTurnPlay(state));
     return;
   }
   continueTurnAfterJudgment(state, player);
@@ -1917,7 +1917,7 @@ function resolveJudgment(
             // 濒死/阵亡由死亡流程接管，判定阶段不再继续（原实现也是这样分流的：
             // 人没了就不该再摸牌出牌，回合交给死亡流程收尾）
             if (player.hp <= 0) {
-              enterNearDeath(state, shandianAttack);
+              enterNearDeath(state, shandianAttack, () => resumeTurnPlay(state));
               return;
             }
             after();
@@ -2223,6 +2223,19 @@ function resumePlay(
     }
   }
   setPending(state, { kind: 'play', seatId: sourceId });
+}
+
+/**
+ * 「回到当前回合玩家的出牌阶段」——濒死 / 死亡链的**调用方**用它作为续接。
+ *
+ * 濒死系统自己不再调 resumePlay（见 docs §5.127）：它只认 `done` 并调用它，
+ * 「控制权还给谁」由发起濒死的那个流程决定。本函数就是其中一种决定——「还给当前回合玩家」，
+ * 与重构前濒死链内部那两处 resumePlay 逐字等价，所以这一步是**纯重构、不改行为**。
+ * 流程自己知道下一步该干什么的（某条锦囊的下一个目标、判定阶段接着往下走…）时，
+ * 应该传那个下一步而不是本函数——后续提交逐个换掉。
+ */
+function resumeTurnPlay(state: GameState): void {
+  resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
 }
 
 // ——————————————————————————————————————————
@@ -2958,7 +2971,7 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
     runDamagedHooks(state, p, chainAttack, dmg, () => {
       if (p.hp <= 0) {
         // 濒死流程接管；ongoingChain 留着，等 resumePlay 把剩下的人接着打完
-        enterNearDeath(state, chainAttack);
+        enterNearDeath(state, chainAttack, () => resumeTurnPlay(state));
         return;
       }
       next();
@@ -3409,7 +3422,7 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
         queueChainSpread(state, attack, dmg);
         if (target.hp <= 0) {
           // 目标自己濒死：蔓延的待办留在 ongoingChain 里，濒死结算完由 resumePlay 接着跑
-          enterNearDeath(state, attack);
+          enterNearDeath(state, attack, () => resumeTurnPlay(state));
           return;
         }
         runChainSpread(state, () => {
@@ -3979,7 +3992,7 @@ function askSanjian(state: GameState, attack: AttackContext, after: () => void):
                 }
                 runDamagedHooks(st3, victim, extra, dmg, () => {
                   if (victim.hp <= 0) {
-                    enterNearDeath(st3, extra);
+                    enterNearDeath(st3, extra, () => resumeTurnPlay(st3));
                     return;
                   }
                   after();
@@ -3999,7 +4012,15 @@ function askSanjian(state: GameState, attack: AttackContext, after: () => void):
 // 濒死 / 死亡
 // ——————————————————————————————————————————
 
-function enterNearDeath(state: GameState, attack: AttackContext): void {
+/**
+ * 进入濒死：本人 nearDeath → 旁人 otherNearDeath → 求桃 / 阵亡 → **调用 `done`**。
+ *
+ * `done` 是「这一串濒死走完之后接着干什么」，由发起濒死的流程决定（伤害结算 / 判定阶段 /
+ * 某一个锦囊的下一步…）。濒死系统**自己不碰控制流**——不调 resumePlay、不猜要不要回出牌阶段，
+ * 只负责把 `done` 传到底并在最后调一次。这就是 docs §5.127 的所有权移交：
+ * 以前这里是「濒死链内部 resumePlay 到当前回合玩家」，调用方没得选。
+ */
+function enterNearDeath(state: GameState, attack: AttackContext, done: () => void): void {
   const dying = getPlayerOrThrow(state, attack.targetId);
   // nearDeath 可挂起：涅槃这类技能要在濒死时询问，然后把人救回来
   runHooksPausable(state, 'nearDeath', dying, { attack }, () => {
@@ -4008,25 +4029,28 @@ function enterNearDeath(state: GameState, attack: AttackContext): void {
       state,
       'otherNearDeath',
       { attack, dyingId: dying.seatId },
-      () => afterNearDeath(state, attack, dying),
+      () => afterNearDeath(state, attack, dying, done),
       dying.seatId,
     );
   });
 }
 
 /** nearDeath（本人）+ otherNearDeath（旁人）都跑完了，接着走原来的濒死处理 */
-function afterNearDeath(state: GameState, attack: AttackContext, dying: Player): void {
+function afterNearDeath(
+  state: GameState,
+  attack: AttackContext,
+  dying: Player,
+  done: () => void,
+): void {
   if (dying.hp > 0) {
-    // 被技能救回来了（涅槃/不屈）：不建濒死队列，把控制权还回去
+    // 被技能救回来了（涅槃/不屈）：不建濒死队列，交给调用方的续接
     pushLog(state, 'nearDeath', `${dying.name} 脱离了濒死状态。`);
     // 诸葛恪·黩武：「结算期间有人**进入濒死并被救回**」——这里正好是「被技能救回」的出口
     if (state.duwuWatchSeat) state.duwuRescued = true;
-    dispatchNearDeathResolved(state, dying.seatId, true, attack.sourceId, () => {
-      resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
-    });
+    dispatchNearDeathResolved(state, dying.seatId, true, attack.sourceId, done);
     return;
   }
-  enterDeathQueue(state, dying, attack.sourceId);
+  enterDeathQueue(state, dying, attack.sourceId, done);
 }
 
 /**
@@ -4055,7 +4079,12 @@ function dispatchNearDeathResolved(
 }
 
 /** 建立濒死求桃队列（完杀在这里生效）。killerId 供阵亡后的「杀死角色后」技能用 */
-function enterDeathQueue(state: GameState, dying: Player, killerId?: string): void {
+function enterDeathQueue(
+  state: GameState,
+  dying: Player,
+  killerId: string | undefined,
+  done: () => void,
+): void {
   // 从濒死者起、按座次轮询每个存活玩家能否出桃
   let queue = aliveSeatsFrom(state, dying.seatId);
   // 完杀（贾诩）：其回合内，只有濒死者本人与完杀持有者能使用【桃】救援
@@ -4076,7 +4105,7 @@ function enterDeathQueue(state: GameState, dying: Player, killerId?: string): vo
     queue = filtered;
   }
   if (queue.length === 0) {
-    doDeath(state, dying.seatId, killerId);
+    doDeath(state, dying.seatId, killerId, done);
     return;
   }
   setPending(state, {
@@ -4086,6 +4115,7 @@ function enterDeathQueue(state: GameState, dying: Player, killerId?: string): vo
     askIndex: 0,
     // 记住是谁打的——阵亡后要用它触发「杀死角色后」的技能（行殇）
     killerId,
+    done,
   });
   pushLog(state, 'nearDeath', `${dying.name} 濒死，等待出桃救援。`);
 }
@@ -4224,7 +4254,7 @@ function lordDeathLoss(
         targetId: v.seatId,
         damage: 1,
         dodged: false,
-      });
+      }, () => resumeTurnPlay(state));
       return;
     }
   }
@@ -4289,7 +4319,18 @@ function applyKillPenalty(state: GameState, dying: Player, killerId: string | un
   api.discardCards(killer.seatId, cards);
 }
 
-function doDeath(state: GameState, dyingId: string, killerId?: string): void {
+/**
+ * 一个人真的阵亡：跑「死亡」钩子 → 清牌 → 判胜负 → **调用 `done`**（谁发起的濒死谁决定去向）。
+ *
+ * `done` 由发起这条濒死链的流程传进来；阵亡流程自己**不再** resumePlay
+ * （见 docs §5.127：中间子流程只能 done，只有最外层 continuation 决定回出牌阶段还是结束回合）。
+ */
+function doDeath(
+  state: GameState,
+  dyingId: string,
+  killerId: string | undefined,
+  done: () => void,
+): void {
   const dying = getPlayerOrThrow(state, dyingId);
   // ⚠️ 必须在下面那几行之前问：阵亡会把「明置」标志翻成 false→true（国战亮双将），
   //    而【会盟】要的是「他**生前**在不在明置计数里」。
@@ -4352,8 +4393,8 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
             }
 
             if (checkWin(state)) return;
-            // 回到当前回合玩家（伤害来源）的出牌阶段
-            resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+            // 清完牌就交回给发起濒死的流程（它决定回出牌阶段、还是接着自己的下一步）
+            done();
           };
           // 君主阵亡：**与你势力相同的角色各失去 1 点体力**（官方君主将的固定特性之一，
           // 只有君主将阵亡才触发——判定见上面的 wasLord）。
@@ -6101,7 +6142,7 @@ function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
       if (target.hp <= 0) {
         // 濒死打断：把剩下的队列留在 ctx 里，濒死结算完由 resumePlay 接着打
         state.ongoingTrick = ctx;
-        enterNearDeath(state, attack);
+        enterNearDeath(state, attack, () => resumeTurnPlay(state));
         return;
       }
       runChainSpread(state, next);
@@ -6252,7 +6293,7 @@ function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
           cardUseId: ctx.cardUseId,
           damage: 1,
           dodged: false,
-        });
+        }, () => resumeTurnPlay(st));
         return;
       }
       chilingNext(st, ctx);
@@ -6560,7 +6601,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
         runDamagedHooks(st, p, attack, dmg, () => {
           queueChainSpread(st, attack, dmg);
           if (p.hp <= 0) {
-            enterNearDeath(st, attack);
+            enterNearDeath(st, attack, () => resumeTurnPlay(st));
             return;
           }
           runChainSpread(st, () => endTrickResolution(st, ctx));
@@ -6955,7 +6996,7 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
     }
     const tail = (): void => {
       if (victim.hp <= 0) {
-        enterNearDeath(state, attack);
+        enterNearDeath(state, attack, () => resumeTurnPlay(state));
       } else {
         endTrickResolution(state, ctx);
       }
@@ -7020,7 +7061,7 @@ function respondHuogongCard(
     }
     const tail = (): void => {
       if (target.hp <= 0) {
-        enterNearDeath(state, attack);
+        enterNearDeath(state, attack, () => resumeTurnPlay(state));
       } else {
         endTrickResolution(state, ctx);
       }
@@ -7231,7 +7272,7 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
     }
     const tail = (): void => {
       if (victim.hp <= 0) {
-        enterNearDeath(state, attack);
+        enterNearDeath(state, attack, () => resumeTurnPlay(state));
       } else {
         endTrickResolution(state, ctx);
       }
@@ -7331,7 +7372,7 @@ function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): Appl
       if (victim.hp <= 0) {
         // 濒死中断：暂存 trick 上下文，救人/死亡后恢复
         state.ongoingTrick = ctx;
-        enterNearDeath(state, attack);
+        enterNearDeath(state, attack, () => resumeTurnPlay(state));
       } else {
         advanceTrick(state, ctx);
       }
@@ -8357,9 +8398,7 @@ function respondDeathSave(
   // 救活：先派发「濒死结算结束后」（左慈·汲魂 / 吴国太·补益），再把控制权还回去
   // 同上：被【桃】救回（黩武的第二个「被救回」出口）
   if (state.duwuWatchSeat) state.duwuRescued = true;
-  dispatchNearDeathResolved(state, dying.seatId, true, pending.killerId, () => {
-    resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
-  });
+  dispatchNearDeathResolved(state, dying.seatId, true, pending.killerId, pending.done);
   return { ok: true };
 }
 
@@ -8375,7 +8414,7 @@ function onPass(state: GameState, seatId: string): ApplyResult {
     if (asked !== seatId) return err('当前不是你响应');
     pending.askIndex++;
     if (pending.askIndex >= pending.askQueue.length) {
-      doDeath(state, pending.dyingId, pending.killerId);
+      doDeath(state, pending.dyingId, pending.killerId, pending.done);
     }
     return { ok: true };
   }
@@ -9424,7 +9463,7 @@ function makeSkillApi(
             if (state.pending === null && resumeTo) resumePlay(state, resumeTo);
           };
           if (target.hp <= 0) {
-            enterNearDeath(state, attack);
+            enterNearDeath(state, attack, () => resumeTurnPlay(state));
             // 进濒死也要接后续（天香就是「先伤害、后摸牌」）：濒死求桃走的是
             // 续接队列，after 里的步骤会排在它后面。
             after?.();
@@ -9445,7 +9484,7 @@ function makeSkillApi(
       pushLog(state, 'skill', `${victim.name} 因【${reason ?? '技能'}】死亡。`, {
         seat: seatId,
       });
-      doDeath(state, seatId);
+      doDeath(state, seatId, undefined, () => resumeTurnPlay(state));
     },
     loseEquip: (seatId, card, after) => {
       const owner = getPlayer(state, seatId);
@@ -9476,7 +9515,7 @@ function makeSkillApi(
           targetId: target.seatId,
           damage: amount,
           dodged: false,
-        });
+        }, () => resumeTurnPlay(state));
       }
       after?.();
     },
@@ -9498,7 +9537,7 @@ function makeSkillApi(
           targetId: target.seatId,
           damage: 0,
           dodged: false,
-        });
+        }, () => resumeTurnPlay(state));
       }
     },
   };

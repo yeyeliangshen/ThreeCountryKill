@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {  fangyuanHandLimitDelta,  woundedFactionCount,
   currentFactionCount,
   applyIntent,
@@ -7813,6 +7814,8 @@ describe('暗置的武将牌没有性别与势力', () => {
       dyingId: A,
       askQueue: [B],
       askIndex: 0,
+      // 手工搭的求桃队列：续接随便给一个（这个用例只看到「回复几点体力」）
+      done: () => {},
     };
     const a = at(state, A);
     ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
@@ -24130,7 +24133,13 @@ describe('输入槽所有权围栏（pending CAS）', () => {
     state.pending = { kind: 'discard', seatId: A, count: 1 };
     notePendingSlotWrite(state);
     const cp = capturePendingCheckpoint(state);
-    state.pending = { kind: 'respondDeath', dyingId: B, askQueue: [A, B], askIndex: 0 };
+    state.pending = {
+      kind: 'respondDeath',
+      dyingId: B,
+      askQueue: [A, B],
+      askIndex: 0,
+      done: () => {},
+    };
     notePendingSlotWrite(state);
     expect(takeOverPendingIfUnchanged(state, cp, playOf(A))).toBe(false);
     expect(state.pending?.kind).toBe('respondDeath');
@@ -24165,6 +24174,55 @@ describe('输入槽所有权围栏（pending CAS）', () => {
     notePendingSlotWrite(state);
     expect(canTakeOverPending(state, cp)).toBe(true);
     expect(queue.length).toBe(1);
+  });
+});
+
+/**
+ * 架构守卫（docs §5.127）：用户定的约束是「**中间子流程禁止直接 resumePlay()，只能 done()**」。
+ * 这不是能靠行为断言守住的东西（行为等价的重构恰恰没有行为可断言），所以直接读源码盯住它。
+ */
+describe('架构约束：濒死 / 死亡链不碰控制权', () => {
+  const src = readFileSync(new URL('../src/engine.ts', import.meta.url), 'utf8');
+
+  /** 从 `(` 处往后配对，取出整个实参表（括号配平） */
+  function argsAt(text: string, openParen: number): string {
+    let depth = 0;
+    for (let i = openParen; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0) return text.slice(openParen + 1, i);
+      }
+    }
+    throw new Error('括号不平衡');
+  }
+
+  it('濒死 / 死亡链内部一处 resumePlay 都没有（控制权只在 done 里交回）', () => {
+    const from = src.indexOf('function enterNearDeath(');
+    const to = src.indexOf('// 意图分发');
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    const seg = src.slice(from, to);
+    // 这一段里的四个函数都该在（切片没切歪）
+    for (const fn of [
+      'function enterNearDeath(',
+      'function afterNearDeath(',
+      'function enterDeathQueue(',
+      'function doDeath(',
+    ]) {
+      expect(seg).toContain(fn);
+    }
+    expect(seg).not.toContain('resumePlay(');
+  });
+
+  it('每个 enterNearDeath 调用点都显式传了续接（第三个参数）', () => {
+    const sites: string[] = [];
+    for (let i = src.indexOf('enterNearDeath('); i >= 0; i = src.indexOf('enterNearDeath(', i + 1)) {
+      sites.push(argsAt(src, i + 'enterNearDeath'.length));
+    }
+    expect(sites.length).toBeGreaterThanOrEqual(17); // 16 个调用点 + 1 处函数声明
+    for (const args of sites) expect(args).toContain('=>');
   });
 });
 
