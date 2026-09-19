@@ -403,6 +403,12 @@ export interface Hero {
    */
   fengyang?: boolean;
   /**
+   * 士燮·避乱（锁定技）：**其他角色**计算与你的距离 +X，X＝你装备区的牌数，**至少 1**。
+   * 是**单向**修正（只有别人看你变远，你计算别人不受影响），且装备数是**实时**读的。
+   * 判定收在 `heroes.biluanAgainst`，由 `distance()` 在 `to` 一侧统一加。
+   */
+  biluan?: boolean;
+  /**
    * 袁术·庸肆（锁定技）：**若场上没有【玉玺】**，你视为装备着【玉玺】。
    *
    * 两处消费方都走 `hasYuxi()`（equip.ts 的摸牌加成 + engine 的出牌阶段开始时视为使用
@@ -437,6 +443,7 @@ export type FieldSkill =
   | 'canUseAs'
   | 'shaLimit'
   | 'distanceFrom'
+  | 'biluan'
   | 'extraDraw'
   | 'handLimit'
   | 'cannotBeTargetOf'
@@ -482,6 +489,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
   'shaLimit',
   'distanceFrom',
+  'biluan',
   'extraDraw',
   'handLimit',
   'cannotBeTargetOf',
@@ -3912,6 +3920,173 @@ export function factionGrantedActiveSkills(state: GameState, player: Player): Ac
 export function wenjiMarked(player: Player, cardId: string): boolean {
   return !!player.flags.wenjiCardId && player.flags.wenjiCardId === cardId;
 }
+
+/**
+ * 士燮·避乱：`from` 计算与 `to` 的距离时要额外加多少？
+ *
+ * 只认**已明置**的士燮（`effectiveHeroes` 里才会有这个字段——暗置的武将牌没有技能），
+ * 而且是**单向**的：只有「别人 → 士燮」加，士燮自己计算别人不加。
+ * X＝士燮**装备区当前牌数**（每次距离结算现算，不缓存档位），**最低 1**。
+ * 装备自身的距离效果（+1 马等）是另一层，`distance()` 里已经先算过了。
+ */
+export function biluanAgainst(state: GameState, to: Player): number {
+  if (!effectiveHeroes(state, to).some((h) => h.biluan === true)) return 0;
+  const count = EQUIP_SLOTS.filter((s) => to.equipment[s] !== null).length;
+  return Math.max(count, 1);
+}
+
+/**
+ * 士燮·【礼下】：一名**与士燮势力不同**的角色进入准备阶段时，其可以弃置士燮装备区的一张牌；
+ * 若这么做，再由其从三项里选一项（弃两张手牌 / 失去 1 点体力 / 令士燮摸两张牌）。
+ *
+ * 口径（用户给出，移动版 2021 不臣篇；**不要与 2022 实体版混**）：
+ * - **发动权在当前回合的那个角色**（问 payload.turnSeatId 那位），士燮不能拒绝；
+ * - 「与士燮势力不同」要求**双方都已确定势力**：未确定势力（暗置）**不触发**
+ *   （2022 实体版才把「没有势力」也算进来，这里不做）；
+ * - 士燮没有装备就不弹询问；弃哪一张由**当前回合角色**选；
+ * - 三项里「弃两张手牌」在手牌不足 2 张时**不给这个选项**（完整动作才可选）；
+ *   「失去 1 点体力」不看体力，1 点体力也能选（之后照常进濒死流程）；
+ * - 弃装备走 `api.discardCards`（士燮的名下）——「失去装备」那类联动照常响；
+ *   避乱的距离实时读装备数，所以拆掉一件之后立刻变化，不用手动同步。
+ */
+function askLixia(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player; // 士燮
+  const actorId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+  if (!actorId || actorId === me.seatId) return;
+  const actor = getPlayer(state, actorId);
+  if (!actor || !actor.alive) return;
+  const mine = effectiveFaction(state, me);
+  const theirs = effectiveFaction(state, actor);
+  if (!mine || !theirs || theirs === mine) return; // 未确定势力 / 同势力：不触发
+  const equips = EQUIP_SLOTS.map((sl) => me.equipment[sl]).filter((c): c is Card => !!c);
+  if (equips.length === 0) return; // 没装备可弃 → 不弹询问
+  ctx.api.askChoice(
+    state,
+    actor.seatId,
+    `【礼下】：是否弃置 ${me.name} 装备区的一张牌？`,
+    [
+      { id: 'yes', label: `发动（弃置 ${me.name} 的一张装备）` },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, a, picked) => {
+      if (picked !== 'yes') return;
+      const user = getPlayer(st, a.seatId);
+      const owner = getPlayer(st, me.seatId);
+      if (!user || !owner) return;
+      const pool = EQUIP_SLOTS.map((sl) => owner.equipment[sl]).filter((c): c is Card => !!c);
+      if (pool.length === 0) return; // 询问是跨步的：回答时装备可能已经没了
+      ctx.api.askPickCards(
+        st,
+        user.seatId,
+        `【礼下】：选择弃置 ${owner.name} 的一张装备`,
+        pool,
+        1,
+        1,
+        (st2, a2, chosen) => {
+          const card = chosen[0];
+          if (!card) return;
+          ctx.api.discardCards(owner.seatId, [card], () => {
+            pushLog(
+              st2,
+              'skill',
+              `${a2.name} 发动【礼下】，弃置了 ${owner.name} 的【${cardLabel(card)}】。`,
+              { seat: a2.seatId },
+            );
+            const choices = [
+              ...(a2.hand.length >= 2
+                ? [{ id: 'discard2', label: '弃置两张手牌' }]
+                : []),
+              { id: 'losehp', label: '失去 1 点体力' },
+              { id: 'draw2', label: `令 ${owner.name} 摸两张牌` },
+            ];
+            ctx.api.askChoice(st2, a2.seatId, '【礼下】：选择一项', choices, (st3, a3, pick) => {
+              if (pick === 'discard2') {
+                ctx.api.askPickCards(
+                  st3,
+                  a3.seatId,
+                  '【礼下】：弃置两张手牌',
+                  a3.hand.slice(),
+                  2,
+                  2,
+                  (st4, a4, cards) => {
+                    if (cards.length === 0) return;
+                    ctx.api.discardCards(a4.seatId, cards, () => {
+                      pushLog(
+                        st4,
+                        'skill',
+                        `${a4.name} 因【礼下】弃置了 ${cards.length} 张手牌。`,
+                        { seat: a4.seatId },
+                      );
+                    });
+                  },
+                );
+                return;
+              }
+              if (pick === 'losehp') {
+                ctx.api.loseHp(a3, 1, () => {
+                  pushLog(st3, 'skill', `${a3.name} 因【礼下】失去 1 点体力。`, {
+                    seat: a3.seatId,
+                  });
+                });
+                return;
+              }
+              const owner2 = getPlayer(st3, me.seatId);
+              if (!owner2) return;
+              let got = 0;
+              for (let i = 0; i < 2; i++) {
+                const c = drawOne(st3);
+                if (!c) break;
+                owner2.hand.push(c);
+                got++;
+              }
+              pushLog(st3, 'skill', `${owner2.name} 因【礼下】摸了 ${got} 张牌。`, {
+                seat: owner2.seatId,
+              });
+            });
+          });
+        },
+      );
+    },
+  );
+}
+
+/**
+ * 士燮（不臣篇·上；**双势力 吴/群**，1.5 阴阳鱼 → 体力上限 3）。
+ *
+ * 口径＝**用户给出的等价规则实现文本**（移动版 2021 不臣篇，2026-09 核对；
+ * ⚠️ 不要与身份场士燮、2022 实体典藏版混——那两版的【避乱】【礼下】是另一套，见 §5.92）：
+ * - 【避乱】（锁定技）：**其他角色**计算与士燮的距离 +X，X＝士燮装备区的牌数，**至少 1**
+ *   （0 件和 1 件都是 +1）。单向修正、实时读装备区；装备自身的 +1 马是另一层修正。
+ * - 【礼下】：一名与士燮**势力不同**的角色进入准备阶段时，其可以弃置士燮装备区的一张牌；
+ *   若这么做，再由其选择：弃两张手牌 / 失去 1 点体力 / 令士燮摸两张牌。
+ *
+ * 双势力：最终势力由 `determineDualFaction` 决定，之后两个技能都读 `effectiveFaction`。
+ */
+const SHIXIE: Hero = {
+  id: 'shixie',
+  name: '士燮',
+  pack: 'buchen',
+  faction: 'wu',
+  secondFaction: 'qun',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  lockedFields: ['biluan'],
+  skillFields: { 避乱: ['biluan'] },
+  biluan: true,
+  hooks: [{ timing: 'othersTurnStart', skillId: '礼下', handler: askLixia }],
+  skills: [
+    {
+      name: '避乱',
+      desc: '锁定技，其他角色计算与你的距离时，额外增加 X（X 为你装备区的牌数，最低为 1）。',
+    },
+    {
+      name: '礼下',
+      desc: '一名与你势力不同的角色进入准备阶段时，其可以弃置你装备区的一张牌，然后选择一项：弃置两张手牌；失去 1 点体力；令你摸两张牌。',
+    },
+  ],
+};
 
 /**
  * 场上「**有受伤角色**的势力」的数量（唐咨·兴棹的四档门槛）——国战公共规则函数。
@@ -12473,7 +12648,6 @@ const BUCHEN_DUAL: Hero[] = [
   dualHero('mengda', '孟达', 'wei', 'shu', 4),
   dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu', 4),
   dualHero('zhanglu', '张鲁', 'wei', 'qun', 3),
-  dualHero('shixie', '士燮', 'wu', 'qun', 3),
   dualHero('xiahouba', '夏侯霸', 'wei', 'shu', 4),
   dualHero('wenqin', '文钦', 'wei', 'wu', 4),
   dualHero('pengyang', '彭羕', 'shu', 'qun', 3),
@@ -12514,6 +12688,7 @@ export const HEROES: Hero[] = [
   ...BUCHEN_DUAL,
   LIUQI,
   TANGZI,
+  SHIXIE,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

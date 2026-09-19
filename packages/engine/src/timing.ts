@@ -6,6 +6,12 @@ import type { GameState, Player } from './model';
 // 武将触发技可挂在某时机上，对结算进行修改/打断。
 export type Timing =
   | 'turnStart'
+  /**
+   * **其他角色**的准备阶段（派给非回合玩家，payload.turnSeatId＝那个正在开始回合的人）。
+   * 士燮·礼下挂在它上面：「一名与你势力不同的角色进入准备阶段时，其可以弃置你装备区的一张牌」——
+   * 发动权在**当前回合的那个角色**，所以问的是 payload 的那位，而不是技能拥有者。
+   */
+  | 'othersTurnStart'
   | 'judgePhase' // 判定阶段开始
   | 'beforeJudge' // 判定牌生效前（鬼才替判 / 天妒取牌）
   | 'drawPhase' // 摸牌阶段开始（可改摸牌数：突袭）

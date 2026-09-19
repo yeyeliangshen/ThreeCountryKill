@@ -1070,13 +1070,19 @@ function startTurn(state: GameState, seatIndex: number): void {
   }
   // 国战：**准备阶段开始时是唯一能主动明置武将牌的时机**（其余时候只能在「发动技能」
   // 时顺带明置）。先问这一句，再走准备阶段的其他钩子。
-  askRevealAtTurnStart(state, player, () => askLordBanner(state, player, () => {
+  askRevealAtTurnStart(state, player, () =>
+    // 「其他角色的准备阶段」（士燮·礼下）：派给非回合玩家，payload 带正在开始回合的人。
+    // 插在明置询问之后、准备阶段其余钩子之前——拆装备属于准备阶段的事。
+    runOthersTurnStart(state, player.seatId, () =>
+      askLordBanner(state, player, () => {
     // 整条回合流程都用可挂起钩子串起来：准备阶段的洛神/观星、判定阶段的鬼才
     // 都可能发起询问，问到一半不能把后面的阶段丢了。
-    runHooksPausable(state, 'turnStart', player, undefined, () => {
-      startJudgmentPhase(state, player);
-    });
-  }));
+        runHooksPausable(state, 'turnStart', player, undefined, () => {
+          startJudgmentPhase(state, player);
+        });
+      }),
+    ),
+  );
 
   // 君主旗的授予在**君主自己的回合开始**时到期清掉（另见 clearLordGrants）
   clearLordGrants(state, player.seatId);
@@ -1891,6 +1897,22 @@ function afterTurnEnd(state: GameState): void {
     return;
   }
   startTurn(state, next);
+}
+
+/**
+ * 派发「其他角色的准备阶段」（依次问每个**非**回合玩家，允许钩子挂起）。
+ * 只被 `startTurn` 调用一次；payload 里的 turnSeatId 是正在开始回合的那个人。
+ */
+function runOthersTurnStart(state: GameState, turnSeatId: string, after: () => void, i = 0): void {
+  const others = state.players.filter((p) => p.alive && p.seatId !== turnSeatId);
+  if (i >= others.length) {
+    after();
+    return;
+  }
+  const p = others[i]!;
+  runHooksPausable(state, 'othersTurnStart', p, { turnSeatId }, () =>
+    runOthersTurnStart(state, turnSeatId, after, i + 1),
+  );
 }
 
 /**
@@ -9036,7 +9058,7 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     if (deputyHero.isLord) return err('君主将只能作为主将');
     player.heroId = intent.heroId;
     player.deputyHeroId = deputyId;
-    player.faction = mainHero.faction;
+    player.faction = mainHero.faction;
 
     // 双势力：按 2023 规则确定势力（唯一共同势力自动确定；要玩家选的组合见下面直接拒绝）
     const dual = determineDualFaction(mainHero, deputyHero, state.mode);

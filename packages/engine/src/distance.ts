@@ -1,7 +1,13 @@
 import type { Player } from './model';
 import type { GameState } from './model';
 import { getPlayer, getPlayerOrThrow } from './model';
-import { effectiveFaction, effectiveHeroes, hasFeiying, unrevealedHeroes } from './heroes';
+import {
+  biluanAgainst,
+  effectiveFaction,
+  effectiveHeroes,
+  hasFeiying,
+  unrevealedHeroes,
+} from './heroes';
 
 /**
  * 基础距离：圆桌上从 fromId 到 toId 的最短座次距。
@@ -46,6 +52,8 @@ export function distance(state: GameState, fromId: string, toId: string): number
   if (to?.equipment.plusMount) d += 1;
   // 飞影（曹洪·鹤翼授予同队列者）：别人计算与他的距离 +1
   if (to && hasFeiying(state, to)) d += 1;
+  // 士燮·避乱（锁定技）：**别人**计算与士燮的距离 +X（X＝其装备区牌数，至少 1）——单向
+  if (to) d += biluanAgainst(state, to);
   if (from) {
     for (const hero of effectiveHeroes(state, from)) {
       d -= hero.distanceFrom ?? 0;

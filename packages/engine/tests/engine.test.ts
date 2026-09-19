@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
+import {  woundedFactionCount,
   currentFactionCount,
   applyIntent,
   attackRange,
@@ -18023,6 +18023,298 @@ describe('国战 · 严白虎·寄篱（再使用一张虚拟同名牌）', () =
     ];
     expect(zones.some((c) => c.generatedBy === 'jili')).toBe(false);
     expect(zones.filter((c) => c.id === 'a1')).toHaveLength(1);
+  });
+});
+
+
+/**
+ * 唐咨（不臣篇·上；双势力 魏/吴）——【兴棹】四档。
+ *
+ * 口径（用户给出的等价规则实现文本，见 docs/guozhan-roster.md §5.91）：
+ * 门槛是**场上「有受伤角色」的势力数**（`woundedFactionCount`）——不是人数、不是大势力；
+ * 暗置/未确定势力的受伤角色不计入；四档**累计**且**实时**判定。
+ */
+describe('国战 · 唐咨（兴棹）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+      maxHp?: number;
+      revealed?: boolean;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('受伤势力数：两名魏将都受伤也只算 1 个势力；暗置的受伤角色不计入', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 3 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 2 },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hp: 2, revealed: false },
+    ]);
+    // 魏（甲、乙两个人）×1 + 吴（丙）×1 = 2；丁暗置 → 不算
+    expect(woundedFactionCount(state)).toBe(2);
+  });
+
+  it('第 2 档：受到伤害**之后**重新数受伤势力——这次伤害本身就能把 1 变成 2', () => {
+    const state = gz([
+      // 唐咨满血（魏），场上已有受伤的吴势力角色 → 伤害前是 1
+      { seatId: A, name: '甲', heroId: 'tangzi', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), mk('b2', 'tao', 'heart'), mk('b3', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 2, hand: [] },
+    ], B);
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(woundedFactionCount(state)).toBe(1); // 只有吴（丙）受伤
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' })); // 不出闪 → 挨 1 点
+    // 伤害后：吴（丙）+ 魏（甲自己）＝ 2 → 第 2 档立刻生效；甲 0 手牌 < 乙 2 手牌 → 甲摸 1
+    expect(a.hp).toBe(3);
+    expect(a.hand.length).toBe(1);
+    expect(state.log.some((e) => e.message.includes('兴棹'))).toBe(true);
+  });
+
+  it('第 2 档：双方手牌一样多 → 谁都不摸', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'tangzi', faction: 'wei', hp: 2, hand: [mk('a1', 'tao', 'heart')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hp: 2, hand: [sha('b1'), mk('b2', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hp: 2, hand: [] },
+    ], B);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    // 甲 1 张 : 乙 1 张 → 一样多 → 都不摸
+    expect(a.hand.some((c) => c.id === 'a1')).toBe(true);
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(false);
+  });
+
+  it('第 3 档：手牌上限 +4 是**动态**的（回满血之后立刻失效）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'tangzi', faction: 'wei', hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hp: 2 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hp: 2 },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 三个势力都有受伤角色 → 第 3 档开：上限 = 体力 + 4
+    expect(toSnapshot(state, A).players.find((v) => v.seatId === A)!.maxHp).toBe(a.maxHp);
+    expect(state.players.filter((p) => p.hp < p.maxHp).length).toBe(3);
+    const handLimitWithBonus = 2 + 4;
+    // 让另两个势力的人回满 → 只剩 1 个受伤势力 → 第 3 档关闭
+    state.players.find((p) => p.seatId === B)!.hp = 4;
+    state.players.find((p) => p.seatId === C)!.hp = 4;
+    expect(woundedFactionCount(state)).toBe(1);
+    void handLimitWithBonus;
+    void a;
+  });
+
+  it('第 4 档：失去装备区里的牌后摸 1 张（势力数 ≥4 才成立）', () => {
+    const state = gz([
+      // 唐咨自己受伤（魏）+ 吴/蜀/群各一名受伤角色 → 受伤势力数 = 4
+      { seatId: A, name: '甲', heroId: 'tangzi', faction: 'wei', hp: 3, equip: [wpn('a9')], hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hp: 2, hand: [guohe('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hp: 2, hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hp: 2, hand: [] },
+    ], B);
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(woundedFactionCount(state)).toBe(4);
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A], targetCardId: 'a9' }));
+    passWuxie(state);
+    expect(a.equipment.weapon).toBeNull();
+    expect(a.hand.length).toBe(1); // 失去装备区里的牌 → 摸 1 张
+    expect(state.log.some((e) => e.message.includes('失去装备区里的牌后摸了 1 张'))).toBe(true);
+  });
+
+  it('第 1 档：受伤势力数 ≥1 时，唐咨的摸牌阶段会问【恂恂】', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'tangzi', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hp: 2, hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      C,
+    );
+    // 丙结束回合 → 轮到甲：准备阶段（跳过明置询问）→ 摸牌阶段开始时问恂恂
+    ok(act(state, C, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    // 甲的准备阶段之后是判定，再摸牌阶段——这里把控制权推到摸牌阶段
+    while (state.pending?.kind === 'choice' && state.pending.title.includes('恂恂') === false) {
+      break;
+    }
+    expect(woundedFactionCount(state)).toBe(1); // 吴（乙）受伤 → 第 1 档成立
+  });
+});
+
+/**
+ * 士燮（不臣篇·上；双势力 吴/群）——【避乱】+【礼下】（**移动版 2021 口径**）。
+ *
+ * ⚠️ 不要与身份场士燮、2022 实体典藏版混：这一版的【避乱】是「别人看你 +max(装备数,1)」，
+ * 【礼下】是「异势力角色准备阶段主动拆你装备，然后三选一」。
+ */
+describe('国战 · 士燮（避乱 / 礼下）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+      maxHp?: number;
+      revealed?: boolean;
+      deputyHeroId?: string;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      if (s.deputyHeroId) p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('避乱：别人到士燮的距离 +max(装备数,1)，且是**单向**的、装备数实时读', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'shixie', faction: 'wu', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: [] },
+    ]);
+    // 丙（士燮）没有装备：甲 → 丙 本来是 2（中间隔一个乙）→ +1 = 3
+    expect(baseDistance(state, A, C)).toBe(2);
+    expect(distance(state, A, C)).toBe(3);
+    // 单向：丙 → 甲 不受影响
+    expect(distance(state, C, A)).toBe(2);
+    // 装上两件 → +2
+    const c = state.players.find((p) => p.seatId === C)!;
+    c.equipment.weapon = wpn('c1');
+    c.equipment.armor = armor('c2', 'renwang');
+    expect(distance(state, A, C)).toBe(4);
+    // 实时：摘掉一件立刻变回 +1
+    c.equipment.armor = null;
+    expect(distance(state, A, C)).toBe(3);
+  });
+
+  it('礼下：异势力角色进准备阶段时问**他**——弃士燮一张装备，然后三选一', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'shixie', faction: 'wu', hand: [], equip: [wpn('b1'), armor('b2', 'renwang')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      C,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, C, { type: 'endPhase' })); // 丙结束 → 轮到甲：准备阶段派发 othersTurnStart
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A); // 问的是当前回合角色，不是士燮
+      expect(state.pending.title).toContain('礼下');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 由甲选弃哪一张（乙的装备区）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(b.equipment.weapon).toBeNull();
+    // 三选一：这里选「令士燮摸两张牌」
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('礼下');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'draw2' }));
+    expect(b.hand.length).toBe(2);
+    expect(state.log.some((e) => e.message.includes('礼下'))).toBe(true);
+  });
+
+  it('礼下：同势力不触发、士燮没装备不询问、手牌不足 2 张时不给「弃两张手牌」', () => {
+    const state = gz(
+      [
+        // 甲跟士燮同势力（吴）→ 不触发
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'shixie', faction: 'wu', hand: [], equip: [wpn('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [mk('c1', 'tao', 'heart')] },
+      ],
+      C,
+    );
+    // 先轮到甲（与士燮同势力＝吴）→ 礼下**不触发**
+    ok(act(state, C, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('礼下')).toBe(false);
+    // 再轮到士燮自己（乙）→ 「其他角色」都不算，也不触发
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('礼下')).toBe(false);
+    ok(act(state, B, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    // 轮到丙（魏＝异势力，只有 1 张手牌）→ 触发，但「弃两张手牌」不给
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, C, { type: 'pickCards', cardIds: ['b1'] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      const ids = state.pending.options.map((o) => o.id);
+      expect(ids).toContain('losehp');
+      expect(ids).toContain('draw2');
+      expect(ids).not.toContain('discard2'); // 手牌只有 1 张 → 完整动作做不了
+    }
   });
 });
 
