@@ -14883,6 +14883,12 @@ function askXiongnueOffense(ctx: HookContext): void {
   const me = ctx.player;
   if (me.lu.length === 0) return;
   if (state.xiongnue) return; // 一个出牌阶段只处理一次
+  // ⚠️ 用户 2026-09 口径：拿不到势力的「戮」（从未登场武将牌堆随机抽到的**双势力**牌）
+  //    **不允许在这条路上选**（凶虐①必须读势力）——但**不消耗、不惩罚**它：
+  //    【嗜戮】换牌与【凶虐②】消耗两戮（势力不限）照常能用它。
+  //    所以这里先把可选的挑出来；一张都没有就整个不出询问。
+  const usable = me.lu.filter((e) => !!e.faction);
+  if (usable.length === 0) return;
   ctx.api.askChoice(
     state,
     me.seatId,
@@ -14897,13 +14903,14 @@ function askXiongnueOffense(ctx: HookContext): void {
         st,
         p.seatId,
         '【凶虐】：选择要移去的「戮」（不同戮对应不同势力）',
-        p.lu.map((e, i) => ({
-          id: String(i),
-          label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${e.faction ? FACTION_NAME[e.faction] ?? e.faction : '势力待核对'}）`,
+        // 只列出**已确定势力**的那些（`faction === null` 的标为 unresolved，不在这里给）
+        usable.map((e) => ({
+          id: e.heroId,
+          label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${FACTION_NAME[e.faction!] ?? e.faction}）`,
         })),
-        (st2, p2, idxStr) => {
-          const idx = Number(idxStr);
-          const entry = p2.lu[idx];
+        (st2, p2, heroId) => {
+          const idx = p2.lu.findIndex((e) => e.heroId === heroId);
+          const entry = idx >= 0 ? p2.lu[idx] : undefined;
           if (!entry) return;
           // 返回未登场武将牌堆（不是销毁——以后还可能被变更副将/技能取到）
           p2.lu.splice(idx, 1);

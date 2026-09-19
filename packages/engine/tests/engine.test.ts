@@ -19411,7 +19411,7 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: '0' })); // 选那张魏戮
+    ok(act(state, A, { type: 'chooseOption', optionId: 'caocao' })); // 选那张魏戮（现在按武将牌 id 选）
     ok(act(state, A, { type: 'chooseOption', optionId: 'dmg' })); // 加伤
     expect(a.lu.length).toBe(0);
     expect(state.heroPool.length).toBe(poolBefore + 1); // 返回未登场堆（不是销毁）
