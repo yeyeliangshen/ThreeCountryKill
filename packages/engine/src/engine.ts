@@ -1057,6 +1057,7 @@ function startTurn(state: GameState, seatIndex: number): void {
   // 伤害事件账本（诛害的强化条件）也是「本回合」口径
   state.damageLedgerThisTurn = [];
   state.liangfanHanIds = [];
+  state.midaoUsedSeats = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
   state.discardThisTurn = [];
   // 武将牌翻面朝上：跳过这一个回合，翻回正面（据守/放逐的代价）

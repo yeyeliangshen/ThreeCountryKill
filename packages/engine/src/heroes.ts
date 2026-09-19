@@ -4120,6 +4120,345 @@ const MENGDA: Hero = {
 };
 
 /**
+/**
+ * 张鲁 —— 布施 / 米道（不臣篇·上，魏/群 双势力，1.5 阴阳鱼 → 3；移动版现行口径，见 §5.94）。
+ *
+ * 布施：① 张鲁**自己**受到伤害后，**每 1 点**都可以令一名与自己势力相同的角色摸 1 张（可选）；
+ *   ② 张鲁**对其他角色**造成伤害后，**必须**令一名与**受伤者**势力相同的角色摸 1 张
+ *   （一次伤害事件只处理一次，与 amount 无关）。受伤者未确定势力时没有合法目标。
+ * 米道：与张鲁势力相同的角色（含**张鲁自己**）使用**有实体牌**的【杀】指定目标时，可以交给张鲁
+ *   一张**手牌**，然后由**张鲁**重新声明这次使用的**花色**与**伤害属性**；只改这一次使用，
+ *   实体牌本身不动。⚠️ 只接了【杀】；伤害类锦囊同一批待办。
+ */
+function factionMatesOf(state: GameState, faction: Faction | null): Player[] {
+  if (!faction) return [];
+  return state.players.filter((p) => p.alive && effectiveFaction(state, p) === faction);
+}
+
+/** 【布施】①：自己受到伤害后——**每 1 点**各问一次（可选），同势力任一角色摸 1 */
+function askBushiSelf(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const n = (ctx.payload as { damage?: number } | undefined)?.damage ?? 0;
+  if (n <= 0) return;
+  const mates = factionMatesOf(state, effectiveFaction(state, me));
+  if (mates.length === 0) return;
+  const step = (i: number): void => {
+    if (i >= n) return;
+    ctx.api.askChoice(
+      state,
+      me.seatId,
+      `【布施】（第 ${i + 1}/${n} 点）：是否令一名与你势力相同的角色摸一张牌？`,
+      [
+        ...mates.map((p) => ({ id: p.seatId, label: p.name })),
+        { id: 'no', label: '不发动' },
+      ],
+      (st, p, picked) => {
+        if (picked !== 'no') {
+          const t = getPlayer(st, picked);
+          const c = t && t.alive ? drawOne(st) : null;
+          if (c && t) {
+            t.hand.push(c);
+            pushLog(st, 'skill', `${p.name} 的【布施】：${t.name} 摸了一张牌。`, { seat: t.seatId });
+          }
+        }
+        step(i + 1);
+      },
+    );
+  };
+  step(0);
+}
+
+/** 【布施】②：张鲁对其他角色造成伤害后——**必须**令受伤者势力的一名角色摸 1（一次事件一次） */
+function askBushiDealt(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  if (!attack || attack.targetId === me.seatId) return;
+  const victim = getPlayer(state, attack.targetId);
+  if (!victim) return;
+  const vf = effectiveFaction(state, victim);
+  if (!vf) return; // 未确定势力：不偷看印面势力，也没有「与其势力相同」的合法目标
+  const mates = factionMatesOf(state, vf);
+  if (mates.length === 0) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【布施】（强制）：令一名与 ${victim.name} 势力相同的角色摸一张牌`,
+    mates.map((p) => ({ id: p.seatId, label: p.name })),
+    (st, p, picked) => {
+      const t = getPlayer(st, picked);
+      const c = t && t.alive ? drawOne(st) : null;
+      if (c && t) {
+        t.hand.push(c);
+        pushLog(st, 'skill', `${p.name} 的【布施】：${t.name} 摸了一张牌。`, { seat: t.seatId });
+      }
+    },
+  );
+}
+
+/** 【米道】：同势力角色（含张鲁自己）用有实体牌的【杀】指定目标时，交一张手牌、由张鲁改花色与属性 */
+function askMidao(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { attack?: AttackContext; card?: Card } | undefined;
+  const attack = payload?.attack;
+  if (!attack) return;
+  // `othersBecomeTarget` 只带 attack，牌面按 id 找回来（虚拟牌连材料一起看）
+  const card = payload?.card ?? findCardAnywhere(state, attack.cardId);
+  if (!card) return;
+  if (state.turn.phase !== 'play') return;
+  const user = getPlayer(state, attack.sourceId);
+  if (!user || !user.alive) return;
+  const mine = effectiveFaction(state, me);
+  const theirs = effectiveFaction(state, user);
+  if (!mine || !theirs || mine !== theirs) return;
+  const physical = damageCardIds(state, attack).filter((id) => findCardAnywhere(state, id) !== null);
+  if (physical.length === 0) return; // 纯虚拟牌不能发动
+  if (state.midaoUsedSeats.includes(user.seatId)) return;
+  const declare = (st: GameState): void => {
+    st.midaoUsedSeats = [...st.midaoUsedSeats, user.seatId];
+    ctx.api.askChoice(
+      st,
+      me.seatId,
+      `【米道】：声明【${cardLabel(card)}】这次使用的**花色**`,
+      [
+        { id: 'spade', label: '黑桃' },
+        { id: 'heart', label: '红桃' },
+        { id: 'club', label: '梅花' },
+        { id: 'diamond', label: '方块' },
+      ],
+      (st2, _p, suit) => {
+        const red = suit === 'heart' || suit === 'diamond';
+        ctx.api.askChoice(
+          st2,
+          me.seatId,
+          '【米道】：声明这次使用的**伤害属性**',
+          [
+            { id: 'normal', label: '普通伤害' },
+            { id: 'fire', label: '火焰伤害' },
+            { id: 'thunder', label: '雷电伤害' },
+          ],
+          (st3, _p2, nature) => {
+            attack.cardColor = red ? 'red' : 'black';
+            if (nature === 'normal') delete attack.attribute;
+            else attack.attribute = nature as 'fire' | 'thunder';
+            pushLog(
+              st3,
+              'skill',
+              `${me.name} 的【米道】：${user.name} 的【${cardLabel(card)}】这次使用视为${red ? '红' : '黑'}色、${nature === 'normal' ? '普通' : nature === 'fire' ? '火焰' : '雷电'}伤害。`,
+              { seat: me.seatId },
+            );
+          },
+        );
+      },
+    );
+  };
+  if (user.seatId === me.seatId) {
+    ctx.api.askChoice(
+      state,
+      me.seatId,
+      `【米道】：是否重新声明这次【${cardLabel(card)}】的花色与伤害属性？`,
+      [
+        { id: 'yes', label: '发动' },
+        { id: 'no', label: '不发动' },
+      ],
+      (st, _p, picked) => {
+        if (picked === 'yes') declare(st);
+      },
+    );
+    return;
+  }
+  if (user.hand.length === 0) return; // 交不出手牌（**手牌**口径，见 §5.94）
+  ctx.api.askChoice(
+    state,
+    user.seatId,
+    `【米道】：是否交给 ${me.name} 一张手牌，重新声明这次【${cardLabel(card)}】的花色与伤害属性？`,
+    [
+      { id: 'yes', label: '发动（交一张手牌）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, u, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askPickCards(
+        st,
+        u.seatId,
+        `【米道】：选择交给 ${me.name} 的一张手牌`,
+        u.hand.slice(),
+        1,
+        1,
+        (st2, u2, chosen) => {
+          const give = chosen[0];
+          if (!give) return;
+          ctx.api.transferCard(u2.seatId, give, me.seatId, () => {
+            pushLog(st2, 'skill', `${u2.name} 因【米道】交给 ${me.name} 【${cardLabel(give)}】。`, {
+              seat: u2.seatId,
+            });
+            declare(st2);
+          });
+        },
+      );
+    },
+  );
+}
+
+const ZHANGLU: Hero = {
+  id: 'zhanglu',
+  name: '张鲁',
+  pack: 'buchen',
+  faction: 'wei',
+  secondFaction: 'qun',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    { timing: 'afterDamage', skillId: '布施', handler: askBushiSelf },
+    { timing: 'afterDamageDealt', skillId: '布施', handler: askBushiDealt },
+    // ⚠️ 米道要看到**别人**的使用：`useCard` 只派给使用者本人，所以挂 `othersBecomeTarget`
+    //    （派给全场，payload 带 attack）——「指定目标时」这个时机的等价落点。
+    { timing: 'othersBecomeTarget', skillId: '米道', handler: askMidao },
+  ],
+  skills: [
+    {
+      name: '布施',
+      desc: '当你受到伤害后，你可以令一名与你势力相同的角色摸一张牌（每点伤害处理一次）；当你对其他角色造成伤害后，你必须令一名与其势力相同的角色摸一张牌。',
+    },
+    {
+      name: '米道',
+      desc: '与你势力相同的角色每回合限一次，其使用有对应实体牌的【杀】指定目标时，可以交给你一张手牌，然后由你重新声明此牌的花色和伤害属性。',
+    },
+  ],
+};
+
+/**
+ * 糜芳傅士仁 —— 锋势（不臣篇·上，蜀/吴 双势力，2 阴阳鱼 → 4；移动版现行口径，见 §5.95）。
+ *
+ * 两个**镜像**分支、**发动权不同**（最易写错处）：
+ * - 主动：我用牌且唯一目标是别人、双方都有牌、目标手牌**少于**我 → **我**决定发动；
+ * - 被动：别人用牌且我是唯一目标、双方都有牌、我手牌**少于**对方 → **由对方**决定发动（负面）。
+ * 两个分支下**弃哪两张都由糜芳傅士仁选**；两张都弃成功后，这张牌的**基础伤害 +1**。
+ * 不看牌种（官方问答：与伤害无关的牌也能发动）；增伤改的是**这次使用**、不动实体牌。
+ * ⚠️ 只接了【杀】；伤害类锦囊的基础伤害需挂在 TrickContext 上（与米道同一批待办）。
+ */
+function askFengshi(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { attack?: AttackContext; card?: Card } | undefined;
+  const attack = payload?.attack;
+  const card = payload?.card;
+  if (!attack || !card) return;
+  if ((attack.totalTargets ?? 1) !== 1) return; // 「唯一目标」一票否决
+  const target = getPlayer(state, attack.targetId);
+  if (!target || !target.alive) return;
+  const mine = attack.sourceId === me.seatId;
+  const amTarget = target.seatId === me.seatId;
+  if (mine === amTarget) return;
+  if (mine) {
+    if (handAndEquipOf(me).length === 0 || handAndEquipOf(target).length === 0) return;
+    if (target.hand.length >= me.hand.length) return;
+    ctx.api.askChoice(
+      state,
+      me.seatId,
+      `【锋势】：是否弃置你与 ${target.name} 各一张牌，令此牌基础伤害 +1？`,
+      [
+        { id: 'yes', label: '发动' },
+        { id: 'no', label: '不发动' },
+      ],
+      (st, p, picked) => {
+        if (picked === 'yes') fengshiDiscard(st, p, target.seatId, attack, card, ctx);
+      },
+    );
+    return;
+  }
+  const user = getPlayer(state, attack.sourceId);
+  if (!user || !user.alive) return;
+  if (handAndEquipOf(me).length === 0 || handAndEquipOf(user).length === 0) return;
+  if (me.hand.length >= user.hand.length) return;
+  ctx.api.askChoice(
+    state,
+    user.seatId,
+    `【锋势】：是否弃置你与 ${me.name} 各一张牌，令此牌基础伤害 +1？（两张都由 ${me.name} 选）`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, _u, picked) => {
+      if (picked === 'yes') fengshiDiscard(st, me, user.seatId, attack, card, ctx);
+    },
+  );
+}
+
+/** 弃双方各一张（都由 picker 选），两张都弃成功才 +1 基础伤害 */
+function fengshiDiscard(
+  state: GameState,
+  picker: Player,
+  otherSeatId: string,
+  attack: AttackContext,
+  card: Card,
+  ctx: HookContext,
+): void {
+  const own = handAndEquipOf(picker);
+  if (own.length === 0) return;
+  ctx.api.askPickCards(
+    state,
+    picker.seatId,
+    '【锋势】：选择弃置你自己的一张牌',
+    own,
+    1,
+    1,
+    (st, p, chosen) => {
+      const c1 = chosen[0];
+      if (!c1) return;
+      ctx.api.discardCards(p.seatId, [c1], () => {
+        const o = getPlayer(st, otherSeatId);
+        if (!o) return;
+        const pool = handAndEquipOf(o);
+        if (pool.length === 0) return; // 中途没了就不增伤（通用执行完整性口径）
+        ctx.api.askPickCards(
+          st,
+          p.seatId,
+          `【锋势】：选择弃置 ${o.name} 的一张牌`,
+          pool,
+          1,
+          1,
+          (st2, p2, chosen2) => {
+            const c2 = chosen2[0];
+            if (!c2) return;
+            ctx.api.discardCards(o.seatId, [c2], () => {
+              attack.damage += 1; // 挂这次使用的基础伤害（酒/技能/防具那条链照常）
+              pushLog(
+                st2,
+                'skill',
+                `${p2.name} 发动【锋势】：弃置双方各一张牌，【${cardLabel(card)}】的基础伤害 +1。`,
+                { seat: p2.seatId },
+              );
+            });
+          },
+        );
+      });
+    },
+  );
+}
+
+const MIFANG: Hero = {
+  id: 'mifangfushiren',
+  name: '糜芳傅士仁',
+  pack: 'buchen',
+  faction: 'shu',
+  secondFaction: 'wu',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [{ timing: 'useCard', skillId: '锋势', handler: askFengshi }],
+  skills: [
+    {
+      name: '锋势',
+      desc: '你使用牌指定一名其他角色为唯一目标时，若其手牌数小于你且双方都有牌，你可以弃置你与其各一张牌，令此牌基础伤害值+1；其他角色使用牌指定你为唯一目标时，若你的手牌数小于其且双方都有牌，其可以令你弃置其与你各一张牌，令此牌基础伤害值+1。',
+    },
+  ],
+};
+
+/**
  * 士燮·【礼下】：一名**与士燮势力不同**的角色进入准备阶段时，其可以弃置士燮装备区的一张牌；
  * 若这么做，再由其从三项里选一项（弃两张手牌 / 失去 1 点体力 / 令士燮摸两张牌）。
  *
@@ -12829,8 +13168,6 @@ const TANGZI: Hero = {
 };
 
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu', 4),
-  dualHero('zhanglu', '张鲁', 'wei', 'qun', 3),
   dualHero('xiahouba', '夏侯霸', 'wei', 'shu', 4),
   dualHero('wenqin', '文钦', 'wei', 'wu', 4),
   dualHero('pengyang', '彭羕', 'shu', 'qun', 3),
@@ -12872,6 +13209,8 @@ export const HEROES: Hero[] = [
   LIUQI,
   TANGZI,
   SHIXIE,
+  ZHANGLU,
+  MIFANG,
   MENGDA,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
