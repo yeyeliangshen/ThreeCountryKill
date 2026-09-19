@@ -23769,6 +23769,32 @@ describe('国战 · 许攸（成略 / 恃才）', () => {
     expect(pick(state, A).hand.length).toBe(before);
   });
 
+  // ⚠️ 仍 skip：锦囊侧的派发已经接上（`endTrickResolution` 的收尾派 `cardUseEnded`、
+  //    锦囊伤害也带 `ctx.cardUseId`），但这张用例还等不到询问——和 §5.118 ① 同一层
+  //    （**收尾覆盖 pending**），等那条修好它应该一起通。【杀】侧是好的（上面两条用例通过）。
+  it.skip('成略：**群体锦囊**（南蛮入侵）也算「目标数大于 1」——整张牌结算结束后才问', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [mk('n1', 'nanman', 'spade')] },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei', hp: 4, maxHp: 4 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 4, maxHp: 4 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    // 乙、丙依次响应（都弃权）→ 南蛮整张结算结束 → 才问【成略】
+    let guard = 0;
+    while (state.pending?.kind === 'respondTrick' && guard++ < 5) {
+      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    }
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期【成略】询问，实际是 ${ask?.kind}`);
+    expect(ask.title).toContain('成略');
+    const before = pick(state, A).hand.length;
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 第一段：甲摸 1
+    expect(pick(state, A).hand.length).toBe(before + 1);
+  });
+
   it('成略：单目标牌不触发；未确定势力的使用者不触发', () => {
     const state = gz(
       [

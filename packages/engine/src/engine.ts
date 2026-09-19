@@ -4903,6 +4903,8 @@ function startTrickResolution(
   const ctx: TrickContext = {
     sourceId: player.seatId,
     card,
+    // 本次「使用牌」的编号（许攸·成略要把它造成的伤害绑回这一次使用）
+    cardUseId: ++state.cardUseSeq,
     responders: [],
     responderIndex: 0,
     targetIds: targetIds.slice(),
@@ -5152,7 +5154,30 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
   //    → 冒烟里 yuanshu/dongzhuo/dengai 等对局直接判不出胜负。说明这些收尾**确实需要**抢回
   //    pending（不是可有可无），正确修法必须能**区分**「本次收尾自己刚产生的询问」与「更早的
   //    陈旧 pending」（版本号 / 对象身份），并且**优先在发问方**（弃置收口）解决。
-  const finish = (): void => resumePlay(state, ctx.sourceId);
+  const finish = (): void => {
+    // 「这张牌整个结算结束」也派给**全场**（许攸·成略：旁观的同势力角色要听）；
+    // 与【杀】那条一样用 cardUseEnded + 本次使用的编号
+    const useId = ctx.cardUseId;
+    const needed =
+      !!useId &&
+      state.players.some(
+        (p) => p.alive && collectTimingHooks(state, p, 'cardUseEnded', false).length > 0,
+      );
+    if (!needed) {
+      resumePlay(state, ctx.sourceId);
+      return;
+    }
+    runAllPlayersHooks(
+      state,
+      'cardUseEnded',
+      {
+        useId,
+        sourceId: ctx.sourceId,
+        targetIds: ctx.targetIds ?? (ctx.targetId ? [ctx.targetId] : []),
+      },
+      () => resumePlay(state, ctx.sourceId),
+    );
+  };
   const first = state.firstDamageCard;
   if (first && !first.resolved && first.cardId === ctx.card.id) {
     // 首张伤害牌只派发一次（账本留着他那张的 id，同一回合的第二张不算首张）
@@ -5818,6 +5843,7 @@ function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
     cardId: ctx.card.id,
     asType: 'huoshao',
     targetId: target.seatId,
+    cardUseId: ctx.cardUseId,
     declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
@@ -5994,6 +6020,7 @@ function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
           cardId: ctx.card.id,
           asType: 'chiling',
           targetId: p.seatId,
+          cardUseId: ctx.cardUseId,
           damage: 1,
           dodged: false,
         });
@@ -6282,6 +6309,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
         cardId: ctx.card.id,
         asType: 'shuiyan',
         targetId: p.seatId,
+        cardUseId: ctx.cardUseId,
         declaredTargets: declaredTargetsOf(ctx),
         damage: 1,
         dodged: false,
@@ -6674,6 +6702,7 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
     cardId: ctx.card.id,
     asType: ctx.card.type,
     targetId: victim.seatId,
+    cardUseId: ctx.cardUseId,
     declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
@@ -6746,6 +6775,7 @@ function respondHuogongCard(
     cardId: ctx.card.id,
     asType: ctx.card.type,
     targetId: target.seatId,
+    cardUseId: ctx.cardUseId,
     declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
@@ -6957,6 +6987,7 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
     cardId: ctx.card.id,
     asType: 'sha',
     targetId: victim.seatId,
+    cardUseId: ctx.cardUseId,
     declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
@@ -7054,6 +7085,7 @@ function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): Appl
     cardId: ctx.card.id,
     asType: ctx.card.type,
     targetId: victim.seatId,
+    cardUseId: ctx.cardUseId,
     declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,

@@ -596,6 +596,8 @@ export interface TrickContext {
   // 过河拆桥/顺手牵羊：目标与指定的明牌区牌
   targetId?: string;
   targetCardId?: string;
+  /** 本次「使用牌」的编号（许攸·成略：把「这张锦囊造成的伤害」绑回这一次使用） */
+  cardUseId?: number;
   /**
    * 本次使用指定的全部目标（按玩家点选顺序）。
    * 单目标锦囊走 targetId 就够了，但**多目标**锦囊（铁索连环一至两名）只能靠这个。
