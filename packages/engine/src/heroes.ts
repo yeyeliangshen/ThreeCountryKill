@@ -423,6 +423,11 @@ export interface Hero {
    */
   fangyuan?: boolean;
   /**
+   * 朱灵·【决绝】第三句：「你杀死与你势力相同的角色时，**不执行奖惩**」。
+   * 国战的基础奖惩见 engine 的 applyKillPenalty（同势力击杀 → 弃置所有牌）。
+   */
+  exemptFromKillPenalty?: boolean;
+  /**
    * **目标级**的「本回合【杀】次数豁免」：整张牌**提议的全部目标**都满足条件时才允许突破次数上限。
    * 夏侯霸·【豹烈】②是第一个用例（目标当前体力 ≥ 自己当前体力）。
    * ⚠️ 语义是「这张杀的这批目标能不能豁免」，**不是**「有技能就无限出杀」——
@@ -15698,6 +15703,7 @@ const ZHULING: Hero = {
   modes: ['guozhan'],
   // 方圆是锁定技（阵法技），要在 handLimit 与回合钩子上都生效
   lockedFields: ['fangyuan'],
+  exemptFromKillPenalty: true,
   skillFields: { 方圆: ['fangyuan'] },
   fangyuan: true,
   hooks: [

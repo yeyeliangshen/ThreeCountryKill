@@ -24113,3 +24113,73 @@ describe('输入槽所有权围栏（pending CAS）', () => {
     expect(queue.length).toBe(1);
   });
 });
+
+/**
+ * 国战**基础奖惩**（用户 2026-09 要求补）：杀死同势力角色 → 凶手**弃置所有牌**；
+ * 朱灵·【决绝】第三句是「不执行奖惩」→ 有豁免。势力按**明置**口径（双方都要已确定势力）。
+ */
+describe('国战 · 基础奖惩（同势力击杀）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[]; hp?: number }[],
+    actor: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = 'vanilla';
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    state.turn = { seatIndex: state.seatOrder.indexOf(actor), phase: 'play' };
+    state.pending = { kind: 'play', seatId: actor };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+
+  it('杀死同势力角色 → 凶手弃置所有牌', () => {
+    // A（魏，3 张手牌）打死同势力的 B（魏，1 血）
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1'), tao('a2'), tao('a3')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 1 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    passDeathSaves(state);
+    expect(pick(state, B).alive).toBe(false);
+    expect(pick(state, A).hand.length).toBe(0); // 奖惩：弃置所有牌
+    expect(state.log.some((e) => e.message.includes('奖惩'))).toBe(true);
+  });
+
+  it('朱灵·【决绝】：杀死同势力角色**不执行**奖惩', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: [sha('a1'), tao('a2'), tao('a3')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 1 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    passDeathSaves(state);
+    expect(pick(state, B).alive).toBe(false);
+    // 只耗掉出的那张杀（a1），其余保留
+    expect(pick(state, A).hand.length).toBe(2);
+    expect(state.log.some((e) => e.message.includes('不执行奖惩'))).toBe(true);
+  });
+});

@@ -4205,6 +4205,41 @@ function lordVictimsOf(state: GameState, dying: Player): Player[] {
   );
 }
 
+/**
+ * **国战基础奖惩**（用户 2026-09 要求补的基础规则）：杀死**同势力**角色 → 凶手**弃置所有牌**。
+ * 朱灵·【决绝】第三句是不执行这条（`Hero.exemptFromKillPenalty`）。
+ *
+ * 口径：势力按**明置**算（`sameKnownFaction`：双方都得已确定势力）——暗将杀人/暗将被杀都不触发，
+ * 与国战「你杀死了与你势力相同的角色」需要双方势力可知一致。弃置是**真正的弃置**
+ * （走 fireCardDiscarded：进本回合弃置账本、派发「因弃置」）。
+ * ⚠️ 「杀死**野心家** → 摸三张牌」那半条还没做（记 docs 待办），只做了同势力这一半。
+ */
+function applyKillPenalty(state: GameState, dying: Player, killerId: string | undefined): void {
+  if (!killerId || killerId === dying.seatId) return;
+  const killer = getPlayer(state, killerId);
+  if (!killer || !killer.alive) return;
+  if (!sameKnownFaction(state, killer, dying)) return;
+  if (activeHeroes(state, killer).some((h) => h.exemptFromKillPenalty === true)) {
+    pushLog(
+      state,
+      'skill',
+      `${killer.name} 杀死同势力角色，【决绝】生效：不执行奖惩。`,
+      { seat: killer.seatId },
+    );
+    return;
+  }
+  const cards = [...killer.hand, ...EQUIP_SLOTS.map((s) => killer.equipment[s]).filter((c): c is Card => !!c)];
+  if (cards.length === 0) return;
+  pushLog(
+    state,
+    'death',
+    `${killer.name} 杀死了同势力角色，奖惩：弃置所有牌。`,
+    { seat: killer.seatId },
+  );
+  const api = makeSkillApi(state, { actor: killer.seatId });
+  api.discardCards(killer.seatId, cards);
+}
+
 function doDeath(state: GameState, dyingId: string, killerId?: string): void {
   const dying = getPlayerOrThrow(state, dyingId);
   // ⚠️ 必须在下面那几行之前问：阵亡会把「明置」标志翻成 false→true（国战亮双将），
@@ -4238,6 +4273,7 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
     const factionText = dyingFaction ? `（${FACTION_NAME[dyingFaction]}）` : '';
     pushLog(state, 'death', `${dying.name} 阵亡${roleText}${factionText}。`);
     // 走可挂起版本：蔡文姬·断肠要在死亡时问「让凶手失去哪张武将牌的技能」
+    applyKillPenalty(state, dying, killerId);
     runHooksPausable(state, 'death', dying, { killerId }, () => {
       // 【会盟】：这个人的势力（已明置口径）是不是正好**一个都不剩**了。
       // to 是此刻的数，from 加上他自己就是死前的数（thus 两个方向都能如实报出来）。
