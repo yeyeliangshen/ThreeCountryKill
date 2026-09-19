@@ -14076,6 +14076,10 @@ const HUANGZU: Hero = {
     { timing: 'attackSettled', skillId: '袭射', handler: askXisheNext },
     { timing: 'playerDied', skillId: '袭射', handler: noteXisheKill },
     { timing: 'turnEnd', skillId: '袭射', handler: askXisheChangeDeputy },
+    // ⚠️ 袭射②是「**该回合**结束时」——他杀人的那个回合往往是**别人的**回合
+    //    （袭射①只在其他角色的准备阶段发动），所以必须同时挂 othersTurnEnd，
+    //    否则黄祖永远等不到那次换将机会（本轮补测试时发现的缺口）。
+    { timing: 'othersTurnEnd', skillId: '袭射', handler: askXisheChangeDeputy },
   ],
   skills: [
     {
