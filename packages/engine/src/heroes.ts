@@ -13219,6 +13219,223 @@ const BUCHEN_DUAL: Hero[] = [
  * ⚠️ 与双势力同一状态：**技能文本未核到**（技能名见 docs/guozhan-roster.md §5.83），
  *    能力、暴露野心/建立新势力流程都还没实装。
  */
+/**
+ * SP司马昭 —— 昭心 / 夙智（不臣篇·下，**野心家武将本体**，1.5 阴阳鱼 → 3；移动版现行口径，见 §5.101）。
+ *
+ * ⚠️ 这是「**野心家武将**」（`faction: 'ambitionist'`，即野势力本体），与「普通势力人数超限后
+ *    转化出来的野心家」是两回事——后者由 `revealHeroCard` 里的人数判定产生，本武将不参与那套。
+ *
+ * 【昭心】受到**一次**伤害后（DamageEvent 粒度，不按点数）：可以公开展示自己全部手牌，
+ *   然后令一名**手牌数不大于自己**的其他角色与自己**交换全部手牌**（走 `api.swapHands` 原子交换）。
+ * 【夙智】（锁定技，仅自己回合内）：三个子效果**共用 3 次额度**：
+ *   ① 自己使用的【杀】/【决斗】对其他角色实际造成伤害时，此伤害 +1（走 `Hero.damageDelta`，
+ *      进统一的伤害修正链；被闪/被防止不消耗次数，2 点伤害也只 +1 一次）；
+ *   ② 使用锦囊牌无距离限制，且每使用一张锦囊摸 1 张（第 3 次本身完整生效后才失效）；
+ *   ③ ⏳ 其他角色因**弃置**进弃牌堆时获得其中 1 张（**本轮未实现**，见文档 §5.101 的待办）。
+ *   回合结束时若本回合触发**不足 3 次**，获得临时【反馈】，持续到**自己的下个回合开始**。
+ */
+function suzhiAvailable(state: GameState, me: Player): boolean {
+  if (state.turn.seatIndex !== state.seatOrder.indexOf(me.seatId)) return false; // 仅自己回合
+  return state.suzhiTriggers < 3;
+}
+
+/** 【夙智】：消耗一次额度；用满 3 次后本回合失效（同时关掉「锦囊无距离」） */
+function consumeSuzhi(state: GameState, me: Player): void {
+  state.suzhiTriggers += 1;
+  if (state.suzhiTriggers >= 3) me.flags.ignoresTrickDistanceThisTurn = false;
+}
+
+/** 【昭心】：一次伤害后，交换双方**全部手牌**（目标是手牌数不大于自己的其他角色） */
+function askZhaoxin(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { damage?: number } | undefined;
+  if (!payload?.damage) return;
+  const cands = state.players.filter(
+    (p) => p.alive && p.seatId !== me.seatId && p.hand.length <= me.hand.length,
+  );
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    cands.length === 0
+      ? '【昭心】：没有手牌数不大于你的其他角色，是否仍展示手牌？（无目标则无事发生）'
+      : '【昭心】：是否公开全部手牌，并与一名手牌数不大于你的角色交换全部手牌？',
+    [
+      ...cands.map((p) => ({ id: p.seatId, label: `${p.name}（${p.hand.length} 张手牌）` })),
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'no') return;
+      // 公开展示全部手牌（日志是公开信息）
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 发动【昭心】，公开手牌：${p.hand.map((c) => `【${cardLabel(c)}】`).join('、') || '（无）'}。`,
+        { seat: p.seatId },
+      );
+      const t = getPlayer(st, picked);
+      if (!t || !t.alive) return;
+      // 目标合法性按**发动时**的当前手牌数再确认一次（询问是跨步的）
+      if (t.hand.length > p.hand.length) return;
+      ctx.api.swapHands(p.seatId, t.seatId);
+      pushLog(st, 'skill', `${p.name} 与 ${t.name} 交换了全部手牌（【昭心】）。`, {
+        seat: p.seatId,
+      });
+    },
+  );
+}
+
+/** 【夙智】①：自己回合内，自己用的【杀】/【决斗】对他人造成伤害时 +1（被闪/被防止不消耗额度） */
+function suzhiDamageDelta(
+  state: GameState,
+  me: Player,
+  atk: { sourceId?: string; targetId?: string },
+): number {
+  if (!suzhiAvailable(state, me)) return 0;
+  if (atk.sourceId !== me.seatId || atk.targetId === me.seatId) return 0;
+  return 1;
+}
+
+/** 【夙智】①的额度结算：伤害**真的落地**后（afterDamageDealt）才消耗一次 */
+function suzhiOnDealt(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (!suzhiAvailable(state, me)) return;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  if (!attack || attack.sourceId !== me.seatId || attack.targetId === me.seatId) return;
+  if (attack.asType !== 'sha' && attack.cardId === '') return;
+  // 只有这次伤害确实来自【杀】或【决斗】的攻击上下文才算
+  if (!(attack.asType === 'sha' || attack.asType === 'juedou')) return;
+  consumeSuzhi(state, me);
+  pushLog(state, 'skill', `${me.name} 的【夙智】：此伤害 +1（本回合第 ${state.suzhiTriggers} 次）。`, {
+    seat: me.seatId,
+  });
+}
+
+/** 【夙智】②：自己回合内使用锦囊 → 摸 1（并消耗一次额度；无距离限制由标记提供） */
+function suzhiOnTrick(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (!suzhiAvailable(state, me)) return;
+  const card = (ctx.payload as { card?: Card } | undefined)?.card;
+  if (!card) return;
+  if (isBasicCard(card) || isEquipCard(card)) return; // 只认锦囊牌
+  const c = drawOne(state);
+  if (c) me.hand.push(c);
+  consumeSuzhi(state, me);
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【夙智】：使用锦囊摸了一张牌（本回合第 ${state.suzhiTriggers} 次）。`,
+    { seat: me.seatId },
+  );
+}
+
+/**
+ * 【夙智】③：**其他角色**的牌因**弃置**进入弃牌堆时，获得其中 1 张（同一批只拿 1 张，计 1 次）。
+ * 挂在 `cardDiscarded`（引擎里「因弃置」的收口，payload 带整批 `cards`，且**只有弃置**走它——
+ * 用牌/响应/判定进弃牌堆都不算）。跨步安全：只从**此刻仍在弃牌堆**的牌里选。
+ */
+function suzhiOnDiscarded(ctx: HookContext): void {
+  const me = ctx.player; // 注意：这里是**弃牌的人**（cardDiscarded 派给持有者）
+  const state = ctx.state;
+  const discarder = me;
+  const suzhi = state.players.find((p) => p.alive && p.heroId === 'sp_simazhao' && p.seatId !== discarder.seatId);
+  if (!suzhi) return;
+  if (!suzhiAvailable(state, suzhi)) return;
+  const cards = (ctx.payload as { cards?: Card[] } | undefined)?.cards ?? [];
+  const pool: Card[] = [];
+  for (const c of cards) {
+    const still = state.discard.find((x) => x.id === c.id);
+    if (still) pool.push(still); // 必须**仍在弃牌堆**（可能已被别的效果拿走）
+  }
+  if (pool.length === 0) return;
+  ctx.api.askChoice(
+    state,
+    suzhi.seatId,
+    `【夙智】：${discarder.name} 弃置了 ${pool.length} 张牌，是否获得其中一张？`,
+    [
+      ...pool.map((c) => ({ id: c.id, label: `获得【${cardLabel(c)}】` })),
+      { id: 'no', label: '不获得' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'no') return;
+      const idx = st.discard.findIndex((c) => c.id === picked);
+      if (idx < 0) return; // 跨步：已经被拿走了
+      const [card] = st.discard.splice(idx, 1);
+      if (!card) return;
+      p.hand.push(card);
+      consumeSuzhi(st, p);
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 的【夙智】：获得 ${discarder.name} 弃置的【${cardLabel(card)}】（本回合第 ${st.suzhiTriggers} 次）。`,
+        { seat: p.seatId },
+      );
+    },
+  );
+}
+
+/** 【夙智】回合结束：本回合触发不足 3 次 → 获得临时【反馈】（持续到自己的下个回合开始） */
+function suzhiOnTurnEnd(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (state.suzhiTriggers >= 3) return;
+  if (me.grantedSkills.some((g) => g.skillName === '反馈')) return; // 已经有了（别的来源给的就别重复发）
+  me.grantedSkills.push({ heroId: 'simayi', skillName: '反馈' });
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【夙智】：本回合触发 ${state.suzhiTriggers} 次（不足 3 次），获得【反馈】直到自己的下个回合开始。`,
+    { seat: me.seatId },
+  );
+}
+
+/** 自己的回合开始时：收回【夙智】给的临时【反馈】、打开「锦囊无距离」标记 */
+function suzhiOnTurnStart(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  const before = me.grantedSkills.length;
+  me.grantedSkills = me.grantedSkills.filter((g) => g.skillName !== '反馈');
+  if (me.grantedSkills.length !== before) {
+    pushLog(state, 'skill', `${me.name} 的【反馈】到期失效（【夙智】的临时授予）。`, {
+      seat: me.seatId,
+    });
+  }
+  me.flags.ignoresTrickDistanceThisTurn = true; // 夙智②的距离部分（用满 3 次或回合结束即关）
+}
+
+const SP_SIMAZHAO: Hero = {
+  id: 'sp_simazhao',
+  name: 'SP司马昭',
+  pack: 'buchen',
+  faction: 'ambitionist', // **野心家武将本体**（野势力），不是人数超限转化出来的那种
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  combos: ['simayi'], // 珠联璧合：界司马懿
+  skillFields: { 夙智: ['damageDelta'] },
+  damageDelta: (state, me, atk) => suzhiDamageDelta(state, me, atk),
+  hooks: [
+    { timing: 'afterDamage', skillId: '昭心', handler: askZhaoxin },
+    { timing: 'afterDamageDealt', skillId: '夙智', locked: true, handler: suzhiOnDealt },
+    { timing: 'useCard', skillId: '夙智', locked: true, handler: suzhiOnTrick },
+    { timing: 'cardDiscarded', skillId: '夙智', locked: true, handler: suzhiOnDiscarded },
+    { timing: 'turnStart', skillId: '夙智', locked: true, handler: suzhiOnTurnStart },
+    { timing: 'turnEnd', skillId: '夙智', locked: true, handler: suzhiOnTurnEnd },
+  ],
+  skills: [
+    {
+      name: '昭心',
+      desc: '当你受到伤害后，你可以公开展示你的所有手牌，然后令一名手牌数不大于你的其他角色与你交换所有手牌。',
+    },
+    {
+      name: '夙智',
+      desc: '锁定技，在你的回合内，你使用【杀】或【决斗】对其他角色造成的伤害+1；你使用锦囊牌无距离限制且每使用一张锦囊牌摸一张牌；其他角色因弃置而进入弃牌堆的牌，你获得其中一张。以上效果每回合共可触发三次，第三次结算完毕后此技能于本回合失效。回合结束时若本回合触发次数不足三次，你获得【反馈】直到你的下个回合开始。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -13233,10 +13450,10 @@ function ambitionistHero(id: string, name: string, hp: number): Hero {
 }
 
 const BUCHEN_AMBITIONIST: Hero[] = [
-  ambitionistHero('sp_simazhao', 'SP司马昭', 3), // 1.5 阴阳鱼
   ambitionistHero('gongsunyuan', '公孙渊', 4),
   ambitionistHero('sunchen', '孙綝', 4),
   ambitionistHero('jie_zhonghui', '界钟会', 4),
+  SP_SIMAZHAO,
 ];
 
 export const HEROES: Hero[] = [
@@ -13845,7 +14062,10 @@ export function heroBlocksBeingTarget(
 }
 
 /** 这组生效武将里是否有人无视锦囊牌的距离限制（黄月英·奇才） */
-export function heroIgnoresTrickDistance(heroes: Hero[]): boolean {
+export function heroIgnoresTrickDistance(heroes: Hero[], player?: Player): boolean {
+  // SP司马昭·夙智②：本回合「使用锦囊无距离限制」（与黄月英·奇才同一个判据：
+  // 调用方把 player 传进来时，动态标记也一并生效）
+  if (player?.flags.ignoresTrickDistanceThisTurn) return true;
   return heroes.some((h) => h.ignoresTrickDistance === true);
 }
 

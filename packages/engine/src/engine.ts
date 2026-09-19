@@ -1374,6 +1374,7 @@ function enterPlayPhase(state: GameState, player: Player): void {
     state.turn.phase = 'play';
     // 新的一轮出牌阶段：清空「本阶段受过伤的人」（董昭·劝进的候选池）
     state.damagedThisPhase = [];
+  state.suzhiTriggers = 0;
     runHooksPausable(state, 'playPhase', player, undefined, () => {
       // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
       if (player.flags.skipPlay) {
@@ -4531,7 +4532,7 @@ function playDelayedTrick(
   if (heroBlocksBeingTarget(state, target, card, player)) return err('该角色不能成为此牌的目标');
   // 奇才：使用锦囊牌无距离限制；刘琦·问计标记的那张实体牌同样无距离限制
   if (
-    !heroIgnoresTrickDistance(activeHeroes(state, player)) &&
+    !heroIgnoresTrickDistance(activeHeroes(state, player), player) &&
     !wenjiMarked(player, card.id) &&
     distance(state, player.seatId, targetId) > 1
   )
@@ -4582,7 +4583,7 @@ function playTrick(
     // 奇才：使用锦囊牌无距离限制
     if (
       type === 'shunshou' &&
-      !heroIgnoresTrickDistance(activeHeroes(state, player)) &&
+      !heroIgnoresTrickDistance(activeHeroes(state, player), player) &&
       !wenjiMarked(player, card.id) &&
       distance(state, player.seatId, tid) > 1
     )
@@ -9086,6 +9087,7 @@ export function createGame(
     liangfanHanIds: [],
     midaoUsedSeats: [],
     damagedThisPhase: [],
+    suzhiTriggers: 0,
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],

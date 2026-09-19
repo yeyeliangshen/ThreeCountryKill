@@ -189,7 +189,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
             p.alive &&
             p.seatId !== seatId &&
             !heroBlocksBeingTarget(state, p, card, player) &&
-            (heroIgnoresTrickDistance(heroes) || distance(state, seatId, p.seatId) <= 1),
+            (heroIgnoresTrickDistance(heroes, player) || distance(state, seatId, p.seatId) <= 1),
         );
       if (canShunshouViaTian) {
         legalCardIds.push(card.id);
@@ -207,7 +207,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     // （目标判定区无同类、且没被帷幕/谦逊这类锁定技挡掉）
     if (isDelayedTrick(card)) {
       const trickType = card.type as 'lebu' | 'shandian' | 'bingliang';
-      const noDistance = heroIgnoresTrickDistance(heroes); // 黄月英·奇才
+      const noDistance = heroIgnoresTrickDistance(heroes, player); // 黄月英·奇才（+ 夙智的动态标记）
       if (trickType === 'shandian') {
         if (!player.judgment.some((t) => t.type === 'shandian')) {
           legalCardIds.push(card.id);

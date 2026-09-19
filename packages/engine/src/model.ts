@@ -196,6 +196,11 @@ export interface PlayerFlags {
    */
   handLimitSetToMaxHp: boolean;
   /**
+   * SP司马昭·夙智②：本回合「使用锦囊牌无距离限制」（由夙智在**自己的回合**里打开，
+   * 三次额度用完即关）。距离校验里与黄月英·奇才走同一个判据。
+   */
+  ignoresTrickDistanceThisTurn: boolean;
+  /**
    * 非锁定技失效（新国战·铁骑那类）：本回合内该角色的非锁定技全部不起作用。
    * 由 afterTurnEnd 统一清掉（「直到回合结束」）。
    */
@@ -300,6 +305,7 @@ export function emptyFlags(): PlayerFlags {
     ignoreShaDistanceThisTurn: false,
     nonLockedSkillsDisabled: false,
     handLimitSetToMaxHp: false,
+    ignoresTrickDistanceThisTurn: false,
     xingzhaoEquipEventId: -1,
     cannotPlayCardsThisTurn: false,
     cannotPlayColor: null,
@@ -805,6 +811,11 @@ export interface GameState {
   damageLedgerThisTurn: { sourceId: string; targetId: string; targetFaction: Faction | null }[];
   /** 孟达·【量反】：本回合从「函」拿进手里的实体牌 id（资格不跨回合） */
   liangfanHanIds: string[];
+  /**
+   * SP司马昭·【夙智】：回合内的触发计数（**三个子效果共用 3 次额度**，0..3）。
+   * 只在他自己的回合内有效，随回合开始清零。达到 3 即本回合剩余时间失效。
+   */
+  suzhiTriggers: number;
   /**
    * **当前阶段**实际受到过伤害的角色（伤被防止不算）。
    * 董昭·【劝进】要求目标是「在当前**出牌阶段**已经受到过伤害」的角色——注意是**阶段**不是回合，
