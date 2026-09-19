@@ -24387,3 +24387,82 @@ describe('国战 · 黄祖（袭射）', () => {
     expect(pick(state, A).equipment.weapon).toBeNull();
   });
 });
+
+/** 诸葛恪·【傲才】（§5.116）：回合外用牌堆顶的**实体基本牌**满足响应请求 */
+describe('国战 · 诸葛恪（傲才）', () => {
+  function gz(actor: string): GameState {
+    const state = createGame(
+      [
+        { seatId: A, name: '诸葛恪', heroId: 'zhugeke' },
+        { seatId: B, name: '乙', heroId: 'vanilla' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    // ⚠️ 国战开局是「暗置 + 待选将」：这里必须自己把 heroId/明置/势力摆好（vault 于现成 harness 的教训）
+    const a = state.players.find((x) => x.seatId === A)!;
+    a.heroId = 'zhugeke';
+    a.deputyHeroId = 'vanilla';
+    a.faction = 'wu';
+    a.heroRevealed = true;
+    a.deputyRevealed = true;
+    a.maxHp = 3;
+    a.hp = 3;
+    a.hand = [];
+    a.flags = emptyFlags();
+    const b = state.players.find((x) => x.seatId === B)!;
+    b.heroId = 'vanilla';
+    b.deputyHeroId = 'vanilla';
+    b.faction = 'wei';
+    b.heroRevealed = true;
+    b.deputyRevealed = true;
+    b.maxHp = 4;
+    b.hp = 4;
+    b.hand = [sha('b1')];
+    b.flags = emptyFlags();
+    state.turn = { seatIndex: state.seatOrder.indexOf(actor), phase: 'play' };
+    state.pending = { kind: 'play', seatId: actor };
+    state.log = [];
+    return state;
+  }
+  const top2 = (state: GameState, c1: Card, c2: Card) => {
+    state.deck = [c1, c2, ...state.deck];
+  };
+
+  it('回合外被要求出【闪】→ 用牌堆顶的实体【闪】响应（不进手牌、进弃牌堆）', () => {
+    const state = gz(B);
+    const sd = mk('d1', 'shan', 'heart');
+    top2(state, sd, mk('d2', 'tao', 'heart'));
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    const deckBefore = state.deck.length;
+    const r = act(state, A, { type: 'aocai' });
+    expect(r.ok, r.ok ? '' : r.error).toBe(true);
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+    expect(state.deck.length).toBe(deckBefore - 1);
+    expect(state.discard.some((c) => c.id === 'd1')).toBe(true);
+    expect(state.players.find((p) => p.seatId === A)!.hand.length).toBe(0);
+    expect(state.log.some((e) => e.message.includes('傲才'))).toBe(true);
+  });
+
+  it('自己的回合不能用【傲才】', () => {
+    const state = gz(A);
+    top2(state, mk('d1', 'shan', 'heart'), mk('d2', 'tao', 'heart'));
+    const r = act(state, A, { type: 'aocai' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('回合外');
+  });
+
+  it('牌堆顶没有匹配的基本牌 → 什么都不发生（顶两张原样不动）', () => {
+    const state = gz(B);
+    top2(state, mk('d1', 'tao', 'heart'), mk('d2', 'jiu', 'spade'));
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    const before = state.deck.map((c) => c.id).join(',');
+    const r = act(state, A, { type: 'aocai' });
+    expect(r.ok, r.ok ? '' : r.error).toBe(true);
+    expect(state.deck.map((c) => c.id).join(',')).toBe(before);
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+});
