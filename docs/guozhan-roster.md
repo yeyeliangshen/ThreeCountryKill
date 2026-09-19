@@ -2545,6 +2545,74 @@ engine 810 项全绿。
 - 旧版君主专属装备与【诏书】那套机制（按用户口径：做资源可以，但要挂「旧版/自定义」开关，
   不参与默认全开模式）。
 
+### 5.77 扩展开关架构（用户给定，**尚未动手**——下一步按这份实施）
+
+用户要求把国战扩展做成**三个独立开关 + 预设模式**，而不是互斥的「模式」。本节是施工图，
+实施时照它做，别在系统里散落 `if (config.xxx)`。
+
+**① 配置形状**（版本用字符串枚举，别用布尔——旧势备/新势备、旧不臣/2023 不臣、旧君临/2026
+君临都会碰到，布尔以后一定会含糊）：
+
+```ts
+type GuozhanConfig = {
+  shibei: 'off' | 'current';              // 势备篇
+  buchen: 'off' | 'current';              // 不臣篇
+  junlintianxia: 'off' | '2026';          // 2026 君临天下
+};
+```
+
+**② 三个开关各管什么**（职责不重叠，避免互相改对方的东西）：
+
+| 开关 | 影响 |
+|---|---|
+| `shibei` | **牌堆内容**：标准 108 + 势备 52（28 基本 / 17 锦囊 / 7 装备）。不关心君主是谁、不实现建国 |
+| `buchen` | **武将 + 特殊规则 + 特殊牌区域**：野心家武将、双势力武将、暴露野心/建立新势力、势力锦囊、府库/特殊区、第一次洗牌洗入 |
+| `junlintianxia: '2026'` | **君主规则覆盖**：曹/刘/孙/袁 → 君主版；君主只能作主将、不会成为超员野心家、珠联璧合全员、【君威】、场外专属装备、离开装备区销毁 |
+
+**③ 分层与预设**：
+
+```text
+1 Base          国战基础规则
+2 Card ext.     势备篇（初始牌堆 +52）
+3 General/mech  不臣篇
+4 Ruleset       2026 君临天下（overrides 旧君主装备规则）
+
+预设：标准国战 = 三个 off；全扩展2026 = shibei:current + buchen:current + junlintianxia:2026
+「全开」只是一个 preset，不是另一套规则代码。
+```
+
+**④ 扩展模块化**（不要散落 if）：
+
+```ts
+interface GuozhanExtension {
+  id: string;
+  modifyGeneralPool?(ctx): void;
+  modifyInitialDeck?(ctx): void;
+  registerCards?(ctx): void;
+  registerRules?(ctx): void;
+  registerHooks?(ctx): void;
+}
+// 按 config 收集 extensions，再 buildGuozhanGame(baseRules, extensions)
+```
+
+**⑤ 冲突检测**：配置系统要能声明 `requires` / `conflicts` / `overrides`，强行开冲突组合时**报错
+或让玩家选一种**，不能默默叠加。第一个例子就是：`junlintianxia: '2026'` **overrides**
+「旧君临天下专属装备规则」（旧版普通牌堆里的【定澜夜明珠】、武器版【飞龙夺凤】、坐骑版
+【六龙骖驾】那批，按 §5.76 不进默认全开）。
+
+**⑥ 界面**：开房界面按「规则扩展」列三行勾选（势备篇 / 不臣篇 / 君临天下，各带一句说明），
+下面给 [标准国战] [全扩展] [自定义] 三个预设按钮。
+
+**⑦ 现状与落点**：
+- 已有：`createGame(..., { shibei: boolean })` 这个开关（势备篇牌堆）✓；四件君主专属装备
+  **已经是场外牌**（`lord-` id、由【君威】现造、`destroyOnLeave`）✓，与 `outsideGameCards`
+  的定位一致。
+- 待改：把 `shibei` 从布尔升级成上面的枚举；新增 `buchen` / `junlintianxia`；
+  把「君主是否进选将池」挂到 `junlintianxia`（**现在是恒进池**）；服务端房间选项 + 界面勾选；
+  五个扩展点按上面的接口拆出来。
+- ⚠️ 需要先定：新房间的**默认预设**（标准 or 全扩展）——这会影响线上老玩家的体验，
+  由用户拍板；本文档不替他决定。
+
 ## 6. 批次表
 
 每批验收标准：技能逐条对照官方文本；有测试；简化处如实标注；`pnpm test` + `pnpm typecheck` + `pnpm build` 全绿。
