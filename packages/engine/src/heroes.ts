@@ -7818,7 +7818,8 @@ const ZUOCI: Hero = {
               `${p.name} 发动【役鬼】，移去一张「魂」（${hero?.name ?? heroId}，势力 ${hero?.faction ?? '未确定'}）。`,
               { seat: p.seatId, action: 'skill' },
             );
-            const faction = hero?.faction ?? null;
+            // ⚠️ §5.121：双势力「魂」= 两个牌面势力**都算**（集合，不是单值）
+            const factions = hero ? printedFactionsOf(hero.id) : null;
             if (picked === 'sha' || picked === 'jiu' || picked === 'tao') {
               if (picked === 'jiu') {
                 p.flags.jiuActive = true;
@@ -7831,7 +7832,7 @@ const ZUOCI: Hero = {
                 return;
               }
               // 【杀】：选一个符合势力限制的目标
-              const targets = hunTargets(st, p, faction, true);
+              const targets = hunTargets(st, p, factions, true);
               if (targets.length === 0) {
                 pushLog(st, 'skill', '没有符合势力限制的目标，【役鬼】未生效。');
                 return;
@@ -7850,7 +7851,7 @@ const ZUOCI: Hero = {
             const spec = QICE_TRICKS.find((t) => t.type === picked);
             if (!spec) return;
             const need = spec.min;
-            const cands = hunTargets(st, p, faction, false, spec.type);
+            const cands = hunTargets(st, p, factions, false, spec.type);
             const step = (chosen: string[]): void => {
               if (chosen.length >= Math.max(1, need) && need > 0) {
                 fireHun(st, p, spec.type, chosen, api);
@@ -7870,7 +7871,7 @@ const ZUOCI: Hero = {
                 p.seatId,
                 `【役鬼】：为【${CARD_TYPE_NAME[spec.type]}】选择目标`,
                 rest.map((c) => ({ id: c.seatId, label: c.name })),
-                (st2, p2, tid) => step2Hun(st2, p2, tid, chosen, spec.type, faction, api),
+                (st2, p2, tid) => step2Hun(st2, p2, tid, chosen, spec.type, factions, api),
                 p.seatId,
               );
             };
@@ -7924,19 +7925,19 @@ function hunFactionOk(
   state: GameState,
   target: Player,
   _player: Player,
-  faction: Faction | null,
+  factions: Faction[] | null,
 ): boolean {
   const tf = effectiveFaction(state, target);
   if (!tf) return true; // 未确定势力 → 可以
-  if (!faction) return true;
-  return tf === faction;
+  if (!factions) return true;
+  return factions.includes(tf); // 双势力「魂」= 两个牌面势力都算（§5.121）
 }
 
 /** 役鬼的候选目标（势力限制 + 距离等既有合法性） */
 function hunTargets(
   state: GameState,
   player: Player,
-  faction: Faction | null,
+  factions: Faction[] | null,
   isSha: boolean,
   trickType?: TrickType,
 ): Player[] {
@@ -7949,7 +7950,7 @@ function hunTargets(
           distance(state, player.seatId, p.seatId) <= attackRange(state, player),
       )
     : qiceTargets(state, player, trickType ?? 'guohe');
-  return base.filter((p) => hunFactionOk(state, p, player, faction));
+  return base.filter((p) => hunFactionOk(state, p, player, factions));
 }
 
 /** 役鬼用锦囊：直接把虚拟锦囊打出去 */
@@ -7971,14 +7972,14 @@ function step2Hun(
   targetId: string,
   chosen: string[],
   type: TrickType,
-  faction: Faction | null,
+  factions: Faction[] | null,
   api: SkillApi,
 ): void {
   const spec = QICE_TRICKS.find((t) => t.type === type);
   if (!spec) return;
   const next = [...chosen, targetId];
   if (next.length < spec.min) {
-    const rest = hunTargets(state, player, faction, false, type).filter(
+    const rest = hunTargets(state, player, factions, false, type).filter(
       (c) => !next.includes(c.seatId),
     );
     if (rest.length > 0) {
@@ -7987,7 +7988,7 @@ function step2Hun(
         player.seatId,
         `【役鬼】：为【${CARD_TYPE_NAME[type]}】选择目标`,
         rest.map((c) => ({ id: c.seatId, label: c.name })),
-        (st2, p2, tid) => step2Hun(st2, p2, tid, next, type, faction, api),
+        (st2, p2, tid) => step2Hun(st2, p2, tid, next, type, factions, api),
         player.seatId,
       );
       return;
