@@ -24,8 +24,15 @@ import type {
   TrickType,
 } from '@sgs/protocol';
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
-import type { AttackContext, GameState, Player, TrickContext } from './model';
-import { addMarker, noteMarkerUsed, useXianqu, useYinyangyu, useZhulian } from './markers';
+import type { AttackContext, GameState, MarkerUsage, Player, TrickContext } from './model';
+import {
+  addMarker,
+  noteMarkerUsed,
+  useXianqu,
+  useYinyangyu,
+  useYinyangyuHandLimit,
+  useZhulian,
+} from './markers';
 import {
   drawOne,
   lordEquipDinglan,
@@ -3619,7 +3626,10 @@ const JUN_CAOCAO: Hero = lordHero(
  * - 「本回合使用过的国战标记」看账本 `state.markerUsesThisTurn`（真用掉一枚就记一笔、
  *   记在**用的人**头上，`startTurn` 清空）；只认**与你势力相同**（已确定势力口径）的角色用过的。
  *   同一枚被用过多次只出一个选项——「视为使用」的效果与是谁用的无关。
- * - 「视为使用」＝ 照那枚标记的效果结算一遍，**不消耗任何标记**（君刘备手里有没有都无所谓）。
+ * - 「视为使用」＝ 照那枚标记**这一回合被用掉时的那种用法**结算一遍，**不消耗任何标记**
+ *   （君刘备手里有没有都无所谓）。用户核对后的口径：账本要记「实际的使用记录」而不只是标记
+ *   种类——阴阳鱼出牌阶段用是「摸一张」、弃牌阶段用是「手牌上限 +2」，复现时照原样执行
+ *   （哪怕结束阶段再给「上限 +2」通常已经没有实际作用）。
  * - 【先驱】本来就要「选择一名其他角色」（观看其暗置武将牌），视为使用时同样先问这个目标。
  * - ⚠️ 待核对：【阴阳鱼】在**弃牌阶段**的那条用法（弃置 → 本回合手牌上限 +2）本仓库还没做，
  *   所以账本里也只会出现出牌阶段那一版。
@@ -3629,57 +3639,73 @@ function askZhangwu(ctx: HookContext): void {
   const me = ctx.player;
   const faction = effectiveFaction(state, me);
   if (!faction) return;
-  // 本回合「与你势力相同的角色」用过的标记，按标记 id 去重
-  const used: MarkerId[] = [];
+  // 本回合「与你势力相同的角色」用过的标记——**按「标记 + 用法」去重**：
+  // 阴阳鱼在出牌阶段（摸一张）与弃牌阶段（手牌上限 +2）是两种不同的效果，各出一个选项。
+  const used: { markerId: MarkerId; usage: MarkerUsage }[] = [];
   for (const u of state.markerUsesThisTurn) {
     const user = getPlayer(state, u.seatId);
     if (!user || effectiveFaction(state, user) !== faction) continue;
-    if (!used.includes(u.markerId)) used.push(u.markerId);
+    if (used.some((x) => x.markerId === u.markerId && x.usage === u.usage)) continue;
+    used.push({ markerId: u.markerId, usage: u.usage });
   }
   if (used.length === 0) return; // 这回合同势力没用过标记 → 不弹询问
-  const NAME: Record<string, string> = {
-    xianqu: '先驱',
-    yinyangyu: '阴阳鱼',
-    zhulian: '珠联璧合',
+  const NAME: Record<string, string> = { xianqu: '先驱', yinyangyu: '阴阳鱼', zhulian: '珠联璧合' };
+  /** 选项/日志里那句话要说清是**哪一种用法**（章武要复现对应的使用效果） */
+  const label = (u: { markerId: MarkerId; usage: MarkerUsage }): string => {
+    const n = NAME[u.markerId] ?? u.markerId;
+    if (u.markerId === 'yinyangyu') {
+      return u.usage === 'handLimit' ? `${n}（手牌上限 +2）` : `${n}（摸一张）`;
+    }
+    if (u.markerId === 'zhulian') {
+      return u.usage === 'heal' ? `${n}（回复 1 点体力）` : `${n}（摸两张）`;
+    }
+    return n;
   };
-  const via = (id: MarkerId): string => `【章武】视为使用【${NAME[id] ?? id}】：`;
+  const keyOf = (u: { markerId: MarkerId; usage: MarkerUsage }): string =>
+    `${u.markerId}:${u.usage}`;
+  const via = (u: { markerId: MarkerId; usage: MarkerUsage }): string =>
+    `【章武】视为使用【${label(u)}】：`;
   ctx.api.askChoice(
     state,
     me.seatId,
     '【章武】：视为使用一枚本回合同势力角色用过的国战标记？',
     [
-      ...used.map((id) => ({ id, label: `视为使用【${NAME[id] ?? id}】` })),
+      ...used.map((u) => ({ id: keyOf(u), label: `视为使用【${label(u)}】` })),
       { id: 'no', label: '不发动' },
     ],
     (st, p, picked) => {
       if (picked === 'no') return;
-      if (picked === 'yinyangyu') {
-        noteMarkerUsed(st, p.seatId, 'yinyangyu');
-        useYinyangyu(st, p, via('yinyangyu'));
+      const pickedUse = used.find((u) => keyOf(u) === picked);
+      if (!pickedUse) return;
+      const { markerId, usage } = pickedUse;
+      // 「视为使用」本身也算「这一回合用过这枚标记」——照原样记（含用法）
+      noteMarkerUsed(st, p.seatId, markerId, usage);
+      if (markerId === 'yinyangyu') {
+        if (usage === 'handLimit') useYinyangyuHandLimit(st, p, via(pickedUse));
+        else useYinyangyu(st, p, via(pickedUse));
         return;
       }
-      if (picked === 'zhulian') {
-        noteMarkerUsed(st, p.seatId, 'zhulian');
-        // 钩子里不能传 returnTo（引擎会把被打断的流程记进续接队列）
-        useZhulian(st, p, ctx.api, via('zhulian'));
+      if (markerId === 'zhulian') {
+        // 按记录好的那条用法直接结算，不再问一遍「摸牌还是回血」；钩子里不能传 returnTo
+        useZhulian(st, p, ctx.api, via(pickedUse), {
+          forced: usage === 'heal' ? 'heal' : 'draw',
+        });
         return;
       }
-      if (picked === 'xianqu') {
+      if (markerId === 'xianqu') {
         const others = st.players.filter((x) => x.alive && x.seatId !== p.seatId);
         if (others.length === 0) {
-          noteMarkerUsed(st, p.seatId, 'xianqu');
-          useXianqu(st, p, undefined, ctx.api, via('xianqu'));
+          useXianqu(st, p, undefined, ctx.api, via(pickedUse));
           return;
         }
         ctx.api.askChoice(
           st,
           p.seatId,
-          '【章武】视为使用【先驱】：观看哪名其他角色的暗置武将牌？',
+          '【章武】视为使用【先驱】：观看哪名其他角色未明置的副将？',
           others.map((x) => ({ id: x.seatId, label: x.name })),
           (st2, p2, seatId) => {
-            noteMarkerUsed(st2, p2.seatId, 'xianqu');
             // 钩子里**不传** returnTo：看过之后由钩子链条自己接着跑（见 runHooksFrom）
-            useXianqu(st2, p2, getPlayer(st2, seatId), ctx.api, via('xianqu'));
+            useXianqu(st2, p2, getPlayer(st2, seatId), ctx.api, via(pickedUse));
           },
         );
       }

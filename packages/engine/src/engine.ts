@@ -1414,8 +1414,9 @@ function afterDiscardPhaseHooks(state: GameState, player: Player): void {
         if (picked === 'yes') {
           consumeMarker(p, 'yinyangyu');
           p.flags.handLimitBonus += 2;
-          // 这一步也是「用掉了一枚国战标记」，一样要给章武记账
-          noteMarkerUsed(st, p.seatId, 'yinyangyu');
+          // 这一步也是「用掉了一枚国战标记」，一样要给章武记账——而且要记**这一条用法**
+          // （弃牌阶段 = 手牌上限 +2，与出牌阶段的「摸一张」在章武那里是两个不同选项）
+          noteMarkerUsed(st, p.seatId, 'yinyangyu', 'handLimit');
           pushLog(st, 'marker', `${p.name} 弃置【阴阳鱼】，本回合手牌上限 +2。`);
         }
         beginDiscard(st, p);

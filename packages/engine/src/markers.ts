@@ -1,8 +1,8 @@
 import type { MarkerId } from '@sgs/protocol';
-import type { GameState, Player } from './model';
+import type { GameState, MarkerUsage, Player } from './model';
 import { getPlayer, pushLog } from './model';
 import { drawOne } from './deck';
-import { unrevealedHeroes, type ActiveSkill, type SkillApi } from './heroes';
+import { getHero, getHeroForMode, type ActiveSkill, type SkillApi } from './heroes';
 
 // —— 国战标记 ——
 // 规则的获得条件与用法见 docs/guozhan-reference.md §2。
@@ -51,14 +51,28 @@ function drawN(state: GameState, player: Player, n: number): number {
   return got;
 }
 
-/** 记一笔「谁本回合用掉了一枚国战标记」（章武要用；见 GameState.markerUsesThisTurn） */
-export function noteMarkerUsed(state: GameState, seatId: string, id: MarkerId): void {
-  state.markerUsesThisTurn.push({ seatId, markerId: id });
+/**
+ * 记一笔「谁本回合把哪枚国战标记按哪种用法用掉了」（章武要用；见 GameState.markerUsesThisTurn）。
+ *
+ * ⚠️ 【章武】是「视为使用**同一枚标记的同一种用法**」，所以用法也要记：
+ *    阴阳鱼在出牌阶段（摸一张）与弃牌阶段（手牌上限 +2）是两种不同的效果。
+ */
+export function noteMarkerUsed(
+  state: GameState,
+  seatId: string,
+  id: MarkerId,
+  usage: MarkerUsage,
+): void {
+  state.markerUsesThisTurn.push({ seatId, markerId: id, usage });
 }
 
 /**
- * 【先驱】的效果：手牌补至四张，并观看目标一名暗置武将牌。
+ * 【先驱】的效果：手牌补至四张，并观看目标**未明置的副将**牌。
  * 「弃置标记」这个动作由调用方负责（真用掉 / 章武的「视为使用」都不消耗标记）。
+ *
+ * ⚠️ 只看**副将**：牌面原文是「并观看其没有明置的**副将**牌」（用户核对后的口径表也是
+ *    「观看一名其他角色未明置的副将」）。先前这里看的是「任意一张暗置武将牌」，
+ *    而且两张都暗着时还要问看哪张——那是错的，本轮订正（副将已明置就没得看）。
  */
 export function useXianqu(
   state: GameState,
@@ -72,39 +86,27 @@ export function useXianqu(
   pushLog(
     state,
     'marker',
-    `${via}，${player.name} 补了 ${got} 张牌${target ? `，并观看 ${target.name} 的暗置武将牌` : ''}。`,
+    `${via}，${player.name} 补了 ${got} 张牌${target ? `，并观看 ${target.name} 未明置的副将` : ''}。`,
   );
   if (!target) return;
-  // 「观看其一张暗置武将牌」：两张都暗着时由观看者挑一张（与知彼同一口径）
-  const hidden = unrevealedHeroes(state.mode, target);
   // 观看是自己要看完的信息展示：**主动技**里给 returnTo（看完把控制权还给出牌方）；
   // **钩子**里不能给（钩子链条会自己接着跑，见 runHooksFrom 的 viewCards 分支）。
   const show = (name: string): void => {
     api.privateView(
       player.seatId,
-      `${target.name} 的暗置武将牌`,
+      `${target.name} 的副将`,
       { cards: [], note: name },
       opts?.returnTo ? { returnTo: opts.returnTo } : undefined,
     );
   };
-  if (hidden.length === 0) {
-    show('（他没有暗置的武将牌）');
+  // 只看**副将**：「并观看其没有明置的副将牌」（牌面原文；用户核对后的口径表也是
+  // 「观看一名其他角色未明置的副将」）。副将已经明置、或他根本没有副将牌 → 没得看。
+  if (target.deputyRevealed || !target.deputyHeroId) {
+    show('（他没有未明置的副将）');
     return;
   }
-  if (hidden.length === 1) {
-    show(hidden[0]!.name);
-    return;
-  }
-  api.askChoice(
-    state,
-    player.seatId,
-    '【先驱】：观看哪一张暗置武将牌？',
-    hidden.map((h) => ({ id: h.id, label: h.name })),
-    (_st, _p, picked) => {
-      show(hidden.find((h) => h.id === picked)?.name ?? hidden[0]!.name);
-    },
-    opts?.returnTo,
-  );
+  const deputy = getHeroForMode(target.deputyHeroId, state.mode) ?? getHero(target.deputyHeroId);
+  show(deputy?.name ?? '（找不到那张武将牌）');
 }
 
 const XIANQU: ActiveSkill = {
@@ -122,7 +124,7 @@ const XIANQU: ActiveSkill = {
     const target = tid ? getPlayer(state, tid) : undefined;
     if (!target) return '【先驱】需选择一名其他角色';
     if (!consumeMarker(player, 'xianqu')) return '没有【先驱】标记';
-    noteMarkerUsed(state, player.seatId, 'xianqu');
+    noteMarkerUsed(state, player.seatId, 'xianqu', 'view');
     useXianqu(state, player, target, api, `${player.name} 弃置【先驱】`, {
       // 选完必须把控制权还给发起者，否则 pending 停在询问上、出牌方再也动不了
       returnTo: player.seatId,
@@ -131,7 +133,16 @@ const XIANQU: ActiveSkill = {
   },
 };
 
-/** 【阴阳鱼】的效果：摸一张牌（弃牌阶段那条「手牌上限 +2」不在这个函数里） */
+/**
+ * 【阴阳鱼】在**弃牌阶段**那条用法：本回合手牌上限 +2。
+ * 【章武】在结束阶段复现时也走它——那时通常已经没有实际作用，但效果要照原样执行。
+ */
+export function useYinyangyuHandLimit(state: GameState, player: Player, via: string): void {
+  player.flags.handLimitBonus += 2;
+  pushLog(state, 'marker', `${via}，${player.name} 本回合手牌上限 +2。`, { seat: player.seatId });
+}
+
+/** 【阴阳鱼】在**出牌阶段**那条用法：摸一张牌 */
 export function useYinyangyu(state: GameState, player: Player, via: string): number {
   const got = drawN(state, player, 1);
   pushLog(state, 'marker', `${via}，${player.name} 摸了 ${got} 张牌。`);
@@ -146,7 +157,7 @@ const YINYANGYU: ActiveSkill = {
   canUse: () => true,
   execute: (state, player) => {
     if (!consumeMarker(player, 'yinyangyu')) return '没有【阴阳鱼】标记';
-    noteMarkerUsed(state, player.seatId, 'yinyangyu');
+    noteMarkerUsed(state, player.seatId, 'yinyangyu', 'draw');
     useYinyangyu(state, player, `${player.name} 弃置【阴阳鱼】`);
     return undefined;
   },
@@ -161,8 +172,28 @@ export function useZhulian(
   player: Player,
   api: SkillApi,
   via: string,
-  opts?: { returnTo?: string },
+  opts?: {
+    returnTo?: string;
+    /** 【章武】复现：按记录好的那条用法直接结算，不再问「摸两张还是回体力」 */
+    forced?: 'draw' | 'heal';
+    /** 选完之后回调（把「用的是哪条」记进章武的账本） */
+    onPicked?: (state: GameState, usage: 'draw' | 'heal') => void;
+  },
 ): void {
+  const apply = (st: GameState, p: Player, picked: string): void => {
+    if (picked === 'heal') {
+      const before = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + 1);
+      pushLog(st, 'marker', `${via}，${p.name} 回复 ${p.hp - before} 点体力。`);
+      return;
+    }
+    const got = drawN(st, p, 2);
+    pushLog(st, 'marker', `${via}，${p.name} 摸了 ${got} 张牌。`);
+  };
+  if (opts?.forced) {
+    apply(state, player, opts.forced);
+    return;
+  }
   api.askChoice(
     state,
     player.seatId,
@@ -172,14 +203,8 @@ export function useZhulian(
       { id: 'heal', label: '回复 1 点体力' },
     ],
     (st, p, picked) => {
-      if (picked === 'heal') {
-        const before = p.hp;
-        p.hp = Math.min(p.maxHp, p.hp + 1);
-        pushLog(st, 'marker', `${via}，${p.name} 回复 ${p.hp - before} 点体力。`);
-        return;
-      }
-      const got = drawN(st, p, 2);
-      pushLog(st, 'marker', `${via}，${p.name} 摸了 ${got} 张牌。`);
+      opts?.onPicked?.(st, picked === 'heal' ? 'heal' : 'draw');
+      apply(st, p, picked);
     },
     opts?.returnTo,
   );
@@ -193,11 +218,12 @@ const ZHULIAN: ActiveSkill = {
   canUse: () => true,
   execute: (state, player, _intent, api) => {
     if (!consumeMarker(player, 'zhulian')) return '没有【珠联璧合】标记';
-    noteMarkerUsed(state, player.seatId, 'zhulian');
-    // 官方两种用法（摸两张牌 / 回复 1 点体力），做成「选择一项」
+    // 官方两种用法（摸两张牌 / 回复 1 点体力），做成「选择一项」。
+    // 记账放在**选完之后**——要连「用的是哪一条」一起记（【章武】照它复现）
     useZhulian(state, player, api, `${player.name} 弃置【珠联璧合】`, {
       // 选完必须把控制权还给发起者，否则 pending 停在 choice 上、出牌方再也动不了
       returnTo: player.seatId,
+      onPicked: (st, usage) => noteMarkerUsed(st, player.seatId, 'zhulian', usage),
     });
     return undefined;
   },

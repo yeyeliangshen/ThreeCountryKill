@@ -3759,15 +3759,15 @@ describe('国战标记（阶段 2）', () => {
     const a = player(state, A);
     expect(a.hand.length).toBe(4);
     expect(a.markers.xianqu).toBeUndefined();
-    // 官方还有「并观看其没有明置的副将牌」——乙两张都明置了，所以给出「没有暗置武将牌」
+    // 官方还有「并观看其**没有明置的副将**牌」——乙两张都明置了，所以只给一句「没有未明置的副将」
     expect(state.pending?.kind).toBe('viewCards');
     if (state.pending?.kind === 'viewCards') {
       expect(state.pending.seatId).toBe(A); // 只有发动者能看到
-      expect(state.pending.note).toContain('没有暗置');
+      expect(state.pending.note).toContain('没有未明置的副将');
     }
   });
 
-  it('先驱：观看对方暗置的武将牌（两张都暗着时由发动者挑一张）', () => {
+  it('先驱：只观看对方**未明置的副将**（主将暗着也不看）', () => {
     const state = makeGz([
       {
         seatId: A,
@@ -3790,14 +3790,12 @@ describe('国战标记（阶段 2）', () => {
     ]);
     giveMarker(state, A, 'xianqu');
     ok(act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [B] }));
-    // 两张都暗着 → 先问「观看哪一张」
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind !== 'choice') return;
-    const opt = state.pending.options.find((o) => o.id.includes('zhenji'));
-    expect(opt).toBeTruthy();
-    ok(act(state, A, { type: 'chooseOption', optionId: opt!.id }));
+    // 只看副将：乙的副将是【甄姬】且暗着 → 直接给观看，不再问「看哪一张」
     expect(state.pending?.kind).toBe('viewCards');
-    if (state.pending?.kind === 'viewCards') expect(state.pending.note).toContain('甄姬');
+    if (state.pending?.kind === 'viewCards') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.note).toContain('甄姬');
+    }
   });
 
   it('先驱：手牌已达 4 张时一张也不摸', () => {
@@ -19534,22 +19532,23 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, 'B', { type: 'chooseOption', optionId: 'draw' }));
     expect(b.markers.zhulian).toBeUndefined(); // 标记用掉了
-    expect(state.markerUsesThisTurn).toEqual([{ seatId: 'B', markerId: 'zhulian' }]);
+    expect(state.markerUsesThisTurn).toEqual([{ seatId: 'B', markerId: 'zhulian', usage: 'draw' }]);
 
     // 乙的结束阶段 → 甲（君刘备）的【章武】可以「视为使用」它
     ok(act(state, 'B', { type: 'endPhase' }));
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind !== 'choice') return;
     expect(state.pending.title).toContain('章武');
-    expect(state.pending.options.map((o) => o.id)).toEqual(['zhulian', 'no']);
+    expect(state.pending.options.map((o) => o.id)).toEqual(['zhulian:draw', 'no']);
     a.hand = [];
-    ok(act(state, 'A', { type: 'chooseOption', optionId: 'zhulian' }));
-    // 珠联璧合二选一：这回选回复体力（甲 3 → 4）
-    expect(state.pending?.kind).toBe('choice');
-    ok(act(state, 'A', { type: 'chooseOption', optionId: 'heal' }));
-    expect(a.hp).toBe(4);
-    expect(a.hand.length).toBe(0); // 「视为使用」不摸牌也不消耗标记
-    expect(state.log.some((l) => l.message.includes('【章武】视为使用【珠联璧合】'))).toBe(true);
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'zhulian:draw' }));
+    // 复现的是**记下来的那种用法**（乙当时选的是「摸两张」）→ 直接摸两张，不再问二选一；
+    // 而且不消耗标记（甲手里本来也没有）
+    expect(a.hp).toBe(3); // 没有回血
+    expect(a.hand.length).toBe(2);
+    expect(state.log.some((l) => l.message.includes('【章武】视为使用【珠联璧合（摸两张）】'))).toBe(
+      true,
+    );
 
     // 对照：丙（魏）用掉标记时，甲在丙的结束阶段不会被问（不是「与你势力相同」的角色用的）
     const state2 = createGame(
@@ -19617,15 +19616,15 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind !== 'choice') return;
     expect(state.pending.title).toContain('章武');
-    ok(act(state, 'A', { type: 'chooseOption', optionId: 'xianqu' }));
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'xianqu:view' }));
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind !== 'choice') return;
     ok(act(state, 'A', { type: 'chooseOption', optionId: 'C' }));
-    expect(state.pending?.kind).toBe('choice'); // 「观看哪一张暗置武将牌？」
-    ok(act(state, 'A', { type: 'chooseOption', optionId: 'xiahoudun' }));
+    // 只看副将 → 直接给观看（丙的副将是【夏侯惇】）
     expect(state.pending?.kind).toBe('viewCards'); // 只有甲看得到
     if (state.pending?.kind !== 'viewCards') return;
     expect(state.pending.seatId).toBe('A');
+    expect(state.pending.note).toContain('夏侯惇');
     ok(act(state, 'A', { type: 'ack' }));
 
     // 看完之后：不是「甲的出牌阶段」，而是乙的结束阶段正常收尾 → 轮到丙
@@ -19671,12 +19670,24 @@ describe('国战 · 君主将（特性）', () => {
     expect(b.markers.yinyangyu).toBeUndefined();
     expect(b.hand.length).toBe(5); // 上限 4+2=6 → 一张都不用弃
     // 记账：这一步也算「本回合用掉了一枚国战标记」→ 甲（君刘备）的【章武】在乙的结束阶段能选它
-    expect(state.markerUsesThisTurn).toEqual([{ seatId: 'B', markerId: 'yinyangyu' }]);
+    expect(state.markerUsesThisTurn).toEqual([
+      { seatId: 'B', markerId: 'yinyangyu', usage: 'handLimit' },
+    ]);
     // 弃牌阶段走完 → 结束阶段：甲（君刘备）的【章武】能选到这枚标记
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind !== 'choice') return;
     expect(state.pending.title).toContain('章武');
-    expect(state.pending.options.map((o) => o.id)).toEqual(['yinyangyu', 'no']);
+    expect(state.pending.options.map((o) => o.id)).toEqual(['yinyangyu:handLimit', 'no']);
+    // 复现的是记下来的那条用法：也给「本回合手牌上限 +2」（结束阶段通常已无实际作用，但照原样执行）
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    expect(a.flags.handLimitBonus).toBe(0);
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'yinyangyu:handLimit' }));
+    expect(a.flags.handLimitBonus).toBe(2);
+    expect(
+      state.log.some((l) => l.message.includes('【章武】视为使用【阴阳鱼（手牌上限 +2）】')),
+    ).toBe(true);
+    // （账本本回合已经随回合结束清空了——「视为使用也记一笔」这件事在日志里看得到，
+    //   这条用例只钉「复现的是记下来的那条用法」）
   });
 
   it('据江排除的是「势力锦囊牌」（不臣篇那四张），挟天子/联军/勠力不算', () => {

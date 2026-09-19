@@ -42,6 +42,18 @@ export function emptyMarkers(): Markers {
 }
 
 // —— 玩家状态 ——
+/**
+ * 一枚国战标记**这一回合是怎么用掉的**——【章武】要「复现对应的使用效果」，所以光记标记
+ * 种类不够（用户核对后的口径）：【阴阳鱼】出牌阶段用是「摸一张」、弃牌阶段用是「本回合
+ * 手牌上限 +2」，复现时要照原样执行（哪怕在结束阶段「上限 +2」已经没有什么实际作用）。
+ *
+ * - `draw`：摸牌（阴阳鱼摸 1 / 珠联璧合摸 2）
+ * - `handLimit`：阴阳鱼在弃牌阶段那条——本回合手牌上限 +2
+ * - `heal`：珠联璧合的另一条——回复 1 点体力（即「当作一次【桃】的效果」）
+ * - `view`：先驱——手牌补至四张并观看目标未明置的副将
+ */
+export type MarkerUsage = 'draw' | 'handLimit' | 'heal' | 'view';
+
 export interface PlayerFlags {
   /** 本回合已出杀数 */
   shaCountThisTurn: number;
@@ -761,7 +773,7 @@ export interface GameState {
    * 与 `damagedThisTurn` / `killedThisTurn` 一样是每回合清空的账本（`startTurn` 里清）。
    * 同一枚被同一人用多次就记多条，章武那边按标记 id 去重成选项。
    */
-  markerUsesThisTurn: { seatId: string; markerId: MarkerId }[];
+  markerUsesThisTurn: { seatId: string; markerId: MarkerId; usage: MarkerUsage }[];
   /**
    * 【授锋】的「本回合出牌阶段用掉的第一张伤害牌」（君袁绍）。
    *
