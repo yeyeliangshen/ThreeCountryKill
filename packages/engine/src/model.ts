@@ -956,7 +956,10 @@ export interface GameState {
    * 刚产生的询问时，把「等它答完再回来」登记在这里；那条 pending 一被 resolve/cancel
    * （回答询问的清槽点）就直接唤醒，而不是靠轮询队列（轮询在 play 占位下永远不跑）。
    */
-  pendingWaiters: (() => void)[];
+  /** 等某一条询问（requestId）**完成**的待办（按 requestId 分组；不是「等 pending 变空」） */
+  pendingWaiters: Map<number, (() => void)[]>;
+  /** **回合世代**：每次回合交接（startTurn）自增；迟到的 resumePlay 请求靠它判过期 */
+  turnSeq: number;
   /**
    * **打点**（docs §5.124.4）：围栏「本来会挡住」的 takeover 记录——用于把被挡的收尾按**语义**
    * 聚类（是「恢复交互入口」还是「提交不可延迟的状态迁移」），而不是按函数名猜。

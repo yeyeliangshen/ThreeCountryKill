@@ -219,12 +219,40 @@ export function takeOverPendingIfUnchanged(
   return true;
 }
 
-/** 唤醒被围栏挡住、且所等的询问刚被回答的那些收尾待办（订阅式，不靠轮询） */
-function runPendingWaiters(state: GameState): void {
-  const waiters = state.pendingWaiters;
-  if (waiters.length === 0) return;
-  state.pendingWaiters = [];
+function waitPendingResolved(state: GameState, requestId: number, waiter: () => void): void {
+  const list = state.pendingWaiters.get(requestId) ?? [];
+  list.push(waiter);
+  state.pendingWaiters.set(requestId, list);
+}
+
+/** 某条询问（requestId）处理完了：唤醒在等它的那些待办（**唯一**唤醒点） */
+function completePendingRequest(state: GameState, requestId: number): void {
+  const waiters = state.pendingWaiters.get(requestId);
+  if (!waiters) return;
+  state.pendingWaiters.delete(requestId);
   for (const run of waiters) runResume(run);
+}
+
+/** 「请求回到出牌阶段」的参数（带世代，迟到即弃） */
+export interface ResumePlayRequest {
+  sourceId: string;
+  turnSeq: number;
+}
+
+/**
+ * **请求**回到出牌阶段（「请求 / 提交」拆分里的请求半边）：过期放弃 / 槽空就取 / 有人等回答就**只登记等待**。
+ * 不可延迟的控制迁移（gameOver / endTurn / 强制死亡结算）才走 takeOverPendingIfUnchanged 那种强制路径。
+ */
+export function requestResumePlay(state: GameState, req: ResumePlayRequest): void {
+  if (state.gameOver) return;
+  if (state.turnSeq !== req.turnSeq) return;
+  if (state.seatOrder[state.turn.seatIndex] !== req.sourceId) return;
+  const checkpoint = capturePendingCheckpoint(state);
+  if (checkpoint.requestId === null) {
+    setPending(state, { kind: 'play', seatId: req.sourceId });
+    return;
+  }
+  waitPendingResolved(state, checkpoint.requestId, () => requestResumePlay(state, req));
 }
 
 /**
@@ -1162,6 +1190,7 @@ function runDamageDealtHooksP(
 // ——————————————————————————————————————————
 
 function startTurn(state: GameState, seatIndex: number): void {
+  state.turnSeq++; // 回合交接：世代 +1（迟到的 resumePlay 请求靠它判过期）
   state.turn = { seatIndex, phase: 'judgment' };
   const player = getPlayerOrThrow(state, state.seatOrder[seatIndex]!);
   // 回合开始重置本回合标记
@@ -4547,7 +4576,6 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
         resumePlay(state, pending.returnTo);
       }
             // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
-      runPendingWaiters(state);
       drainResume(state);
       return { ok: true };
     }
@@ -4587,7 +4615,6 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       // 输入槽空了 → 唤醒被挡住的收尾待办，再排空续接队列。
       // ⚠️ 这两句以前只写在 `if (p.after)` 分支里（我加唤醒语义时的疏漏）→ 走 returnTo 的那条
       //    分支不会立刻唤醒，被挡住的续接要拖到下一次询问/意图结束才醒（不是死锁，但会延迟）。
-      runPendingWaiters(state);
       drainResume(state);
       return { ok: true };
     }
@@ -4629,7 +4656,6 @@ function onPickCards(
     resumePlay(state, pending.returnTo);
   }
         // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
-      runPendingWaiters(state);
       drainResume(state);
       return { ok: true };
 }
@@ -9754,7 +9780,8 @@ export function createGame(
     duwuWatchSeat: null,
     duwuRescued: false,
     pendingSeq: 0,
-    pendingWaiters: [],
+    pendingWaiters: new Map(),
+    turnSeq: 0,
     blockedTakeovers: [],
     cardUseSeq: 0,
     useDamages: [],
