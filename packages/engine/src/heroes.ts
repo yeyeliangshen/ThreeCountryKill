@@ -10876,6 +10876,13 @@ const GUOJIA: Hero = {
   ],
 };
 
+/**
+ * 董昭·【劝进】**能否选择自己**作为目标？
+ * ⚠️ 待实测项：技能文字没有「其他角色」，但动作是「交给一名角色一张手牌」，
+ *    移动版没有可靠 FAQ 说明自己能不能被劝进 → 单独留成配置点（用户要求别埋进公共交出逻辑）。
+ */
+const QUANJIN_CAN_TARGET_SELF = false;
+
 const DONGZHAO: Hero = {
   id: 'dongzhao',
   name: '董昭',
@@ -10887,7 +10894,11 @@ const DONGZHAO: Hero = {
   maxHp: 3,
   gender: 'male',
   modes: ['guozhan'], // 不臣篇是国战专属
-  // 劝进：把一张手牌交给一名**本回合受到过伤害**的角色，令其执行一次军令。
+  // 劝进：把一张手牌交给一名**当前出牌阶段**受到过伤害的角色，令其执行一次军令。
+  //
+  // ⚠️ 待实测项（用户 2026-09 指定）：技能文字没写「其他角色」，董昭**能否选自己**没有可靠 FAQ
+  //    → 单独留成配置点，别把它埋进公共的「交给」逻辑里。当前取 false（不能选自己）。
+  //    ⚠️ 另外「在当前出牌阶段受到过伤害」是**阶段**口径（不是回合），走 state.damagedThisPhase。
   // 凿运（不臣篇·上 2021，已核）：出牌阶段限一次，你可以选择一名与你势力不同且距离
   // 大于 1 的角色并弃置 X 张手牌（X 为你计算与其的距离 - 1），令你本回合计算与其的
   // 距离视为 1，然后你对其造成 1 点伤害。
@@ -10961,17 +10972,21 @@ const DONGZHAO: Hero = {
       canUse: (state, player) =>
         player.hand.length > 0 &&
         state.players.some(
-          (p) => p.alive && p.seatId !== player.seatId && state.damagedThisTurn.includes(p.seatId),
+          (p) =>
+            p.alive &&
+            (QUANJIN_CAN_TARGET_SELF || p.seatId !== player.seatId) &&
+            state.damagedThisPhase.includes(p.seatId),
         ),
       execute: (state, player, intent, api) => {
         const ids = intent.cardIds ?? [];
         if (ids.length !== 1) return '请选择要交给对方的一张手牌';
         const targetId = intent.targetIds[0];
-        if (!targetId) return '请选择一名本回合受到过伤害的角色';
-        if (targetId === player.seatId) return '不能选择自己';
+        if (!targetId) return '请选择一名在当前出牌阶段受到过伤害的角色';
+        if (!QUANJIN_CAN_TARGET_SELF && targetId === player.seatId) return '不能选择自己（待实测项）';
         const target = getPlayer(state, targetId);
         if (!target || !target.alive) return '目标无效';
-        if (!state.damagedThisTurn.includes(targetId)) return '该角色本回合没有受到过伤害';
+        if (!state.damagedThisPhase.includes(targetId))
+          return '该角色在当前出牌阶段没有受到过伤害';
         const card = removeCard(player.hand, ids[0]!);
         if (!card) return '找不到手牌';
         target.hand.push(card);

@@ -582,6 +582,10 @@ function markDamaged(state: GameState, timing: Timing, player: Player, payload?:
   if (dmg > 0 && !state.damagedThisTurn.includes(player.seatId)) {
     state.damagedThisTurn.push(player.seatId);
   }
+  // 「本**阶段**受过伤的角色」（董昭·劝进）：伤被防止（dmg 0）不算
+  if (dmg > 0 && !state.damagedThisPhase.includes(player.seatId)) {
+    state.damagedThisPhase.push(player.seatId);
+  }
 }
 
 /**
@@ -1364,6 +1368,8 @@ function doDrawPhase(state: GameState, player: Player): void {
 function enterPlayPhase(state: GameState, player: Player): void {
   if (!player.flags.skipPlay) {
     state.turn.phase = 'play';
+    // 新的一轮出牌阶段：清空「本阶段受过伤的人」（董昭·劝进的候选池）
+    state.damagedThisPhase = [];
     runHooksPausable(state, 'playPhase', player, undefined, () => {
       // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
       if (player.flags.skipPlay) {
@@ -9024,6 +9030,7 @@ export function createGame(
     damageLedgerThisTurn: [],
     liangfanHanIds: [],
     midaoUsedSeats: [],
+    damagedThisPhase: [],
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],

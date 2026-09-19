@@ -798,6 +798,12 @@ export interface GameState {
   damageLedgerThisTurn: { sourceId: string; targetId: string; targetFaction: Faction | null }[];
   /** 孟达·【量反】：本回合从「函」拿进手里的实体牌 id（资格不跨回合） */
   liangfanHanIds: string[];
+  /**
+   * **当前阶段**实际受到过伤害的角色（伤被防止不算）。
+   * 董昭·【劝进】要求目标是「在当前**出牌阶段**已经受到过伤害」的角色——注意是**阶段**不是回合，
+   * 所以不能复用 `damagedThisTurn`。进入出牌阶段时清空（与 `lostCardsThisPhase` 同一生命周期口径）。
+   */
+  damagedThisPhase: string[];
   /** 张鲁·【米道】：本回合已经发动过米道的**使用者**座位（每名同势力角色各自每回合一次） */
   midaoUsedSeats: string[];
   /**
