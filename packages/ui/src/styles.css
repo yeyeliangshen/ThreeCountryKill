@@ -344,6 +344,38 @@ button:disabled {
   gap: 10px;
 }
 /* 一个发到的「格子」：武将牌 +（君主将/标准版）切换按钮 */
+/* 武将牌上的「势力 + 体力」一行：势力用带色小徽章，悬浮整张牌有技能说明（title） */
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+.hero-faction {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  opacity: 0.95;
+}
+.hero-faction.faction-wei {
+  color: #6fa8ff;
+}
+.hero-faction.faction-shu {
+  color: #ff8a8a;
+}
+.hero-faction.faction-wu {
+  color: #7fd6a2;
+}
+.hero-faction.faction-qun {
+  color: #d9c37a;
+}
+.hero-faction.faction-ambitionist {
+  color: #c48bff;
+}
+.hero-faction.faction-neutral {
+  color: var(--muted);
+}
 .hero-cell {
   display: flex;
   flex-direction: column;

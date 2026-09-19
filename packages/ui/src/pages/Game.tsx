@@ -84,6 +84,58 @@ function winnerText(mode: GameMode, winner: string, players: PlayerView[]): stri
   return wp ? `${wp.name} 获胜` : '游戏结束';
 }
 
+
+/** 势力中文名（双势力武将牌显示两个势力，如「魏/蜀」） */
+
+function factionLabel(h: { faction: Faction; secondFaction?: Faction }): string {
+
+  const a = FACTION_NAME[h.faction] ?? h.faction;
+
+  return h.secondFaction ? `${a}/${FACTION_NAME[h.secondFaction] ?? h.secondFaction}` : a;
+
+}
+
+
+
+/** 悬浮在武将牌上的说明：势力 + 体力 + 每条技能的**名称与效果** */
+
+function heroTooltip(h: {
+
+  name: string;
+
+  faction: Faction;
+
+  secondFaction?: Faction;
+
+  maxHp: number;
+
+  skills: { name: string; desc: string }[];
+
+  isLord?: boolean;
+
+}): string {
+
+  const head = [
+
+    `${h.name}${h.isLord ? '（君主将）' : ''}`,
+
+    `势力：${factionLabel(h)}　体力：${h.maxHp}`,
+
+  ];
+
+  const skills =
+
+    h.skills.length === 0
+
+      ? ['（技能文本尚未核对，暂空）']
+
+      : h.skills.map((s) => `【${s.name}】${s.desc}`);
+
+  return [...head, '', ...skills].join('\n');
+
+}
+
+
 /**
  * 出牌阶段：这张牌需要选几个目标（区间，铁索连环是 1 至 2 名）。
  *
@@ -741,10 +793,16 @@ export function Game() {
                     <div key={dealtId} className="hero-cell">
                       <button
                         className={`hero-card faction-${h.faction} ${isMain || isDeputy ? 'picked' : ''}`}
+                        title={heroTooltip(h)}
                         onClick={() => pickGuozhanHero(id)}
                       >
                         <div className="hero-name">{h.name}</div>
-                        <div className="hero-hp">体力 {h.maxHp}</div>
+                        <div className="hero-meta">
+                          <span className={`hero-faction faction-${h.faction}`}>
+                            {factionLabel(h)}
+                          </span>
+                          <span className="hero-hp">体力 {h.maxHp}</span>
+                        </div>
                         <div className="hero-skills">
                           {h.skills.map((sk) => (
                             <div key={sk.name}>
@@ -807,13 +865,19 @@ export function Game() {
                   <button
                     key={id}
                     className={`hero-card ${isPicked ? 'picked' : ''}`}
+                    title={heroTooltip(h)}
                     onClick={() => setPickedHero(id)}
                   >
                     <div className="hero-name">
                       {h.name}
                       {h.id === 'vanilla' && <small>（白板）</small>}
                     </div>
-                    <div className="hero-hp">体力 {h.maxHp}</div>
+                    <div className="hero-meta">
+                      <span className={`hero-faction faction-${h.faction}`}>
+                        {factionLabel(h)}
+                      </span>
+                      <span className="hero-hp">体力 {h.maxHp}</span>
+                    </div>
                     <div className="hero-skills">
                       {h.skills.map((sk) => (
                         <div key={sk.name}>
