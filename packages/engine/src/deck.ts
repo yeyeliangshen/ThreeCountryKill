@@ -435,15 +435,14 @@ export function lordEquipLiulong(seq: number): Card {
  * 「锁定技，你每回合首次弃置牌后，摸一张牌。当此牌离开你的装备区时，销毁之。」
  * （移动版官网《国战模式更新公告》里给的就是这一版文本；用户核对后也给了同一版）
  *
- * ⚠️ **待核对**：与【盟军大纛】一样，只核到效果，**花色/点数/装备类型**没核到。
- *    按同族记 `treasure`、花色点数用占位值 ♥7（见 §5.61）。
+ * 牌面（用户核对后提供）：**装备牌·宝物，方块 K（♦K）**，君孙权发动【君威】获得。
  */
 export function lordEquipDinglan(seq: number): Card {
   return {
     id: `lord-dinglan#${seq}`,
     type: 'treasure',
-    suit: 'heart',
-    rank: 7,
+    suit: 'diamond',
+    rank: 13,
     equipName: 'dinglan',
     destroyOnLeave: true,
   };

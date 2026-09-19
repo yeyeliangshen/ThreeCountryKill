@@ -19349,6 +19349,10 @@ describe('国战 · 君主将（特性）', () => {
     expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
     ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
     expect(a.equipment.treasure?.equipName).toBe('dinglan');
+    // 牌面（用户核对后提供）：宝物·方块 K
+    expect(a.equipment.treasure?.type).toBe('treasure');
+    expect(a.equipment.treasure?.suit).toBe('diamond');
+    expect(a.equipment.treasure?.rank).toBe(13);
     expect(dinglan()).toBe(0);
 
     // ② 弃牌阶段弃一张 → 触发「本回合首次弃置牌后摸一张」
