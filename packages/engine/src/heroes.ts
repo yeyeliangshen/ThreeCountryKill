@@ -3623,7 +3623,7 @@ const JUN_CAOCAO: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【六龙骖驾】）、【雄驰】、【征戎】，三条都已实现。',
   {
     // 与标准版【曹操】是同一个武将本体：两者不能同时当主将+副将（见 heroCanonicalId）
-    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
 
     canonicalId: 'caocao',
     skills: [
@@ -3760,7 +3760,7 @@ const JUN_LIUBEI: Hero = lordHero(
   'shu',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【飞龙夺凤】）、【章武】、【励众】都已实现。',
   {
-    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
 
     canonicalId: 'liubei', // 与【刘备】同一本体
     skills: [
@@ -3992,7 +3992,7 @@ const JUN_SUNQUAN: Hero = lordHero(
   'wu',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【定澜夜明珠】）、【督授】、【据江】已实现。',
   {
-    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
 
     canonicalId: 'sunquan', // 与【孙权】同一本体
     // 督授：给**同势力角色**一个出牌阶段技能（引擎按这个 id 找提供者，见 factionGrantedActiveSkills）
@@ -4184,7 +4184,7 @@ const JUN_YUANSHAO: Hero = lordHero(
   'qun',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【盟军大纛】）、【会盟】、【授锋】已实现。',
   {
-    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
 
     canonicalId: 'yuanshao', // 与【袁绍】同一本体
     skills: [
@@ -6221,15 +6221,20 @@ const WUJING: Hero = {
       maxTargets: 2,
       needsCards: true,
       maxCards: () => 1,
-      canUse: (state, player) => player.hand.some((c) => isEquipCard(c)),
+      // 「一张装备牌」不限手牌——装备区里的也算（用户口径：不要硬编码只能从手牌选）
+      canUse: (state, player) => handAndEquipOf(player).some((c) => isEquipCard(c)),
       execute: (state, player, intent, api) => {
         const cardId = intent.cardIds?.[0];
-        const material = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        const material = cardId
+          ? handAndEquipOf(player).find((c) => c.id === cardId)
+          : undefined;
         if (!material || !isEquipCard(material)) return '调归要用一张装备牌当【调虎离山】';
         const targets = intent.targetIds.filter((id) => id !== player.seatId);
         if (targets.length === 0) return '【调虎离山】要指定一名其他角色';
-        // 先付代价：材料牌进弃牌堆
-        removeCard(player.hand, material.id);
+        // 先付代价：材料牌进弃牌堆（装备区里的那张先摘下来）
+        const eqSlot = EQUIP_SLOTS.find((sl) => player.equipment[sl]?.id === material.id);
+        if (eqSlot) player.equipment[eqSlot] = null;
+        else removeCard(player.hand, material.id);
         toDiscard(state, material);
         pushLog(
           state,
@@ -6301,6 +6306,9 @@ export function fengyangBlocksEquip(
   card: Card,
 ): boolean {
   if (!EQUIP_SLOTS.some((s) => owner.equipment[s]?.id === card.id)) return false;
+  // 阵法技的**全局前提**（用户口径）：存活角色至少 4 名——残局只剩 3 人时风扬不再生效。
+  // （与围攻关系同一条前提，见 `besiegers` 那套。）
+  if (state.players.filter((p) => p.alive).length < 4) return false;
   const actor = getPlayer(state, actorSeatId);
   if (!actor) return false;
   const actorFaction = effectiveFaction(state, actor);
@@ -6310,7 +6318,11 @@ export function fengyangBlocksEquip(
     const mine = effectiveFaction(state, p);
     if (!mine) continue; // 暗置的吴景没有风扬（effectiveHeroes 已经滤掉，这里是双保险）
     if (actorFaction === mine) continue; // 同势力不受限
-    if (formationQueue(state, p).some((q) => q.seatId === owner.seatId)) return true;
+    // 吴景自己**处于队列中**（连续相邻的同势力至少 2 名）才谈得上「与你处于同一队列」——
+    // 单名的 `formationQueue` 只返回他自己，那时不保护任何人（用户口径：阵法技不是常驻锁定技）。
+    const queue = formationQueue(state, p);
+    if (queue.length < 2) continue;
+    if (queue.some((q) => q.seatId === owner.seatId)) return true;
   }
   return false;
 }

@@ -17342,6 +17342,8 @@ describe('国战 · 吴景（调归 / 风扬）', () => {
         { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', equip: [wpn('b1')], hand: [] },
         // 丙是魏，拿着过河拆桥 + 顺手牵羊
         { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [guohe('c1'), shunshou('c2')] },
+        // 阵法技的全局前提是**存活至少 4 人**，所以这里要有个第四人
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: [] },
       ],
       C,
     );
@@ -17357,12 +17359,29 @@ describe('国战 · 吴景（调归 / 风扬）', () => {
     expect(state.players.find((p) => p.seatId === C)!.hand.some((c) => c.id === 'b1')).toBe(false);
   });
 
+  it('风扬：阵法技的全局前提——存活不足 4 人就整个不生效（残局）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', equip: [wpn('b1')], hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [guohe('c1')] },
+      ],
+      C,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, C, { type: 'playCard', cardId: 'c1', targetIds: [B], targetCardId: 'b1' }));
+    passWuxie(state);
+    // 只剩 3 人：阵法技不生效 → 装备正常被拆
+    expect(b.equipment.weapon).toBeNull();
+  });
+
   it('风扬：同势力角色不受限；吴景自己也不受限', () => {
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'wujing', faction: 'wu', hand: [guohe('a1')] },
         { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', equip: [wpn('b1')], hand: [] },
         { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: [] },
       ],
       A,
     );
