@@ -4012,7 +4012,29 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
 
   const killer = killerId && killerId !== dyingId ? getPlayer(state, killerId) : undefined;
   if (killer?.alive) {
-    runHooksPausable(state, 'kill', killer, { victimId: dyingId }, afterKill);
+    // 「有人死亡时」派给**全场**（孙綝·嗜戮那类旁观者技能）——只有场上真有人挂这个时机才走这一层，
+    // 否则与原路径完全等价（多一层可挂起嵌套会改变续接顺序，这是踩过的坑）。
+    runHooksPausable(state, 'kill', killer, { victimId: dyingId }, () => {
+      const needsAny = state.players.some(
+        (p) => p.alive && collectTimingHooks(state, p, 'playerDied', true).length > 0,
+      );
+      if (!needsAny) {
+        afterKill();
+        return;
+      }
+      const list = state.players.filter((p) => p.alive);
+      const step = (i: number): void => {
+        const p = list[i];
+        if (!p) {
+          afterKill();
+          return;
+        }
+        runHooksPausable(state, 'playerDied', p, { victimId: dyingId, killerId }, () =>
+          step(i + 1),
+        );
+      };
+      step(0);
+    });
     return;
   }
   afterKill();
@@ -9028,6 +9050,7 @@ export function createGame(
     hun: [],
     han: [],
     yi: [],
+    lu: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],
@@ -9118,6 +9141,8 @@ export function createGame(
     midaoUsedSeats: [],
     damagedThisPhase: [],
     suzhiTriggers: 0,
+    xiongnue: null,
+    xiongnueDefense: false,
     discardPhaseCountsThisTurn: {},
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,

@@ -161,6 +161,12 @@ export type Timing =
   | 'pindianRevealed'
   | 'death' // 死亡
   | 'roundEnd' // 一轮结束（座次绕回首位；君主·励众在这里结算）
+  | 'playerDied'
+  /**
+   * **有人死亡时**（派给**所有**存活角色，payload `{ victimId, killerId? }`，可挂起）。
+   * 与只派给凶手的 `kill` 不同：孙綝·【嗜戮】「角色死亡时你可以收其武将牌」是**旁观者**技能，
+   * 只挂 `kill` 收不到（别人杀死时……他自己是凶手反而是 `kill`）。
+   */
   | 'roundStart' // 一轮开始（轮号 +1 之后、新一轮第一个回合开始之前；徐庶·荐才在这里获知武将牌）
   /**
    * 伤害**将要落地**（最终伤害值已定、尚未扣血、`flags.damagePrevented` 还没读）。

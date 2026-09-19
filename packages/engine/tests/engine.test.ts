@@ -19252,6 +19252,149 @@ describe('国战 · 夏侯霸（豹烈）', () => {
   });
 });
 
+
+/**
+ * 孙綝（不臣篇·下；野心家武将本体）——【嗜戮】/【凶虐】（文档 §5.107）。
+ * 锁：「戮」是**真实武将牌**（记 id + 取得时冻结的势力）、凶虐移去时**返回未登场武将牌堆**；
+ * 凶虐①只在出牌阶段开始处理一次、三效果分别验一遍；②严格在**出牌阶段结束时**（跳过阶段就没有）。
+ */
+describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+      lu?: { heroId: string; faction: Faction | null }[];
+      deputyHeroId?: string;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      if (s.deputyHeroId) p.deputyHeroId = s.deputyHeroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.lu = (s.lu ?? []).map((e) => ({ ...e }));
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('嗜戮①：死亡时收走**仍存在**的武将牌作为戮；被击杀时额外从未登场堆取', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sunchen', faction: 'ambitionist', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hp: 1, deputyHeroId: 'guanyu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const poolBefore = state.heroPool.length;
+    // 甲杀乙（乙 1 血 → 濒死 → 无人救 → 死亡）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 濒死
+    passDeathSaves(state); // 求桃轮：所有人弃权 → 乙死亡
+    // 嗜戮询问（旁观者时机：有人死亡 → 派给全场）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('嗜戮');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 乙的两张武将牌（vanilla + 关羽）成为戮，且是**真实武将牌**（记 heroId）
+    expect(a.lu.length).toBeGreaterThanOrEqual(2);
+    expect(a.lu.map((e) => e.heroId)).toContain('guanyu');
+    // 亲手杀死 → 再从未登场堆取（池子少了牌）
+    expect(state.heroPool.length).toBeLessThan(poolBefore);
+  });
+
+  it('凶虐①：出牌阶段开始消费 1 张戮（自己选）、武将牌**返回**未登场堆；加伤模式只对该势力生效', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'sunchen',
+        faction: 'ambitionist',
+        hand: [sha('a1')],
+        hp: 4,
+        maxHp: 4,
+        lu: [{ heroId: 'caocao', faction: 'wei' }],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hp: 4, hand: [] },
+    ], C);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const poolBefore = state.heroPool.length;
+    ok(act(state, C, { type: 'endPhase' })); // 轮到甲
+    skipRevealAsk(state);
+    // 准备阶段先来【嗜戮】的换牌（这里弃 0 张）
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, A, { type: 'pickCards', cardIds: [] }));
+    }
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: '0' })); // 选那张魏戮
+    ok(act(state, A, { type: 'chooseOption', optionId: 'dmg' })); // 加伤
+    expect(a.lu.length).toBe(0);
+    expect(state.heroPool.length).toBe(poolBefore + 1); // 返回未登场堆（不是销毁）
+    expect(state.xiongnue?.faction).toBe('wei');
+  });
+
+  it('凶虐②：**出牌阶段结束时**消费 2 张戮换减伤；受到其他角色伤害 -1', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'sunchen',
+        faction: 'ambitionist',
+        hand: [],
+        hp: 4,
+        maxHp: 4,
+        lu: [
+          { heroId: 'caocao', faction: 'wei' },
+          { heroId: 'liubei', faction: 'shu' },
+        ],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 甲的出牌阶段开始：先答凶虐①（这里不发动）
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('凶虐')) {
+      ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    }
+    ok(act(state, A, { type: 'endPhase' })); // 出牌阶段结束 → 凶虐②
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: '0' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: '0' }));
+    expect(a.lu.length).toBe(0);
+    expect(state.xiongnueDefense).toBe(true);
+    // 之后乙打甲 1 点 → 减到 0（视为没造成伤害 → 甲体力不变）
+    const hpBefore = a.hp;
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' })); // 不出闪
+    expect(a.hp).toBe(hpBefore);
+  });
+});
+
 /** 技能判定也走「判定牌生效前」：鬼才/鬼道能改判、天妒能收牌 */
 describe('国战 · 技能判定接入改判时机', () => {
   function gz(

@@ -13910,6 +13910,328 @@ const XIAHOUBA: Hero = {
   ],
 };
 
+/**
+ * 孙綝 —— 嗜戮 / 凶虐（不臣篇·下，**野心家武将本体**，2 阴阳鱼 → 4；移动版 2021 线上口径，见 §5.107）。
+ *
+ * 【嗜戮】：① 角色**死亡时**，孙綝可以收走该角色**仍然存在**的武将牌（已移除的收不到、用士兵牌
+ *   顶替的也不算）作为「戮」——**是真实的武将牌**（记 id + **取得时冻结的势力**），不是计数标记；
+ *   若此人是**孙綝杀死**的，再从未登场武将牌堆额外取至多 2 张（不足就取多少算多少，不凭空造牌）。
+ *   ② **准备阶段**：有戮则（至多戮数）弃牌 + 摸**实际弃牌数**张（与【制衡】那类「弃几摸几」同形）。
+ * 【凶虐】：① **出牌阶段开始时**消费 1 张戮（**自己选**哪一张，因为不同戮的势力不同）→ 三选一，
+ *   持续到本回合结束：对**该戮势力**的角色伤害 +1 / 造成伤害后获得其一张牌（一次伤害事件一张）/
+ *   对其使用牌无次数限制。② **出牌阶段结束时**消费 2 张戮（势力不限）→ 直到**自己的下个回合开始**
+ *   受到**其他角色**的伤害 -1（每次伤害事件都生效；减到 0 视为没造成伤害）。
+ * ⚠️ ② 的时点严格是**出牌阶段结束时**：出牌阶段被跳过（乐不思蜀）就没有这个窗口。
+ */
+function luFactionOf(entry: { faction: Faction | null }): Faction | null {
+  return entry.faction;
+}
+
+/** 嗜戮①：有人死亡 → 收其仍存在的武将牌；若是我杀的，再从未登场武将堆取至多 2 张 */
+function askShilu(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { victimId?: string; killerId?: string } | undefined;
+  const victimId = payload?.victimId;
+  if (!victimId || victimId === me.seatId) return;
+  const victim = getPlayer(state, victimId);
+  if (!victim) return;
+  // 仍存在的武将牌：主/副将位里**没被移除**的那些（移除过的已经换成士兵牌）
+  const collectable = [victim.heroId, victim.deputyHeroId].filter(
+    (id): id is string => !!id && !victim.removedHeroIds.includes(id),
+  );
+  if (collectable.length === 0) return; // 两张都被移除 → 没有可收的武将牌
+  const iKilled = payload?.killerId === me.seatId;
+  const faction = victim.determinedFaction ?? victim.faction;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【嗜戮】：是否收走 ${victim.name} 的武将牌作为「戮」？（${collectable.length} 张${iKilled ? '，且你亲手杀死，可再从未登场武将堆取至多 2 张' : ''}）`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const names: string[] = [];
+      for (const id of collectable) {
+        p.lu.push({ heroId: id, faction });
+        names.push(getHeroForMode(id, st.mode)?.name ?? id);
+      }
+      if (iKilled) {
+        // 从未登场武将牌堆取（左慈·汲魂同一套资源；不足就取多少算多少）
+        for (let k = 0; k < 2; k++) {
+          const id = st.heroPool.shift();
+          if (!id) break;
+          const h = getHeroForMode(id, st.mode);
+          // ⚠️ 双势力牌随机成戮时「对应哪个势力」没有查到移动版细则 → 记 null（待核对，见 §5.107）
+          p.lu.push({ heroId: id, faction: h?.secondFaction ? null : (h?.faction ?? null) });
+          names.push(h?.name ?? id);
+        }
+      }
+      pushLog(st, 'skill', `${p.name} 的【嗜戮】：收得「戮」${names.map((n) => `【${n}】`).join('、')}（共 ${p.lu.length} 张）。`, {
+        seat: p.seatId,
+      });
+    },
+  );
+}
+
+/** 嗜戮②（准备阶段）+ 凶虐效果到期：换牌 & 清掉上一回合的凶虐状态 */
+function askShiluPrepare(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  // 凶虐：① 的攻击效果只在本回合有效（新回合开始即失效）；② 的防御持续到**自己的下个回合开始**
+  if (state.xiongnue) state.xiongnue = null;
+  state.xiongnueDefense = false;
+  const x = me.lu.length;
+  if (x === 0) return;
+  const pool = handAndEquipOf(me);
+  const max = Math.min(x, pool.length);
+  if (max === 0) return;
+  ctx.api.askPickCards(
+    state,
+    me.seatId,
+    `【嗜戮】：至多弃 ${max} 张牌（戮 ${x} 张），然后摸等量张`,
+    pool,
+    0,
+    max,
+    (st, p, chosen) => {
+      if (chosen.length === 0) return;
+      ctx.api.discardCards(p.seatId, chosen, () => {
+        let got = 0;
+        for (let i = 0; i < chosen.length; i++) {
+          const c = drawOne(st);
+          if (!c) break;
+          p.hand.push(c);
+          got++;
+        }
+        pushLog(
+          st,
+          'skill',
+          `${p.name} 发动【嗜戮】：弃置 ${chosen.length} 张牌，摸了 ${got} 张。`,
+          { seat: p.seatId },
+        );
+      });
+    },
+    { returnTo: me.seatId },
+  );
+}
+
+/** 凶虐①：出牌阶段开始 → 消费 1 张戮（自己选）→ 三选一，持续到本回合结束 */
+function askXiongnueOffense(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (me.lu.length === 0) return;
+  if (state.xiongnue) return; // 一个出牌阶段只处理一次
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【凶虐】：是否移去一张「戮」，令其返回未登场武将牌堆，并选择本回合的攻击效果？',
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askChoice(
+        st,
+        p.seatId,
+        '【凶虐】：选择要移去的「戮」（不同戮对应不同势力）',
+        p.lu.map((e, i) => ({
+          id: String(i),
+          label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${e.faction ? FACTION_NAME[e.faction] ?? e.faction : '势力待核对'}）`,
+        })),
+        (st2, p2, idxStr) => {
+          const idx = Number(idxStr);
+          const entry = p2.lu[idx];
+          if (!entry) return;
+          // 返回未登场武将牌堆（不是销毁——以后还可能被变更副将/技能取到）
+          p2.lu.splice(idx, 1);
+          st2.heroPool.push(entry.heroId);
+          pushLog(
+            st2,
+            'skill',
+            `${p2.name} 的【凶虐】：移去「戮」【${getHeroForMode(entry.heroId, st2.mode)?.name ?? entry.heroId}】（${entry.faction ? FACTION_NAME[entry.faction] ?? entry.faction : '势力待核对'}），其返回未登场武将牌堆。`,
+            { seat: p2.seatId },
+          );
+          const modes: { id: 'dmg' | 'obtain' | 'limit'; label: string }[] = [
+            { id: 'dmg', label: '本回合对其势力角色造成的伤害 +1' },
+            { id: 'obtain', label: '本回合对其势力角色造成伤害后，获得其一张牌' },
+            { id: 'limit', label: '本回合对其势力角色使用牌无次数限制' },
+          ];
+          ctx.api.askChoice(st2, p2.seatId, '【凶虐】：选择本回合的攻击效果', modes, (st3, p3, mode) => {
+            if (!entry.faction) {
+              pushLog(
+                st3,
+                'skill',
+                `${p3.name} 的【凶虐】：这张「戮」的势力待核对（双势力牌随机所得），本次不产生效果。`,
+                { seat: p3.seatId },
+              );
+              return;
+            }
+            st3.xiongnue = { faction: entry.faction, mode: mode as 'dmg' | 'obtain' | 'limit' };
+            pushLog(
+              st3,
+              'skill',
+              `${p3.name} 的【凶虐】：本回合对【${FACTION_NAME[entry.faction] ?? entry.faction}】势力生效（${modes.find((m) => m.id === mode)?.label ?? mode}）。`,
+              { seat: p3.seatId },
+            );
+          });
+        },
+      );
+    },
+  );
+}
+
+/** 凶虐②：**出牌阶段结束时**消费 2 张戮（势力不限）→ 受到其他角色伤害 -1，直到自己的下个回合开始 */
+function askXiongnueDefense(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (me.lu.length < 2) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【凶虐】：是否移去 2 张「戮」（势力不限），令你直到自己的下个回合开始受到其他角色的伤害 -1？',
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askChoice(
+        st,
+        p.seatId,
+        '【凶虐】：选择移去的第 1 张「戮」',
+        p.lu.map((e, i) => ({
+          id: String(i),
+          label: getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId,
+        })),
+        (st2, p2, first) => {
+          const i1 = Number(first);
+          const e1 = p2.lu[i1];
+          if (!e1) return;
+          p2.lu.splice(i1, 1);
+          st2.heroPool.push(e1.heroId);
+          ctx.api.askChoice(
+            st2,
+            p2.seatId,
+            '【凶虐】：选择移去的第 2 张「戮」',
+            p2.lu.map((e, i) => ({
+              id: String(i),
+              label: getHeroForMode(e.heroId, st2.mode)?.name ?? e.heroId,
+            })),
+            (st3, p3, second) => {
+              const e2 = p3.lu[Number(second)];
+              if (!e2) return;
+              p3.lu.splice(Number(second), 1);
+              st3.heroPool.push(e2.heroId);
+              st3.xiongnueDefense = true;
+              pushLog(
+                st3,
+                'skill',
+                `${p3.name} 的【凶虐】：移去 2 张「戮」，直到自己的下个回合开始受到其他角色的伤害 -1。`,
+                { seat: p3.seatId },
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
+/** 凶虐的伤害修正（同一个字段同时服务来源侧 +1 与目标侧 -1） */
+function xiongnueDamageDelta(
+  state: GameState,
+  me: Player,
+  atk: { sourceId?: string; targetId?: string },
+): number {
+  const target = atk.targetId ? getPlayer(state, atk.targetId) : undefined;
+  // ① 来源侧：本回合选定的势力 → 对其角色伤害 +1
+  if (atk.sourceId === me.seatId && state.xiongnue && target) {
+    if (effectiveFaction(state, target) === state.xiongnue.faction && state.xiongnue.mode === 'dmg') {
+      return 1;
+    }
+  }
+  // ② 目标侧：受到**其他角色**的伤害 -1（无来源/自己造成的不减）
+  if (state.xiongnueDefense && atk.targetId === me.seatId) {
+    if (atk.sourceId && atk.sourceId !== me.seatId) return -1;
+  }
+  return 0;
+}
+
+/** 凶虐①的「造成伤害后获得其一张牌」 */
+function xiongnueObtain(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const eff = state.xiongnue;
+  if (!eff || eff.mode !== 'obtain') return;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  if (!attack || attack.sourceId !== me.seatId || attack.targetId === me.seatId) return;
+  const target = getPlayer(state, attack.targetId);
+  if (!target || !target.alive) return;
+  if (effectiveFaction(state, target) !== eff.faction) return;
+  if (handAndEquipOf(target).length === 0) return; // 无牌可获得
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【凶虐】：是否获得 ${target.name} 的一张牌？`,
+    [
+      { id: 'yes', label: '获得其一张牌' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const t = getPlayer(st, target.seatId);
+      if (!t) return;
+      takeOneOfTargetCards(st, p, t, ctx.api, '凶虐', () => {
+        pushLog(st, 'skill', `${p.name} 的【凶虐】：获得了 ${t.name} 的一张牌。`, {
+          seat: p.seatId,
+        });
+      });
+    },
+  );
+}
+
+const SUNCHEN: Hero = {
+  id: 'sunchen',
+  name: '孙綝',
+  pack: 'buchen',
+  faction: 'ambitionist', // 野心家武将本体（野势力）
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  skillFields: { 凶虐: ['damageDelta', 'shaBypassLimit'] },
+  damageDelta: (state, me, atk) => xiongnueDamageDelta(state, me, atk),
+  // 凶虐③：只豁免**次数限制**（距离/目标数/其他合法性一律不豁免）——整批目标都要是那个势力
+  shaBypassLimit: (state, owner, targetIds) => {
+    const eff = state.xiongnue;
+    if (!eff || eff.mode !== 'limit') return false;
+    if (targetIds.length === 0) return false;
+    return targetIds.every((id) => {
+      const t = state.players.find((p) => p.seatId === id);
+      return !!t && effectiveFaction(state, t) === eff.faction;
+    });
+  },
+  hooks: [
+    { timing: 'playerDied', skillId: '嗜戮', handler: askShilu },
+    { timing: 'turnStart', skillId: '嗜戮', handler: askShiluPrepare },
+    { timing: 'playPhase', skillId: '凶虐', handler: askXiongnueOffense },
+    { timing: 'playPhaseEnd', skillId: '凶虐', handler: askXiongnueDefense },
+    { timing: 'afterDamageDealt', skillId: '凶虐', handler: xiongnueObtain },
+  ],
+  skills: [
+    {
+      name: '嗜戮',
+      desc: '角色死亡时，你可以获得其武将牌，称为「戮」；若其为你杀死的，你额外从未登场武将牌堆获得两张「戮」。准备阶段，若你有「戮」，你可以弃置至多 X 张牌，然后摸等量的牌（X 为「戮」的数量）。',
+    },
+    {
+      name: '凶虐',
+      desc: '出牌阶段开始时，你可以移去一张「戮」，令其返回未登场武将牌堆，然后选择一项：本回合你对与其势力相同的角色造成的伤害+1；你对其造成伤害后获得其一张牌；你对其使用牌无次数限制。出牌阶段结束时，你可以移去两张「戮」，令你直到自己的下个回合开始受到其他角色的伤害-1。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -13924,7 +14246,6 @@ function ambitionistHero(id: string, name: string, hp: number): Hero {
 }
 
 const BUCHEN_AMBITIONIST: Hero[] = [
-  ambitionistHero('sunchen', '孙綝', 4),
   ambitionistHero('jie_zhonghui', '界钟会', 4),
   SP_SIMAZHAO,
   GONGSUNYUAN,
@@ -13940,6 +14261,7 @@ export const HEROES: Hero[] = [
   MENGDA,
   LIUBA,
   XIAHOUBA,
+  SUNCHEN,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,
