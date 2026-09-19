@@ -2094,7 +2094,15 @@ function dispatchRoundEnd(state: GameState, after: () => void): void {
 }
 
 /** 回到某玩家的出牌阶段（伤害结算后恢复来源回合） */
-function resumePlay(state: GameState, sourceId: string): void {
+function resumePlay(
+  state: GameState,
+  sourceId: string,
+  /**
+   * 收尾开始前的输入槽快照（可选）。给了就按围栏判：槽里若已经是**收尾期间新产生**的询问，
+   * 这次就不抢槽、把「回出牌阶段」**排进续接队列**等它答完（docs §5.124 的规则）。
+   */
+  since?: PendingCheckpoint,
+): void {
   if (state.gameOver) return;
   // 被濒死打断的多步链（军令逐个问、决绝逐个结算、钩子链里打出的濒死…）：先接着跑它们，
   // 别急着把出牌阶段占位 pending 摆回去（摆回去这些链就再也醒不过来了）。
@@ -2142,12 +2150,12 @@ function resumePlay(state: GameState, sourceId: string): void {
     return;
   }
   state.turn.phase = 'play';
-  // ⚠️ 已知缺口（本轮试修失败，见 docs §5.118）：这一行是**无条件覆盖**——如果此刻正挂着
-  //    一条询问（例如弃置收口里旁观技能刚发起的「是否获得其中一张」），它就把询问冲掉了。
-  //    试过加 `if (state.pending === null)` 保护：夙智③ 那条用例确实通了，但**冒烟/模糊测试
-  //    大面积卡死**（这条路径的调用方太多，包括一些「收尾时必须把出牌阶段抢回来」的场合，
-  //    它们的 pending 恰恰不是 null）→ 已回退。正确的修法要更窄：只放过「**由这次收尾自己
-  //    新产生**的询问」，别放行更早的陈旧 pending。
+  // ⚠️ 围栏的**判断**已经就绪（`since` + canTakeOverPending），但**暂时不启用**：
+  //    实测「挡住 + pushResume 排队」会让冒烟 6 条挂（固定种子对局判不出胜负、牌张守恒不变式）——
+  //    因为 pushResume 只在槽为 null/弃牌阶段时排空，流程回到「出牌阶段」占位时那条续接
+  //    永远醒不过来。⇒ **必须先做唤醒语义**（在 pending 被 resolve/cancel 的地方主动排空队列），
+  //    否则「不冲掉询问」会变成「整局卡死」。见 docs §5.124.1。
+  void since;
   setPending(state, { kind: 'play', seatId: sourceId });
 }
 
@@ -4993,6 +5001,8 @@ function startTrickResolution(
     card,
     // 本次「使用牌」的编号（许攸·成略要把它造成的伤害绑回这一次使用）
     cardUseId: ++state.cardUseSeq,
+    // 结算开始时的输入槽快照（收尾想抢回出牌阶段时按它判所有权）
+    pendingFence: capturePendingCheckpoint(state),
     responders: [],
     responderIndex: 0,
     targetIds: targetIds.slice(),
