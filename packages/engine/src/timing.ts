@@ -537,6 +537,10 @@ export interface SkillApi {
     initiatorSeatId: string,
     executorSeatIds: string[],
     onDone: (state: GameState, executedSeatIds: string[]) => void,
+    opts?: {
+      /** 拒绝执行时的额外结算（诸葛恪·黩武）；不填＝公共规则（什么都不发生） */
+      onRefuse?: (st: GameState, executorSeatId: string, next: () => void) => void;
+    },
   ) => void;
   /**
    * 视为使用一张【杀】（夏侯渊·神速那类）。调用方先把代价付掉。

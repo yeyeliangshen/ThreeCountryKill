@@ -1088,6 +1088,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   // 这样结束阶段读到的就是这一整个回合的弃置（含判定/摸牌/出牌/弃牌各阶段）
   state.turnDiscards = [];
   state.useDamages = [];
+  state.duwuWatchSeat = null;
+  state.duwuRescued = false;
   state.liangfanHanIds = [];
   state.midaoUsedSeats = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
@@ -3823,6 +3825,8 @@ function afterNearDeath(state: GameState, attack: AttackContext, dying: Player):
   if (dying.hp > 0) {
     // 被技能救回来了（涅槃/不屈）：不建濒死队列，把控制权还回去
     pushLog(state, 'nearDeath', `${dying.name} 脱离了濒死状态。`);
+    // 诸葛恪·黩武：「结算期间有人**进入濒死并被救回**」——这里正好是「被技能救回」的出口
+    if (state.duwuWatchSeat) state.duwuRescued = true;
     dispatchNearDeathResolved(state, dying.seatId, true, attack.sourceId, () => {
       resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
     });
@@ -7625,7 +7629,16 @@ function applyArmyOrder(
  */
 function runArmyOrder(
   state: GameState,
-  opts: { initiatorSeatId: string; executorSeatIds: string[]; resumeTo?: string },
+  opts: {
+    initiatorSeatId: string;
+    executorSeatIds: string[];
+    resumeTo?: string;
+    /**
+     * 「拒绝执行」时的额外结算（诸葛恪·黩武：拒绝 → 受到 1 点普通伤害 → 发起者摸 1）。
+     * 不填＝按公共规则什么都不发生（劝进/节钺/将略都是这种）。
+     */
+    onRefuse?: (st: GameState, executorSeatId: string, next: () => void) => void;
+  },
   done: (st: GameState, executedSeatIds: string[]) => void,
 ): void {
   const { initiatorSeatId, executorSeatIds, resumeTo } = opts;
@@ -7683,7 +7696,8 @@ function runArmyOrder(
           (st3, p3, picked) => {
             if (picked !== 'yes') {
               pushLog(st3, 'skill', `${p3.name} 拒绝执行军令。`);
-              step(st3, i + 1);
+              if (opts.onRefuse) opts.onRefuse(st3, executor.seatId, () => step(st3, i + 1));
+              else step(st3, i + 1);
               return;
             }
             pushLog(st3, 'skill', `${p3.name} 执行军令：${token.label}。`);
@@ -7944,6 +7958,8 @@ function respondDeathSave(
     });
   }
   // 救活：先派发「濒死结算结束后」（左慈·汲魂 / 吴国太·补益），再把控制权还回去
+  // 同上：被【桃】救回（黩武的第二个「被救回」出口）
+  if (state.duwuWatchSeat) state.duwuRescued = true;
   dispatchNearDeathResolved(state, dying.seatId, true, pending.killerId, () => {
     resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
   });
@@ -8754,8 +8770,12 @@ function makeSkillApi(
         (st, executed) => onDone(st, executed.includes(executorSeatId)),
       );
     },
-    armyOrderMulti: (initiatorSeatId, executorSeatIds, onDone) => {
-      runArmyOrder(state, { initiatorSeatId, executorSeatIds, resumeTo }, onDone);
+    armyOrderMulti: (initiatorSeatId, executorSeatIds, onDone, opts2) => {
+      runArmyOrder(
+        state,
+        { initiatorSeatId, executorSeatIds, resumeTo, onRefuse: opts2?.onRefuse },
+        onDone,
+      );
     },
     grantTempSkill: (heroId, skillName, toSeatId) => {
       const target = toSeatId
@@ -9344,6 +9364,8 @@ export function createGame(
     xiongnueDefense: false,
     discardPhaseCountsThisTurn: {},
     turnDiscards: [],
+    duwuWatchSeat: null,
+    duwuRescued: false,
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],

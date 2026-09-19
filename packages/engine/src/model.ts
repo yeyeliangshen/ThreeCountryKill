@@ -922,6 +922,13 @@ export interface GameState {
    * 第二张结算时不能因为第一张打过他就发阴阳鱼。
    * 只在**真的扣了血**之后记（被防止/减到 0 不算）；随回合清空。
    */
+  /**
+   * 诸葛恪·【黩武】：结算期间「谁在盯着」与「有没有人进入濒死并被救回」。
+   * 两次状态（`duwuWatchSeat` = 发起者）——因为黩武的结算会挂起好几次询问，
+   * 用局部变量接不住；随回合清空。
+   */
+  duwuWatchSeat: string | null;
+  duwuRescued: boolean;
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

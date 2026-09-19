@@ -23854,3 +23854,98 @@ describe('国战 · 许攸（成略 / 恃才）', () => {
     expect(state.log.some((e) => e.message.includes('没有手牌可弃'))).toBe(true);
   });
 });
+
+/**
+ * 诸葛恪（不臣篇·下，吴；文档 §5.116）。⚠️ 国战【黩武】是**限定技 + 群体军令**，
+ * 不是身份场那条「弃 X 张牌造成 1 伤害」。本轮【傲才】未实现（见文档欠账）。
+ */
+describe('国战 · 诸葛恪（黩武）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+      revealed?: boolean;
+    }[],
+    actor?: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = 'vanilla';
+      p.faction = s.faction;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+
+  it('黩武：目标是**攻击范围内**、势力不同**或未确定势力**的其他角色（暗将也算）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '诸葛恪', heroId: 'zhugeke', faction: 'wu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' }, // 不同势力 ✓
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' }, // 同势力 ✗
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', revealed: false }, // 未确定 ✓
+      ],
+      A,
+    );
+    const legal = toSnapshot(state, A).prompt?.legalSkillIds ?? [];
+    expect(legal).toContain('duwu');
+    ok(act(state, A, { type: 'useSkill', skillId: 'duwu', cardIds: [], targetIds: [] }));
+    // 选军令 → 先问乙（不同势力）→ 先问丁（未确定势力）——同势力的丙不在名单里
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期挑军令，实际是 ${ask?.kind}`);
+    const opt = ask.options[0]!;
+    ok(act(state, A, { type: 'chooseOption', optionId: opt.id }));
+    const first = state.pending;
+    if (first?.kind !== 'choice') throw new Error(`预期问执行军令，实际是 ${first?.kind}`);
+    expect([B, D]).toContain(first.seatId);
+    expect(first.seatId).not.toBe(C);
+  });
+
+  it('黩武：拒绝 → 先受 1 点普通技能伤害、再让诸葛恪摸 1；限定技只能用一次', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '诸葛恪', heroId: 'zhugeke', faction: 'wu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, maxHp: 4, hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'useSkill', skillId: 'duwu', cardIds: [], targetIds: [] }));
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期挑军令，实际是 ${ask?.kind}`);
+    ok(act(state, A, { type: 'chooseOption', optionId: ask.options[0]!.id }));
+    const exec = state.pending;
+    if (exec?.kind !== 'choice') throw new Error(`预期问乙，实际是 ${exec?.kind}`);
+    expect(exec.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 拒绝
+    expect(pick(state, B).hp).toBe(3); // 1 点普通技能伤害
+    expect(pick(state, A).hand.length).toBe(1); // 诸葛恪摸 1
+    expect(state.log.some((e) => e.message.includes('拒绝执行军令'))).toBe(true);
+    // 限定技：本局已用
+    const again = act(state, A, { type: 'useSkill', skillId: 'duwu', cardIds: [], targetIds: [] });
+    expect(again.ok).toBe(false);
+  });
+});

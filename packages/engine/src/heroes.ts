@@ -13781,6 +13781,125 @@ const XUYOU: Hero = {
   ],
 };
 
+/**
+ * 诸葛恪 —— 傲才 / 黩武（不臣篇·下，**吴**，1.5 阴阳鱼 → 3，珠联璧合【丁奉】）。
+ *
+ * ⚠️ **国战【黩武】与身份场那条完全不是一回事**：这里是**限定技 + 群体军令**
+ * （身份场的「弃 X 张牌造成 1 点伤害」**没有**实现、也不该混进来）。
+ * 另：移动版这一页标注国战权限暂未开放，所以本仓库是在实现**已存在的规则定义**。
+ *
+ * 【黩武】（限定技，出牌阶段）：按**公共军令**机制（与董昭·劝进 / 王平·将略**同一套**
+ * `api.armyOrderMulti`）令**攻击范围内**的每名「其他角色且（势力不同 **或未确定势力**）」
+ * 依次选择执行 / 拒绝；拒绝者受到诸葛恪造成的 **1 点普通技能伤害**（先伤害、整条流程走完，
+ * 然后诸葛恪摸 1）。全部处理完后，若**整个黩武结算期间**有人**进入濒死并被救回**，
+ * 诸葛恪**失去 1 点体力**（只一次，不是伤害）。
+ * - 目标在**发动时冻结**（之后装备/攻击范围变化不改变名单）；
+ * - 「未确定势力」**算目标**（暗将也在范围内——这条最容易写错）；
+ * - 濒死的两个出口（被技能救回 / 被【桃】救回）都记在 `state.duwuRescued`，
+ *   所以「执行军令时被打进濒死」与「拒绝后被黩武伤害打进濒死」都算。
+ *
+ * 【傲才】**本轮未实现**（如实记录，见 docs §5.116 的欠账）：它需要在「被要求使用/打出基本牌」
+ * 的请求上开一个 **CardProvider** 口子（看牌堆顶两张 → 选一张**真实实体牌**直接满足请求，
+ * 不经过手牌、不是虚拟牌、没匹配就原样留在牌堆），这个接口本轮来不及做，
+ * 本仓库目前也还没有别的「从特殊区域提供响应牌」的技能——等做它时一起加。
+ */
+function duwuTargets(state: GameState, me: Player): Player[] {
+  const mine = effectiveFaction(state, me);
+  return state.players.filter((p) => {
+    if (!p.alive || p.seatId === me.seatId) return false;
+    // 在**诸葛恪的攻击范围内**（方向是诸葛恪 → 对方；武器/加范围技能照常参与）
+    if (!canTarget(state, me.seatId, p.seatId)) return false;
+    const f = effectiveFaction(state, p);
+    if (!f) return true; // 未确定势力也算（暗将）
+    return f !== mine;
+  });
+}
+
+const DUWU_SKILL: ActiveSkill = {
+  id: 'duwu',
+  name: '黩武',
+  oncePerGame: true,
+  minTargets: 0,
+  maxTargets: 0,
+  needsCards: false,
+  canUse: (state, player) => duwuTargets(state, player).length > 0,
+  execute: (state, player, _intent, api) => {
+    const targets = duwuTargets(state, player);
+    if (targets.length === 0) return '攻击范围内没有符合条件的角色';
+    pushLog(state, 'skill', `${player.name} 发动【黩武】。`);
+    // 结算期间记账（会挂起好几次询问，所以用 state 上的状态位）
+    state.duwuWatchSeat = player.seatId;
+    state.duwuRescued = false;
+    api.armyOrderMulti(
+      player.seatId,
+      targets.map((t) => t.seatId),
+      (st) => {
+        const rescued = state.duwuRescued;
+        state.duwuWatchSeat = null;
+        state.duwuRescued = false;
+        if (rescued && player.alive) {
+          pushLog(
+            st,
+            'skill',
+            `${player.name} 的【黩武】：结算期间有人进入濒死并被救回，失去 1 点体力。`,
+            { seat: player.seatId },
+          );
+          api.loseHp(player, 1);
+        }
+      },
+      {
+        // 拒绝：**先**造成 1 点普通技能伤害（整条伤害/濒死流程走完），**再**摸 1
+        onRefuse: (st, executorSeatId, next) => {
+          const target = getPlayer(st, executorSeatId);
+          if (!target || !target.alive) {
+            next();
+            return;
+          }
+          pushLog(
+            st,
+            'skill',
+            `${target.name} 拒绝执行军令，受到【黩武】的 1 点普通伤害。`,
+            { seat: player.seatId },
+          );
+          api.dealDamage(target, 1, player.seatId, undefined, () => {
+            if (player.alive) {
+              const c = drawOne(st);
+              if (c) player.hand.push(c);
+              pushLog(st, 'skill', `${player.name} 因【黩武】摸一张牌。`, {
+                seat: player.seatId,
+              });
+            }
+            next();
+          });
+        },
+      },
+    );
+    return undefined;
+  },
+};
+
+const ZHUGEKE: Hero = {
+  id: 'zhugeke',
+  name: '诸葛恪',
+  pack: 'buchen',
+  faction: 'wu',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  combos: ['dingfeng'], // 珠联璧合【丁奉】
+  activeSkills: [DUWU_SKILL],
+  skills: [
+    {
+      name: '傲才',
+      desc: '你的回合外，当你被要求使用或打出一张基本牌时，你可以观看牌堆顶的两张牌，然后使用其中一张满足要求的基本牌（**本轮未实现**）。',
+    },
+    {
+      name: '黩武',
+      desc: '限定技，出牌阶段，你可以令攻击范围内所有与你势力不同或未确定势力的其他角色依次选择是否执行一项「军令」：不执行者受到你造成的1点普通伤害，然后你摸一张牌。若此技能结算期间有角色进入濒死状态并被救回，你失去1点体力。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
 ];
 
@@ -15620,6 +15739,7 @@ export const HEROES: Hero[] = [
   PANJUN,
   SUFEI,
   XUYOU,
+  ZHUGEKE,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,
