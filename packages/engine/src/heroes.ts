@@ -14179,13 +14179,17 @@ function suzhiOnTrick(ctx: HookContext): void {
  * 用牌/响应/判定进弃牌堆都不算）。跨步安全：只从**此刻仍在弃牌堆**的牌里选。
  */
 function suzhiOnDiscarded(ctx: HookContext): void {
-  const me = ctx.player; // 注意：这里是**弃牌的人**（cardDiscarded 派给持有者）
+  // 挂 `anyCardDiscarded`（**派给全场**）：ctx.player 是技能拥有者（司马昭本人），
+  // payload.ownerSeatId 才是**弃牌的人**——「其他角色」由这一句排掉。
+  const suzhi = ctx.player;
   const state = ctx.state;
-  const discarder = me;
-  const suzhi = state.players.find((p) => p.alive && p.heroId === 'sp_simazhao' && p.seatId !== discarder.seatId);
-  if (!suzhi) return;
+  const payload = ctx.payload as { cards?: Card[]; ownerSeatId?: string } | undefined;
+  const discarderSeat = payload?.ownerSeatId;
+  if (!discarderSeat || discarderSeat === suzhi.seatId) return;
+  const discarder = getPlayer(state, discarderSeat);
+  if (!discarder) return;
   if (!suzhiAvailable(state, suzhi)) return;
-  const cards = (ctx.payload as { cards?: Card[] } | undefined)?.cards ?? [];
+  const cards = payload?.cards ?? [];
   const pool: Card[] = [];
   for (const c of cards) {
     const still = state.discard.find((x) => x.id === c.id);
@@ -14262,7 +14266,7 @@ const SP_SIMAZHAO: Hero = {
     { timing: 'afterDamage', skillId: '昭心', handler: askZhaoxin },
     { timing: 'afterDamageDealt', skillId: '夙智', locked: true, handler: suzhiOnDealt },
     { timing: 'useCard', skillId: '夙智', locked: true, handler: suzhiOnTrick },
-    { timing: 'cardDiscarded', skillId: '夙智', locked: true, handler: suzhiOnDiscarded },
+    { timing: 'anyCardDiscarded', skillId: '夙智', locked: true, handler: suzhiOnDiscarded },
     { timing: 'turnStart', skillId: '夙智', locked: true, handler: suzhiOnTurnStart },
     { timing: 'turnEnd', skillId: '夙智', locked: true, handler: suzhiOnTurnEnd },
   ],

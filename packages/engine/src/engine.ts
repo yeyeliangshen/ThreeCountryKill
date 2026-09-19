@@ -3092,8 +3092,28 @@ function fireCardDiscarded(
     state.discardPhaseCountsThisTurn[owner.seatId] =
       (state.discardPhaseCountsThisTurn[owner.seatId] ?? 0) + cards.length;
   }
+  /** 「其他角色的牌因弃置进弃牌堆」派给全场（夙智③）；随后才继续原来的收尾 */
+  const afterOwnerHooks = (): void => {
+    const seen = state.players.some(
+      (p) =>
+        p.alive &&
+        p.seatId !== owner.seatId &&
+        collectTimingHooks(state, p, 'anyCardDiscarded', false).length > 0,
+    );
+    if (!seen) {
+      after();
+      return;
+    }
+    runAllPlayersHooks(
+      state,
+      'anyCardDiscarded',
+      { cards, ownerSeatId: owner.seatId },
+      () => after(),
+      owner.seatId,
+    );
+  };
   dinglanAfterDiscard(state, owner, () =>
-    runHooksPausable(state, 'cardDiscarded', owner, { cards }, after),
+    runHooksPausable(state, 'cardDiscarded', owner, { cards }, afterOwnerHooks),
   );
 }
 
@@ -5286,9 +5306,13 @@ function resolveGuohe(state: GameState, ctx: TrickContext): void {
       'trick',
       `${getPlayer(state, ctx.sourceId)!.name} 拆了 ${target.name} 的【${cardLabel(got.card)}】。`,
     );
-    // 拆掉的是装备 → 目标失去装备区的一张牌（枭姬）
+    // 拆掉的是装备 → 目标失去装备区的一张牌（枭姬）；之后还要补上「因弃置」的收口
+    // ⚠️ 以前这一支直接 endTrickResolution，装备被拆**不进**弃置收口：礼让听不到、
+    //    夙智③那种「其他角色因弃置进弃牌堆」的旁观技能也听不到（测试抓到的）。
     if (got.fromEquip) {
-      fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
+      fireEquipLost(state, target, got.card, () =>
+        fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId),
+      );
       return;
     }
     // ⚠️ 「因弃置」那套要派发（孔的礼让），而且**执行弃置动作的是使用者**——
