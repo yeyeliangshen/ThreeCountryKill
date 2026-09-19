@@ -24274,11 +24274,11 @@ describe('国战 · 黄祖（袭射）', () => {
     expect(state.log.some((e) => e.message.includes('袭射'))).toBe(false);
   });
 
-  // ⚠️ 仍 skip，但**驱动方式已修正**（本轮进展）：必须让黄祖自己结束回合，下一个才是乙；
-  //    用丙结束的话下家是黄祖自己 → 测的是「自己的准备阶段」，袭射根本不发动。
-  //    修正后已经能推进到「袭射询问 → 打死乙」这一段，卡在 `乙没死`（`passDeathSaves` 之后仍 alive）——
-  //    下一轮查：1 血目标挨 1 点后濒死队列的实际形态（可能 pending 不是 respondDeath，
-  //    或伤害链在袭射的异步收尾里还没走完）。
+  // ⚠️ 仍 skip：**引擎侧已被独立探针证明是对的** —— 探针里同一条链跑出：
+  //    袭射询问 → 视为出杀 → 乙 0 体力濒死 → 无人救 → **阵亡** → 日志「本回合有人死于袭射的【杀】」
+  //    → 弹出「【袭射】：是否变更一次副将（新副将暗置、不重算体力上限）？」✓
+  //    所以剩下的只是**用例自身的断言时序**没对齐（探针里那次 `alive=false` 成立，用例里不成立），
+  //    下一轮把探针的逐步序列原样抄进用例即可（不要再用「先断言再救」这种顺序）。
   it.skip('袭射②：该回合结束时（**别人的回合**）可换副将；换出暗副将后势力不退回 null', () => {
     const weapon: Card = { id: 'w1', type: 'weapon', suit: 'spade', rank: 1, equipName: 'qinggang', range: 2 };
     const state = gz(
@@ -24299,18 +24299,22 @@ describe('国战 · 黄祖（袭射）', () => {
     if (ask?.kind !== 'choice') throw new Error(`预期袭射询问，实际是 ${ask?.kind}`);
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(pick(state, B).alive).toBe(false);
-    // 乙的回合结束（黄祖的 othersTurnEnd）→ 袭射② 的换将询问
+    // 乙（1 血）挨 1 点 → 濒死 → 没人救 → 阵亡
     let guard = 0;
-    while (state.pending?.kind === 'respondDeath' && guard++ < 3) passDeathSaves(state);
-    // 找到黄祖的换将询问（可能在回合推进过程中出现）
-    const seen = state.log.some((e) => e.message.includes('袭射'));
-    expect(seen).toBe(true);
-    if (state.pending?.kind === 'choice' && state.pending.title.includes('袭射')) {
-      ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-      // 新副将必须**暗置**，且已确定的势力**不退回 null**（早期移动版的旧结算已修正）
-      expect(a.deputyRevealed).toBe(false);
-      expect(a.determinedFaction).toBe('qun');
+    while (state.pending?.kind === 'respondDeath' && guard++ < 5) {
+      const asked = state.pending.askQueue[state.pending.askIndex]!;
+      ok(act(state, asked, { type: 'pass' }));
     }
+    expect(pick(state, B).alive).toBe(false);
+    expect(state.log.some((e) => e.message.includes('死于袭射'))).toBe(true);
+    // 该回合结束（乙的回合）→ 袭射② 的换将询问
+    const ask2 = state.pending;
+    if (ask2?.kind !== 'choice') throw new Error(`预期换将询问，实际是 ${ask2?.kind}`);
+    expect(ask2.title).toContain('袭射');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 新副将必须**暗置**，且已确定的势力**不退回 null**（早期移动版的旧结算已修正）
+    expect(a.deputyRevealed).toBe(false);
+    expect(a.determinedFaction).toBe('qun');
   });
 
   it('目标体力**小于**黄祖时不能响应（严格小于：相等仍可响应）', () => {
