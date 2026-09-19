@@ -18529,7 +18529,10 @@ describe('国战 · 张鲁（布施 / 米道）', () => {
     }
   });
 
-  // 挂点已改成 othersUseCard，但这条用例里询问仍未出现（挂点或测试架设还需一轮）→ 先跳过
+  // ⚠️ 根因已定位（文档 §5.104）：米道的钩子挂在**张鲁**身上、事件 `othersUseCard` 也确实派给了
+  //    其他玩家（两条出杀路径、且在 useCard 链之外），但**旁观者钩子发问在这层没有被「可挂起」
+  //    机制接住**——询问设好之后又被后面的流程（等出闪/结算）覆盖掉，用例里最终看到的是 play。
+  //    下一步：查 runHooksPausable/runHooksFrom 的暂停条件，补一个钩子层的定向用例。先跳过。
   it.skip('米道：同势力角色用实体黑杀 → 交一张手牌、由张鲁改花色为红 → 仁王盾挡不住', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade')] },
@@ -18796,8 +18799,10 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     expect(state.suzhiTriggers).toBe(1);
   });
 
-  // ⚠️ 挂点待查：过河拆桥弃**装备**这条路上 `cardDiscarded` 是否派发（实现侧挂在它上面），
-  //    用例里询问没出现 → 先显式跳过，别把「假绿」当已验证。
+  // ⚠️ 根因已定位（文档 §5.104）：`cardDiscarded` 是**派给牌主**的（"你因弃置…" 那类技能用），
+  //    而夙智③是**旁观者**技能（"其他角色因弃置…"）——钩子挂在 SP司马昭身上，牌主是别人时
+  //    根本收不到这个事件。修法：在 fireCardDiscarded 里补一圈「派给全场」的时机
+  //    （与 othersUseCard / anyShanUsed 同一套写法）。先跳过，别把「假绿」当已验证。
   it.skip('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'guohe', 'heart')], hp: 4, maxHp: 4 },

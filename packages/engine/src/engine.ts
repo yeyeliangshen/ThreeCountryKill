@@ -2245,11 +2245,16 @@ function startAttack(
   // useCard 是**可挂起**的时机：钩子可能发问（孙策·激昂那次「是否摸一张」、马超·铁骑的
   // 技能判定现在也会经过「判定牌生效前」让鬼才发问），所以后续步骤必须放进回调里，
   // 否则询问会被紧随其后的成为目标/结算覆盖掉（本引擎的老坑）。
-  runHooksPausable(state, 'useCard', source, { attack, card }, () => {
-    // 成为【杀】目标**不会**自动亮将（国战规则里没有这个时机）。暗置的玩家要用
-    // 【倾国】【龙胆】这类转化技，得事先预亮——用出去的那一刻才明置（revealForConversion）。
-    becomeTargetFor(state, target, attack);
-  });
+  // 「**其他**角色使用牌时」：`useCard` 只派给使用者本人（旁观者技能如张鲁·米道收不到），
+  // 所以这里单独派一圈给其他玩家。⚠️ 必须在 `useCard` 链**外面**先派：嵌在链内部的话，
+  // 旁观的询问会被续接队列的嵌套顺序挤掉（与 beforeDamageApply 踩过的是同一个坑）。
+  runOthersUseCard(state, source.seatId, { attack, card }, () =>
+    runHooksPausable(state, 'useCard', source, { attack, card }, () => {
+      // 成为【杀】目标**不会**自动亮将（国战规则里没有这个时机）。暗置的玩家要用
+      // 【倾国】【龙胆】这类转化技，得事先预亮——用出去的那一刻才明置（revealForConversion）。
+      becomeTargetFor(state, target, attack);
+    }),
+  );
 }
 
 /**
@@ -6634,10 +6639,9 @@ function resolvePlayedSha(
     afterSettled: after,
   };
   pushLog(state, log.kind, log.text);
-  runHooksPausable(state, 'useCard', source, { attack, card }, () =>
-    // 「**其他**角色使用牌时」：`useCard` 只派给使用者本人，旁观者技能（张鲁·米道）收不到，
-    // 所以这里再派一圈给**其他**玩家（可挂起，钩子可以发问）。
-    runOthersUseCard(state, source.seatId, { attack, card }, () => {
+  // 同 startAttack：旁观者的「其他角色使用牌时」要在链外先派（嵌套会挤掉询问）
+  runOthersUseCard(state, source.seatId, { attack, card }, () =>
+    runHooksPausable(state, 'useCard', source, { attack, card }, () => {
       becomeTargetFor(state, target, attack);
     }),
   );
