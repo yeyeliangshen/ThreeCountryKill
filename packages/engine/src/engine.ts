@@ -5147,6 +5147,11 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
   // 「这张牌整个结算结束」的出口（锦囊侧）。两张牌都用这个出口：
   // ①【授锋】的 cardResolved（只看账本里那张首张伤害牌）；②【调虎离山】的 afterUse。
   // ⚠️ 这里必须是 resumePlay：本函数自己就是它的替代品，调自己会无限递归
+  // ⚠️ 已知缺口（两种修法都试过、都回退，见 docs §5.118）：这里会把收口里旁观技能刚发起的询问
+  //    冲掉（夙智③）。① 在 resumePlay 里加 null 保护 → 冒烟大面积卡死；② 只把 guard 收在本处
+  //    → 冒烟里 yuanshu/dongzhuo/dengai 等对局直接判不出胜负。说明这些收尾**确实需要**抢回
+  //    pending（不是可有可无），正确修法必须能**区分**「本次收尾自己刚产生的询问」与「更早的
+  //    陈旧 pending」（版本号 / 对象身份），并且**优先在发问方**（弃置收口）解决。
   const finish = (): void => resumePlay(state, ctx.sourceId);
   const first = state.firstDamageCard;
   if (first && !first.resolved && first.cardId === ctx.card.id) {
