@@ -13292,6 +13292,34 @@ function allAlivePlayersDetermined(state: GameState): boolean {
   return state.players.filter((p) => p.alive).every((p) => !!effectiveFaction(state, p));
 }
 
+/**
+ * 【聪察】②：**摸牌阶段**，场上所有存活角色都已确定势力时，**可以**多摸两张牌。
+ *
+ * ⚠️ 用户 2026-09 核后纠正：文面是「**可以**」→ 必须**询问**，不能无条件 +2
+ *    （此前按无条件实现是错的）。走 `drawPhase` 钩子 + `flags.drawCountDelta`：
+ *    钩子在 `doDrawPhase` **之前**跑，所以这里设的改量会被紧接着的摸牌读到；
+ *    摸牌阶段被跳过时钩子里的询问仍会弹，但那张数用不上（与「多摸两张」同义）。
+ */
+function askCongchaExtraDraw(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (!allAlivePlayersDetermined(state)) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【聪察】：场上所有存活角色均已确定势力，是否多摸两张牌？',
+    [
+      { id: 'yes', label: '多摸两张' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      p.flags.drawCountDelta += 2;
+      pushLog(st, 'skill', `${p.name} 的【聪察】：多摸两张牌。`, { seat: p.seatId });
+    },
+  );
+}
+
 /** 【聪察】①的发动：准备阶段观察一名尚未确定势力的角色（顺带清掉上一轮的过期观察） */
 function askCongcha(ctx: HookContext): void {
   const state = ctx.state;
@@ -13443,11 +13471,12 @@ const PANJUN: Hero = {
   modes: ['guozhan'],
   // 公清是锁定技：伤害修正不能被「非锁定技失效」关掉
   lockedFields: ['damageDelta'],
-  skillFields: { 聪察: ['drawCountDelta'], 公清: ['damageDelta'] },
-  drawCountDelta: (state) => (allAlivePlayersDetermined(state) ? 2 : 0),
+  skillFields: { 公清: ['damageDelta'] },
   damageDelta: gongqingDelta,
   hooks: [
     { timing: 'turnStart', skillId: '聪察', handler: askCongcha },
+    // 聪察②：「可以」→ 询问（用户核后纠正，见 askCongchaExtraDraw 的注释）
+    { timing: 'drawPhase', skillId: '聪察', handler: askCongchaExtraDraw },
     { timing: 'factionDetermined', skillId: '聪察', handler: onFactionDetermined },
     { timing: 'beforeDamageApply', skillId: '公清', locked: true, handler: gongqingSetOne },
   ],

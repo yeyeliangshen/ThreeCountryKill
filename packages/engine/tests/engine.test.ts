@@ -22864,7 +22864,12 @@ describe('国战 · 潘濬（聪察 / 公清）', () => {
       ],
       A,
     );
-    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬（没有可观察的人 → 不问）
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬（没有可观察的人 → 不问聪察①）
+    // 聪察②是「**可以**」→ 摸牌阶段先弹询问，选了才 +2
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期聪察②询问，实际是 ${ask?.kind}`);
+    expect(ask.title).toContain('聪察');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     expect(state.log.some((e) => e.message.includes('潘濬 摸了 4 张牌'))).toBe(true);
   });
 
@@ -22881,6 +22886,7 @@ describe('国战 · 潘濬（聪察 / 公清）', () => {
     if (state.pending?.kind === 'choice' && state.pending.title.includes('聪察')) {
       ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
     }
+    // 有未确定势力的存活角色 → 聪察② 连问都不问，摸 2
     expect(state.log.some((e) => e.message.includes('潘濬 摸了 2 张牌'))).toBe(true);
   });
 
