@@ -3904,13 +3904,15 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
    */
   const afterKill = (): void => {
     const roleText = dying.role ? `（${ROLE_NAME[dying.role]}）` : '';
-    const factionText = dying.faction ? `（${FACTION_NAME[dying.faction]}）` : '';
+    // 会盟/暗将口径读「已确定势力」（双势力确定后 faction 可能已不同）
+    const dyingFaction = dying.determinedFaction ?? dying.faction;
+    const factionText = dyingFaction ? `（${FACTION_NAME[dyingFaction]}）` : '';
     pushLog(state, 'death', `${dying.name} 阵亡${roleText}${factionText}。`);
     // 走可挂起版本：蔡文姬·断肠要在死亡时问「让凶手失去哪张武将牌的技能」
     runHooksPausable(state, 'death', dying, { killerId }, () => {
       // 【会盟】：这个人的势力（已明置口径）是不是正好**一个都不剩**了。
       // to 是此刻的数，from 加上他自己就是死前的数（thus 两个方向都能如实报出来）。
-      const to = knownFactionCount(state, dying.faction);
+      const to = knownFactionCount(state, dyingFaction);
       const from = to + (wasDetermined ? 1 : 0);
       const afterDeath = (): void => {
         // 「濒死结算结束后」的第三个出口：这回是真的没了（alive=false）。
@@ -3949,7 +3951,7 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
         runAllPlayersHooks(
           state,
           'factionCountChanged',
-          { faction: dying.faction, from, to },
+          { faction: dyingFaction, from, to },
           afterDeath,
         );
         return;
@@ -5723,7 +5725,11 @@ function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
           const card = chosen[0];
           if (card) {
             const slot = EQUIP_SLOTS.find((s) => p2.equipment[s]?.id === card.id);
-            if (slot) p2.equipment[slot] = null;
+            if (slot) {
+              // 弃的是**装备区**里的牌 → 走「失去装备」通道（枭姬/旋略/白银狮子/兴棹都要响）
+              p2.equipment[slot] = null;
+              fireEquipLost(st2, p2, card, () => {});
+            }
             toDiscard(st2, card);
             pushLog(st2, 'discard', `${p2.name} 因【敕令】弃置【${cardLabel(card)}】。`);
             fireCardDiscarded(st2, p2, [card], () => chilingNext(st2, ctx));
@@ -7775,10 +7781,12 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     //        第 4 个才野；5 人局只允许 2 个（3 就超了）。
     //     ⚠️ 按**明置先后**逐个人判（谁先亮谁留下），不是开局按座次预先指定。
     //     君主将不会成为野心家（2026 君主规则），所以 `isLordPair` 直接跳过。
-    if (state.mode === 'guozhan' && !wasDetermined && !isLordPair && player.faction) {
+    // ⚠️ 双势力武将：按**已确定势力**判超编/派发会盟（faction 是后台主将势力，可能已不同）
+    const joinFaction = player.determinedFaction ?? player.faction;
+    if (state.mode === 'guozhan' && !wasDetermined && !isLordPair && joinFaction) {
       const total = state.players.length;
-      if (knownFactionCount(state, player.faction) > total / 2) {
-        const from = player.faction;
+      if (knownFactionCount(state, joinFaction) > total / 2) {
+        const from = joinFaction;
         player.faction = 'ambitionist';
         pushLog(
           state,
@@ -7807,7 +7815,7 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
       // 【会盟】：他这一翻让某个势力**首次出现在场上**（0 → 1）时派发。
       // 只有「本来没有确定势力」的人翻牌才可能发生这件事——第二张牌翻过来时势力早就定了。
       if (wasDetermined) return;
-      const to = knownFactionCount(state, player.faction);
+      const to = knownFactionCount(state, joinFaction);
       if (to === 1) {
         runAllPlayersHooks(
           state,
@@ -8561,7 +8569,11 @@ function makeSkillApi(
       from.equipment[equipSlot] = null;
       // 目标对应栏位已有牌 → 那张进弃牌堆（移动的常规语义）
       const replaced = target.equipment[equipSlot];
-      if (replaced) toDiscard(state, replaced);
+      if (replaced) {
+        // 与 giveEquipTo 统一：被顶掉的旧装备同样算「失去装备区的牌」
+        fireEquipLost(state, target, replaced, () => {});
+        toDiscard(state, replaced);
+      }
       target.equipment[equipSlot] = card;
       pushLog(
         state,
@@ -8660,7 +8672,13 @@ function makeSkillApi(
         done();
         return;
       }
-      removeCard(from.hand, card.id);
+      // ⚠️ 询问是**跨步**的：选牌时这张牌还在，回答时可能已被别的效果搬走/弃掉。
+      //    取不到就不能往目标手里再推一份（否则同一张牌同时在两个区域——模糊测试抓过这类）。
+      //    这里是所有「获得他人一张牌」技能的公共落点（反馈/恩怨/授锋/制蛮/伪帝/附敌/问计/眩惑…）。
+      if (!removeCard(from.hand, card.id)) {
+        done();
+        return;
+      }
       to.hand.push(card);
       done();
     },

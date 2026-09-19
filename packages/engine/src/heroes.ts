@@ -2304,7 +2304,8 @@ export function siegeRelations(
 ): { besiegedSeatId: string; besiegers: string[] }[] {
   const alive = state.seatOrder
     .map((id) => getPlayer(state, id))
-    .filter((p): p is Player => !!p && p.alive);
+    // 被【调虎离山】移出座次的人**不计入座次**（与 baseDistance / formationQueue 同一口径）
+    .filter((p): p is Player => !!p && p.alive && !p.flags.removedFromSeating);
   const n = alive.length;
   if (n < 4) return [];
   const out: { besiegedSeatId: string; besiegers: string[] }[] = [];
@@ -2338,6 +2339,8 @@ export function besiegingTarget(state: GameState, player: Player): string | null
  */
 export function hasFeiying(state: GameState, player: Player): boolean {
   if (effectiveHeroes(state, player).some((h) => h.feiying === true)) return true;
+  // 阵法技的**全局前提**：存活角色至少 4 名（残局只剩 3 人时阵法整体不成立）——与风扬同一口径
+  if (state.players.filter((p) => p.alive).length < 4) return false;
   // 同队列里有人有鹤翼 → 我也视为拥有飞影
   const q = formationQueue(state, player);
   return q.some(
@@ -13395,8 +13398,11 @@ export function factionAliveCount(state: GameState, faction: Faction | null): nu
 export function bigFactions(state: GameState): Faction[] {
   const counts = new Map<Faction, number>();
   for (const p of state.players) {
-    if (!p.alive || !p.faction || p.faction === 'ambitionist') continue;
-    counts.set(p.faction, (counts.get(p.faction) ?? 0) + 1);
+    // ⚠️ 口径：**未确定势力（暗置）的角色不属于任何势力**，不能拿后台的 p.faction 充人数
+    //    （暗置者「没有任何武将技能、性别以及势力」）。与会盟/问计/兴棹同一口径。
+    const f = effectiveFaction(state, p);
+    if (!p.alive || !f || f === 'ambitionist') continue;
+    counts.set(f, (counts.get(f) ?? 0) + 1);
   }
   const max = Math.max(0, ...counts.values());
   if (max < 2) return [];
