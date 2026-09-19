@@ -4402,3 +4402,22 @@ skip 1 条（决绝打死人，根因见上）。
 ⇒ **已把实现与用例改动全部回退**（`git checkout`），仓库恢复全绿（940 通过 + 4 skip）；
 把上面这条「更早的校验是哪一道」作为下一轮的**第一步**（读 `onPickHero` 开头到双势力判定之间那段），
 查清后再照 §5.126 的五步落地即可 —— 实现本身我已经写通一次，只需重放。
+
+#### 5.126.3 选势力：卡点**收敛到一行**（下一轮从这里开始，实现已回退保绿灯）
+
+本轮重放（这次**一个字都没碰测试里的 intent 字面量**，只改了两行断言）——仍然是同一个错：
+`pickHero` 返回「**选将阶段：请选择武将**」。而这条消息在全引擎里**只有一处**：
+
+```ts
+function onPickHero(state, seatId, intent) {
+  if (intent.type !== 'pickHero') return err('选将阶段：请选择武将');   // engine.ts:9691
+```
+
+且 `pnpm typecheck` 通过。⇒ **结论：调用 `onPickHero` 时，intent 的 `type` 已经不是 `'pickHero'`**
+——问题在**它上游**（`applyIntent` 的路由 / 某个包装），不在我之前怀疑的「测试调用方式」，
+也不在双势力判定那一段。
+
+**下一轮的第一刀（很具体）**：在 `onPickHero` 开头 `console.log(intent)` 或直接看 `applyIntent` 里
+`pickHero` 的**路由条件**（是不是「必须是选将阶段 / draft 存在 / pendingSeats 含该座位」这类前置条件
+不满足时，会拿**另一个 intent 对象**去调 `onPickHero`）。查清后再照 §5.126 的五步重放实现
+（实现与用例本轮都写过、已回退，可直接重放）。
