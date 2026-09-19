@@ -216,6 +216,14 @@ export function takeOverPendingIfUnchanged(
   return true;
 }
 
+/** 唤醒被围栏挡住、且所等的询问刚被回答的那些收尾待办（订阅式，不靠轮询） */
+function runPendingWaiters(state: GameState): void {
+  const waiters = state.pendingWaiters;
+  if (waiters.length === 0) return;
+  state.pendingWaiters = [];
+  for (const run of waiters) runResume(run);
+}
+
 /**
  * **写输入槽的唯一入口**：赋值 + 推进版本号（`pendingSeq`）。
  *
@@ -2150,11 +2158,12 @@ function resumePlay(
     return;
   }
   state.turn.phase = 'play';
-  // ⚠️ 围栏判断依旧**暂不启用**（第四次的结论）：唤醒语义（回答处主动 drainResume）已经落地并单独
-  //    验证全绿，但「被挡住 → pushResume 排队」这条路**仍然**会让冒烟 6 条挂 —— 因为队列还依赖
-  //    intent 结束时的 drain（用 isIdlePending 判，**故意**排除「出牌阶段」占位，防回合交界重入）。
-  //    ⇒ 缺口是「回退重试也要有机会跑」：在**不重入回合交界**的前提下，让队列在槽变成 play 占位时
-  //    也能跑（或把 resumePlay 的排队做成「等这条 pending 被 resolve 时唤醒」的订阅式，而不是轮询队列）。
+  // ⚠️ 围栏判断**第五次尝试仍然暂不启用**：订阅式唤醒（runPendingWaiters）已经接好、
+  //    唤醒点也确认会跑，但启用后冒烟依旧挂同样的 6 条（4 条固定种子判不出胜负 + 牌张守恒不变式）。
+  //    说明问题不只在「什么时候醒」——**某些流程确实依赖收尾立刻把控制权抢回来**（不只是晚一点），
+  //    单纯「不覆盖、延后」会改变它们的行为。⇒ 下一刀必须先**测量**：给被挡住的场合打日志/计数，
+  //    看清到底是哪些收尾被挡、挡住后流程走向哪里，再决定是给它豁免（例如伤害/濒死/回合交接
+  //    这三类白名单）还是改流程。别再盲改。
   void since;
   setPending(state, { kind: 'play', seatId: sourceId });
 }
@@ -4455,7 +4464,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       if (state.pending === null && pending.returnTo) {
         resumePlay(state, pending.returnTo);
       }
-            // 输入槽空了 → **主动唤醒**被挡住的续接（不再靠 isIdlePending 猜，见 docs §5.124 待办 3）
+            // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
+      runPendingWaiters(state);
       drainResume(state);
       return { ok: true };
     }
@@ -4491,7 +4501,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       if (p.after) {
         const after = p.after;
         after();
-              // 输入槽空了 → **主动唤醒**被挡住的续接（不再靠 isIdlePending 猜，见 docs §5.124 待办 3）
+              // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
+      runPendingWaiters(state);
       drainResume(state);
       return { ok: true };
       }
@@ -4535,7 +4546,8 @@ function onPickCards(
   if (state.pending === null && pending.returnTo) {
     resumePlay(state, pending.returnTo);
   }
-        // 输入槽空了 → **主动唤醒**被挡住的续接（不再靠 isIdlePending 猜，见 docs §5.124 待办 3）
+        // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
+      runPendingWaiters(state);
       drainResume(state);
       return { ok: true };
 }
@@ -9566,6 +9578,7 @@ export function createGame(
     duwuWatchSeat: null,
     duwuRescued: false,
     pendingSeq: 0,
+    pendingWaiters: [],
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],

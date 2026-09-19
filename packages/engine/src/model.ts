@@ -599,6 +599,12 @@ export interface TrickContext {
   /** 本次「使用牌」的编号（许攸·成略：把「这张锦囊造成的伤害」绑回这一次使用） */
   cardUseId?: number;
   /**
+   * **这张牌开始结算时的输入槽快照**（所有权围栏，见 docs §5.124）：
+   * 收尾要把控制权抢回出牌阶段时，拿它判断「槽里还是不是我结算前那一份」——
+   * 期间若产生了新询问（弃置收口里的旁观技能、成略的询问…），就**只能排队等它答完**。
+   */
+  pendingFence?: { requestId: number | null; slotVersion: number };
+  /**
    * 本次使用指定的全部目标（按玩家点选顺序）。
    * 单目标锦囊走 targetId 就够了，但**多目标**锦囊（铁索连环一至两名）只能靠这个。
    */
@@ -945,6 +951,12 @@ export interface GameState {
    * 否则这个版本号不会动，收尾会误判成「没人碰过」。
    */
   pendingSeq: number;
+  /**
+   * **被围栏挡住的收尾待办**（订阅式唤醒，docs §5.124.2）：收尾想抢回出牌阶段但槽里是别人
+   * 刚产生的询问时，把「等它答完再回来」登记在这里；那条 pending 一被 resolve/cancel
+   * （回答询问的清槽点）就直接唤醒，而不是靠轮询队列（轮询在 play 占位下永远不跑）。
+   */
+  pendingWaiters: (() => void)[];
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**
