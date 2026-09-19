@@ -2610,8 +2610,34 @@ interface GuozhanExtension {
 - 待改：把 `shibei` 从布尔升级成上面的枚举；新增 `buchen` / `junlintianxia`；
   把「君主是否进选将池」挂到 `junlintianxia`（**现在是恒进池**）；服务端房间选项 + 界面勾选；
   五个扩展点按上面的接口拆出来。
-- ⚠️ 需要先定：新房间的**默认预设**（标准 or 全扩展）——这会影响线上老玩家的体验，
-  由用户拍板；本文档不替他决定。
+**⑧ 用户已拍板的决定（照此实施）**：
+- **线上新房间默认 `standard`（标准国战）**：① 标准是最稳的兼容基线，老玩家进新房间不会因为
+  版本更新突然多出扩展；② 排查问题容易判断是 Base 还是某个扩展；③「全扩展2026」不只改牌堆，
+  还改选将池、势力判定、胜利流程、特殊区域、君主规则，当默认值会让边缘交互天然变复杂。
+- **开发/测试环境默认 `full2026`**（`DEV_DEFAULT_GUOZHAN_PRESET`）——产品默认值与个人游玩
+  偏好解耦。
+- 配置加 **`schemaVersion`**（`GUOZHAN_CONFIG_SCHEMA_VERSION = 1`），存档/录像/重连恢复要迁移
+  时才知道按哪一版解释。
+- **预设只负责生成配置**：`preset → 配置 → validateConfig → buildGuozhanGame`，
+  底层永远只看版本字符串，别写 `if (preset === 'full2026')`。
+- **房间开局后三个开关冻结**（`freezeConfig`）——武将池、势力锦囊、野心家状态都没法中途迁移。
+
+**⑨ 实施顺序（第①步已完成）**：
+① **Config 类型 + preset + validator + 单测** ✅（`packages/engine/src/config.ts` +
+`tests/config.test.ts`，见下）；
+② 现有规则接配置：`shibei` 布尔 → 版本枚举、君主进池挂 `junlintianxia` + 单测；
+③ Server：房间配置的创建/序列化/广播/重连恢复；
+④ UI：三个扩展开关 + [标准国战]/[全扩展2026]/[自定义] + 冲突提示；
+⑤ 扩展模块化：ShibeiExtension / BuchenExtension / Junlintianxia2026Extension；
+⑥ **单独一遍**全仓搜 `if (shibei)` 之类的遗留散落判断并迁掉——「已经有 Extension 模块」
+不代表旧条件分支自动消失。
+
+第①步落地内容（本轮已提交）：`GUOZHAN_CONFIG_SCHEMA_VERSION`、`GuozhanRoomConfig`（含
+`schemaVersion` + `extensions`）、`GUOZHAN_PRESETS`（standard / full2026）、
+`DEFAULT_GUOZHAN_PRESET = 'standard'`、`DEV_DEFAULT_GUOZHAN_PRESET = 'full2026'`、
+`configFromPreset()`（返回副本）、`GUOZHAN_RULE_RELATIONS`（requires/conflicts/overrides
+三张表，现在是空的、留着加数据不改代码）、`validateGuozhanConfig()`（联机时配置是网络数据，
+类型只是编译期的）、`freezeConfig()`。5 条单测全绿。
 
 ## 6. 批次表
 
