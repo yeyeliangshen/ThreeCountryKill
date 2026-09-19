@@ -9,6 +9,7 @@ import type {
   TrickType,
 } from '@sgs/protocol';
 import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
+import { applyDeckExtensions, applyPoolExtensions } from './extensions';
 import {
   CARD_TYPE_NAME,
   DAMAGE_CARD_TYPES,
@@ -8639,11 +8640,11 @@ export function createGame(
         junlintianxia: opts?.config?.extensions.junlintianxia ?? '2026',
       }
     : { shibei: 'off', buchen: 'off', junlintianxia: 'off' };
-  const poolHeroes = poolForMode(mode).filter(
-    (h) =>
-      (!isGuozhan || h.faction !== 'neutral') &&
-      // 君临天下关掉时：君主将不进选将池（用户架构：君主规则由这个开关统一负责）
-      (!isGuozhan || ext.junlintianxia !== 'off' || !h.isLord),
+  // 选将池：先按模式筛，再交给各扩展模块调整（君主将进不进池由君临天下扩展决定）
+  // 见 extensions.ts——**不要在引擎里撒 `if (ext.xxx)`**（用户给定的架构）
+  const poolHeroes = applyPoolExtensions(
+    poolForMode(mode).filter((h) => !isGuozhan || h.faction !== 'neutral'),
+    ext,
   );
   const allIds = poolHeroes.map((h) => h.id);
   const deals: Record<string, string[]> = {};
@@ -8667,7 +8668,8 @@ export function createGame(
     mode,
     players,
     seatOrder,
-    deck: shuffle(buildDeck(mode, { shibei: ext.shibei === 'current' }), opts?.rng),
+    // 牌堆：基础堆（按模式）→ 各扩展模块追加自己的牌（势备篇 +52）
+    deck: shuffle(applyDeckExtensions(buildDeck(mode), ext), opts?.rng),
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
     pending: null,

@@ -2696,6 +2696,38 @@ engine 818 项全绿。
 按 §5.77 ④ 的接口拆出来，然后**单独一遍**全仓搜 `if (shibei)` / `isLord` 之类的遗留散落判断
 并迁进扩展模块。
 
+### 5.80 扩展开关第⑤⑥步：扩展模块 + 遗留判断清点
+
+**第⑤步（完成）**：新增 `packages/engine/src/extensions.ts`——按用户给的接口定义
+`GuozhanExtension`（`enabled` / `modifyGeneralPool` / `modifyInitialDeck`，以及给不臣篇预留的
+`registerCards/registerRules/registerHooks` 位置），并落地三个模块：
+
+| 模块 | 启用的含义 | 动作 |
+|---|---|---|
+| `ShibeiExtension` | `shibei !== 'off'` 时启用 | `modifyInitialDeck`：追加势备 52 张 |
+| `BuchenExtension` | `buchen !== 'off'` | **占位**：不臣篇的武将/机制/牌还没实装，刻意不写空分支 |
+| `Junlintianxia2026Extension` | **常驻启用** | `modifyGeneralPool`：`junlintianxia === 'off'` 时把君主将踢出选将池 |
+
+`createGame` 现在只做两件事：`applyPoolExtensions(基础池, ext)` 与
+`applyDeckExtensions(基础堆, ext)`——**引擎里不再有 `if (ext.shibei)` 这类判断**。
+⚠️ 这里有个语义坑记在代码里：`enabled` 表示「这个模块此刻要不要动手」，不等于「配置里开没开」。
+君临天下的动作本身就是「关掉时做点什么」，所以它常驻启用、条件留在模块内部——这正是架构的目的。
+
+**第⑥步（清点完成，无遗留）**：全仓搜 `shibei` / `buchen` / `junlintianxia` / `config.extensions`
+的结果，只剩三类位置，都在该在的地方：
+① `config.ts` / `extensions.ts` 两个模块本身；
+② `createGame` 入口的**归一化**（`opts.config` 优先、兼容旧 `shibei: boolean`、非国战一律 off）；
+③ `deck.ts` 里势备牌堆的**构造**（`buildShibeiCards` 由扩展模块调用）。
+没有散落在系统各处的扩展判断。
+
+**仍未拆进模块的部分（如实记录）**：君主规则**本体**（亮将双亮、只能作主将、珠联璧合全员、
+君主阵亡连带掉血、不成为超员野心家）现在由 **`Hero.isLord` 武将数据**驱动，写在
+`revealHeroCard` / `pickHero` / `onHeroRevealed` 等流程里。它们不是「读配置的扩展判断」，
+而是「由武将数据驱动的规则」——要真拆成 `Junlintianxia2026Extension.registerRules()`，
+需要把亮将/选将流程改成可插拔的钩子（深度重构），本轮**没做**，留作后续。
+
+测试：engine 818 项全绿（扩展模块的行为由既有的 config 用例覆盖：君主进池/牌堆 108↔160）。
+
 ## 6. 批次表
 
 每批验收标准：技能逐条对照官方文本；有测试；简化处如实标注；`pnpm test` + `pnpm typecheck` + `pnpm build` 全绿。
