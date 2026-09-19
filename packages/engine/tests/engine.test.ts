@@ -38,7 +38,7 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
 
   type GameState,
   type SeatSetup,
-  determineDualFaction,  turnDiscardCountBy,} from '../src';
+  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,} from '../src';
 import { FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type { Card, CardType, Faction, GameMode, MarkerId, Suit } from '@sgs/protocol';
 
@@ -23678,5 +23678,179 @@ describe('国战 · 苏飞（联翩）', () => {
     expect(pick(state, C).hand.length).toBe(6);
     ask = state.pending;
     expect(ask === null || ask?.kind !== 'choice' || !ask.title.includes('联翩')).toBe(true);
+  });
+});
+
+/**
+ * 许攸（**国战专属**，不臣篇·下，魏/群双势力；文档 §5.115）。
+ * 锁：① 成略等**整张牌结算结束**、看**目标数>1**（不是伤害目标数）、绑**这一次使用**；
+ * ② 恃才按**伤害事件**（1 点摸 2 / 大于 1 弃所有手牌，真正的「弃置」）。
+ */
+describe('国战 · 许攸（成略 / 恃才）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+      weapon?: { equipName: string; range: number };
+      markers?: string[];
+    }[],
+    actor?: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = 'vanilla';
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      for (const id of (s.markers ?? []) as MarkerId[]) addMarker(p, id);
+      if (s.weapon) p.equipment.weapon = weapon('w0', s.weapon.equipName, s.weapon.range);
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+  const taos = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+
+  it('成略：同势力角色用**多目标**牌（方天画戟的杀）→ 令使用者摸 1', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [sha('a1')],
+          weapon: { equipName: 'fangtian', range: 4 },
+        },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    const before = pick(state, A).hand.length;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C, D] }));
+    // 逐个目标响应（都不出闪）
+    let guard = 0;
+    while (state.pending?.kind === 'respondSha' && guard++ < 5) {
+      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    }
+    // 整张牌结算完 → 成略询问许攸
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('成略');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 甲摸 1（-1 出杀 +1 摸）；许攸挨了 1 点，但**没有**阴阳鱼分支的询问？—— 他受了伤，要问第二段
+    expect(pick(state, A).hand.length).toBe(before);
+  });
+
+  it('成略：单目标牌不触发；未确定势力的使用者不触发', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1'), sha('a2')] },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei' },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    expect(state.log.some((e) => e.message.includes('成略'))).toBe(false);
+  });
+
+  it('成略第二段：这次使用**实际伤害过**许攸 → 才能给阴阳鱼；已有标记的角色不在候选', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [sha('a1')],
+          weapon: { equipName: 'fangtian', range: 4 },
+        },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei', hp: 4, maxHp: 4 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', markers: ['yinyangyu'] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B, C, D] }));
+    let guard = 0;
+    while (state.pending?.kind === 'respondSha' && guard++ < 5) {
+      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 第一段：甲摸 1
+    const ask2 = state.pending;
+    if (ask2?.kind !== 'choice') throw new Error(`预期阴阳鱼询问，实际是 ${ask2?.kind}`);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    const pickAsk = state.pending;
+    if (pickAsk?.kind !== 'choice') throw new Error(`预期选角色，实际是 ${pickAsk?.kind}`);
+    // 候选：许攸自己 ✓ 与使用者甲（同为魏、也没有标记）✓；丙已有标记 ✗；丁不同势力 ✗
+    expect(pickAsk.options.map((o) => o.id).sort()).toEqual([A, B].sort());
+    ok(act(state, B, { type: 'chooseOption', optionId: B }));
+    expect(markerCount(pick(state, B), 'yinyangyu')).toBe(1);
+  });
+
+  it('恃才（锁定技）：一次 1 点伤害摸 2；一次 2 点只触发一次并弃置所有手牌（真弃置）', () => {
+    const s1 = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei', hp: 4, maxHp: 4, hand: [] },
+      ],
+      A,
+    );
+    ok(act(s1, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (s1.pending?.kind === 'respondSha') ok(act(s1, B, { type: 'pass' }));
+    expect(pick(s1, B).hand.length).toBe(2); // 1 点 → 摸 2
+    // 2 点：酒 + 杀 → 弃所有手牌
+    const s2 = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [jiu('j1'), sha('a1')] },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei', hp: 4, maxHp: 4, hand: taos('b', 3) },
+      ],
+      A,
+    );
+    ok(act(s2, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(s2, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (s2.pending?.kind === 'respondSha') ok(act(s2, B, { type: 'pass' }));
+    expect(pick(s2, B).hand.length).toBe(0); // 弃置所有手牌
+    // 真弃置：执行者是许攸自己 → 进本回合弃置账本
+    expect(turnDiscardCountBy(s2, B)).toBe(3);
+    expect(s2.log.some((e) => e.message.includes('恃才'))).toBe(true);
+  });
+
+  it('恃才：0 手牌时技能照样成立（只是移动 0 张）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [jiu('j1'), sha('a1')] },
+        { seatId: B, name: '许攸', heroId: 'xuyou', faction: 'wei', hp: 4, maxHp: 4, hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    expect(pick(state, B).hand.length).toBe(0);
+    expect(state.log.some((e) => e.message.includes('没有手牌可弃'))).toBe(true);
   });
 });

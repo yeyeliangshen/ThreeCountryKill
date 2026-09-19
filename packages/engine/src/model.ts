@@ -520,6 +520,8 @@ export interface AttackContext {
    * 不需要再单独加一个 `chain` 标记。
    */
   declaredTargets?: string[];
+  /** 本次「使用牌」的编号（许攸·成略：把「这张牌造成的伤害」绑回这一次使用） */
+  cardUseId?: number;
   /**
    * 这张【杀】一共指定了几个目标（playSha 填）。严白虎·寄篱只认「**唯一**目标」，
    * 而逐个结算时攻击上下文是每人一份，光看自己这份分不出是不是唯一目标。
@@ -912,6 +914,16 @@ export interface GameState {
    * 随回合清空（`startTurn`）；同一回合内**逐个技能实例实时重算**，不要缓存。
    */
   turnDiscards: { actorId: string; ownerId: string; cardIds: string[] }[];
+  /**
+   * **一次「使用牌」的编号**（每次使用自增）＋「本回合各次使用实际造成的伤害」账本。
+   *
+   * 许攸·【成略】要求「**这张牌整个生命周期**有没有实际伤害过某个人」——必须绑定**这次使用**
+   * （`cardUseId`），不能按牌名、也不能按「本回合受过伤」判断：同一个人连着用两张【南蛮】，
+   * 第二张结算时不能因为第一张打过他就发阴阳鱼。
+   * 只在**真的扣了血**之后记（被防止/减到 0 不算）；随回合清空。
+   */
+  cardUseSeq: number;
+  useDamages: { useId: number; targetId: string; amount: number }[];
   /**
    * 朱灵·【决绝】的触发门槛：本回合**自己的弃牌阶段**里**弃置过手牌**的座位。
    * ⚠️ 与上面的「弃置总张数」是两个口径：门槛只看「有没有弃过**手牌**」，

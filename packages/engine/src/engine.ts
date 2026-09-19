@@ -1087,6 +1087,7 @@ function startTurn(state: GameState, seatIndex: number): void {
   // 「本回合弃置账本」（苏飞·联翩）：**回合**口径——在回合开始时清，
   // 这样结束阶段读到的就是这一整个回合的弃置（含判定/摸牌/出牌/弃牌各阶段）
   state.turnDiscards = [];
+  state.useDamages = [];
   state.liangfanHanIds = [];
   state.midaoUsedSeats = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
@@ -2276,6 +2277,8 @@ function startAttack(
     totalTargets: ordered.length,
     // 这次使用指定的**全部**目标名单（界钟会·权计要「唯一目标就是挨打的那位」）
     declaredTargets: ordered.slice(),
+    // 本次「使用牌」的编号（许攸·成略要把伤害绑回这一次使用）
+    cardUseId: ++state.cardUseSeq,
     // 【方天画戟】：其余目标排在这里，逐个结算
     fangtianQueue: ordered.slice(1),
     // 国战版「一人闪则其余无效」；军争版各目标独立结算
@@ -2859,14 +2862,36 @@ function afterAttackSettled(state: GameState, attack: AttackContext): void {
   }
   // 「你的【杀】结算完之后」（糜夫人给别人的【勇决】）：派给使用者，
   // 钩子跑完才继续（技能驱动的连环出杀排在它后面）。
+  // 「这次使用整张牌结算结束」派给**全场**（许攸·成略：旁观的同势力角色要听）——
+  // 放在 attackSettled（派给使用者）**之后**，收尾之前
+  const afterEnded = (): void => {
+    const useId = attack.cardUseId;
+    const needed =
+      !!useId &&
+      state.players.some(
+        (p) => p.alive && collectTimingHooks(state, p, 'cardUseEnded', false).length > 0,
+      );
+    if (!needed) {
+      afterAttackSettledTail(state, attack);
+      return;
+    }
+    runAllPlayersHooks(
+      state,
+      'cardUseEnded',
+      {
+        useId,
+        sourceId: attack.sourceId,
+        targetIds: attack.declaredTargets ?? [attack.targetId],
+      },
+      () => afterAttackSettledTail(state, attack),
+    );
+  };
   const settleSource = getPlayer(state, attack.sourceId);
   if (settleSource && settleSource.alive) {
-    runHooksPausable(state, 'attackSettled', settleSource, { attack }, () => {
-      afterAttackSettledTail(state, attack);
-    });
+    runHooksPausable(state, 'attackSettled', settleSource, { attack }, afterEnded);
     return;
   }
-  afterAttackSettledTail(state, attack);
+  afterEnded();
 }
 
 /** 【杀】结算的真正收尾（attackSettled 钩子之后） */
@@ -3283,7 +3308,17 @@ function damageStep(
         return;
       }
         withHuxinjing(state, attack, finalDmg, (hxPrevented) => {
-          if (!hxPrevented) target.hp -= finalDmg;
+          if (!hxPrevented) {
+            target.hp -= finalDmg;
+            // 「这一次使用实际伤害过谁」的账本（许攸·成略）：只记真扣了血的
+            if (attack.cardUseId) {
+              state.useDamages.push({
+                useId: attack.cardUseId,
+                targetId: target.seatId,
+                amount: finalDmg,
+              });
+            }
+          }
           apply(finalDmg, hxPrevented);
         });
       }),
@@ -9309,6 +9344,8 @@ export function createGame(
     xiongnueDefense: false,
     discardPhaseCountsThisTurn: {},
     turnDiscards: [],
+    cardUseSeq: 0,
+    useDamages: [],
     handDiscardedInDiscardPhase: [],
     juejueArmed: false,
     ongoingSkillChain: [],

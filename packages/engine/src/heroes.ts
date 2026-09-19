@@ -25,14 +25,7 @@ import type {
 } from '@sgs/protocol';
 import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } from './timing';
 import type { AttackContext, GameState, MarkerUsage, Player, TrickContext } from './model';
-import {
-  addMarker,
-  noteMarkerUsed,
-  useXianqu,
-  useYinyangyu,
-  useYinyangyuHandLimit,
-  useZhulian,
-} from './markers';
+import { addMarker, consumeMarker, markerCount, noteMarkerUsed, useXianqu, useYinyangyu, useYinyangyuHandLimit, useZhulian } from './markers';
 import {
   drawOne,
   lordEquipDinglan,
@@ -13638,8 +13631,157 @@ const SUFEI: Hero = {
   ],
 };
 
+/**
+ * 许攸（**国战专属**）—— 成略 / 恃才（不臣篇·下，**魏/群双势力**，1.5 阴阳鱼 → **3**，无珠联璧合）。
+ *
+ * ⚠️ 与**身份场许攸**（转换技成略 + 控顶恃才 + 寸目）是**两个武将实体**，本仓库只做国战版。
+ *
+ * 【成略】（一次「使用牌完整结算结束」时可发动）：一名与许攸**势力相同**的角色使用了一张
+ * **目标数大于 1** 的牌（多目标**杀** / 群体锦囊…），整张牌结算结束后：
+ * ① 许攸可以令**这名使用者**摸 1 张；② 然后，若许攸**被这张牌实际伤害过**，可以再令一名
+ * 「与许攸同势力、且**当前没有【阴阳鱼】标记**」的角色获得 1 枚【阴阳鱼】。
+ * - 使用者可以是许攸自己（文本没写「其他角色」）；候选也不排除许攸自己。
+ * - 「目标数」看的是**这次使用指定的目标**（`attack.declaredTargets`），不是伤害目标数——
+ *   多目标牌即使只伤到一个人也满足；单目标牌即使伤害被传导给别的人也不满足。
+ * - 「被这张牌伤害过」严格绑定**这一次使用**（`attack.cardUseId` + `state.useDamages`）：
+ *   同一个人连用两张【南蛮】，第二张不能因为第一张打过许攸就算数；被防止的伤害也不算。
+ * - **阴阳鱼**是国战**标记**（复用 `markers.ts` 的 `yinyangyu`），不是体力/阴阳鱼素材。
+ *
+ * 【恃才】（**锁定技**）：许攸**受到一次伤害后**，按这次伤害的**实际伤害值**：
+ * 等于 1 → 摸 2 张；大于 1 → **弃置所有手牌**（真正的「弃置」，执行者是许攸自己——
+ * 所以会正确计入苏飞·联翩那种「谁弃的牌」统计；0 手牌时技能照样成立，只是移动 0 张）。
+ * 按**伤害事件**触发（一次 2 点只触发一次），不按点数。
+ *
+ * ⚠️ **本轮未接**：群体锦囊（南蛮/万箭）那条「使用结算结束」还没接线（引擎里目前只有
+ * 【杀】在 `attackSettled` 上派发一次），所以成略暂时只对**多目标杀**生效——
+ * 记得在「锦囊结算收尾」补同一个派发点（欠账记在 docs §5.115）。
+ */
+function askChenglue(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as
+    | { useId?: number; sourceId?: string; targetIds?: string[] }
+    | undefined;
+  if (!payload?.useId) return;
+  const targets = payload.targetIds ?? [];
+  if (targets.length <= 1) return; // 目标数要大于 1（不是伤害目标数）
+  const user = getPlayer(state, payload.sourceId ?? '');
+  if (!user || !user.alive) return;
+  const mine = effectiveFaction(state, me);
+  if (!mine || effectiveFaction(state, user) !== mine) return; // 同势力（含许攸自己）；未确定势力不算
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【成略】：是否令 ${user.name} 摸一张牌？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p2, picked) => {
+      if (picked !== 'yes') return;
+      const drawn = drawOne(st);
+      if (drawn) user.hand.push(drawn);
+      pushLog(st, 'skill', `${me.name} 发动【成略】：${user.name} 摸一张牌。`, { seat: me.seatId });
+      // 第二段：**这一次使用**有没有实际伤害过许攸
+      const hurt = st.useDamages.some(
+        (d) => d.useId === payload.useId && d.targetId === me.seatId && d.amount > 0,
+      );
+      if (!hurt) return;
+      const pool = (): Player[] =>
+        st.players.filter(
+          (x) => x.alive && effectiveFaction(st, x) === mine && markerCount(x, 'yinyangyu') === 0,
+        );
+      if (pool().length === 0) return;
+      ctx.api.askChoice(
+        st,
+        p2.seatId,
+        '【成略】：是否令一名没有【阴阳鱼】标记的同势力角色获得一枚【阴阳鱼】？',
+        [
+          { id: 'yes', label: '发动' },
+          { id: 'no', label: '不发动' },
+        ],
+        (st2, p3, second) => {
+          if (second !== 'yes') return;
+          const list = pool();
+          if (list.length === 0) return;
+          ctx.api.askChoice(
+            st2,
+            p3.seatId,
+            '【成略】：选择获得【阴阳鱼】的角色',
+            list.map((t) => ({ id: t.seatId, label: t.name })),
+            (st3, p4, targetId) => {
+              const target = getPlayer(st3, targetId);
+              if (!target) return;
+              addMarker(target, 'yinyangyu');
+              pushLog(st3, 'marker', `${target.name} 因【成略】获得一枚【阴阳鱼】。`, {
+                seat: p4.seatId,
+              });
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
+/** 【恃才】（锁定技）：受 1 点伤害摸 2；受更多则弃置所有手牌 */
+function askShicai(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const amount = (ctx.payload as { damage?: number } | undefined)?.damage ?? 0;
+  if (amount <= 0) return;
+  if (amount === 1) {
+    for (let i = 0; i < 2; i++) {
+      const c = drawOne(state);
+      if (!c) break;
+      me.hand.push(c);
+    }
+    pushLog(state, 'skill', `${me.name} 的【恃才】：受到 1 点伤害，摸两张牌。`, {
+      seat: me.seatId,
+    });
+    return;
+  }
+  const hand = me.hand.slice();
+  if (hand.length === 0) {
+    pushLog(state, 'skill', `${me.name} 的【恃才】：受到 ${amount} 点伤害，但没有手牌可弃。`, {
+      seat: me.seatId,
+    });
+    return;
+  }
+  pushLog(state, 'skill', `${me.name} 的【恃才】：受到 ${amount} 点伤害，弃置所有手牌。`, {
+    seat: me.seatId,
+  });
+  // 真正的「弃置」：执行者是许攸自己（会进苏飞·联翩那种按执行者统计的账本）
+  ctx.api.discardCards(me.seatId, hand, undefined, me.seatId);
+}
+
+const XUYOU: Hero = {
+  id: 'xuyou',
+  name: '许攸',
+  pack: 'buchen',
+  faction: 'wei',
+  secondFaction: 'qun',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    // 「使用牌结算结束」：目前引擎只在**杀**打完（attackSettled）时派发一次
+    { timing: 'cardUseEnded', skillId: '成略', handler: askChenglue },
+    { timing: 'afterDamage', skillId: '恃才', locked: true, handler: askShicai },
+  ],
+  skills: [
+    {
+      name: '成略',
+      desc: '一名与你势力相同的角色使用一张目标数大于1的牌结算结束后，你可以令其摸一张牌；若你曾受到此牌造成的伤害，你可以令一名与你势力相同且没有【阴阳鱼】的角色获得一枚【阴阳鱼】。',
+    },
+    {
+      name: '恃才',
+      desc: '锁定技，当你受到一次伤害后，若此伤害的伤害值为1，你摸两张牌；若大于1，你弃置所有手牌。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('xuyou', '许攸', 'wei', 'qun', 3),
 ];
 
 /**
@@ -15477,6 +15619,7 @@ export const HEROES: Hero[] = [
   ZHULING,
   PANJUN,
   SUFEI,
+  XUYOU,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,
