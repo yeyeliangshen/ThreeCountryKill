@@ -24166,6 +24166,23 @@ describe('国战 · 基础奖惩（同势力击杀）', () => {
     expect(state.log.some((e) => e.message.includes('奖惩'))).toBe(true);
   });
 
+  it('朱灵·【决绝】的豁免**只管同势力那一半**：杀野心家照样摸三张', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: [sha('a1'), tao('a2'), tao('a3')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'ambitionist', hp: 1 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    passDeathSaves(state);
+    expect(pick(state, B).alive).toBe(false);
+    // 出掉 1 张（剩 2）+ 杀野心家摸 3 = 5（豁免只针对「同势力」那一半）
+    expect(pick(state, A).hand.length).toBe(5);
+    expect(state.log.some((e) => e.message.includes('杀死了野心家'))).toBe(true);
+  });
+
   it('杀死**野心家** → 凶手摸三张牌（奖惩的另一半）', () => {
     const state = gz(
       [
