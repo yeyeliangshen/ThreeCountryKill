@@ -1,5 +1,5 @@
 import type { GameMode } from '@sgs/protocol';
-import { configFromPreset } from '@sgs/engine';
+import { configFromPreset, GUOZHAN_PRESETS } from '@sgs/engine';
 
 import { useStore } from '../store';
 
@@ -164,6 +164,17 @@ export function Lobby() {
               />
               君临天下（君主将）
             </label>
+            <div className="preset-hint" title="预设只是「一键生成配置」；手动改任何一项就会变成自定义">
+              当前：
+              {(() => {
+                const ext = lobby.config.extensions;
+                const same = (p: 'standard' | 'full2026') =>
+                  JSON.stringify(ext) === JSON.stringify(GUOZHAN_PRESETS[p].extensions);
+                if (same('standard')) return '标准国战';
+                if (same('full2026')) return '全扩展2026';
+                return '自定义';
+              })()}
+            </div>
             <div className="preset-row">
               {(['standard', 'full2026'] as const).map((name) => (
                 <button
