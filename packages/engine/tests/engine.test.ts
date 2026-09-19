@@ -6468,8 +6468,10 @@ describe('牌堆分模式（欠账一）', () => {
       { seatId: A, name: '甲', heroId: 'vanilla' },
       { seatId: B, name: '乙', heroId: 'vanilla' },
     ];
+    // ⚠️ 不传 config 时引擎按「全开」处理（历史行为不变）；「默认标准国战」是**房间层**的
+    //    默认值，由服务端建房时传进来——所以这里国战局默认是 160 张（g + s 两种 id）
     const gz = createGame(setup, 'GZ', { mode: 'guozhan' });
-    expect(gz.deck.every((c) => c.id.startsWith('g'))).toBe(true);
+    expect(gz.deck.every((c) => c.id.startsWith('g') || c.id.startsWith('s'))).toBe(true);
     const jz = createGame(setup, 'JZ');
     expect(jz.deck.every((c) => c.id.startsWith('c'))).toBe(true);
   });
@@ -8667,10 +8669,12 @@ describe('势备篇 · 牌堆与开关', () => {
       { seatId: A, name: '甲', heroId: 'vanilla' },
       { seatId: B, name: '乙', heroId: 'vanilla' },
     ];
-    const off = createGame(setup, 'T', { mode: 'guozhan' });
+    const off = createGame(setup, 'T', { mode: 'guozhan', shibei: false });
     const on = createGame(setup, 'T', { mode: 'guozhan', shibei: true });
     expect(off.deck.every((c) => c.id.startsWith('g'))).toBe(true);
+    expect(off.deck).toHaveLength(108);
     expect(on.deck.some((c) => c.id.startsWith('s'))).toBe(true);
+    expect(on.deck).toHaveLength(160);
   });
 });
 

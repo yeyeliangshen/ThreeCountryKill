@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   configFromPreset,
+  createGame,
   DEFAULT_GUOZHAN_PRESET,
   DEV_DEFAULT_GUOZHAN_PRESET,
   freezeConfig,
@@ -63,5 +64,38 @@ describe('国战扩展开关：配置 / 预设 / 校验', () => {
       (frozen.extensions as { buchen: string }).buchen = 'current';
     }).toThrow();
     expect(frozen.extensions.buchen).toBe('off');
+  });
+  it('扩展开关真的生效：君主进池 + 势备牌堆都由 config 决定', () => {
+    const seats = [
+      { seatId: 'A', name: '甲', heroId: 'vanilla' },
+      { seatId: 'B', name: '乙', heroId: 'vanilla' },
+    ];
+    const deal = (cfg?: GuozhanRoomConfig) => {
+      const st = createGame(seats, 'T', { mode: 'guozhan', freePick: true, config: cfg });
+      return st.draft!.deals['A']!;
+    };
+    const full = deal(configFromPreset('full2026'));
+    // 全开：君主进池（君操、君刘、君孙、君袁都在）
+    expect(full).toContain('juncaocao');
+    expect(full).toContain('junyuanshao');
+    const std = deal(configFromPreset('standard'));
+    // 标准：君主将不在选将池里（君临天下关掉 = 这套君主规则整体不启用）
+    expect(std).not.toContain('juncaocao');
+    expect(std).not.toContain('junliubei');
+    expect(std).not.toContain('junsunquan');
+    expect(std).not.toContain('junyuanshao');
+    expect(std).toContain('caocao'); // 但标准版曹操还在
+
+    // 牌堆：势备开关 → 108 / 160
+    const mk = (cfg?: GuozhanRoomConfig) =>
+      createGame(seats, 'T', { mode: 'guozhan', config: cfg }).deck.length;
+    expect(mk(configFromPreset('standard'))).toBe(108);
+    expect(mk(configFromPreset('full2026'))).toBe(160);
+    // 不传 config = 全开（历史行为），房间层的默认值是另一回事
+    expect(mk()).toBe(160);
+
+    // 兼容旧的布尔写法
+    expect(createGame(seats, 'T', { mode: 'guozhan', shibei: false }).deck.length).toBe(108);
+    expect(createGame(seats, 'T', { mode: 'guozhan', shibei: true }).deck.length).toBe(160);
   });
 });

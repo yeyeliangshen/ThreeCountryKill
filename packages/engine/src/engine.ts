@@ -8,6 +8,7 @@ import type {
   RoleId,
   TrickType,
 } from '@sgs/protocol';
+import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
 import {
   CARD_TYPE_NAME,
   DAMAGE_CARD_TYPES,
@@ -8543,8 +8544,17 @@ export function createGame(
     mode?: GameMode;
     heroDealCount?: number;
     /**
-     * 势备篇（国战的游戏牌扩展）：开启后国战牌堆**追加** 52 张。
-     * 非国战模式忽略它——它是国战的扩展，对别的牌堆没有意义。
+     * 国战扩展开关（见 `config.ts` 与 docs/guozhan-roster.md §5.77）。
+     *
+     * 不传时按「**全开**」处理（`shibei: 'current'` / `buchen: 'current'` /
+     * `junlintianxia: '2026'`），也就是历史行为不变——**「默认标准国战」是房间层的默认值**
+     * （`DEFAULT_GUOZHAN_PRESET`，由服务端建房时传进来），引擎自己不替产品定默认，
+     * 这样既有的测试与随机测试的覆盖面也不会因为加开关而缩水。
+     */
+    config?: GuozhanRoomConfig;
+    /**
+     * @deprecated 旧的布尔写法（势备篇开/关）。保留兼容：等价于
+     * `config.extensions.shibei = 'current' | 'off'`。新代码请用 `config`。
      */
     shibei?: boolean;
     /**
@@ -8621,7 +8631,20 @@ export function createGame(
   // 避免多个玩家拿到同一名武将。池子发完则重洗剩余部分兜底。
   // 池子先按模式筛（国战专属武将不带进军争/混战），国战再排除中立武将；
   // 每人需拿到 ≥2 名同阵营武将才能选将，k=7 时按鸽巢原理在 ≤4 个阵营中必有 ≥2 同阵营，恒可满足。
-  const poolHeroes = poolForMode(mode).filter((h) => !isGuozhan || h.faction !== 'neutral');
+  // 扩展开关的归一化：没传 config 时全开（历史行为）；旧的 `shibei: boolean` 兼容
+  const ext: GuozhanExtensions = isGuozhan
+    ? {
+        shibei: opts?.config?.extensions.shibei ?? (opts?.shibei ? 'current' : opts?.shibei === false ? 'off' : 'current'),
+        buchen: opts?.config?.extensions.buchen ?? 'current',
+        junlintianxia: opts?.config?.extensions.junlintianxia ?? '2026',
+      }
+    : { shibei: 'off', buchen: 'off', junlintianxia: 'off' };
+  const poolHeroes = poolForMode(mode).filter(
+    (h) =>
+      (!isGuozhan || h.faction !== 'neutral') &&
+      // 君临天下关掉时：君主将不进选将池（用户架构：君主规则由这个开关统一负责）
+      (!isGuozhan || ext.junlintianxia !== 'off' || !h.isLord),
+  );
   const allIds = poolHeroes.map((h) => h.id);
   const deals: Record<string, string[]> = {};
   if (opts?.freePick) {
@@ -8644,7 +8667,7 @@ export function createGame(
     mode,
     players,
     seatOrder,
-    deck: shuffle(buildDeck(mode, { shibei: opts?.shibei }), opts?.rng),
+    deck: shuffle(buildDeck(mode, { shibei: ext.shibei === 'current' }), opts?.rng),
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
     pending: null,
