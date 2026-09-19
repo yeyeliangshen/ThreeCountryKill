@@ -17,6 +17,7 @@ import {
   DAMAGE_CARD_TYPES,
   EQUIP_NAME,
   cardLabel,
+  cardShortName,
   isDelayedTrick,
   isEquipCard,
   isInstantTrick,
@@ -1036,7 +1037,7 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.gainedFromDeckThisTurn = [];
   state.deckGainOwner = {};
   // 寄篱「这张牌已经重跑过」同样只在**本回合**内有效（严白虎）
-  state.jiliReranCards = [];
+  state.extraResolvedCards = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
   state.discardThisTurn = [];
   // 武将牌翻面朝上：跳过这一个回合，翻回正面（据守/放逐的代价）
@@ -2114,6 +2115,8 @@ function startAttack(
   const attack: AttackContext = {
     sourceId: source.seatId,
     cardId: card.id,
+    // 技能新造的虚拟牌（寄篱）把来源标记带进来：技能侧靠它防止「再生的牌又触发自己」
+    ...(card.generatedBy ? { generatedBy: card.generatedBy } : {}),
     asType,
     targetId,
     damage,
@@ -2715,21 +2718,34 @@ function afterAttackSettled(state: GameState, attack: AttackContext): void {
 
 /** 【杀】结算的真正收尾（attackSettled 钩子之后） */
 function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
-  // 严白虎·寄篱：「成为红色【杀】的唯一目标 → 此牌结算两次」。
-  // 重跑就是**同一张杀**再走一遍完整流程（可再闪、再受伤），与方天画戟逐个结算同一套路：
-  // 换一份 attack 副本、把 dodged/requiredShan 复位，并带 jiliDone 防递归
-  // （技能侧还有按牌 id 的去重账本 state.jiliReranCards）。
-  const jiliTarget = attack.jiliSecond && !attack.jiliDone ? getPlayer(state, attack.targetId) : undefined;
-  if (jiliTarget && jiliTarget.alive) {
-    attack.jiliDone = true;
-    pushLog(state, 'skill', `【寄篱】：此【杀】对 ${jiliTarget.name} 再结算一次。`);
-    becomeTargetFor(state, jiliTarget, {
-      ...attack,
-      dodged: false,
-      requiredShan: 1,
-      redirected: false,
-    });
-    return;
+  // 严白虎·寄篱：「成为红色【杀】的唯一目标 → 此牌结算结束后，其使用者对你再使用一次
+  // 相同牌名的牌」。注意这不是「把这份 attack 重跑一遍」（那是君孙权·据江的口径）：
+  // 这里造一张**无实体虚拟【杀】**并让使用者**重新使用**它——严白虎照样能出【闪】，
+  // 新的 attack 从头走一遍（成为目标 → 响应 → 伤害 → 收尾）。
+  if (attack.jiliUse) {
+    attack.jiliUse = false;
+    const source = getPlayer(state, attack.sourceId);
+    const jiliTarget = getPlayer(state, attack.targetId);
+    if (source && source.alive && jiliTarget && jiliTarget.alive) {
+      // 牌名看这次使用的是「什么杀」（武圣红牌当杀 → 牌名仍是【杀】，属性按原牌）：
+      // 实体牌还在弃牌堆时取它（属性/牌名最准），丈八那种虚拟杀取不到就按 attack 合成一份
+      // ——合成出来的对象只用于牌名与属性，永远不进任何区域。
+      const found =
+        state.discard.find((c) => c.id === attack.cardId) ??
+        state.deck.find((c) => c.id === attack.cardId);
+      const original: Card = {
+        id: attack.cardId,
+        type: attack.asType,
+        suit: 'spade',
+        rank: 1,
+        ...(found?.attribute ? { attribute: found.attribute } : {}),
+      };
+      useVirtualSameNameCard(state, source, original, jiliTarget, (card) => {
+        // countTowardLimit: false —— 这张牌是技能逼出来的，不占「本回合已使用的【杀】」
+        startAttack(state, source, card, [jiliTarget.seatId], 'sha', { countTowardLimit: false });
+      });
+      return;
+    }
   }
   // 【授锋】的「这张【杀】整个结算结束」也在这个出口（reason：这里才是真收尾，
   // 寄篱重跑与青龙偃月刀那类连环出杀都排在它前面）。账本里是别的牌就不打扰。
@@ -4258,24 +4274,26 @@ function playTao(
 }
 
 /**
- * 严白虎·寄篱的「红色基本牌对自己结算两次」。
+ * 严白虎·寄篱：红色基本牌对**自己**也是「唯一目标」→ 使用者（＝他自己）再使用一张
+ * **虚拟同名牌**。只在出牌阶段主动使用这条路上补（濒死求桃那条在 respondDeathSave 里）。
  *
- * 只在**自己**使用时补一次效果（濒死求桃那条路在 respondDeathSave 里单独处理）。
- * 只处理【桃】（回血可以真叠加）；【酒】是靠 `flags.jiuActive` 布尔标记生效的，
- * 重跑不会让伤害再 +1——这是本引擎的口径，已记为已知简化。
+ * 只处理【桃】：【桃】没有指定目标、也没有响应窗口，所以第二张的效果就是再回复 1 点体力。
+ * ⚠️ 这里不套 `playTao` 的「体力已满不能使用【桃】」判定——那是**主动使用**的限制，
+ *    寄篱这条是锁定技逼出来的「再使用一次」，不该被它挡掉（本引擎的口径，已记文档）。
+ * 【酒】按 `flags.jiuActive` 布尔标记生效，第二张不会让伤害再 +1——同上，已记已知简化。
  */
 function jiliResolveSelfBasic(state: GameState, player: Player, card: Card): void {
+  if (card.virtual || card.generatedBy) return; // 虚拟牌不再生虚拟牌（防自环）
   if (cardColorOf(card) !== 'red') return;
   if (card.type !== 'tao') return;
   if (!effectiveHeroes(state, player).some((h) => h.jili === true)) return;
-  if (state.jiliReranCards.includes(card.id)) return;
-  state.jiliReranCards.push(card.id);
-  const healed = healAndTrigger(state, player, 1);
-  pushLog(
-    state,
-    'skill',
-    `【寄篱】：这张【桃】对 ${player.name} 再结算一次，回复 ${healed} 点体力。`,
-  );
+  useVirtualSameNameCard(state, player, card, player, (vcard) => {
+    const healed = healAndTrigger(state, player, 1);
+    pushLog(state, 'tao', `【${cardShortName(vcard)}】回复 ${healed} 点体力。`, {
+      seat: player.seatId,
+      action: 'tao',
+    });
+  });
 }
 
 function playJiu(
@@ -4677,29 +4695,90 @@ function trickFullyNegatedForSingleTarget(state: GameState, ctx: TrickContext): 
   return true;
 }
 
+/**
+ * 严白虎·寄篱：「此牌的使用者对你再使用一次**相同牌名的牌**」——造出那**第二张牌**。
+ *
+ * 口径（用户核对，见 docs/guozhan-roster.md §5.87）：
+ * - 牌名/类别与第一张**相同**（普通杀→虚拟普通杀、火杀→虚拟火杀、雷杀→虚拟雷杀，
+ *   属性一起带过来；【桃】【过河拆桥】等同理）；
+ * - **没有对应实体牌**：`materials: []`、不继承花色与点数（`suit/rank` 只是协议层的
+ *   占位写法），不给 `color` → `cardColor()` 得到 null＝**无色**。于是【仁王盾】那类
+ *   看颜色看花色的效果按「无色」处理，**寄篱自己也不会被这张无色牌再触发一次**；
+ * - 标 `generatedBy: 'jili'`：任何「把它当实体牌」的逻辑（进弃牌堆、被【奸雄】获得、
+ *   被计成某张实体牌）都凭它认出这不是牌堆里的牌。
+ *
+ * 它带来的是**一次全新的使用**：重新经历 使用 → 指定目标 → 成为目标 → 响应窗口
+ * （【闪】/【无懈可击】）→ 牌效果 → 伤害 → 结算结束。
+ */
+export function virtualSameNameCard(original: Card, seq: number): Card {
+  return {
+    id: `jili-${original.id}-${seq}`,
+    type: original.type,
+    suit: 'spade',
+    rank: 0,
+    ...(original.attribute ? { attribute: original.attribute } : {}),
+    virtual: true,
+    generatedBy: 'jili',
+    materials: [],
+  };
+}
+
+/**
+ * 严白虎·寄篱的机制入口：让 `source` **用一张虚拟同名牌**指定 `target`（全新的一次使用）。
+ *
+ * ⚠️ 与 `repeatCardResolution`（据江的「此牌额外结算一次」）是**两套机制**，刻意不共用：
+ *    据江 = 同一张牌、不新建使用，追加一遍结算；寄篱 = 新造一张无实体同名牌、走完整的
+ *    使用流程。两者的差别（有无实体牌、有无新的响应窗口、能不能被再次指定）都由此而来。
+ */
+function useVirtualSameNameCard(
+  state: GameState,
+  source: Player,
+  original: Card,
+  target: Player,
+  apply: (card: Card) => void,
+): void {
+  const card = virtualSameNameCard(original, state.jiliVirtualSeq++);
+  pushLog(
+    state,
+    'skill',
+    `【寄篱】：${source.name} 对 ${target.name} 再使用一张【${cardShortName(card)}】。`,
+    { seat: target.seatId },
+  );
+  apply(card);
+}
+
 /** 无懈可击询问结束后的锦囊结算 */
 /**
- * 单目标锦囊「结算完成」的收口（原来是直接 resumePlay）。
+ * 单目标锦囊「结算完成」的收口（原来是直接 resumePlay）。两条「再走一遍」的路在这里分流：
  *
- * 多出来的一步是严白虎·寄篱：「当你成为红色基本牌或红色普通锦囊牌的**唯一目标**后，
- * 在此牌结算结束后，此牌的使用者对你再使用一次相同牌名的牌」——也就是这张牌**结算两次**。
- * `ctx.jiliSecond` 由技能在他成为目标时置位，走到这里就把同一张牌再走一遍完整流程
- * （第二次会重新开无懈窗口，符合「再使用一次」的口径；`targetCardId` 不再沿用，
- * 因为过河拆桥/顺手牵羊第二遍时原来那张明牌已经被拿走了，让使用者重新选）。
- *
- * 防递归有两道：本 ctx 的 `jiliDone`，以及技能侧按**牌 id** 记的账本 `state.jiliReranCards`
- * （第二次结算时钩子会再次看到这张牌，靠它跳过）。
+ * ① 君孙权·据江：`ctx.extraResolve` → **同一张牌追加一遍结算**（不新建使用，`rerunSkill`
+ *    只是日志里的技能名）。防递归靠本 ctx 的 `extraResolveDone` + 按牌 id 的账本
+ *    `state.extraResolvedCards`（追加的那一遍里钩子会再次看到这张牌）。
+ * ② 严白虎·寄篱：`ctx.jiliUse` → **使用一张虚拟同名锦囊**（全新的一次使用，重新开无懈窗口；
+ *    `targetCardId` 不沿用，因为过河拆桥/顺手牵羊第二遍时原来那张明牌已经被拿走了）。
+ *    它自己不用防递归：虚拟牌是无色的，寄篱的钩子只认红色牌。
  */
 function endTrickResolution(state: GameState, ctx: TrickContext): void {
-  if (ctx.jiliSecond && !ctx.jiliDone) {
-    ctx.jiliDone = true;
+  if (ctx.extraResolve && !ctx.extraResolveDone) {
+    ctx.extraResolveDone = true;
     const source = getPlayer(state, ctx.sourceId);
     if (source && source.alive) {
       const targetName =
         (ctx.targetIds ?? []).map((id) => getPlayer(state, id)?.name ?? '').filter(Boolean).join('、') ||
         '目标';
-      pushLog(state, 'skill', `【${ctx.rerunSkill ?? '寄篱'}】：此牌对 ${targetName} 再结算一次。`);
+      pushLog(state, 'skill', `【${ctx.rerunSkill ?? '据江'}】：此牌对 ${targetName} 再结算一次。`);
       startTrickResolution(state, source, ctx.card, ctx.targetIds ?? [], undefined);
+      return;
+    }
+  }
+  if (ctx.jiliUse) {
+    ctx.jiliUse = false;
+    const source = getPlayer(state, ctx.sourceId);
+    const target = getPlayer(state, ctx.jiliTargetId ?? '');
+    if (source && source.alive && target && target.alive) {
+      useVirtualSameNameCard(state, source, ctx.card, target, (card) => {
+        startTrickResolution(state, source, card, [target.seatId], undefined);
+      });
       return;
     }
   }
@@ -7298,21 +7377,22 @@ function respondDeathSave(
     { amount: heal, taoSaverId: card.type === 'tao' && saver.seatId !== dying.seatId ? saver.seatId : undefined },
     () => {},
   );
-  // 严白虎·寄篱：别人（或他自己）用**红色**【桃】把他从濒死救回来，这张牌同样结算两次
-  // ——第二遍就是再回复 1 点。记账本防止重复。
+  // 严白虎·寄篱：别人（或他自己）用**红色**【桃】把他从濒死救回来 → 再用一张虚拟【桃】
+  // （第二张就是再回复 1 点；它无色，寄篱的钩子不会再认它，所以天然不会自环）
   if (
     card.type === 'tao' &&
+    !card.virtual &&
+    !card.generatedBy &&
     cardColorOf(card) === 'red' &&
-    effectiveHeroes(state, dying).some((h) => h.jili === true) &&
-    !state.jiliReranCards.includes(card.id)
+    effectiveHeroes(state, dying).some((h) => h.jili === true)
   ) {
-    state.jiliReranCards.push(card.id);
-    const more = healAndTrigger(state, dying, 1);
-    pushLog(
-      state,
-      'skill',
-      `【寄篱】：这张【桃】对 ${dying.name} 再结算一次，回复 ${more} 点体力。`,
-    );
+    useVirtualSameNameCard(state, saver, card, dying, (vcard) => {
+      const more = healAndTrigger(state, dying, 1);
+      pushLog(state, 'tao', `【${cardShortName(vcard)}】回复 ${more} 点体力。`, {
+        seat: dying.seatId,
+        action: 'tao',
+      });
+    });
   }
   // 救活：先派发「濒死结算结束后」（左慈·汲魂 / 吴国太·补益），再把控制权还回去
   dispatchNearDeathResolved(state, dying.seatId, true, pending.killerId, () => {
@@ -8701,7 +8781,8 @@ export function createGame(
     killedThisTurn: [],
     gainedFromDeckThisTurn: [],
     deckGainOwner: {},
-    jiliReranCards: [],
+    extraResolvedCards: [],
+    jiliVirtualSeq: 0,
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],
@@ -8762,6 +8843,7 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     player.heroId = intent.heroId;
     player.deputyHeroId = deputyId;
     player.faction = mainHero.faction;
+
     // 双势力：按 2023 规则确定势力（唯一共同势力自动确定；要玩家选的组合见下面直接拒绝）
     const dual = determineDualFaction(mainHero, deputyHero, state.mode);
     if (dual?.kind === 'auto') {

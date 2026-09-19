@@ -3624,6 +3624,7 @@ const JUN_CAOCAO: Hero = lordHero(
   {
     // 与标准版【曹操】是同一个武将本体：两者不能同时当主将+副将（见 heroCanonicalId）
     pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+
     canonicalId: 'caocao',
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
@@ -3760,6 +3761,7 @@ const JUN_LIUBEI: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【飞龙夺凤】）、【章武】、【励众】都已实现。',
   {
     pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+
     canonicalId: 'liubei', // 与【刘备】同一本体
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
@@ -3916,9 +3918,12 @@ export function factionGrantedActiveSkills(state: GameState, player: Player): Ac
  *   不算；君孙权自己也在内。
  * - 「吴势力不为大势力」用 `isBigFaction`（与势备篇的大势力同一口径；没有势备篇时
  *   大势力概念本就不存在，等于恒真）。
- * - 「额外结算一次」＝ 同一张牌再走一遍完整结算（复用寄篱那套 `jiliSecond`），于是
- *   **所有**目标都再结算一次——官方原文是「此牌额外结算一次」，不是「只对你再算一次」。
- *   同一张牌只重跑一次（`state.jiliReranCards` 按牌 id 去重）。
+ * - 「额外结算一次」＝ 同一张牌再走一遍完整结算，于是**所有**目标都再结算一次——
+ *   官方原文是「此牌额外结算一次」，不是「只对你再算一次」。同一张牌只追加一遍
+ *   （`state.extraResolvedCards` 按牌 id 去重）。
+ * - ⚠️ 这套「追加结算」与严白虎·寄篱的「再使用一张虚拟同名牌」是**两套机制**，底层已拆开：
+ *   据江走 `extraResolve`（同一张牌、不新建使用、不重开响应窗口），
+ *   寄篱走 `jiliUse` + `engine.useVirtualSameNameCard`（新牌、新使用、重开响应窗口）。
  */
 function askJujiang(ctx: HookContext): void {
   const state = ctx.state;
@@ -3939,11 +3944,11 @@ function askJujiang(ctx: HookContext): void {
   const user = getPlayer(state, tctx.sourceId);
   if (!user || !user.alive) return;
   if (effectiveFaction(state, user) !== myFaction) return; // 只有「与你势力相同的角色」的牌才算
-  if (tctx.jiliSecond || tctx.jiliDone) return;
-  if (state.jiliReranCards.includes(card.id)) return; // 同一张牌只重跑一次
-  tctx.jiliSecond = true;
+  if (tctx.extraResolve || tctx.extraResolveDone) return;
+  if (state.extraResolvedCards.includes(card.id)) return; // 同一张牌只追加一遍
+  tctx.extraResolve = true;
   tctx.rerunSkill = '据江';
-  state.jiliReranCards.push(card.id);
+  state.extraResolvedCards.push(card.id);
   pushLog(
     state,
     'skill',
@@ -3959,6 +3964,7 @@ const JUN_SUNQUAN: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【定澜夜明珠】）、【督授】、【据江】已实现。',
   {
     pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+
     canonicalId: 'sunquan', // 与【孙权】同一本体
     // 督授：给**同势力角色**一个出牌阶段技能（引擎按这个 id 找提供者，见 factionGrantedActiveSkills）
     factionSkillId: 'dushou',
@@ -4150,6 +4156,7 @@ const JUN_YUANSHAO: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【盟军大纛】）、【会盟】、【授锋】已实现。',
   {
     pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
+
     canonicalId: 'yuanshao', // 与【袁绍】同一本体
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
@@ -5975,9 +5982,9 @@ const YANBAIHU: Hero = {
       },
     },
     {
-      // 寄篱①：成为**红色即时锦囊**的唯一目标 → 置「此牌结算两次」
-      // （单目标锦囊在 startTrickResolution 里给所有存活角色派发 othersBecomeTarget，
-      //   所以目标本人也收得到自己的那一条；多人目标不会走这条派发）
+      // 寄篱①：成为**红色即时锦囊**的唯一目标 → 记下「此牌结算结束后，其使用者要再用一张
+      // 虚拟同名锦囊指定我」（单目标锦囊在 startTrickResolution 里给所有存活角色派发
+      // othersBecomeTarget，所以目标本人也收得到自己的那一条；多人目标不走这条派发）
       timing: 'othersBecomeTarget',
       skillId: '寄篱',
       locked: true,
@@ -5990,14 +5997,13 @@ const YANBAIHU: Hero = {
         if (!card || !tctx) return;
         if (cardColor(card) !== 'red') return;
         if (!isInstantTrick(card)) return; // 只认「普通锦囊」，延时锦囊不算
-        if (tctx.jiliSecond || tctx.jiliDone) return;
-        if (ctx.state.jiliReranCards.includes(card.id)) return; // 已经重跑过这张牌
-        tctx.jiliSecond = true;
-        ctx.state.jiliReranCards.push(card.id);
+        if (tctx.jiliUse) return; // 同一张牌只再造一张
+        tctx.jiliUse = true;
+        tctx.jiliTargetId = ctx.player.seatId;
       },
     },
     {
-      // 寄篱②：成为**红色【杀】**的**唯一**目标 → 同样置「结算两次」。
+      // 寄篱②：成为**红色【杀】**的**唯一**目标 → 同样记下「结算结束后再用一张虚拟同名【杀】」。
       // 「唯一目标」看 attack.totalTargets（playSha 填；方天画戟那种多目标不算）。
       timing: 'becomeTarget',
       skillId: '寄篱',
@@ -6009,10 +6015,9 @@ const YANBAIHU: Hero = {
         if (attack.targetId !== ctx.player.seatId) return;
         if (attack.cardColor !== 'red') return;
         if ((attack.totalTargets ?? 1) !== 1) return; // 只认唯一目标
-        if (attack.jiliSecond || attack.jiliDone) return;
-        if (ctx.state.jiliReranCards.includes(attack.cardId)) return;
-        attack.jiliSecond = true;
-        ctx.state.jiliReranCards.push(attack.cardId);
+        if (attack.jiliUse) return; // 同一张杀只再造一张
+        if (attack.generatedBy === 'jili') return; // 寄篱造的虚拟牌不再生一张（它无色，这里是第二道保险）
+        attack.jiliUse = true;
       },
     },
     {
@@ -6043,6 +6048,10 @@ const YANBAIHU: Hero = {
     {
       name: '寄篱',
       desc: '副将技，锁定技，你计算体力上限时减少 1 个单独的阴阳鱼。当你成为红色基本牌或红色普通锦囊牌的唯一目标后，在此牌结算结束后，此牌的使用者对你再使用一次相同牌名的牌。当你受到伤害时，若你于当前阶段内受到过伤害的次数为 1，你防止此伤害，然后移除该武将牌。',
+      // 实现口径（docs/guozhan-roster.md §5.87）：第二张牌是**无对应实体牌的虚拟同名牌**
+      // （subcards=[]、不继承花色点数、无色、generatedBy='jili'），并且是**一次全新的使用**
+      // （新卡牌使用事件：重新指定目标、重开响应窗口、严白虎仍可正常出【闪】/锦囊会开新的
+      // 无懈链）。见 engine 的 virtualSameNameCard / useVirtualSameNameCard。
     },
   ],
 };
@@ -12481,6 +12490,9 @@ export function cardAsSeenBy(
   card: Card,
 ): Card {
   if (!state || !owner) return card;
+  // 虚拟牌没有实体牌面：不参与「黑桃当红桃」这类**看花色**的转化
+  // （它的颜色只由 `color` 决定；严白虎·寄篱的第二张牌正是靠这一点保持无色，不会自环）
+  if (card.virtual) return card;
   if (card.suit !== 'spade') return card;
   if (!effectiveHeroes(state, owner).some((h) => h.spadeAsHeart === true)) return card;
   // 红桃 + 红色一起改：读 suit 的地方（判定/火攻/仁王盾颜色）两样都会用到

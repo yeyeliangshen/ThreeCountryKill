@@ -17676,8 +17676,14 @@ describe('国战 · 徐庶（诛害 / 举荐）', () => {
   });
 });
 
-/** 严白虎·寄篱的「此牌结算两次」（红色基本牌/普通锦囊的唯一目标） */
-describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
+/**
+ * 严白虎·寄篱的「再使用一次相同牌名的牌」（红色基本牌/普通锦囊的唯一目标）。
+ *
+ * 实现口径（docs/guozhan-roster.md §5.87）：第二张是**无对应实体牌的虚拟同名牌**
+ * （subcards=[]、不继承花色点数、无色、generatedBy='jili'），是**一次全新的使用**——
+ * 重新指定目标、重开响应窗口，所以严白虎照样能出【闪】、锦囊会开新的无懈链。
+ */
+describe('国战 · 严白虎·寄篱（再使用一张虚拟同名牌）', () => {
   function gz(
     seats: {
       seatId: string;
@@ -17731,7 +17737,7 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     ...extra,
   });
 
-  it('红色【杀】：唯一目标 → 结算两次（第二次的伤害被寄篱的减伤条款挡掉并移除武将牌）', () => {
+  it('红色【杀】：唯一目标 → 再使用一张虚拟【杀】（第二张的伤害被寄篱的减伤条款挡掉并移除武将牌）', () => {
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'heart')] },
@@ -17744,13 +17750,13 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' })); // 第一遍：不出闪 → 受 1 点（4→3）
     expect(b.hp).toBe(3);
-    // 第二遍：又一轮「等出闪」
+    // 第二张：新的一次使用 → 又一轮「等出闪」（严白虎照样能正常出【闪】）
     expect(state.pending?.kind).toBe('respondSha');
     ok(act(state, B, { type: 'pass' }));
     // 这一遍的伤害是本阶段第 2 次 → 寄篱防止并移除武将牌
     expect(b.hp).toBe(3);
     expect(b.removedHeroIds).toContain('yanbaihu');
-    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('再使用一张【杀】'))).toBe(true);
     expect(state.log.some((e) => e.message.includes('寄篱'))).toBe(true);
   });
 
@@ -17767,11 +17773,11 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' }));
     expect(b.hp).toBe(3);
-    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(false);
+    expect(state.log.some((e) => e.message.includes('再使用一张'))).toBe(false);
     expect(b.removedHeroIds).toHaveLength(0);
   });
 
-  it('红色【过河拆桥】：唯一目标 → 结算两次（第二遍重新选一张）', () => {
+  it('红色【过河拆桥】：唯一目标 → 第二张虚拟【过河拆桥】重新选一张（并重开无懈窗口）', () => {
     const state = gz(
       [
         // 寄篱只认**红色**牌，所以这里手工造一张红桃【过河拆桥】
@@ -17783,10 +17789,11 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     );
     const b = state.players.find((p) => p.seatId === B)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'b2' }));
+    // passWuxie 会一直清到没有无懈窗口为止——第二张牌自己也会开一个新的无懈链
     passWuxie(state);
-    // 第一遍拆掉了武器；第二遍重新结算（这张牌已经不在装备区 → 拆手牌）
+    // 第一遍拆掉了武器；第二张（虚拟牌）没带明牌目标 → 拆手牌
     expect(b.equipment.weapon).toBeNull();
-    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('再使用一张【过河拆桥】'))).toBe(true);
     expect(b.hand.length).toBe(0);
   });
 
@@ -17794,8 +17801,8 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     const state = gz([yanbaihu(A, '甲', { hand: [mk('a1', 'tao', 'heart')], hp: 2 }) as never], A);
     const a = state.players.find((p) => p.seatId === A)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
-    expect(a.hp).toBe(4); // 2 → 3（第一次）→ 4（寄篱再结算一次）
-    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+    expect(a.hp).toBe(4); // 2 → 3（第一次）→ 4（寄篱再使用一张虚拟【桃】）
+    expect(state.log.some((e) => e.message.includes('再使用一张【桃】'))).toBe(true);
   });
 
   it('别人用红色【桃】把他从濒死救回来：也结算两次', () => {
@@ -17815,8 +17822,37 @@ describe('国战 · 严白虎·寄篱（此牌结算两次）', () => {
     ok(act(state, B, { type: 'pass' })); // 乙自己不出桃
     ok(act(state, C, { type: 'pass' })); // 丙也不出桃
     ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲用红桃救
-    expect(b.hp).toBe(2); // 救回 1 点 + 寄篱再结算一次 1 点
-    expect(state.log.some((e) => e.message.includes('再结算一次'))).toBe(true);
+    expect(b.hp).toBe(2); // 救回 1 点 + 寄篱再使用一张虚拟【桃】再回 1 点
+    expect(state.log.some((e) => e.message.includes('再使用一张【桃】'))).toBe(true);
+  });
+
+  it('第二张是**无实体**虚拟牌：不进任何区域、牌名只报【杀】（不继承花色点数）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'heart')] },
+        yanbaihu(B, '乙') as never,
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 第二张走的是**新的使用**：又是一轮「等你出闪」
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    // 牌名只报【杀】——虚拟牌不带花色点数（不会出现「♥A·杀」那种字样）
+    expect(state.log.some((e) => e.message.includes('再使用一张【杀】'))).toBe(true);
+    // 无实体：它从未进入任何区域；原牌在弃牌堆里只有一份
+    const zones: Card[] = [
+      ...state.discard,
+      ...state.deck,
+      ...state.players.flatMap((p) => p.hand),
+      ...state.players.flatMap((p) =>
+        Object.values(p.equipment).flatMap((c) => (c ? [c] : [])),
+      ),
+    ];
+    expect(zones.some((c) => c.generatedBy === 'jili')).toBe(false);
+    expect(zones.filter((c) => c.id === 'a1')).toHaveLength(1);
   });
 });
 

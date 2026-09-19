@@ -178,7 +178,7 @@ export type Timing =
    * 君孙权·据江挂这里（「与你势力相同的角色指定你为目标的非伤害牌额外结算一次」）。
    * 与 `othersBecomeTarget` 的区别：那个只在「**唯一**目标」时派发（于吉·千幻要用它取消牌），
    * 而据江要看所有目标，多目标的锦囊（五谷/桃园/联军）也得能观察到。
-   * 「再结算一次」复用寄篱那套：技能在钩子里把 `trickCtx.jiliSecond` 置位（+`rerunSkill` 供日志），
+   * 「额外结算一次」：技能在钩子里把 `trickCtx.extraResolve` 置位（+`rerunSkill` 供日志），
    * `endTrickResolution` 走到出口时把同一张牌再走一遍。
    */
   | 'trickTargeted';

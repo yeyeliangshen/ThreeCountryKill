@@ -439,10 +439,20 @@ export interface AttackContext {
    * 而逐个结算时攻击上下文是每人一份，光看自己这份分不出是不是唯一目标。
    */
   totalTargets?: number;
-  /** 严白虎·寄篱：这张【杀】要再结算一次 + 「已经重跑过」的守卫（见 TrickContext 同名注释） */
-  /** 严白虎·寄篱：这张【杀】要再结算一次 + 「已经重跑过」的守卫（见 TrickContext 同名注释） */
-  jiliSecond?: boolean;
-  jiliDone?: boolean;
+  /**
+   * 这张【杀】是不是由技能新造的虚拟牌（`Card.generatedBy` 透传过来）。
+   * 目前只有严白虎·寄篱造的那张（`'jili'`）——它**无色**，所以寄篱的钩子不会再认它；
+   * 这个字段是给技能判定用的第二道保险（别只看颜色）。
+   */
+  generatedBy?: string;
+  /**
+   * 严白虎·寄篱：这张【杀】结算结束后，其使用者要**再使用一张虚拟同名【杀】**指定他。
+   *
+   * 由技能在他成为目标时置位，走到结算收尾（afterAttackSettledTail）消费掉——只消费一次：
+   * 第二张是**全新的一次使用**（新的 AttackContext），不是把这一份重跑一遍。
+   * ⚠️ 与君孙权·据江的「额外结算一次」是两套机制，别混（见 engine 的两个机制函数）。
+   */
+  jiliUse?: boolean;
   /**
    * 这张【杀】已经被改过目标（大乔·流离）。
    * 只允许改一次，否则两个都会改目标的技能能让它来回弹、死循环。
@@ -493,15 +503,20 @@ export interface TrickContext {
   // 决斗：当前该谁出杀（target=目标方，source=来源方）
   duelTurn?: 'target' | 'source';
   /**
-   * 这张牌要**再结算一次**（由技能在这个时机置位），以及「已经重跑过了」的守卫
-   * （防止无限递归）。两个技能走这条路：
-   *   严白虎·寄篱：成为红色牌的唯一目标 → 此牌结算两次；
-   *   君孙权·据江：与你势力相同的角色指定你为目标的非伤害牌 → 额外结算一次。
-   * 字段名沿用寄篱那套；`rerunSkill` 只是日志里那个技能名（缺省按寄篱写）。
+   * 君孙权·据江：「此牌**额外结算一次**」——**同一张牌**不新建使用，只在结算收尾处把
+   * 同一份结算再完整走一遍（追加结算）。`rerunSkill` 只是日志里那个技能名。
    */
-  jiliSecond?: boolean;
-  jiliDone?: boolean;
+  extraResolve?: boolean;
+  extraResolveDone?: boolean;
   rerunSkill?: string;
+  /**
+   * 严白虎·寄篱：这张锦囊结算结束后，其使用者**再使用一张虚拟同名锦囊**指定严白虎。
+   * 与据江的「追加结算」刻意分开：第二张没有实体牌（`materials: []`）、不继承花色点数、
+   * 会重新开无懈窗口——它是**一次全新的卡牌使用**（见 engine 的 useVirtualSameNameCard）。
+   */
+  jiliUse?: boolean;
+  /** 寄篱第二张牌的目标（他成为目标那一刻记下来，结算收尾时用） */
+  jiliTargetId?: string;
   /**
    * 决斗：当前响应方在「这一次响应」里已经打出的【杀】数。
    * 对手含无双时每次要出两张【杀】，凑满才换手（见 heroDuelShaRequired）。
@@ -707,10 +722,17 @@ export interface GameState {
    */
   deckGainOwner: Record<string, string>;
   /**
-   * 严白虎·寄篱「此牌结算两次」的去重账本：已经触发过重跑的牌 id。
-   * 第二次结算时技能钩子会再次看到这张牌，靠它跳过（否则无限递归）。随回合清空。
+   * 君孙权·据江「此牌额外结算一次」的去重账本：已经追加结算过的牌 id。
+   * 追加的那一遍里技能钩子会再次看到这张牌，靠它跳过（否则无限递归）。随回合清空。
+   *
+   * ⚠️ 只服务于「追加结算」（据江）那一套；严白虎·寄篱的第二张牌是**新建的虚拟牌**
+   *    （不同 id），不需要账本——它自己也永远不会被再次触发（无色）。
    */
-  jiliReranCards: string[];
+  extraResolvedCards: string[];
+  /**
+   * 严白虎·寄篱造出来的虚拟牌**发号器**（id 带序号 → 唯一；记在 state 上 → 同种子可重放）。
+   */
+  jiliVirtualSeq: number;
   /**
    * 装备「失去事件」的编号（见 timing.EquipLostPayload.eventId）。单调递增，不需要重置。
    */

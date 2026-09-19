@@ -165,6 +165,12 @@ export interface Card {
    * 而不是收虚拟牌本身——见 engine 的 `consumeCard`。
    */
   materials?: Card[];
+  /**
+   * 虚拟牌的**来源标记**：哪个技能造出来的。目前只有严白虎·寄篱（`'jili'`）。
+   * 它是一道判据——「由技能新造的无实体牌」，任何「把牌当实体牌处理」的逻辑
+   * （进弃牌堆、被获得、被计成某张实体牌）都该先看它。
+   */
+  generatedBy?: string;
 }
 
 export const SUIT_COLOR: Record<Suit, 'red' | 'black'> = {
