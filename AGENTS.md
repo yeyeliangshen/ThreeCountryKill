@@ -43,3 +43,25 @@
   **改了引擎核心流程或新增技能后，务必跑它**，并且不要为了「让它通过」而放宽断言。
 - 新增技能/卡牌：先问自己「哪一种输入会让它出错」，再写用例；能写成结构不变式（不变量）的
   就写进 fuzz。
+
+## 六、实现顺序：**先查仓库里有没有**（用户 2026-09 明确要求，与第二节并列）
+
+用户给的技能文本是**参考关键词 / 等价口径**，**不是「重写一遍」的指令**。动手前一律先做三步：
+
+1. 先 `grep` 武将 id / 中文名 / 技能名（`packages/engine/src/heroes.ts`、
+   `packages/engine/src/data/roster.ts`、`docs/guozhan-roster.md`）——**确认是否已有实现**；
+2. **已有** → 不要重写：把它当成「逐条核对」（拿用户文本当 checklist），**只修真差异，其余不动**，
+   并在 `docs/guozhan-roster.md` 里用表格记「用户要点 / 仓库原状 / 处理」。
+   已发生过的例子：吴景（补阵法前提 + 材料可来自装备区）、董昭（补「当前**出牌阶段**受伤」口径 +
+   自选目标留配置点）、严白虎（核对一致、只补改目标的限制）；
+3. **没有** → 再新建；注意**占位空壳**：`dualHero()` / `ambitionistHero()` 里可能已有空条目，
+   只需补 `hooks` / `activeSkills` / 面板字段，**不要新造一个 id 不同的同名武将**。
+
+⚠️ **只有用户明确说要换版本/换技能**（例如「副将技换成【荐才】」「【寄篱】改成真虚拟牌」）
+才替换既有实现；替换时把旧实现的口径与来源写进 roster 文档（哪一版、为什么换、旧实现留在 git 历史）。
+
+⚠️ **复用也包括地基**：新技能先找现成的公共机制——
+军令 `api.armyOrder` / `api.armyOrderMulti`、`api.swapHands`、`api.removeHeroCard`、`api.loseEquip`、
+`api.kill`、「拿他人一张牌」的 `takeOneOfTargetCards`、以及**「派给全场」的时机**
+（`othersUseCard` / `anyShanUsed` / `beforeDamageApply` / `othersTurnStart` / `othersTurnEnd`）——
+**别再各自发明一套**；旁观者技能尤其要注意用「派给全场」的时机（§5.104 记过这类教训）。
