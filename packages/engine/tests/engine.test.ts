@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+
 import {  fangyuanHandLimitDelta,  woundedFactionCount,
   currentFactionCount,
   applyIntent,
@@ -1803,6 +1804,40 @@ describe('武将技能（Step 6）', () => {
     // 濒死走完后，续接把剩下的流程跑完，控制权交给下一个存活者
     expect(state.pending?.kind).toBe('play');
     expect(state.gameOver).toBe(false);
+  });
+
+  /**
+   * 跨 ②（濒死 continuation 化）+ ③（伤害管线重排）的回归：
+   *
+   * 定版口径是「扣体力 → 濒死/死亡 → **被救回之后**才跑造成伤害后/受到伤害后」。
+   * 于是出现一条以前不会遇到的路径：濒死求桃**先**走、受伤后技能的询问**后**挂起。
+   * 这条路径上最容易犯的错，是伤害结算的收尾（`resumePlay` / 续接）在那条询问之后
+   * 又把「出牌阶段」写回输入槽——玩家的二选一就被顶掉了（傲才那次踩的是同一个坑：
+   * 「请求还挂着」才跑得通，被顶掉就再也答不上）。
+   */
+  it('跨②③回归：濒死被救回后，受伤后技能挂起的询问不得被收尾覆盖成「出牌阶段」', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), tao('a2'), shan('a3')], hp: 4 },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'spade', 5)); // 刚烈判定：黑桃 → 非红桃
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 乙 0 血 → **先**走濒死
+    expect(state.pending?.kind).toBe('respondDeath');
+    ok(act(state, B, { type: 'pass' })); // 乙自己放弃
+    ok(act(state, C, { type: 'pass' })); // 丙也放弃（求桃从濒死者起轮询：乙 → 丙 → 甲）
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲出【桃】救回乙
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(1);
+    // 救回之后才轮到「受到伤害后」：刚烈判定 → 问甲二选一。
+    // 关键断言：这一格是那张询问，**不是** { kind:'play' }（收尾不许把它顶掉）
+    expect(state.pending).toMatchObject({ kind: 'choice', seatId: A });
+    ok(act(state, A, { type: 'chooseOption', optionId: 'damage' })); // 选「受到 1 点伤害」
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hp).toBe(3);
+    // 整条链走完，控制权回到甲的出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
   // 7. 司马懿·鬼才：替换不利判定牌
@@ -16160,18 +16195,20 @@ describe('国战 · 法正（恩怨 / 眩惑）', () => {
     const a = state.players.find((p) => p.seatId === A)!;
     const b = state.players.find((p) => p.seatId === B)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力降到 0 → 濒死
-    // 恩怨②先问甲（受伤后）——这里选失去 1 点体力走掉
-    ok(act(state, A, { type: 'chooseOption', optionId: 'lose' }));
-    expect(a.hp).toBe(3);
-    // 濒死求桃轮询：从乙起 → [B, A]
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力降到 0
+    // 定版口径（docs §5.120）：扣体力 → **先走濒死/死亡** → 被救回之后才跑「受到伤害后」。
+    // 所以恩怨②现在排在这条求桃之后（以前是先问恩怨②、再进濒死，与官方相反）。
     expect(state.pending?.kind).toBe('respondDeath');
-    ok(act(state, B, { type: 'pass' }));
-    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
-    // 乙回到 1 点体力；甲用完桃后手牌为空，因【恩怨】摸 1 张
+    ok(act(state, B, { type: 'pass' })); // 乙自己放弃救援
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲出【桃】救人
+    // 乙回到 1 点体力；甲用完桃后手牌为空，因【恩怨】①摸 1 张
     expect(b.hp).toBe(1);
     expect(a.hand.length).toBe(1);
     expect(state.log.some((e) => e.message.includes('因【恩怨】摸了 1 张牌'))).toBe(true);
+    // 救回之后才轮到「受到伤害后」：恩怨②问甲（伤害来源）二选一
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'lose' }));
+    expect(a.hp).toBe(3);
   });
 
   it('恩怨①：法正自己吃桃回血不触发（只认「其他角色对你使用【桃】」）', () => {
@@ -24217,12 +24254,21 @@ describe('架构约束：濒死 / 死亡链不碰控制权', () => {
   });
 
   it('每个 enterNearDeath 调用点都显式传了续接（第三个参数）', () => {
+    // 先把注释剥掉：注释里举例写的 `enterNearDeath(...)` 不该被当成调用点
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     const sites: string[] = [];
-    for (let i = src.indexOf('enterNearDeath('); i >= 0; i = src.indexOf('enterNearDeath(', i + 1)) {
-      sites.push(argsAt(src, i + 'enterNearDeath'.length));
+    for (let i = code.indexOf('enterNearDeath('); i >= 0; i = code.indexOf('enterNearDeath(', i + 1)) {
+      sites.push(argsAt(code, i + 'enterNearDeath'.length));
     }
-    expect(sites.length).toBeGreaterThanOrEqual(17); // 16 个调用点 + 1 处函数声明
+    // 提交 C 把 12 个伤害点收口进了 afterDamageSettled，所以调用点比提交 B 时少
+    // （剩：收口函数本身 + 判定阶段闪电 + 铁索 + 君主连坐 + 敕令 + 失去体力 + 上限变化）
+    expect(sites.length).toBeGreaterThanOrEqual(7);
     for (const args of sites) expect(args).toContain('=>');
+  });
+
+  it('伤害点统一从 afterDamageSettled 收口（不在各处自己判濒死）', () => {
+    // 12 个伤害点 + 函数定义本身
+    expect(src.split('afterDamageSettled(').length - 1).toBeGreaterThanOrEqual(10);
   });
 });
 

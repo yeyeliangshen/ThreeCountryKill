@@ -4478,3 +4478,74 @@ skill chain / chain damage）禁止直接 `resumePlay()`，只能 `done()`**；�
 因此本轮补了一条**架构守卫用例**（读源码断言那条链里不出现 `resumePlay`），
 真正的行为验证（「受伤后技能自己产生新 interactive pending 时 damage tail 不得覆盖成 play」）
 是提交 C 的跨 ②+③ 回归用例。
+
+### 5.128 输入槽所有权（三）：提交 C「伤害管线定死顺序」+ 两个由此暴露的收尾缺陷
+
+提交 C 按用户 2026-09 给的目标形状改：`prepareDamage → 来源侧增伤 → 目标武将修正（公清）→
+目标装备修正（藤甲/白银狮子）→ 扣体力 → **濒死/死亡** → 造成伤害后 → 受到伤害后 → damageFinished`。
+值那几层（`damageDeltaFor` / `finalizeDamage` / `beforeDamageApply`）本轮**没动**——§5.120 已经
+判定它们不是靠注册顺序拼的、本来就在正确的位置；真正要改的是「濒死」那一段的先后。
+
+#### 5.128.1 改法：新增 `afterDamageSettled`，12 个伤害点全部从它收口
+
+```ts
+function afterDamageSettled(state, victim, attack, damage, finished) {
+  if (victim.hp <= 0) {
+    // 定版口径：先走完濒死/死亡（提交B 的 done 续接），**被救回之后**才继续「伤害后」
+    enterNearDeath(state, attack, () => runDamagedHooks(state, victim, attack, damage, finished));
+    return;
+  }
+  runDamagedHooks(state, victim, attack, damage, finished);
+}
+```
+
+- 「伤害后」内部顺序也按官方改成 **造成伤害后（来源）→ 受到伤害后（目标）→ 一名角色受到伤害后
+  （旁观 anyDamaged）→ 收尾**（以前是「目标 → 旁观 → 来源」）。
+- 12 个伤害点（杀/闪电/铁索/决斗/火攻/离间/南蛮万箭/火烧连营/水淹七军/三尖两刃刀/
+  技能造成的伤害/失去体力路径）不再各自写 `if (hp <= 0) enterNearDeath(...)`：
+  濒死的先后只由收口函数决定。
+- 阵亡的人**照样**收到伤害后钩子——与改前一致（以前也是钩子先跑、濒死后跑），
+  这里只换先后，不动「谁收到钩子」。
+- 顺手补一处漏判：**决斗**的伤害被防止时以前仍会派发「伤害后」钩子（同段的其它伤害点都判了
+  `prevented`），现在统一 `prevented → 不派发伤害后`。
+
+#### 5.128.2 由提交 C 暴露、必须一并修的两个收尾缺陷（都是「谁清那一格」的问题）
+
+**(a) 求桃队列用完不交槽** —— `enterDeathQueue` 建的那一格（`respondDeath`）以前靠濒死链内部
+的 `resumePlay` 覆盖掉；改成 continuation 之后没人清了，于是**调用方的续接看到「还有询问挂着」**
+（`api.dealDamage` 的 tail 就是 `if (pending === null && resumeTo) resumePlay(...)` 这个写法），
+永远不接管。现在求桃那一格自带 `release`：走完（被救回 / 阵亡）时若槽里还是它，先 `setPending(null)`
+再 `done()`。**这就是「中间子流程只能 done，槽的释放由发起者负责」**这条约束的具体落点。
+
+**(b) 钩子链收尾会把「已经答过的那一格」原样还回去** —— `runHooksPausable` 会记下「钩子发起时
+槽里的那一格」（ambient），链条跑完后如果槽空了就还回去（这是为了「装装备触发枭姬」那类
+`{kind:'play'}` 占位不丢）。但**已经答完的询问**也被一起还了回去：
+
+- 实测路径（刚烈把来源打进濒死）：求桃 → 阵亡 → 死亡钩子链收尾 → 把**求桃那一格**还回来 →
+  求桃队列永远问不完（`passDeathSaves` 死循环，内存跑到 4GB 被打爆）。
+- 现在加一条口径：**只有「还没被答过」的那一格能还**。实现是 `applyIntent` 里给「玩家回答的
+  那一条询问」（非占位）打一个 `WeakSet` 标记，`runHooksPausable` 收尾时跳过带标记的。
+  （连营那种「询问插在『等乙出闪』中间」的场景不受影响：respondSha 没被答过，照旧还回去。）
+
+#### 5.128.3 测试
+
+- 新增 **跨 ②+③ 回归**（用户点名要的那条）：「濒死被救回后，受伤后技能挂起的询问不得被收尾
+  覆盖成『出牌阶段』」——甲杀乙（乙 1 血）→ 乙先走濒死 → 甲出【桃】救回 → 刚烈判定 → 问甲二选一；
+  断言这一格是 `choice`（seat 甲）而**不是** `play`，答完才回到甲的出牌阶段。
+- 新增架构守卫两条：伤害点是否统一从 `afterDamageSettled` 收口；`enterNearDeath` 的每个调用点
+  是否都显式传了续接（扫描前先剥注释）。
+- **改了 2 条既有用例**（如实记）：① 国战·法正【恩怨①】——原来「先问恩怨②、再进濒死」的步骤
+  顺序与定版口径相反，改成「先濒死 → 救回后才问恩怨②」；② 手工搭 `respondDeath` pending 的
+  用例补 `done: () => {}`。
+- 全绿：engine 951 通过 + 4 skip、ui 13、server 34；`pnpm typecheck` / `pnpm build` 通过。
+
+#### 5.128.4 遗留（提交 C 没做的部分）
+
+- **`requestResumePlay` 仍未接线**：槽的释放现在是「谁建谁清」的显式约定（见 (a)），
+  还没换成提交 A 那套「按 requestId 请求 / 等待」。三处回答路径（`ack` / `chooseOption` /
+  `pickCards`）也还没补 `completePendingRequest`。
+- 各流程**自己的下一步**还没替换成续接：仍传 `resumeTurnPlay`（回到当前回合玩家），
+  例如南蛮/万箭推进、火烧连营下一个目标、敕令下一位——它们现在靠 `ongoingTrick` /
+  `ongoingChain` 那套「等 resumePlay 接管」的旧机制，行为正确但还不是「最外层决定去向」的形态。
+- ⑦ 那 4 条 skip（夙智③ / 成略锦囊侧 / 米道 / 决绝打死人）仍在：钩子链「间接打出濒死」的
+  那一类收口要等上面两件做完再看。

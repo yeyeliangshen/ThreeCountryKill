@@ -980,6 +980,28 @@ function isIdlePending(pending: GameState['pending']): boolean {
 }
 
 /**
+ * 「占位空位」：出牌 / 弃牌阶段的格子——没有人被问话，谁摆都一样。
+ *
+ * 与 `isIdlePending` 的区别：那个是「续接队列可以接着排吗」，它**故意不认出牌阶段**
+ * （回合交接的窗口，见上）；这里只回答「这一格能不能在钩子链收尾时原样还回去」，
+ * 出牌阶段当然算占位。用于 `runHooksPausable` 的环境 pending 还原。
+ */
+function isPlaceholderPending(pending: GameState['pending']): boolean {
+  if (pending === null) return false;
+  return pending.kind === 'play' || pending.kind === 'discard';
+}
+
+/**
+ * 「已经答过的询问」——按对象记（WeakSet，随状态对象一起被回收）。
+ *
+ * 用途只有一个：钩子链收尾时**不许**把「已经答完的那一格」原样还回去
+ * （见 `runHooksPausable` 的 `ambient`）。留在槽里的旧对象被答完之后只是没人再看它，
+ * 但要是被还原，玩家会被反复问同一个问题——实测就是求桃队列问不完（内存跑满）。
+ * 打标记的地方是 `applyIntent`：那是「玩家回答了一条询问」的唯一入口。
+ */
+const answeredPendings = new WeakSet<object>();
+
+/**
  * 排空续接队列。只在**每个 intent 处理完之后**调用一处，别散着调——
  * 它是「询问 → 续接」这条控制流的唯一收口。
  *
@@ -1060,7 +1082,15 @@ function runHooksPausable(
   // 钩子发起的询问会**覆盖**掉当时的环境 pending（比如出牌阶段的 {kind:'play'}）。
   // 记下它：等整条钩子链跑完，如果调用方没有产生新的 pending，就把它还回去——
   // 否则出牌阶段的牌一打完（例如装装备触发枭姬）pending 就成了 null，玩家卡死。
-  const ambient = state.pending;
+  //
+  // ⚠️ 只有**还没被答过**的那一格能还：占位空位（出牌 / 弃牌）谁摆都一样，随便还；
+  //    而「正在等回答」的那一格如果**已经答完**（玩家已经作答、那条询问处理完了），
+  //    还回去等于把一条处理完的询问又摆上来——玩家会被反复问同一个问题。
+  //    实测（docs §5.128）：刚烈把来源打进濒死 → 求桃走完、人阵亡 → 死亡钩子链收尾时
+  //    把「求桃那一格」原样还了回去 → 求桃队列永远问不完（内存跑满、整局卡死）。
+  //    没答过的那一格照旧要还（例：连营的询问插在「等乙出闪」中间，问完必须还回 respondSha）。
+  const ambient =
+    state.pending && !answeredPendings.has(state.pending) ? state.pending : null;
   // 这条链的令牌：跑完就置死，用来拦住「排到很后面才醒」的陈旧续接（见 runHooksFrom 的注释）
   const token: ChainToken = { alive: true };
   runHooksFrom(
@@ -1913,14 +1943,11 @@ function resolveJudgment(
             'damage',
             `${player.name} 受到 ${dmg} 点雷电伤害，剩余 ${Math.max(0, player.hp)} 体力。`,
           );
-          runDamagedHooks(state, player, shandianAttack, dmg, () => {
-            // 濒死/阵亡由死亡流程接管，判定阶段不再继续（原实现也是这样分流的：
-            // 人没了就不该再摸牌出牌，回合交给死亡流程收尾）
-            if (player.hp <= 0) {
-              enterNearDeath(state, shandianAttack, () => resumeTurnPlay(state));
-              return;
-            }
-            after();
+          afterDamageSettled(state, player, shandianAttack, dmg, () => {
+            // 人没了 → 判定阶段不再继续（回合交给控制流收尾：resumeTurnPlay 会发现
+            // 回合玩家已死 → 结束回合）；活着就接着跑剩下的判定
+            if (player.alive) after();
+            else resumeTurnPlay(state);
           });
         });
         return; // 判定牌已归位，剩下的判定由 after 接着跑
@@ -2968,14 +2995,8 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
       next();
       return;
     }
-    runDamagedHooks(state, p, chainAttack, dmg, () => {
-      if (p.hp <= 0) {
-        // 濒死流程接管；ongoingChain 留着，等 resumePlay 把剩下的人接着打完
-        enterNearDeath(state, chainAttack, () => resumeTurnPlay(state));
-        return;
-      }
-      next();
-    });
+    // 扣血 → 濒死/死亡 → 伤害后 → 接着蔓延（受伤的人死了也照样把剩下的打完）
+    afterDamageSettled(state, p, chainAttack, dmg, next);
   });
 }
 
@@ -3414,17 +3435,12 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
     }
     // afterDamage（派给受伤者）与 afterDamageDealt（派给来源）都可能挂起询问，
     // 所以串起来跑，最后才接上收尾。收尾里会进濒死或回到出牌阶段。
-    const tail = (): void => {
+    const finished = (): void => {
       runHooks(state, 'afterResolve', target, { attack });
       // 三尖两刃刀：造成伤害后（目标还活着才有效）
       askSanjian(state, attack, () => {
         // 铁索连环：先记账（重置横置目标 + 记下要蔓延给谁），再决定控制流
         queueChainSpread(state, attack, dmg);
-        if (target.hp <= 0) {
-          // 目标自己濒死：蔓延的待办留在 ongoingChain 里，濒死结算完由 resumePlay 接着跑
-          enterNearDeath(state, attack, () => resumeTurnPlay(state));
-          return;
-        }
         runChainSpread(state, () => {
           afterAttackSettled(state, attack);
         });
@@ -3435,7 +3451,8 @@ function resolveAttackHit(state: GameState, attack: AttackContext): void {
       afterAttackSettled(state, attack);
       return;
     }
-    runDamagedHooks(state, target, attack, dmg, tail);
+    // 扣血 → 濒死/死亡 → 造成伤害后 / 受到伤害后 → 铁索蔓延 → 收尾
+    afterDamageSettled(state, target, attack, dmg, finished);
   };
 
   // 伤害时的武器特效（寒冰剑 / 麒麟弓）——都可能要问，所以串着来
@@ -3617,11 +3634,40 @@ function finalizeDamage(
 }
 
 /**
- * 「受到伤害后」的统一派发：受伤者的 `afterDamage` → 旁观者的 `anyDamaged`
- * （蔡文姬·悲歌那种「当**一名角色**受到伤害后」）→ 来源的 `afterDamageDealt` → `after`。
+ * 「这一次伤害扣完体力之后」的**统一时序**（用户 2026-09 定版，docs §5.120 / §5.128）：
+ *
+ *   扣体力（damageStep 已做）→ **濒死 / 死亡** → 造成伤害后 → 受到伤害后 → damageFinished
+ *
+ * 以前是反的（先把伤害后钩子派发完，再判 `hp <= 0` 进濒死）。现在所有伤害点都从本函数收口，
+ * 别在各自那里再写 `if (victim.hp <= 0) enterNearDeath(...)`——那正是顺序跑偏的来源。
+ *
+ * 濒死/死亡走 `enterNearDeath` 的续接（提交B）：求桃、阵亡、清牌整串走完**才**继续
+ * 「伤害后」这一段。阵亡的人**照样**派发伤害后钩子——与改动前的行为一致（以前也是钩子先跑、
+ * 濒死后跑），本次只把濒死的先后换到前面，不动「谁收到钩子」。
+ */
+function afterDamageSettled(
+  state: GameState,
+  victim: Player,
+  attack: AttackContext,
+  damage: number,
+  finished: () => void,
+): void {
+  if (victim.hp <= 0) {
+    enterNearDeath(state, attack, () => runDamagedHooks(state, victim, attack, damage, finished));
+    return;
+  }
+  runDamagedHooks(state, victim, attack, damage, finished);
+}
+
+/**
+ * 「伤害后」的统一派发，按官方口径**先「造成伤害后」（来源）再「受到伤害后」（目标）**：
+ * 伤害来源的 `afterDamageDealt` → 受伤者的 `afterDamage` → 旁观者的 `anyDamaged`
+ * （蔡文姬·悲歌那种「当**一名角色**受到伤害后」）→ `after`（＝ damageFinished）。
  *
  * `anyDamaged` 派给**所有存活角色**（含受伤者自己与来源）——技能自己按 payload
  * 判断要不要发动，引擎不做过滤。
+ *
+ * ⚠️ 濒死/死亡**已经在本函数之前**走完了（见 `afterDamageSettled`）——本函数只管「伤害后」。
  */
 function runDamagedHooks(
   state: GameState,
@@ -3640,9 +3686,11 @@ function runDamagedHooks(
   } else {
     victim.flags.damageCount += 1;
   }
-  runHooksPausable(state, 'afterDamage', victim, { attack, damage }, () => {
-    runAnyDamagedHooks(state, victim, attack, damage, () => {
-      runDamageDealtHooksP(state, attack, damage, after);
+  // 官方口径：先「造成伤害后」（来源），再「受到伤害后」（目标），最后才是旁观者的
+  // 「当一名角色受到伤害后」（anyDamaged）。以前这里是「目标 → 旁观 → 来源」，本轮按定版改。
+  runDamageDealtHooksP(state, attack, damage, () => {
+    runHooksPausable(state, 'afterDamage', victim, { attack, damage }, () => {
+      runAnyDamagedHooks(state, victim, attack, damage, after);
     });
   });
 }
@@ -3990,13 +4038,8 @@ function askSanjian(state: GameState, attack: AttackContext, after: () => void):
                   after();
                   return;
                 }
-                runDamagedHooks(st3, victim, extra, dmg, () => {
-                  if (victim.hp <= 0) {
-                    enterNearDeath(st3, extra, () => resumeTurnPlay(st3));
-                    return;
-                  }
-                  after();
-                });
+                // 扣血 → 濒死/死亡 → 伤害后 → 问完接着走三尖这条链的下文
+                afterDamageSettled(st3, victim, extra, dmg, after);
               });
             },
           );
@@ -4104,19 +4147,28 @@ function enterDeathQueue(
     }
     queue = filtered;
   }
-  if (queue.length === 0) {
-    doDeath(state, dying.seatId, killerId, done);
-    return;
-  }
-  setPending(state, {
+  // 求桃这一格用完就**交出来**：调用方的续接常以「pending 为空」判断控制权能不能接管
+  // （api.dealDamage 的 tail 就是这么写的，见 §5.128）。不清的话这一格会永远停在
+  // respondDeath 上——表现就是「被顶的人停在 0 体力却永远不死」那类卡死。
+  const release = (): void => {
+    if (state.pending === queuePending) setPending(state, null);
+    done();
+  };
+  const queuePending: Extract<Pending, { kind: 'respondDeath' }> = {
     kind: 'respondDeath',
     dyingId: dying.seatId,
     askQueue: queue,
     askIndex: 0,
     // 记住是谁打的——阵亡后要用它触发「杀死角色后」的技能（行殇）
     killerId,
-    done,
-  });
+    done: release,
+  };
+  if (queue.length === 0) {
+    // 没人能救：直接走阵亡（这一路本来就没有求桃那一格，release 只是透传 done）
+    doDeath(state, dying.seatId, killerId, release);
+    return;
+  }
+  setPending(state, queuePending);
   pushLog(state, 'nearDeath', `${dying.name} 濒死，等待出桃救援。`);
 }
 
@@ -4467,8 +4519,12 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
   // ——比在二十多处移牌的地方逐处挂钩子可靠得多（与 checkHandEmptied 同一套思路）。
   const ownedBefore = state.players.map((p) => ownedCardIds(p));
   const turnSeatBefore = state.turn.seatIndex;
+  // 这一枪回答的是哪一格：答完的**不许再被钩子链收尾时「还回去」**（见 runHooksPausable
+  // 的 ambient）。占位空位（出牌/弃牌）不算「在等回答」，不受这条约束。
+  const answering = state.pending;
   const result = applyIntentInner(state, seatId, intent);
   if (result.ok) {
+    if (answering && !isPlaceholderPending(answering)) answeredPendings.add(answering);
     // 询问结束后接着跑被打断的流程。控制流的唯一收口，别在别处再调 drainResume。
     drainResume(state);
     // 「这张牌是谁从牌堆摸到的」（袁术·伪帝）：要跟 ownedBefore 比，才能区分「自己摸的」和
@@ -6132,19 +6188,13 @@ function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
       huoShaoStep(state, ctx);
       return;
     }
-    // 受伤后钩子（反馈/刚烈/悲歌…）在铁索蔓延之前跑
-    runDamagedHooks(state, target, attack, dmg, () => {
+    // 扣血 → 濒死/死亡 → 伤害后 →（铁索蔓延）→ 接着打下一个被横置的人
+    afterDamageSettled(state, target, attack, dmg, () => {
       queueChainSpread(state, attack, dmg);
       const next = (): void => {
         ctx.responderIndex++;
         huoShaoStep(state, ctx);
       };
-      if (target.hp <= 0) {
-        // 濒死打断：把剩下的队列留在 ctx 里，濒死结算完由 resumePlay 接着打
-        state.ongoingTrick = ctx;
-        enterNearDeath(state, attack, () => resumeTurnPlay(state));
-        return;
-      }
       runChainSpread(state, next);
     });
   });
@@ -6598,12 +6648,9 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
           endTrickResolution(st, ctx);
           return;
         }
-        runDamagedHooks(st, p, attack, dmg, () => {
+        // 扣血 → 濒死/死亡 → 伤害后 →（铁索蔓延）→ 推进这张锦囊
+        afterDamageSettled(st, p, attack, dmg, () => {
           queueChainSpread(st, attack, dmg);
-          if (p.hp <= 0) {
-            enterNearDeath(st, attack, () => resumeTurnPlay(st));
-            return;
-          }
           runChainSpread(st, () => endTrickResolution(st, ctx));
         });
       });
@@ -6994,14 +7041,13 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
         `${victim.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
       );
     }
-    const tail = (): void => {
-      if (victim.hp <= 0) {
-        enterNearDeath(state, attack, () => resumeTurnPlay(state));
-      } else {
-        endTrickResolution(state, ctx);
-      }
-    };
-    runDamagedHooks(state, victim, attack, dmg, tail);
+    // 伤害被防止 → 没造成伤害 → 伤害后时机不派发（与其它伤害点统一；以前这里漏了这一步）
+    if (prevented) {
+      endTrickResolution(state, ctx);
+      return;
+    }
+    // 扣血 → 濒死/死亡 → 伤害后 → 推进这张锦囊
+    afterDamageSettled(state, victim, attack, dmg, () => endTrickResolution(state, ctx));
   });
   return { ok: true };
 }
@@ -7059,18 +7105,13 @@ function respondHuogongCard(
         `${target.name} 受到 ${dmg} 点火属性伤害，剩余 ${Math.max(0, target.hp)} 体力。`,
       );
     }
-    const tail = (): void => {
-      if (target.hp <= 0) {
-        enterNearDeath(state, attack, () => resumeTurnPlay(state));
-      } else {
-        endTrickResolution(state, ctx);
-      }
-    };
+    // 伤害被防止（护心镜/天香）→ 没造成伤害 → 伤痛后时机不派发，直接推进锦囊
     if (prevented) {
       endTrickResolution(state, ctx);
       return;
     }
-    runDamagedHooks(state, target, attack, dmg, tail);
+    // 扣血 → 濒死/死亡 → 伤害后 → 推进这张锦囊
+    afterDamageSettled(state, target, attack, dmg, () => endTrickResolution(state, ctx));
   });
   return { ok: true };
 }
@@ -7271,17 +7312,14 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
       );
     }
     const tail = (): void => {
-      if (victim.hp <= 0) {
-        enterNearDeath(state, attack, () => resumeTurnPlay(state));
-      } else {
-        endTrickResolution(state, ctx);
-      }
+      endTrickResolution(state, ctx);
     };
     if (prevented) {
       endTrickResolution(state, ctx);
       return;
     }
-    runDamagedHooks(state, victim, attack, dmg, tail);
+    // 扣血 → 濒死/死亡 → 伤害后 → 推进这张锦囊
+    afterDamageSettled(state, victim, attack, dmg, tail);
   });
   return { ok: true };
 }
@@ -7368,20 +7406,12 @@ function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): Appl
         `${victim.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
       );
     }
-    const tail = (): void => {
-      if (victim.hp <= 0) {
-        // 濒死中断：暂存 trick 上下文，救人/死亡后恢复
-        state.ongoingTrick = ctx;
-        enterNearDeath(state, attack, () => resumeTurnPlay(state));
-      } else {
-        advanceTrick(state, ctx);
-      }
-    };
     if (prevented) {
       advanceTrick(state, ctx);
       return;
     }
-    runDamagedHooks(state, victim, attack, dmg, tail);
+    // 扣血 → 濒死/死亡 → 伤害后 → 推进这张锦囊
+    afterDamageSettled(state, victim, attack, dmg, () => advanceTrick(state, ctx));
   });
   return { ok: true };
 }
@@ -9454,22 +9484,13 @@ function makeSkillApi(
           if (resumeTo) resumePlay(state, resumeTo);
           return;
         }
-        runDamagedHooks(state, target, attack, dmg, () => {
+        // 扣血 → 濒死/死亡 → 伤害后 → 技能自己的后续（after）→ 按需还回出牌阶段
+        afterDamageSettled(state, target, attack, dmg, () => {
           // after 跑完之后：只有**没留下 pending** 才把出牌阶段还回去。
           // 否则 after 里的询问会被 resumePlay 直接覆盖掉（凶算就是这样：
           // 它要在伤害结算后问「重置哪个限定技」）。
-          const tail = (): void => {
-            after?.();
-            if (state.pending === null && resumeTo) resumePlay(state, resumeTo);
-          };
-          if (target.hp <= 0) {
-            enterNearDeath(state, attack, () => resumeTurnPlay(state));
-            // 进濒死也要接后续（天香就是「先伤害、后摸牌」）：濒死求桃走的是
-            // 续接队列，after 里的步骤会排在它后面。
-            after?.();
-            return;
-          }
-          tail();
+          after?.();
+          if (state.pending === null && resumeTo) resumePlay(state, resumeTo);
         });
       });
     },
