@@ -8927,6 +8927,12 @@ function makeSkillApi(
               src,
             )
           : card;
+      // **多目标形态**：走 `startAttack`（它自带逐目标结算队列，而且**自己会收牌**）——
+      // 所以这条分支**不要**再 consumeCard（单目标那条走 resolvePlayedSha，才需要自己收牌）。
+      if (opts?.targetIds && opts.targetIds.length > 0) {
+        startAttack(state, src, effective, opts.targetIds, 'sha');
+        return;
+      }
       consumeCard(state, src, effective);
       resolvePlayedSha(
         state,
