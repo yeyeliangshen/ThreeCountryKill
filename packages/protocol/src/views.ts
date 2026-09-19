@@ -70,6 +70,8 @@ export interface PlayerView {
   hunCount?: number;
   /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
   wounds?: Card[];
+  /** 孟达·【求安】的「函」（公开信息） */
+  han?: Card[];
   /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */
   shuangxiongColor?: 'red' | 'black' | null;
   // 副将是否已亮将（国战公开信息）

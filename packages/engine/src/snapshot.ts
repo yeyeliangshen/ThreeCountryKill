@@ -52,6 +52,7 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     hunCount: p.hun.length,
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
     wounds: p.wounds.slice(),
+    han: p.han.slice(),
     // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」
     shuangxiongColor: p.flags.shuangxiongColor,
     // 预亮是对手看不到的信息，只放进本人的那一份快照

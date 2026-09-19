@@ -392,6 +392,8 @@ export interface Player {
    * 暗置 → 用的时候随机移去一张，并把那张武将牌亮出来（势力决定目标限制）。
    */
   hun: string[];
+  /** 孟达·【求安】的「函」：扣在武将牌旁的伤害牌（公开；不属于手牌/装备/弃牌堆） */
+  han: Card[];
   /**
    * 「田」：邓艾·屯田放在**武将牌上**的牌（第 5 个区域的味道，与周泰的「创」同类）。
    * 屯田判定出非红桃牌就收进来；急袭把「田」当【顺手牵羊】用；资粮把「田」交给同势力。
@@ -794,6 +796,8 @@ export interface GameState {
    * 随回合清空（startTurn）。
    */
   damageLedgerThisTurn: { sourceId: string; targetId: string; targetFaction: Faction | null }[];
+  /** 孟达·【量反】：本回合从「函」拿进手里的实体牌 id（资格不跨回合） */
+  liangfanHanIds: string[];
   /**
    * 装备「失去事件」的编号（见 timing.EquipLostPayload.eventId）。单调递增，不需要重置。
    */

@@ -3936,6 +3936,190 @@ export function biluanAgainst(state: GameState, to: Player): number {
 }
 
 /**
+ * 孟达 —— 求安 / 量反（不臣篇·上，魏/蜀 双势力，2 阴阳鱼 → 4；移动版现行口径，见 §5.93）。
+ *
+ * 求安：即将受到伤害时（beforeDamageApply：数值已定、尚未扣血），若武将牌旁没有「函」，
+ *   可把**造成这次伤害的实体牌**扣成「函」并**防止整次伤害**（不是减 1）。没有可移动实体牌的
+ *   情况（纯虚拟牌、技能直伤）不能发动；有函期间不能再发动。
+ * 量反：自己准备阶段**强制**：获得所有「函」→ **失去 1 点体力**（不是伤害，可能因此进濒死）；
+ *   本回合用函牌造成伤害后，可获得该受伤角色的一张牌（AOE 逐目标各一次，2 点伤害一次事件只一次）。
+ */
+
+/** 【求安】：把造成这次伤害的实体牌扣成「函」，整次伤害作废 */
+function askQiuan(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as
+    | { targetId?: string; damage?: number; attack?: AttackContext }
+    | undefined;
+  if (payload?.targetId !== me.seatId) return;
+  const dmg = payload.damage ?? 0;
+  if (dmg <= 0 || me.han.length > 0) return;
+  const attack = payload.attack;
+  if (!attack) return;
+  const movable = damageCardIds(state, attack).filter((id) => findCardAnywhere(state, id) !== null);
+  if (movable.length === 0) return;
+  const first = findCardAnywhere(state, movable[0]!)!;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【求安】：是否将【${cardLabel(first)}】扣成「函」，防止这 ${dmg} 点伤害？`,
+    [
+      { id: 'yes', label: '发动（防止整次伤害）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const self = getPlayer(st, p.seatId);
+      if (!self) return;
+      const got: Card[] = [];
+      for (const id of movable) {
+        const where = findCardAnywhere(st, id);
+        if (!where) continue;
+        removeFromAnywhere(st, id);
+        self.han.push(where);
+        got.push(where);
+      }
+      if (got.length === 0) return;
+      self.flags.damagePrevented = true;
+      pushLog(
+        st,
+        'skill',
+        `${self.name} 发动【求安】，将【${got.map((c) => cardLabel(c)).join('】【')}】扣成「函」，防止了这 ${dmg} 点伤害。`,
+        { seat: self.seatId },
+      );
+    },
+  );
+}
+
+/** 这张牌此刻在哪个区域（弃牌堆/牌堆/手牌/装备区）——找不到返回 null */
+function findCardAnywhere(state: GameState, id: string): Card | null {
+  const d = state.discard.find((c) => c.id === id);
+  if (d) return d;
+  const k = state.deck.find((c) => c.id === id);
+  if (k) return k;
+  for (const p of state.players) {
+    const h = p.hand.find((c) => c.id === id);
+    if (h) return h;
+    for (const slot of EQUIP_SLOTS) {
+      if (p.equipment[slot]?.id === id) return p.equipment[slot]!;
+    }
+  }
+  return null;
+}
+
+/** 把这张牌从它所在的区域摘掉（调用方负责放到新区域） */
+function removeFromAnywhere(state: GameState, id: string): void {
+  const di = state.discard.findIndex((c) => c.id === id);
+  if (di >= 0) {
+    state.discard.splice(di, 1);
+    return;
+  }
+  const ki = state.deck.findIndex((c) => c.id === id);
+  if (ki >= 0) {
+    state.deck.splice(ki, 1);
+    return;
+  }
+  for (const p of state.players) {
+    const hi = p.hand.findIndex((c) => c.id === id);
+    if (hi >= 0) {
+      p.hand.splice(hi, 1);
+      return;
+    }
+    for (const slot of EQUIP_SLOTS) {
+      if (p.equipment[slot]?.id === id) {
+        p.equipment[slot] = null;
+        return;
+      }
+    }
+  }
+}
+
+/** 这次伤害对应的实体牌 id（虚拟牌连材料一起看）。见 §5.93 的待办：丈八那份找不回材料 */
+function damageCardIds(state: GameState, attack: AttackContext): string[] {
+  const found = findCardAnywhere(state, attack.cardId);
+  if (!found) return [];
+  return found.materials?.length ? found.materials.map((c) => c.id) : [found.id];
+}
+
+/** 【量反】①：强制收函，然后失去 1 点体力（不是伤害；先拿牌后失血） */
+function askLiangfan(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (me.han.length === 0) return;
+  const got = me.han.slice();
+  me.han = [];
+  for (const c of got) me.hand.push(c);
+  state.liangfanHanIds = [...state.liangfanHanIds, ...got.map((c) => c.id)];
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【量反】：获得${got.length > 1 ? '所有' : ''}「函」（${got.map((c) => cardLabel(c)).join('、')}）。`,
+    { seat: me.seatId },
+  );
+  ctx.api.loseHp(me, 1, () => {
+    pushLog(state, 'skill', `${me.name} 因【量反】失去 1 点体力。`, { seat: me.seatId });
+  });
+}
+
+/** 【量反】②：本回合用函牌造成伤害后，可获得受伤角色的一张牌（AOE 逐目标各一次） */
+function askLiangfanObtain(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (state.liangfanHanIds.length === 0) return;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  if (!attack || attack.sourceId !== me.seatId) return;
+  if (!damageCardIds(state, attack).some((id) => state.liangfanHanIds.includes(id))) return;
+  const victim = getPlayer(state, attack.targetId);
+  if (!victim || !victim.alive) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【量反】：是否获得 ${victim.name} 的一张牌？`,
+    [
+      { id: 'yes', label: '获得其一张牌' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const t = getPlayer(st, victim.seatId);
+      if (!t) return;
+      takeOneOfTargetCards(st, p, t, ctx.api, '量反', () => {
+        pushLog(st, 'skill', `${p.name} 的【量反】：获得了 ${t.name} 的一张牌。`, {
+          seat: p.seatId,
+        });
+      });
+    },
+  );
+}
+
+const MENGDA: Hero = {
+  id: 'mengda',
+  name: '孟达',
+  pack: 'buchen',
+  faction: 'wei',
+  secondFaction: 'shu',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    { timing: 'beforeDamageApply', skillId: '求安', handler: askQiuan },
+    { timing: 'turnStart', skillId: '量反', handler: askLiangfan },
+    { timing: 'afterDamageDealt', skillId: '量反', handler: askLiangfanObtain },
+  ],
+  skills: [
+    {
+      name: '求安',
+      desc: '当你即将受到伤害时，若你的武将牌旁没有「函」，你可以将造成此伤害的牌置于你的武将牌旁，称为「函」，然后防止此伤害。',
+    },
+    {
+      name: '量反',
+      desc: '准备阶段，若你的武将牌旁有「函」，你获得所有「函」，然后失去 1 点体力；本回合你使用「函」造成伤害后，可以获得受到此伤害的角色的一张牌。',
+    },
+  ],
+};
+
+/**
  * 士燮·【礼下】：一名**与士燮势力不同**的角色进入准备阶段时，其可以弃置士燮装备区的一张牌；
  * 若这么做，再由其从三项里选一项（弃两张手牌 / 失去 1 点体力 / 令士燮摸两张牌）。
  *
@@ -12645,7 +12829,6 @@ const TANGZI: Hero = {
 };
 
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('mengda', '孟达', 'wei', 'shu', 4),
   dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu', 4),
   dualHero('zhanglu', '张鲁', 'wei', 'qun', 3),
   dualHero('xiahouba', '夏侯霸', 'wei', 'shu', 4),
@@ -12689,6 +12872,7 @@ export const HEROES: Hero[] = [
   LIUQI,
   TANGZI,
   SHIXIE,
+  MENGDA,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,
