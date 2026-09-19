@@ -7698,6 +7698,9 @@ function onAocai(state: GameState, seatId: string): ApplyResult {
     return res;
   };
   if (matches.length === 1 && matches[0]) return use(matches[0]);
+  // ⚠️ 多候选：发问前把请求**留一份**——回答那步会把 pending 清成 null，而下面的响应分支
+  //    （respondSha/respondDeathSave/onRespondTrick）需要「请求还挂着」才跑得通。
+  const reqPending = pending;
   askChoice(
     state,
     seatId,
@@ -7705,7 +7708,10 @@ function onAocai(state: GameState, seatId: string): ApplyResult {
     matches.map((c) => ({ id: c.id, label: `【${CARD_TYPE_NAME[c.type]}】${c.suit}${c.rank}` })),
     (st, pl, picked) => {
       const chosen = st.deck.find((c) => c.id === picked);
-      if (chosen) use(chosen);
+      if (chosen) {
+        setPending(st, reqPending); // 把请求摆回去，响应分支才能照常跑
+        use(chosen);
+      }
       void pl;
     },
   );

@@ -24454,6 +24454,39 @@ describe('国战 · 诸葛恪（傲才）', () => {
     if (!r.ok) expect(r.error).toContain('回合外');
   });
 
+  it('两张都能用时**让玩家挑**（不是自动取第一张）', () => {
+    const state = gz(B);
+    top2(state, mk('d1', 'shan', 'spade'), mk('d2', 'shan', 'club'));
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    const r = act(state, A, { type: 'aocai' });
+    expect(r.ok, r.ok ? '' : r.error).toBe(true);
+    const pick = state.pending;
+    if (pick?.kind !== 'choice') throw new Error(`预期让玩家挑，实际是 ${pick?.kind}`);
+    expect(pick.options.map((o) => o.id).sort()).toEqual(['d1', 'd2']);
+    const deckBefore = state.deck.length;
+    const r2 = act(state, A, { type: 'chooseOption', optionId: 'd2' });
+    expect(r2.ok, r2.ok ? '' : r2.error).toBe(true);
+    expect(state.deck.length).toBe(deckBefore - 1);
+    expect(state.discard.some((c) => c.id === 'd2')).toBe(true);
+    expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
+  });
+
+  it('濒死时用牌堆顶的实体【桃】救自己（respondDeath 那条路）', () => {
+    const state = gz(B);
+    const aP = state.players.find((x) => x.seatId === A)!;
+    aP.hp = 1;
+    top2(state, mk('d1', 'tao', 'heart'), mk('d2', 'sha', 'spade'));
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, A, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+    const r = act(state, A, { type: 'aocai' });
+    expect(r.ok, r.ok ? '' : r.error).toBe(true);
+    expect(aP.alive).toBe(true);
+    expect(aP.hp).toBe(1);
+    expect(state.discard.some((c) => c.id === 'd1')).toBe(true);
+  });
+
   it('【决斗】要求出【杀】时也能用【傲才】（走 respondTrick 那条路）', () => {
     const state = gz(B);
     const b = state.players.find((x) => x.seatId === B)!;
