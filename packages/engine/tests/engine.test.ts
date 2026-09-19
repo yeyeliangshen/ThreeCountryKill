@@ -6435,9 +6435,9 @@ describe('牌堆分模式（欠账一）', () => {
   const guozhan = buildDeck('guozhan');
   const junzheng = buildDeck('melee');
 
-  it('国战牌堆：id 前缀 g，张数 = 官方 108 减去未收录的【无懈可击·国】', () => {
+  it('国战牌堆：id 前缀 g，张数 = 官方 108（54 基本 + 34 锦囊 + 20 装备）', () => {
     expect(guozhan.every((c) => c.id.startsWith('g'))).toBe(true);
-    expect(guozhan).toHaveLength(106);
+    expect(guozhan).toHaveLength(108);
     const count = (t: CardType) => guozhan.filter((c) => c.type === t).length;
     // 官方国战堆的基本牌比例：杀 29 / 闪 14 / 桃 8 / 酒 3
     expect(count('sha')).toBe(29);
@@ -8584,10 +8584,10 @@ describe('势备篇 · 调虎离山（不计入距离与座次 / 不能用牌 / 
 });
 
 describe('势备篇 · 牌堆与开关', () => {
-  it('开关关闭时是标准国战堆（106 张），开启后追加势备篇的已实现牌', () => {
+  it('开关关闭时是标准国战堆（108 张），开启后追加势备篇的已实现牌', () => {
     const off = buildDeck('guozhan');
     const on = buildDeck('guozhan', { shibei: true });
-    expect(off).toHaveLength(106);
+    expect(off).toHaveLength(108);
     expect(on.length).toBeGreaterThan(off.length);
     // 势备篇的牌 id 前缀是 s，可与标准堆的 g 区分
     expect(on.filter((c) => c.id.startsWith('s')).length).toBe(on.length - off.length);
@@ -8601,9 +8601,9 @@ describe('势备篇 · 牌堆与开关', () => {
     expect(jz.every((c) => c.id.startsWith('c'))).toBe(true);
   });
 
-  it('势备篇 52 张已全部进堆（不再有「先不生成」的牌）', () => {
+  it('势备篇已实现 49 张进堆（官方 52 张，缺的 3 张见 docs §5.75）', () => {
     const on = buildDeck('guozhan', { shibei: true });
-    expect(on.filter((c) => c.id.startsWith('s'))).toHaveLength(52);
+    expect(on.filter((c) => c.id.startsWith('s'))).toHaveLength(49);
     // 最后补上的两张锦囊
     const hasCard = (suit: Suit, rank: number, type: string) =>
       on.some((c) => c.suit === suit && c.rank === rank && c.type === type && c.id.startsWith('s'));

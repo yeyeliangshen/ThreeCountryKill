@@ -4,7 +4,8 @@ import type { GameState } from './model';
 /**
  * 构建牌堆。**国战与其它模式的牌堆不一样**。
  *
- * 国战牌堆官方 108 张，本版本**已全部收录**（含【无懈可击·国】2 张）。
+ * 国战牌堆官方 108 张 = **54 基本 + 34 锦囊 + 20 装备**（用户核对后提供的构成）。
+ * 锦囊里含三张无懈：♠J【无懈可击】＋ ♦Q / ♣K【无懈可击·国】。
  * 国战独有的【铁索连环】【知己知彼】【以逸待劳】【远交近攻】【五谷丰登】都实现了。
  * 国战独有的装备（麒麟弓/吴六剑/三尖两刃刀/白银狮子/寒冰剑）也都在堆里，
  * 但**特效未做**，悬停提示里会如实标注（同军争那几件）。
@@ -105,7 +106,12 @@ function buildGuozhanDeck(): Card[] {
   cards.push(mk('shunshou', 'diamond', 3));
   cards.push(mk('wuzhong', 'heart', 7));
   cards.push(mk('wuzhong', 'heart', 8));
+  // 无懈三张（官方点数，用户核对后提供）：♠J 普通【无懈可击】＋ ♦Q / ♣K 两张【无懈可击·国】。
+  // ⚠️ 【无懈可击·国】属于**国战标准 108 张**，不是势备篇的牌——原先错放在势备篇里，
+  //    于是标准堆只有 54 基本 + 32 锦囊 + 20 装备 = 106 张（少的就是这两张）。
   cards.push(mk('wuxie', 'spade', 11));
+  cards.push(mk('wuxieguo', 'diamond', 12));
+  cards.push(mk('wuxieguo', 'club', 13));
   cards.push(mk('huogong', 'heart', 2));
   cards.push(mk('huogong', 'diamond', 2));
   cards.push(mk('taoyuan', 'heart', 3));
@@ -322,9 +328,10 @@ export function buildShibeiCards(): Card[] {
   cards.push(mk('treasure', 'diamond', 5, { equipName: 'muniu' })); // 木牛流马
 
   // —— 锦囊 17：全部已实现 ——
-  cards.push(mk('wuxie', 'spade', 13)); // 无懈可击（同基础堆，直接可用）
-  cards.push(mk('wuxieguo', 'diamond', 11)); // 无懈可击·国
-  cards.push(mk('wuxieguo', 'club', 13)); // 无懈可击·国
+  // ⚠️ 这里原先还塞了「无懈可击 ＋ 无懈可击·国 ×2」三张——它们是**国战标准 108 张**里的牌
+  //    （见 buildGuozhanDeck），不该由势备篇提供（两个包同时开会重复）。挪走之后势备篇的锦囊
+  //    只剩 14 张，官方是 17 张——**还缺 3 张**，缺哪 3 张要等势备篇的官方逐张表
+  //    （见 docs/guozhan-roster.md §5.75）。
   cards.push(mk('tiaohu', 'heart', 2)); // 调虎离山
   cards.push(mk('tiaohu', 'diamond', 10, { lianheng: true })); // 调虎离山（带连横）
   cards.push(mk('shuiyan', 'club', 12)); // 水淹七军
