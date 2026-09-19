@@ -19494,6 +19494,80 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     expect(state.heroPool.length).toBeLessThan(poolBefore2);
   });
 
+  /**
+   * 用户 2026-09 的口径（§5.131）：**双势力武将牌作「戮」时，同时对应牌面上的两个势力**——
+   * 不是二选一，也不是沿用该武将死亡前所属角色的单一势力。
+   *
+   * 这条用**端到端**的方式守住：乙（角色**已确定势力是吴**）的副将是【唐咨】（魏/吴双势力牌），
+   * 他死后被收成「戮」；甲用【凶虐】①选加伤，再打一张【南蛮入侵】同时糊三个人——
+   * 魏与吴两个目标都该 +1，蜀不该。
+   * （若实现「沿用死者生前的势力」→ 只有吴会 +1；若实现「二选一」→ 魏那侧也拿不到 +1。）
+   */
+  it('嗜戮①+凶虐①：双势力武将牌作「戮」时**两个牌面势力同时算**（不是二选一、也不是死者生前的势力）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'sunchen',
+        faction: 'ambitionist',
+        hand: [sha('a1'), mk('n1', 'nanman', 'spade')],
+        hp: 4,
+        maxHp: 4,
+      },
+      // 乙：副将【唐咨】是**双势力**（魏/吴）牌，而角色的已确定势力只有「吴」
+      { seatId: B, name: '乙', heroId: 'vanilla', deputyHeroId: 'tangzi', faction: 'wu', hp: 1, hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu', hp: 4, hand: [] },
+      { seatId: E, name: '戊', heroId: 'vanilla', faction: 'wu', hp: 4, hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.heroPool = ['zhangfei']; // 供嗜戮②的换牌（这一轮弃 0 张）
+    // ① 甲杀乙 → 乙阵亡 → 嗜戮收走他的武将牌
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪
+    passDeathSaves(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('嗜戮');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 收来的「戮」里，【唐咨】那张同时记着两个牌面势力（不是乙生前的「吴」一个）
+    expect(a.lu.find((e) => e.heroId === 'tangzi')?.factions).toEqual(['wei', 'wu']);
+    // ② 走一轮回到甲的出牌阶段
+    ok(act(state, A, { type: 'endPhase' }));
+    // 出牌阶段结束时【凶虐】②会问「消费 2 张戮换减伤」——这里选**不发动**，
+    // 把【唐咨】那张戮留到下个回合给凶虐①用
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    for (const s of [C, D, E]) {
+      skipRevealAsk(state);
+      ok(act(state, s, { type: 'endPhase' }));
+    }
+    skipRevealAsk(state);
+    if (state.pending?.kind === 'pickCards') ok(act(state, A, { type: 'pickCards', cardIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 选戮：唐咨那张的标签写「魏/吴」，**不是**二选一
+    if (state.pending?.kind === 'choice') {
+      const opt = state.pending.options.find((o) => o.id === 'tangzi');
+      expect(opt?.label).toContain('魏/吴');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'tangzi' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'dmg' }));
+    expect(state.xiongnue?.factions).toEqual(['wei', 'wu']);
+    // ③ 一张【南蛮入侵】同时糊三个势力：魏、吴都 +1，蜀不加
+    ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    passWuxie(state);
+    let guard = 0;
+    while (state.pending?.kind === 'respondTrick' && guard++ < 8) {
+      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    }
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    expect(at(C).hp).toBe(2); // 魏：南蛮 1 + 凶虐① 1
+    expect(at(E).hp).toBe(2); // 吴：同上（两个牌面势力**同时**生效）
+    expect(at(D).hp).toBe(3); // 蜀：不在牌面势力里 → 只有南蛮那 1 点
+  });
+
   it('凶虐①：出牌阶段开始消费 1 张戮（自己选）、武将牌**返回**未登场堆；加伤模式只对该势力生效', () => {
     const state = gz([
       {

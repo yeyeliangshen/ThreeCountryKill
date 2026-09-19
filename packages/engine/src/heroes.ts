@@ -14796,7 +14796,8 @@ const XIAHOUBA: Hero = {
  * 孙綝 —— 嗜戮 / 凶虐（不臣篇·下，**野心家武将本体**，2 阴阳鱼 → 4；移动版 2021 线上口径，见 §5.107）。
  *
  * 【嗜戮】：① 角色**死亡时**，孙綝可以收走该角色**仍然存在**的武将牌（已移除的收不到、用士兵牌
- *   顶替的也不算）作为「戮」——**是真实的武将牌**（记 id + **取得时冻结的势力**），不是计数标记；
+ *   顶替的也不算）作为「戮」——**是真实的武将牌**（记 id + **这张牌牌面上的势力集合**：双势力牌两个都算，§5.131），
+ *   不是计数标记；
  *   若此人是**孙綝杀死**的，再从未登场武将牌堆额外取至多 2 张（不足就取多少算多少，不凭空造牌）。
  *   ② **准备阶段**：有戮则（至多戮数）弃牌 + 摸**实际弃牌数**张（与【制衡】那类「弃几摸几」同形）。
  * 【凶虐】：① **出牌阶段开始时**消费 1 张戮（**自己选**哪一张，因为不同戮的势力不同）→ 三选一，
@@ -14846,7 +14847,8 @@ function askShilu(ctx: HookContext): void {
           const id = st.heroPool.shift();
           if (!id) break;
           const h = getHeroForMode(id, st.mode);
-          // ⚠️ 双势力牌随机成戮时「对应哪个势力」没有查到移动版细则 → 记 null（待核对，见 §5.107）
+          // 从**未登场武将牌堆**随机取来的那张：同样按**牌面势力**记（双势力牌 → 两个都算）。
+          // 用户 2026-09 口径：不是二选一，也不是沿用该武将死亡前所属角色的单一势力（§5.131）。
           p.lu.push({ heroId: id, factions: printedFactionsOf(id) });
           names.push(h?.name ?? id);
         }
@@ -14925,11 +14927,9 @@ function askXiongnueOffense(ctx: HookContext): void {
   const me = ctx.player;
   if (me.lu.length === 0) return;
   if (state.xiongnue) return; // 一个出牌阶段只处理一次
-  // ⚠️ 用户 2026-09 口径：拿不到势力的「戮」（从未登场武将牌堆随机抽到的**双势力**牌）
-  //    **不允许在这条路上选**（凶虐①必须读势力）——但**不消耗、不惩罚**它：
-  //    【嗜戮】换牌与【凶虐②】消耗两戮（势力不限）照常能用它。
-  //    所以这里先把可选的挑出来；一张都没有就整个不出询问。
-  // 每张「戮」都带**牌面势力集合**（双势力牌同时对应两个）→ 不再有「不可选」的戮
+  // 每张「戮」都带**牌面势力集合**（双势力牌**同时**对应两个牌面势力，用户 2026-09 口径，
+  // 见 §5.131）：所以这里没有「拿不到势力、不可选」的戮了——`factions.length > 0` 只是兜底
+  // （理论上不会有空集合；真遇到空集合就整个不出询问，不做「凭空惩罚」那套）。
   const usable = me.lu.filter((e) => e.factions.length > 0);
   if (usable.length === 0) return;
   ctx.api.askChoice(
@@ -14946,7 +14946,7 @@ function askXiongnueOffense(ctx: HookContext): void {
         st,
         p.seatId,
         '【凶虐】：选择要移去的「戮」（不同戮对应不同势力）',
-        // 只列出**已确定势力**的那些（`faction === null` 的标为 unresolved，不在这里给）
+        // 双势力牌那张标签写「魏/吴」这样两个势力（**不是**二选一：移去之后就按这两个都生效）
         usable.map((e) => ({
           id: e.heroId,
           label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${e.factions.map((f) => FACTION_NAME[f] ?? f).join('/')}）`,
