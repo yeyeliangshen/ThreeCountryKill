@@ -4014,6 +4014,13 @@ skip 1 条（决绝打死人，根因见上）。
    ——于是礼让（孔融）听不到、夙智③也听不到。现在拆装备会 `fireEquipLost` → 再补
    `fireCardDiscarded`（执行者是使用者）→ 才收尾。
 
-**仍未过**：`夙智③` 那张用例还是 skip——新时机接上、旧洞补掉之后**仍然等不到询问**，
-时间不够继续追。**下一轮的第一刀**：查 handler 里的 `suzhiAvailable(state, suzhi)`
-（额度 3 次 / 「仅自己回合内」的限制）与「钩子里发问」的挂起时序。
+**仍未过**：`夙智③` 那张用例还是 skip——新时机接上、旧洞补掉之后**仍然等不到询问**。
+本轮又往下追了一层，**排除掉两个嫌疑**（留给下一轮，别重复走）：
+- ✅ 钩子**注册没问题**：`夙智` 的三条钩子就挂在 `SP_SIMAZHAO` 的 `hooks` 上（不在 `guozhan` 变体里），
+  `activeHeroes`/`collectTimingHooks` 拿得到；`anyCardDiscarded` 的时机名也对得上。
+- ✅ handler 的门槛也没问题：`suzhiAvailable` 只要求「自己的回合 + 额度未满」，测试里两条都成立；
+  它要拿的牌在 `state.discard` 里也查得到（过河拆桥先 `toDiscard` 再进收口）。
+→ **剩下的嫌疑只剩「钩子里发问之后的收尾把 pending 顶掉」**（和 §5.111 那条钩子链↔濒死同源）。
+下一轮的第一刀：在 `anyCardDiscarded` 的 handler 里发问之后，打印 `state.pending` 与调用栈，
+确认是 `endTrickResolution` 那条尾巴把它冲掉的，然后按 §5.111 的思路（`ongoingSkillChain`
+或让钩子链认「响应型 pending」）一起收。
