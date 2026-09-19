@@ -4003,10 +4003,13 @@ function askHuimeng(ctx: HookContext): void {
 function askShoufeng(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
-  const payload = ctx.payload as { card?: Card; userSeatId?: string } | undefined;
+  const payload = ctx.payload as
+    { card?: Card; cardIds?: string[]; userSeatId?: string } | undefined;
   const card = payload?.card;
+  const cardIds = payload?.cardIds;
   const user = payload?.userSeatId ? getPlayer(state, payload.userSeatId) : undefined;
   if (!card || !user) return;
+  const gain = (st: GameState, p: Player): void => shoufengGain(st, p, card, cardIds);
   const isSelf = user.seatId === me.seatId;
   const cost = handAndEquipOf(me);
   if (!isSelf && cost.length === 0) return; // 连一张牌都拿不出 → 发不了
@@ -4023,12 +4026,12 @@ function askShoufeng(ctx: HookContext): void {
     (st, p, picked) => {
       if (picked !== 'yes') return;
       if (isSelf) {
-        shoufengGain(st, p, card);
+        gain(st, p);
         return;
       }
       const pool = handAndEquipOf(p);
       if (pool.length === 0) {
-        shoufengGain(st, p, card);
+        gain(st, p);
         return;
       }
       ctx.api.askPickCards(
@@ -4041,7 +4044,7 @@ function askShoufeng(ctx: HookContext): void {
         (st2, p2, chosen) => {
           const give = chosen[0];
           if (!give) {
-            shoufengGain(st2, p2, card);
+            gain(st2, p2);
             return;
           }
           // 走 API 而不是自己 splice：交出去的可能是装备，要触发失去装备那类技能
@@ -4052,7 +4055,7 @@ function askShoufeng(ctx: HookContext): void {
               `${p2.name} 发动【授锋】，交给 ${user.name} 【${cardLabel(give)}】。`,
               { seat: p2.seatId },
             );
-            shoufengGain(st2, p2, card);
+            gain(st2, p2);
           });
         },
       );
@@ -4061,22 +4064,36 @@ function askShoufeng(ctx: HookContext): void {
 }
 
 /** 【授锋】的后半句：从弃牌堆取回那张伤害牌（取不到只记日志） */
-function shoufengGain(state: GameState, me: Player, card: Card): void {
-  const idx = state.discard.findIndex((c) => c.id === card.id);
-  if (idx < 0) {
+function shoufengGain(state: GameState, me: Player, card: Card, cardIds?: string[]): void {
+  // 「获得此伤害牌」＝照**使用时记下的实体牌清单**逐张取，只拿还在弃牌堆里的
+  // （用户给定的口径：已被【奸雄】那类搬进别人手牌/装备区的不追回；纯「视为使用」的
+  //  虚拟牌没有实体牌，所以一张也拿不到——但它照样满足「用过首张伤害牌」）。
+  const ids = cardIds && cardIds.length > 0 ? cardIds : [];
+  const taken: Card[] = [];
+  for (const id of ids) {
+    const idx = state.discard.findIndex((c) => c.id === id);
+    if (idx < 0) continue; // 已被别人拿走 / 本来就不是实体牌 → 不追回
+    const [c] = state.discard.splice(idx, 1);
+    if (!c) continue;
+    me.hand.push(c);
+    taken.push(c);
+  }
+  if (taken.length === 0) {
     pushLog(
       state,
       'skill',
-      `【授锋】：【${cardLabel(card)}】已不在弃牌堆（可能已被别的技能获得，或本来就是虚拟牌），无法获得。`,
+      `【授锋】：【${cardLabel(card)}】没有可获得的实体牌（已被【奸雄】那类效果拿走，或是纯虚拟牌）。`,
     );
     return;
   }
-  const [taken] = state.discard.splice(idx, 1);
-  if (!taken) return;
-  me.hand.push(taken);
-  pushLog(state, 'skill', `${me.name} 发动【授锋】，获得【${cardLabel(taken)}】。`, {
-    seat: me.seatId,
-  });
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 发动【授锋】，获得【${taken.map((c) => cardLabel(c)).join('】【')}】${
+      taken.length > 1 ? `（共 ${taken.length} 张）` : ''
+    }。`,
+    { seat: me.seatId },
+  );
 }
 
 /**

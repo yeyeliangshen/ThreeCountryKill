@@ -19894,6 +19894,85 @@ describe('国战 · 君主将（特性）', () => {
     expect(huimeng()).toBe(0);
   });
 
+  it('授锋·丈八：两张牌凑的虚拟【杀】算伤害牌，「获得此伤害牌」拿的是那两张实体牌', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junyuanshao' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+        { seatId: 'C', name: '丙', heroId: 'zhangliao' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junyuanshao', 'qun', [mk('a1', 'tao')]);
+    const b = seatSet(state, 'B', 'guanyu', 'shu', [mk('b1', 'tao'), mk('b2', 'tao')]);
+    seatSet(state, 'C', 'zhangliao', 'wei', []);
+    b.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'spade', rank: 1, equipName: 'zhangba', range: 3 };
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+
+    // 乙用丈八把两张手牌当【杀】打丙
+    ok(
+      act(state, 'B', {
+        type: 'playCard',
+        cardId: 'b1',
+        extraCardIds: ['b2'],
+        targetIds: ['C'],
+      }),
+    );
+    ok(act(state, 'C', { type: 'pass' })); // 丙没手牌，不闪
+    expect(state.players.find((x) => x.seatId === 'C')!.hp).toBe(3);
+    // 这张虚拟【杀】也算「首张伤害牌」→ 问甲【授锋】
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('授锋');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'yes' }));
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, 'A', { type: 'pickCards', cardIds: ['a1'] }));
+    }
+    // 甲拿到的是丈八那**两张**实体牌
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    expect(a.hand.map((c) => c.id).sort()).toEqual(['b1', 'b2']);
+    expect(state.log.some((l) => l.message.includes('共 2 张'))).toBe(true);
+  });
+
+  it('授锋·奸雄先拿走：实体牌已进曹操手里 → 不追回，获得 0 张（但它仍算首张伤害牌）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junyuanshao' },
+        { seatId: 'B', name: '乙', heroId: 'caocao' },
+        { seatId: 'C', name: '丙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const a = seatSet(state, 'A', 'junyuanshao', 'qun', [mk('a1', 'tao')]);
+    seatSet(state, 'B', 'caocao', 'wei', []);
+    seatSet(state, 'C', 'guanyu', 'shu', [mk('c1', 'sha')]);
+    state.turn = { seatIndex: 2, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'C' };
+    state.log = [];
+
+    // 丙用【杀】打乙（曹操）→ 乙【奸雄】把这张【杀】拿走 → 结算结束后甲【授锋】
+    ok(act(state, 'C', { type: 'playCard', cardId: 'c1', targetIds: ['B'] }));
+    ok(act(state, 'B', { type: 'pass' })); // 乙不闪
+    // 【奸雄】在这个引擎里是自动结算的（不问）：曹操当场把那张【杀】收进手里
+    expect(state.players.find((x) => x.seatId === 'B')!.hand.map((c) => c.id)).toEqual(['c1']);
+    // 结算结束 → 【授锋】照常问（它只看「用过首张伤害牌」），但实体牌已被拿走 → 0 张
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('授锋');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'yes' }));
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, 'A', { type: 'pickCards', cardIds: ['a1'] }));
+    }
+    expect(a.hand.length).toBe(0); // 交出去一张、一张也没拿回来（不追回曹操手里的牌）
+    expect(state.log.some((l) => l.message.includes('没有可获得的实体牌'))).toBe(true);
+  });
+
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
     // 三家：甲（君刘备，蜀，君主）、乙（蜀）、丙（魏）
     const state = createGame(

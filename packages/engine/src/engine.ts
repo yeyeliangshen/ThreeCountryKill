@@ -594,7 +594,17 @@ function markCardUsed(state: GameState, timing: Timing, player: Player, payload?
   // ⚠️ 不能等结算结束再数——青龙偃月刀那种「第一张【杀】还没结算完又用出第二张」的情况下，
   //    第二张的结算会先结束，按结算顺序数会把第二张当首张（见 GameState.firstDamageCard）。
   if (state.firstDamageCard === null && DAMAGE_CARD_TYPES.has(card.type)) {
-    state.firstDamageCard = { seatId: player.seatId, cardId: card.id, resolved: false };
+    // 「伤害牌」是**牌的类别**，不是「这次结算有没有真的造成伤害」——所以被【闪】掉的杀、
+    // 被【无懈】掉的决斗照样算，登记在这里（使用时）而不是伤害发生后。
+    // 同时把这次使用对应的**实体牌**记下来：丈八两张牌凑的虚拟【杀】对应那两张，
+    // 纯「视为使用」的虚拟牌则没有实体牌（`materials` 为空且自己不是实体牌）。
+    const physical = card.materials?.length ? card.materials.map((c) => c.id) : [card.id];
+    state.firstDamageCard = {
+      seatId: player.seatId,
+      cardId: card.id,
+      cardIds: physical,
+      resolved: false,
+    };
   }
   if (targets.length > 0) {
     const mine = effectiveFaction(state, player);
@@ -2709,18 +2719,24 @@ function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
   const first = state.firstDamageCard;
   if (first && !first.resolved && attack.cardId !== '' && first.cardId === attack.cardId) {
     first.resolved = true;
+    // ⚠️ 找不到实体牌也要派发：丈八两张牌凑出来的【杀】是**虚拟**牌，在任何区域里都找不到它，
+    //    但它照样算「用过首张伤害牌」（用户口径）；「获得此伤害牌」照 cardIds 那张实体牌清单走。
+    //    这里合成的对象只用于显示牌名。
     const card =
       state.discard.find((c) => c.id === attack.cardId) ??
-      state.deck.find((c) => c.id === attack.cardId);
-    if (card) {
-      runAllPlayersHooks(
-        state,
-        'cardResolved',
-        { card, userSeatId: attack.sourceId },
-        () => resumePlay(state, state.seatOrder[state.turn.seatIndex]!),
-      );
-      return;
-    }
+      state.deck.find((c) => c.id === attack.cardId) ?? {
+        id: attack.cardId,
+        type: attack.asType,
+        suit: 'spade' as const,
+        rank: 1,
+      };
+    runAllPlayersHooks(
+      state,
+      'cardResolved',
+      { card, cardIds: first.cardIds, userSeatId: attack.sourceId },
+      () => resumePlay(state, state.seatOrder[state.turn.seatIndex]!),
+    );
+    return;
   }
   // 技能驱动的连环出杀（贾诩·乱武）在这里接着往下走；普通出杀回到出牌阶段
   if (attack.afterSettled) {
@@ -4681,7 +4697,7 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
     runAllPlayersHooks(
       state,
       'cardResolved',
-      { card: ctx.card, userSeatId: ctx.sourceId },
+      { card: ctx.card, cardIds: first.cardIds, userSeatId: ctx.sourceId },
       finish,
     );
     return;

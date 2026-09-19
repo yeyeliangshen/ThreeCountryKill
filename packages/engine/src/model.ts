@@ -786,7 +786,19 @@ export interface GameState {
    * `resolved` 才是「这条已经派发过了」——同一张牌在寄篱那类重跑路径上可能走到两次出口。
    * 生命周期一个回合（`startTurn` 清成 null）。
    */
-  firstDamageCard: { seatId: string; cardId: string; resolved: boolean } | null;
+  firstDamageCard: {
+    seatId: string;
+    /** 使用时那张「生效牌」的 id（丈八是虚拟【杀】的 id，用来和结算出口对上） */
+    cardId: string;
+    /**
+     * 这次使用**对应的实体牌** id 列表（用户给定的实现口径）：
+     * 普通牌＝它自己；丈八两张牌凑的虚拟【杀】＝那两张；纯「视为使用」＝空。
+     * 【授锋】的「获得此伤害牌」就是照这张表去弃牌堆逐张取——所以必须在**使用的那一刻**
+     * 记下来，不能等触发时再去找「刚才那张牌」。
+     */
+    cardIds: string[];
+    resolved: boolean;
+  } | null;
   /**
    * 「本回合已经因【雄驰】问过一次」的角色（君曹操）。
    *
