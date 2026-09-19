@@ -25,7 +25,11 @@
 
 ## 三、每次改动都要
 
-1. `pnpm test` + `pnpm typecheck` + `pnpm build` **全绿** 再提交；
+1. `pnpm test` + `pnpm typecheck` + `pnpm build` **全绿** 再提交。
+   ⚠️ **提交必须显式过闸**：写成 `if ! pnpm test > /tmp/t.log 2>&1; then tail /tmp/t.log; exit 1; fi`
+   再接 `git commit`——**千万不要用 `;` 把「跑测试」和「提交」串起来**（踩过两次：一次测试红着提交、
+   一次补丁脚本断言失败没落盘但照样提交，两个提交都得再补一个修复提交）；
+   脚本化改动还要**回头确认文件真的落盘了**（断言失败会静默跳过某一对替换）。
 2. 在 `docs/guozhan-roster.md` 里**新增一节**记录：改了什么、口径依据、简化与待核对项
    （这份文档是本仓库唯一的「口径 + 欠账」权威清单）；
 3. 提交信息**用文件或 heredoc 写**（`git commit -F-`）——**不要在命令行里带反引号**，
