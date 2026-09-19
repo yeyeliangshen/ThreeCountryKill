@@ -997,7 +997,7 @@ const SIMAYI: Hero = {
       timing: 'afterDamage',
       skillId: '反馈',
       handler: (ctx) => {
-        const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
+        const payload = ctx.payload as { attack?: AttackContext; /* ⚠️ 直写槽：heroes 不能 import engine（循环依赖），这一处暂不过版本号，见 docs §5.124 待办 */ damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
         const source = getPlayer(ctx.state, payload.attack.sourceId);
         if (!source || source.seatId === ctx.player.seatId) return; // 无来源或自伤

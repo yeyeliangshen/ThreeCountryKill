@@ -211,9 +211,21 @@ export function takeOverPendingIfUnchanged(
   next: Pending,
 ): boolean {
   if (!canTakeOverPending(state, checkpoint)) return false;
-  state.pending = next;
+  setPending(state, next);
   notePendingSlotWrite(state);
   return true;
+}
+
+/**
+ * **写输入槽的唯一入口**：赋值 + 推进版本号（`pendingSeq`）。
+ *
+ * 以后不要直接 `state.pending = ...`——版本号是「收尾所有权围栏」的另一半
+ * （见 capturePendingCheckpoint / canTakeOverPending 与 docs §5.124），
+ * 直接写会让围栏误判成「这个槽没人碰过」。
+ */
+export function setPending(state: GameState, next: GameState['pending']): void {
+  state.pending = next;
+  state.pendingSeq++;
 }
 
 export function askChoice(
@@ -224,7 +236,7 @@ export function askChoice(
   resolve: (state: GameState, player: Player, optionId: string) => void,
   returnTo?: string,
 ): void {
-  state.pending = { kind: 'choice', seatId, title, options, resolve, returnTo };
+  setPending(state, { kind: 'choice', seatId, title, options, resolve, returnTo });
 }
 
 /**
@@ -248,7 +260,7 @@ export function askPickCards(
   resolve: (state: GameState, player: Player, picked: Card[]) => void,
   opts?: { returnTo?: string; secret?: boolean },
 ): void {
-  state.pending = {
+  setPending(state, {
     kind: 'pickCards',
     seatId,
     title,
@@ -262,7 +274,7 @@ export function askPickCards(
     resolve,
     returnTo: opts?.returnTo,
     secret: opts?.secret,
-  };
+  });
 }
 
 /**
@@ -1023,7 +1035,7 @@ function runHooksPausable(
       token.alive = false;
       onDone(cancelled);
       if (state.pending === null && ambient && !state.gameOver) {
-        state.pending = ambient;
+        setPending(state, ambient);
       }
     },
     attackBox,
@@ -1506,7 +1518,7 @@ function enterPlayPhase(state: GameState, player: Player): void {
           // 玉玺（锁定技）：出牌阶段开始时，视为使用一张【知己知彼】。
           // 放在**设置出牌 pending 之前**——它是这个阶段的开场动作，结算完才轮到玩家正常出牌。
           askYuxiZhibi(state, player, () => {
-            state.pending = { kind: 'play', seatId: player.seatId };
+            setPending(state, { kind: 'play', seatId: player.seatId });
           });
         },
         player.seatId,
@@ -1602,7 +1614,7 @@ function afterDiscardPhaseHooks(state: GameState, player: Player): void {
 function beginDiscard(state: GameState, player: Player): void {
   const over = player.hand.length - handLimit(state, player);
   if (over > 0) {
-    state.pending = { kind: 'discard', seatId: player.seatId, count: over };
+    setPending(state, { kind: 'discard', seatId: player.seatId, count: over });
   } else {
     runDiscardPhaseEnd(state, player);
   }
@@ -2001,7 +2013,7 @@ function afterTurnEnd(state: GameState): void {
     checkWin(state);
     if (!state.gameOver) {
       state.gameOver = true;
-      state.pending = null;
+      setPending(state, null);
       state.turn.phase = 'gameOver';
       pushLog(state, 'gameover', '游戏结束。');
     }
@@ -2136,7 +2148,7 @@ function resumePlay(state: GameState, sourceId: string): void {
   //    大面积卡死**（这条路径的调用方太多，包括一些「收尾时必须把出牌阶段抢回来」的场合，
   //    它们的 pending 恰恰不是 null）→ 已回退。正确的修法要更窄：只放过「**由这次收尾自己
   //    新产生**的询问」，别放行更早的陈旧 pending。
-  state.pending = { kind: 'play', seatId: sourceId };
+  setPending(state, { kind: 'play', seatId: sourceId });
 }
 
 // ——————————————————————————————————————————
@@ -2516,7 +2528,7 @@ function afterShaTargetResolve(
   }
 
   // 暂停：等待目标响应（出闪或弃权）
-  state.pending = { kind: 'respondSha', responderId: targetId, attack };
+  setPending(state, { kind: 'respondSha', responderId: targetId, attack });
 }
 
 /**
@@ -3993,21 +4005,21 @@ function enterDeathQueue(state: GameState, dying: Player, killerId?: string): vo
     doDeath(state, dying.seatId, killerId);
     return;
   }
-  state.pending = {
+  setPending(state, {
     kind: 'respondDeath',
     dyingId: dying.seatId,
     askQueue: queue,
     askIndex: 0,
     // 记住是谁打的——阵亡后要用它触发「杀死角色后」的技能（行殇）
     killerId,
-  };
+  });
   pushLog(state, 'nearDeath', `${dying.name} 濒死，等待出桃救援。`);
 }
 
 /** 设定胜方并写日志，返回 true 表示游戏结束 */
 function setWinner(state: GameState, winner: string): true {
   state.gameOver = true;
-  state.pending = null;
+  setPending(state, null);
   state.turn.phase = 'gameOver';
   state.winner = winner || null;
   let msg: string;
@@ -4312,7 +4324,7 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
     if (state.pending === null && !state.gameOver && state.turn.seatIndex === turnSeatBefore) {
       const turnSeat = state.seatOrder[state.turn.seatIndex]!;
       if (state.turn.phase === 'play') {
-        state.pending = { kind: 'play', seatId: turnSeat };
+        setPending(state, { kind: 'play', seatId: turnSeat });
       } else if (state.turn.phase === 'discard') {
         const cur = getPlayer(state, turnSeat);
         if (cur) beginDiscard(state, cur);
@@ -4423,7 +4435,7 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       const picked = pending.options.find((o) => o.id === intent.optionId);
       if (!picked) return err('选项无效');
       const player = getPlayerOrThrow(state, seatId);
-      state.pending = null;
+      setPending(state, null);
       state.log.push({
         id: state.logSeq++,
         kind: 'skill',
@@ -4464,7 +4476,7 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       const p = state.pending;
       if (!p || p.kind !== 'viewCards') return err('当前没有需要确认的信息');
       if (p.seatId !== seatId) return err('不是你在看这张牌');
-      state.pending = null;
+      setPending(state, null);
       // 技能发起的查看：接着跑技能的下一步
       if (p.after) {
         const after = p.after;
@@ -4498,7 +4510,7 @@ function onPickCards(
     if (!c) return err('选的牌不在候选里');
     picked.push(c);
   }
-  state.pending = null;
+  setPending(state, null);
   pushLog(
     state,
     'skill',
@@ -5109,7 +5121,7 @@ function openWuxieWindow(state: GameState, ctx: TrickContext, onDone: () => void
     onDone();
     return;
   }
-  state.pending = { kind: 'wuxieQueue', ctx, askQueue: queue, askIndex: 0, onDone };
+  setPending(state, { kind: 'wuxieQueue', ctx, askQueue: queue, askIndex: 0, onDone });
 }
 
 /**
@@ -5551,11 +5563,11 @@ function resolveJuedou(state: GameState, ctx: TrickContext): void {
       ? `${target.name} 需打出 ${need} 张【杀】或受 1 点伤害。`
       : `${target.name} 需打出【杀】或受 1 点伤害。`,
   );
-  state.pending = {
+  setPending(state, {
     kind: 'respondTrick',
     responderId: targetId,
     ctx: { ...ctx, duelTurn: 'target', duelShaCount: 0 },
-  };
+  });
 }
 
 /**
@@ -5584,7 +5596,7 @@ function resolveHuogong(state: GameState, ctx: TrickContext): void {
     return;
   }
   pushLog(state, 'trick', `${target.name} 需展示一张手牌。`);
-  state.pending = { kind: 'respondTrick', responderId: targetId, ctx };
+  setPending(state, { kind: 'respondTrick', responderId: targetId, ctx });
 }
 
 /** 借刀杀人：武器持有者选择出杀或交出武器 */
@@ -5606,7 +5618,7 @@ function resolveJiedao(state: GameState, ctx: TrickContext): void {
     return;
   }
   pushLog(state, 'trick', `${holder.name} 需打出【杀】或交出武器。`);
-  state.pending = { kind: 'respondTrick', responderId: holderId, ctx };
+  setPending(state, { kind: 'respondTrick', responderId: holderId, ctx });
 }
 
 /**
@@ -5734,7 +5746,7 @@ function yiyiResolveCurrent(state: GameState, ctx: TrickContext): void {
     yiyiStep(state, ctx);
     return;
   }
-  state.pending = {
+  setPending(state, {
     kind: 'pickCards',
     seatId: t.seatId,
     title: `【以逸待劳】：摸 ${drew} 张牌后需弃置 ${count} 张`,
@@ -5754,7 +5766,7 @@ function yiyiResolveCurrent(state: GameState, ctx: TrickContext): void {
       ctx.responderIndex++;
       yiyiStep(st, ctx);
     },
-  };
+  });
 }
 
 /**
@@ -5819,7 +5831,7 @@ function wuguResolveCurrent(
     wuguStep(state, ctx, remaining);
     return;
   }
-  state.pending = {
+  setPending(state, {
     kind: 'pickCards',
     seatId: p.seatId,
     title: '【五谷丰登】：从亮出的牌里获得一张',
@@ -5837,7 +5849,7 @@ function wuguResolveCurrent(
       ctx.responderIndex++;
       wuguStep(st, ctx, remaining);
     },
-  };
+  });
 }
 
 /**
@@ -6518,13 +6530,13 @@ function resolveZhibi(state: GameState, ctx: TrickContext): void {
           seat: player.seatId,
           action: 'zhibi',
         });
-        st.pending = {
+        setPending(st, {
           kind: 'viewCards',
           seatId: player.seatId,
           title: `${t.name} 的手牌（${t.hand.length} 张）`,
           cards: t.hand.slice(),
           returnTo: ctx.sourceId,
-        };
+        });
         return;
       }
       const heroId = optionId.slice('hero:'.length);
@@ -6533,14 +6545,14 @@ function resolveZhibi(state: GameState, ctx: TrickContext): void {
         seat: player.seatId,
         action: 'zhibi',
       });
-      st.pending = {
+      setPending(st, {
         kind: 'viewCards',
         seatId: player.seatId,
         title: '你观看的暗置武将牌',
         cards: [],
         note: heroName,
         returnTo: ctx.sourceId,
-      };
+      });
     },
     ctx.sourceId,
   );
@@ -6647,7 +6659,7 @@ function respondForCurrent(state: GameState, ctx: TrickContext, rId: string): vo
     'trick',
     `轮到 ${r.name} 响应【${CARD_TYPE_NAME[ctx.card.type as import('@sgs/protocol').CardType]}】。`,
   );
-  state.pending = { kind: 'respondTrick', responderId: rId, ctx };
+  setPending(state, { kind: 'respondTrick', responderId: rId, ctx });
 }
 
 /** AOE：推进到下一个响应者 */
@@ -6751,11 +6763,11 @@ function afterDuelShaPlayed(state: GameState, responderId: string, ctx: TrickCon
   const played = (ctx.duelShaCount ?? 0) + 1;
   if (played < need) {
     pushLog(state, 'trick', `还需打出 ${need - played} 张【杀】。`);
-    state.pending = {
+    setPending(state, {
       kind: 'respondTrick',
       responderId,
       ctx: { ...ctx, duelShaCount: played },
-    };
+    });
     return;
   }
 
@@ -6769,11 +6781,11 @@ function afterDuelShaPlayed(state: GameState, responderId: string, ctx: TrickCon
     return;
   }
   pushLog(state, 'trick', `轮到 ${newResponder.name} 打出【杀】或受 1 点伤害。`);
-  state.pending = {
+  setPending(state, {
     kind: 'respondTrick',
     responderId: newResponderId,
     ctx: { ...ctx, duelTurn: newTurn, duelShaCount: 0 },
-  };
+  });
 }
 
 function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
@@ -6834,11 +6846,11 @@ function respondHuogongCard(
     // 展示的是**他的**牌，所以花色按他的口径（小乔·红颜：黑桃算红桃）——
     // 官方 FAQ：对小乔火攻，她亮黑桃，发动者要弃的是红桃。
     pushLog(state, 'trick', `${responder.name} 展示了【${cardLabel(card)}】。`);
-    state.pending = {
+    setPending(state, {
       kind: 'respondTrick',
       responderId: ctx.sourceId,
       ctx: { ...ctx, revealedSuit: suitSeenAs(state, responder, card) },
-    };
+    });
     return { ok: true };
   }
 
@@ -7379,7 +7391,7 @@ function onRespondWuxie(
     }
     pending.askQueue = queue;
     pending.askIndex = 0;
-    state.pending = pending;
+    setPending(state, pending);
   };
   const name = isGuo ? '无懈可击·国' : '无懈可击';
   // 链上已经有前一环 → 这一张是在**抵消上一张无懈**，它不选抵消谁（翻转即可），
@@ -7556,7 +7568,7 @@ function afterShanPlayed(state: GameState, who: Player, attack: AttackContext): 
     if (required > 1) {
       attack.requiredShan = required - 1;
       pushLog(state, 'shan', `${who.name} 还需出 ${required - 1} 张【闪】。`);
-      state.pending = { kind: 'respondSha', responderId: attack.targetId, attack };
+      setPending(state, { kind: 'respondSha', responderId: attack.targetId, attack });
       return;
     }
     attack.dodged = true;
@@ -7946,10 +7958,10 @@ function resolveFactionCard(
 /** 没人代打：还原成发起者自己响应的那个提示 */
 function restoreFactionScene(state: GameState, seatId: string, scene: FactionScene): void {
   if (scene.kind === 'sha-response') {
-    state.pending = { kind: 'respondSha', responderId: seatId, attack: scene.attack };
+    setPending(state, { kind: 'respondSha', responderId: seatId, attack: scene.attack });
     return;
   }
-  state.pending = { kind: 'respondTrick', responderId: seatId, ctx: scene.ctx };
+  setPending(state, { kind: 'respondTrick', responderId: seatId, ctx: scene.ctx });
 }
 
 /**
@@ -7976,7 +7988,7 @@ function onFactionCall(
   const helpers = factionHelpers(state, player, fc.needType);
   if (helpers.length === 0) return err('没有可以代打的同势力角色');
 
-  state.pending = {
+  setPending(state, {
     kind: 'factionCall',
     callerId: seatId,
     needType: fc.needType,
@@ -7991,7 +8003,7 @@ function onFactionCall(
       pushLog(st, 'skill', `没有同势力角色代打，${player.name} 需自行响应。`);
       restoreFactionScene(st, seatId, scene);
     },
-  };
+  });
   return { ok: true };
 }
 
@@ -8690,7 +8702,7 @@ function makeSkillApi(
         return;
       }
       // 内容按座位裁剪（snapshot 只把 viewCards 发给这个座位），日志里不出现内容
-      state.pending = {
+      setPending(state, {
         kind: 'viewCards',
         seatId: viewerSeatId,
         title,
@@ -8698,7 +8710,7 @@ function makeSkillApi(
         note: content.note,
         after: opts?.after,
         returnTo: opts?.after ? undefined : opts?.returnTo,
-      };
+      });
     },
     useShaOn: (sourceSeatId, targetId, card, opts) => {
       const src = getPlayer(state, sourceSeatId);
@@ -9344,7 +9356,7 @@ function onUseSkill(
   // 就把出牌阶段还给他——不然 pending 会一直是 null，界面直接卡住。
   // 正常情况（留下询问、或询问里传了 returnTo）这里不会触发。
   if (state.pending === null && !state.gameOver) {
-    state.pending = { kind: 'play', seatId: player.seatId };
+    setPending(state, { kind: 'play', seatId: player.seatId });
   }
   return { ok: true };
 }
