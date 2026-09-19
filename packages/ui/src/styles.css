@@ -1890,3 +1890,20 @@ select:focus-visible,
     object-fit: cover;
   }
 }
+
+/* 特殊牌区（权 / 异 / 函 / 戮）：紧挨武将名的一条小徽章行 */
+.special-zones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 2px 0;
+}
+.zone-chip {
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 3px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.9;
+  white-space: nowrap;
+}
