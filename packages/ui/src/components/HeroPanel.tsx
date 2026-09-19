@@ -100,6 +100,31 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
     >
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
+        {/* 特殊牌区（公开信息）：权 / 异 / 函 是**实体牌**，戮是**武将牌**（只显示牌名） */}
+        {me.quan?.length || me.yi?.length || me.han?.length || me.luCount ? (
+          <div className="special-zones">
+            {me.quan?.map((c) => (
+              <span key={`quan-${c.id}`} className="zone-chip">
+                权·{c.type}
+              </span>
+            ))}
+            {me.yi?.map((c) => (
+              <span key={`yi-${c.id}`} className="zone-chip">
+                异·{c.type}
+              </span>
+            ))}
+            {me.han?.map((c) => (
+              <span key={`han-${c.id}`} className="zone-chip">
+                函·{c.type}
+              </span>
+            ))}
+            {me.luNames?.map((n, i) => (
+              <span key={`lu-${i}`} className="zone-chip">
+                戮·{n}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <div className="hero-info-top">
           {me.role && mode === 'junzheng' && (
             <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>

@@ -3,6 +3,7 @@ export * from './model';
 export * from './timing';
 export * from './heroes';
 export * from './markers';
+export * from './config';
 export * from './distance';
 export {
   createGame,

@@ -12,6 +12,7 @@ import {
   applyIntent,
   createGame,
   getHero,
+  poolForMode,
   seededRng,
   toSnapshot,
   type GameState,
@@ -161,9 +162,12 @@ function step(state: GameState, rand: () => number): string {
 }
 
 describe('随机对局冒烟：全势备篇牌堆不卡死、不抛错', () => {
-  it('12 局（固定种子）都跑到分出胜负', () => {
+  it('40 局（固定种子）都跑到分出胜负', () => {
     let totalSteps = 0;
-    for (let seed = 1; seed <= 12; seed++) {
+    // ⚠️ 种子范围从 24 扩到 40：黄祖·袭射的钩子接上后随机轨迹变了，原来那 24 个种子里
+    //    【丈八蛇矛】那条路一次都没走到（覆盖率断言从「通过」变成 0 次）。**断言没有放宽**——
+    //    只是换更多固定样本，保证覆盖率断言重新成立（docs §5.117）。
+    for (let seed = 1; seed <= 40; seed++) {
       const rand = rng(seed);
       const n = 5 + (seed % 3);
       const setup: SeatSetup[] = Array.from({ length: n }, (_, i) => ({
@@ -195,4 +199,104 @@ describe('随机对局冒烟：全势备篇牌堆不卡死、不抛错', () => {
     // 无懈（含「无懈对无懈」的抵消链）同理
     expect(hits.wuxie).toBeGreaterThan(0);
   });
+});
+
+/**
+ * 逐个武将的实战冒烟。
+ *
+ * 为什么值得单独跑：单元测试是「按剧本走」，而这里的驱动是**随机**的——同样的技能会在
+ * 各种时机被触发，专门能撞出「某个技能在多层询问之后忘了把控制权还回去」这类问题
+ * （症状是 pending 变成 null、整局静默卡死，`step()` 里那句 throw 就是不变式）。
+ *
+ * 名单挑的是**机制最复杂 / 最近实现**的那批：眩惑与千幻要借技能、将略要问多个人、
+ * 寄篱要重跑结算、调归要看队列、伪帝要账本、举荐要变更副将……
+ * 每个武将跑两遍：一次放主将位、一次放副将位（副将位才走得到副将技与减半个阴阳鱼）。
+ */
+describe('随机对局冒烟：每个新武将参战都打得完', () => {
+  const HEROES = [
+    'fazheng',
+    'wangping',
+    'lukang',
+    'zhangxiu',
+    'wuguotai',
+    'yuanshu',
+    'wujing',
+    'yanbaihu',
+    'xushu',
+    'zuoci',
+    'yuji',
+    'dongzhuo',
+    'zhangren',
+    'mifuren',
+    'sunce',
+    'dengai',
+    'lidian',
+    'caiwenji',
+    'zhangjiao',
+    'simayi',
+    // 这轮改动碰过的技能：集智（后半句）/ 克己·谋断（用牌账本）/ 旋略（批量失去）/
+    // 枭姬（每张都算的对照）/ 铁骑（技能判定）/ 天义（拼点，给鹰扬制造机会）
+    'huangyueying',
+    'lvmeng',
+    'lingtong',
+    'sunshangxiang',
+    'machao',
+    'taishici',
+  ];
+
+  /**
+   * 造一局：0 号位固定成某个武将。
+   *
+   * 其余座位给**随机**国战武将（而不是白板）——这样拼点、借技能、势力技这些跨武将互动
+   * 也有机会发生；势力上让其中两个与 0 号位相同（否则「与你势力相同的角色」这类技能
+   * 永远没有对象，测了等于没测），第三个不同势力。
+   */
+  function seatGame(heroId: string, inDeputy: boolean, seed: number): GameState {
+    const pool = poolForMode('guozhan');
+    const setup: SeatSetup[] = Array.from({ length: 4 }, (_, i) => ({
+      seatId: `s${i}`,
+      name: `P${i}`,
+      heroId: i === 0 ? 'vanilla' : pool[(seed * 7 + i * 13) % pool.length]!.id,
+    }));
+    const state = createGame(setup, `H${seed}`, { mode: 'guozhan', rng: rng(seed) });
+    state.draft = null;
+    const me = state.players[0]!;
+    const hero = getHero(heroId)!;
+    if (inDeputy) me.deputyHeroId = heroId;
+    else me.heroId = heroId;
+    me.faction = hero.faction;
+    me.heroRevealed = true;
+    me.deputyRevealed = true;
+    me.maxHp = Math.max(1, Math.floor(hero.maxHp));
+    me.hp = me.maxHp;
+    state.players.slice(1).forEach((p, i) => {
+      p.faction = i === 2 ? 'wei' : hero.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      // 副将也亮出来，好让「副将技」那类技能有第二种来源
+      p.deputyHeroId = pool[(seed * 3 + i * 5) % pool.length]!.id;
+    });
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: me.seatId };
+    state.log = [];
+    return state;
+  }
+
+  for (const heroId of HEROES) {
+    for (const inDeputy of [false, true]) {
+      const where = inDeputy ? '副将位' : '主将位';
+      it(`${heroId}（${where}）跑到分出胜负`, () => {
+        const seed = HEROES.indexOf(heroId) * 31 + (inDeputy ? 7 : 3);
+        const rand = rng(seed);
+        const state = seatGame(heroId, inDeputy, seed);
+        let steps = 0;
+        // step() 里「既没有 pending 也不在选将阶段」会直接抛错——那正是要抓的 bug
+        while (!state.gameOver && steps < 4000) {
+          step(state, rand);
+          steps++;
+        }
+        expect(state.gameOver, `${heroId}(${where}) 跑了 ${steps} 步还没结束`).toBe(true);
+      });
+    }
+  }
 });

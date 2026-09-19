@@ -1,4 +1,5 @@
 import type { Intent } from './intent';
+import type { GuozhanRoomConfig } from './config';
 import type { GameMode, RoomSummary, SeatView, Snapshot } from './views';
 
 // —— WebSocket 消息信封 ——
@@ -32,16 +33,22 @@ export type ClientMessage =
   | { type: 'setMode'; mode: GameMode }
   // 房主在大厅切换「选将不限」（测试用）
   | { type: 'setFreePick'; freePick: boolean }
-  /** 房主切换「势备篇（+52 张）」。和 freePick 一样是**开局前的房间状态** */
-  | { type: 'setShibei'; shibei: boolean }
+  /**
+   * 房主改「国战扩展开关」（势备篇 / 不臣篇 / 君临天下）。
+   * 和 freePick 一样是**开局前的房间状态**：开局后服务端会拒绝（配置要冻结）。
+   */
+  | { type: 'setGuozhanConfig'; config: GuozhanRoomConfig }
   // 房主开局：指定模式 + 可选每人发将数 + 可选选将不限
   | {
       type: 'startGame';
       mode: GameMode;
       heroDealCount?: number;
       freePick?: boolean;
-      /** 势备篇：开启后国战牌堆追加 52 张（只追加到国战） */
-      shibei?: boolean;
+      /**
+       * 国战扩展开关。**由服务端填**（房间里存的那份，开局时冻结），客户端传的会被忽略——
+       * 配置是房间状态，不是开局参数。
+       */
+      config?: GuozhanRoomConfig;
     }
   // 游戏中的行动意图
   | { type: 'intent'; intent: Intent };
@@ -58,8 +65,10 @@ export type ServerMessage =
       started: boolean;
       mySeatId: string | null;
       mode: GameMode; // 房主当前选择的模式
+      /** 当前房间的国战扩展开关（仅国战有意义；大厅里房主可改，开局后冻结） */
+      config: GuozhanRoomConfig;
       freePick: boolean; // 房主是否开了「选将不限（测试用）」
-      shibei: boolean; // 房主是否开了「势备篇（+52 张）」
+      // （原来的 `shibei: boolean` 已并入 `config.extensions.shibei`）
     }
   /** 房间被删了（房主离开且没人留下，或房主解散）：客户端回大厅并提示 */
   | { type: 'roomClosed'; reason: string }

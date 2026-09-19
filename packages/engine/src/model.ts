@@ -1,3 +1,4 @@
+import { CARD_TYPE_NAME, EQUIP_NAME } from '@sgs/protocol';
 import type {
   Card,
   CardType,
@@ -41,6 +42,18 @@ export function emptyMarkers(): Markers {
 }
 
 // —— 玩家状态 ——
+/**
+ * 一枚国战标记**这一回合是怎么用掉的**——【章武】要「复现对应的使用效果」，所以光记标记
+ * 种类不够（用户核对后的口径）：【阴阳鱼】出牌阶段用是「摸一张」、弃牌阶段用是「本回合
+ * 手牌上限 +2」，复现时要照原样执行（哪怕在结束阶段「上限 +2」已经没有什么实际作用）。
+ *
+ * - `draw`：摸牌（阴阳鱼摸 1 / 珠联璧合摸 2）
+ * - `handLimit`：阴阳鱼在弃牌阶段那条——本回合手牌上限 +2
+ * - `heal`：珠联璧合的另一条——回复 1 点体力（即「当作一次【桃】的效果」）
+ * - `view`：先驱——手牌补至四张并观看目标未明置的副将
+ */
+export type MarkerUsage = 'draw' | 'handLimit' | 'heal' | 'view';
+
 export interface PlayerFlags {
   /** 本回合已出杀数 */
   shaCountThisTurn: number;
@@ -75,8 +88,83 @@ export interface PlayerFlags {
   usedCardsInPlayPhase: { suit: Suit; color: 'red' | 'black'; kind: 'basic' | 'trick' | 'equip' }[];
   /** 跳过出牌阶段（乐不思蜀） */
   skipPlay: boolean;
-  /** 跳过摸牌阶段（兵粮寸断） */
+  /** 跳过摸牌阶段（兵粮寸断 / 夏侯渊·神速 / 张郃·巧变） */
   skipDraw: boolean;
+  /** 跳过弃牌阶段（张郃·巧变） */
+  skipDiscard: boolean;
+  /**
+   * 崔琰毛玠·征辟①：本回合你对其**使用牌无距离和次数限制**（存的是那个座位）。
+   * 「直到回合结束**或其明置武将牌**」——后者用惰性判断：目标还有暗置武将牌时才有效。
+   */
+  distanceLimitlessToSeat: string | null;
+  /**
+   * 李傕郭汜·凶算：被点名「本回合结束时视为未发动」的限定技 id（在那一回合结束时清掉）。
+   */
+  limitedToReset: string[];
+  /**
+   * 沙摩柯·蒺藜：本回合**使用或打出**的牌数，以及「这张牌生效前你的攻击范围」。
+   * 范围要取**牌生效之前**的值——官方 FAQ：本回合先出牌再装武器，那张牌不算；
+   * 先装武器再出牌，才算（武器装上后范围就变了）。
+   */
+  cardsUsedOrPlayed: number;
+  actionRangeSnapshot: number;
+  /**
+   * 卞夫人·约俭：本回合有没有**指定过其他势力（含未确定势力）的角色**为目标。
+   * 由 markCardUsed 在 useCard 时登记（载荷里带了 targetIds），随回合清零。
+   */
+  targetedOtherFactionThisTurn: boolean;
+  /**
+   * 刘琦·屯江：本回合的**出牌阶段**里有没有**指定过其他角色**（不看势力，看人）为目标。
+   * 由 markCardUsed 登记「有明确目标」的那些；AOE 那类目标由规则定死的牌
+   * （南蛮/万箭/桃园/五谷…）在 startTrickResolution 里按「真正会影响谁」补登记。
+   * 装备牌、对自己用的【桃】、无中生有都不会置位。随回合清零（emptyFlags）。
+   */
+  targetedOtherThisTurn: boolean;
+  /**
+   * 刘琦·问计：本回合被【问计】**标记的那张实体牌**的 id（null＝本回合没有）。
+   *
+   * ⚠️ 记的是**实体牌**不是牌名：交来的那张【杀】享受强化，手里同名的另一张按普通牌处理。
+   * 该牌享受：无距离限制、无使用次数限制、其他角色不能响应（见 engine 里的三处判定）。
+   */
+  wenjiCardId: string | null;
+  /**
+   * 左慈·役鬼：「本回合内已以此法使用过哪些牌名」（按牌名限一次，回合开始清零）。
+   */
+  hunUsedNames: string[];
+  /**
+   * 吕范·典财：本**出牌阶段**你失去了几张牌（cardsLost 那个公共事件上累加，
+   * 出牌阶段结束时清零）。「其他角色的出牌阶段结束时」按它跟体力值比。
+   */
+  lostCardsThisPhase: number;
+  /**
+   * 臧霸·横江：本回合对**哪个**当前回合角色用过（回合结束时看他在弃牌阶段弃没弃牌）。
+   */
+  hengjiangTarget: string | null;
+  /**
+   * 本回合有没有**造成过伤害**（蒋琬费利·生息：没造成过才能在弃牌阶段开始时摸两张）。
+   * 由 damageDealt 钩子的入口登记，随回合重置。
+   */
+  dealtDamageThisTurn: boolean;
+  /**
+   * 「本次伤害已被防止」——`damageDealt` 钩子唯一的**取消通道**。
+   *
+   * 钩子只能设标记（没有返回值），所以 damageStep 在派发前清、派发后读，
+   * 读到就整条伤害作废（不扣血、不跑伤害后钩子、不进濒死）。小乔·天香用它。
+   */
+  damagePrevented: boolean;
+  /**
+   * 「本次伤害减少几点」——`damageDealt` 钩子里除「防止」之外的**减伤通道**。
+   *
+   * 与 damagePrevented 同样：派发前清 0、派发后读。陆抗·恪守的「令此伤害-1」用它——
+   * 它是**要付代价的可选**减伤，所以不能像名士/白银狮子那样在 finalizeDamage 里直接算。
+   * 减到 0 即「不造成伤害」：不扣血、不跑伤害后钩子、也不进铁索蔓延。
+   */
+  damageReduce: number;
+  /**
+   * 本回合「使用【杀】的限制次数」的额外加成（陆抗·筑围 = 1）。
+   * 与 handLimitBonus 一样是「本回合」语义，随回合重置。
+   */
+  shaLimitBonus: number;
   /**
    * 跳过判定阶段（夏侯渊·神速）。
    * 注意是**整个判定阶段跳过**，所以判定区的延时锦囊会原样留着、下回合再判。
@@ -97,19 +185,78 @@ export interface PlayerFlags {
   /** 本回合使用【杀】无距离限制（太史慈·天义拼点赢） */
   ignoreShaDistanceThisTurn: boolean;
   /**
+   * 唐咨·兴棹第 4 档：已经结算过的「失去装备区里的牌」批次编号（equipLost 的 eventId）。
+   * 同一批失去（一次弃多张/一次被拿走多张）只摸 1 张，靠它去重。随回合清零。
+   */
+  xingzhaoEquipEventId: number;
+  /**
+   * 曹节·约俭：「本回合手牌上限**等于**（视为）其体力上限」——是**覆盖**语义，
+   * 所以记成开关、由 `handLimit()` 每次现算，而不是一次性加差值（否则体力一变就跟着错、还会与
+   * 兴棹+4 之类叠加）。
+   */
+  handLimitSetToMaxHp: boolean;
+  /**
+   * SP司马昭·夙智②：本回合「使用锦囊牌无距离限制」（由夙智在**自己的回合**里打开，
+   * 三次额度用完即关）。距离校验里与黄月英·奇才走同一个判据。
+   */
+  ignoresTrickDistanceThisTurn: boolean;
+  /**
    * 非锁定技失效（新国战·铁骑那类）：本回合内该角色的非锁定技全部不起作用。
    * 由 afterTurnEnd 统一清掉（「直到回合结束」）。
    */
   nonLockedSkillsDisabled: boolean;
   /**
+   * 「**每个出牌阶段**限 N 次」的技能计数（界钟会·排异是第一个用例）。
+   * ⚠️ 与 `skillUsedThisTurn` 分开：那个是**回合**内限一次，这个是**阶段**内限次——
+   * 额外出牌阶段会重新拿到额度（用户口径），所以随**出牌阶段开始**清零。
+   */
+  skillUsesThisPhase: Record<string, number>;
+  /**
    * 本回合不能使用或打出手牌（军令「本回合不能使用或打出手牌」那一项）。
    * 比 skipPlay 窄：还能发动技能、结束阶段照常。
    */
   cannotPlayCardsThisTurn: boolean;
+  /**
+   * 马岱·潜袭：本回合不能使用或打出**这个颜色**的手牌（判定结果的颜色）。
+   * 与 cannotPlayCardsThisTurn 同一套：回合结束时清掉。
+   */
+  cannotPlayColor: 'red' | 'black' | null;
   /** 本回合不能回复体力（军令「翻面且本回合不能回复体力」那一项） */
   cannotHealThisTurn: boolean;
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
+  /**
+   * 李典·忘隙的待办：伤害把对方打进了濒死，得等**濒死结算完**才知道他活没活下来
+   * （本引擎伤害层顺序是「伤害后钩子→濒死」，官方相反）。nearDeathResolved 时按 seatId 取出来处理。
+   */
+  wangxiPending: { seatId: string; left: number }[];
+  /**
+   * 凌统·旋略：「同一次失去装备」的事件编号——官方口径是一次失去只触发一次，
+   * 而 equipLost 是**逐张**派发的（枭姬要每张都触发）。靠 payload.eventId 去重。
+   */
+  xuanlveEventId: number;
+  /**
+   * 严白虎·雉盗：本回合「只能指定他与你」的那名角色（null = 没有这个限制）。
+   * 与 distanceToOneThisTurn 同源，随回合清空。
+   */
+  cardTargetOnlySeat: string | null;
+  /**
+   * 寄篱的「同一阶段内受到伤害的次数」：阶段用 `回合座位:阶段名` 作键，
+   * 键变了就当这是本阶段的第 1 次。这样不必给每个阶段转换点都加重置代码。
+   */
+  damageCountKey: string;
+  damageCount: number;
+  /** 严白虎·雉盗：这个出牌阶段是否已经「第一次对其造成伤害」领过牌了 */
+  zhidaoHitDone: boolean;
+  /** 【飞龙夺凤】本回合已经触发过「首次使用【杀】造成伤害」（每回合重置） */
+  feilongDoneThisTurn: boolean;
+  /** 【定澜夜明珠】「每回合首次弃置牌后摸一张」用过就算数（每回合在 startTurn 重置） */
+  dinglanDoneThisTurn: boolean;
+  /**
+   * 吴景·调归：「这次【调虎离山】用之前的队列人数」——技能发出锦囊时记下，
+   * 结算完成后（afterUse）拿来比「是否**因此**形成队列」。null 表示没有待结算的调归。
+   */
+  queueSizeBeforeTrick: number | null;
   /**
    * 势备篇【挟天子以令诸侯】：「本回合结束后我要进行一个额外回合」的待办。
    * 还要配合 discardedInDiscardPhase 一起判——规则是「若你于弃牌阶段弃置一张牌」。
@@ -142,15 +289,45 @@ export function emptyFlags(): PlayerFlags {
     usedCardsInPlayPhase: [],
     skipPlay: false,
     skipDraw: false,
+    skipDiscard: false,
+    damagePrevented: false,
+    damageReduce: 0,
+    shaLimitBonus: 0,
+    dealtDamageThisTurn: false,
+    hengjiangTarget: null,
+    lostCardsThisPhase: 0,
+    hunUsedNames: [],
+    targetedOtherFactionThisTurn: false,
+    targetedOtherThisTurn: false,
+    wenjiCardId: null,
+    distanceLimitlessToSeat: null,
+    limitedToReset: [],
+    cardsUsedOrPlayed: 0,
+    actionRangeSnapshot: 0,
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,
+    skillUsesThisPhase: {},
     damageBonusThisTurn: 0,
     ignoreShaDistanceThisTurn: false,
     nonLockedSkillsDisabled: false,
+    handLimitSetToMaxHp: false,
+    ignoresTrickDistanceThisTurn: false,
+    xingzhaoEquipEventId: -1,
     cannotPlayCardsThisTurn: false,
+    cannotPlayColor: null,
     cannotHealThisTurn: false,
     revealRewarded: false,
+    wangxiPending: [],
+    xuanlveEventId: -1,
+    queueSizeBeforeTrick: null,
+    cardTargetOnlySeat: null,
+    damageCountKey: '',
+    damageCount: 0,
+    zhidaoHitDone: false,
+    // 【飞龙夺凤】「每回合首次使用【杀】造成伤害后」用过就算数（每回合在 startTurn 重置）
+    feilongDoneThisTurn: false,
+    dinglanDoneThisTurn: false,
     xietianziPending: false,
     discardedInDiscardPhase: false,
     removedFromSeating: false,
@@ -208,17 +385,110 @@ export interface Player {
    * 不随回合清空（是「我想用这个技能」的持续声明），也不公开给对手。
    */
   prelitSkills: string[];
+  /**
+   * 【荐才】（徐庶）私下「获知」的武将牌 id：**尚未登场**（还在 `state.heroPool` 里）
+   * 且与徐庶已确定势力相同。只给本人看（快照里走 `knownHeroes` 那一条）。
+   * ⚠️ 真源是 `state.heroPool`：某张牌真的登场后，它就不再算「尚未登场」——
+   *    每次使用时与 heroPool 取交集，所以这里留着旧 id 也不会算错。
+   */
+  knownHeroIds: string[];
 
+  /**
+   * 周泰·不屈的「创」：濒死时从牌堆顶扣在武将牌上的牌（**置于武将牌上**，
+   * 不属于手牌/装备/判定任何区域）。点数与已有的均不同才能挡死，所以要看点数。
+   */
+  wounds: Card[];
   /**
    * 被【断肠】（蔡文姬）点名的那张武将牌：**它失去所有技能**
    * （势力与性别不受影响）。存 heroId，永久生效（不随回合清）。
    */
   nullifiedHeroId: string | null;
   /**
+   * 「千幻」：于吉·千幻放在**武将牌上**的牌（旧国战 1.x 的「千幻」标记牌）。
+   */
+  qianhuan: Card[];
+  /**
+   * 「魂」：左慈·役鬼扣在武将牌上的**武将牌**（存的是武将 id）。
+   * 暗置 → 用的时候随机移去一张，并把那张武将牌亮出来（势力决定目标限制）。
+   */
+  hun: string[];
+  /** 孟达·【求安】的「函」：扣在武将牌旁的伤害牌（公开；不属于手牌/装备/弃牌堆） */
+  han: Card[];
+  /**
+   * 公孙渊·【怀异】的「异」：**本次以此法获得的装备牌**置于武将牌旁（公开特殊牌区）。
+   * ⚠️ 移动版口径：异**不是手牌**——不能正常使用/打出、不计手牌数；只被【恣睢】按张数读取。
+   *    （2022 线下版才加了「异可如手牌使用/打出」，本仓库取移动版 2021。）
+   */
+  yi: Card[];
+  /**
+   * 孙綝·【嗜戮】的「戮」：**真实的武将牌**（不是计数标记）——每张记下武将牌 id 与**取得时冻结的
+   * 势力**（死者所确定的势力；从未登场武将堆随机得到的见 §5.107 的待核对项）。
+   * 与左慈的「魂」(`hun: string[]`) 同一套资源语义：它们都从 `state.heroPool` 里来。
+   */
+  lu: { heroId: string; factions: Faction[] }[];
+  /**
+   * 界钟会·【权计】的「权」：**真实的实体牌**（从手牌或装备区移来），公开放在武将牌旁。
+   * 它不是手牌、不算装备区，排异时被移去（进弃牌堆）；每有 1 张，手牌上限 +1（动态读，不缓存）。
+   */
+  quan: Card[];
+  /**
+   * 潘濬·【聪察】①的「观察」标记：**正在观察本角色**的潘濬座位。
+   *
+   * 每个观察来源**各自一条**（两个潘濬观察同一个人时互不覆盖，各自结算自己的那一次）；
+   * 被观察者**首次确定势力**时结算并立即删除；潘濬自己的**下一个回合开始**时过期。
+   * 只存座位 id，不含任何暗将信息。
+   */
+  congchaWatchedBy: string[];
+  /**
+   * 「田」：邓艾·屯田放在**武将牌上**的牌（第 5 个区域的味道，与周泰的「创」同类）。
+   * 屯田判定出非红桃牌就收进来；急袭把「田」当【顺手牵羊】用；资粮把「田」交给同势力。
+   */
+  tian: Card[];
+  /**
+   * 已被**移除**的武将牌（id 列表）。
+   *
+   * 国战「移除」：那张牌离场，角色用「士兵牌」顶上——**势力/性别/体力上限都保留**，
+   * 但**没有技能**。所以 effectiveHeroes 会滤掉它，而势力/性别那几条（读 faction 字段
+   * 与英雄的 gender）照旧。糜夫人的闺秀/存嗣、张任的穿心、董卓的暴凌都用它。
+   */
+  removedHeroIds: string[];
+  /**
    * 通过觉醒技/化身等途径「获得」的技能：从别的武将身上借来的。
    * 只记来源武将 id 与技能名，具体怎么摘见 heroes.grantedHeroes。
    */
   grantedSkills: { heroId: string; skillName: string }[];
+  /**
+   * 「**本回合**获得的技能」（与永久的 grantedSkills 平行，回合结束时清空）。
+   * 孙策·魂殇（本回合拥有英姿/英魂）、法正·眩惑（获得武圣等之一直到回合结束）用它。
+   */
+  tempGrantedSkills: { heroId: string; skillName: string }[];
+
+  /**
+   * 君主技发的「临时技能库」记录（君曹操·建安 → 五子良将纛）。
+   *
+   * 与 `tempGrantedSkills`（**本回合**有效，回合开始清空）不同：纛给的技能持续到
+   * **君主的下个回合开始**，中间要跨过别人的回合，所以单开一条记录、由君主的回合开始清掉。
+   * 同时记下为代价「暂时不能明置」的那张武将牌（封锁同寿命）。
+   */
+  /**
+
+   * **已确定的势力**（双势力武将，不臣篇）。
+
+   *
+
+   * 用户给定口径：双势力武将牌要「确定势力」，确定之后**整局都按那一个势力算**，
+
+   * 不会因为重新暗置之类切回另一个。判定规则见 `heroes.determineDualFaction()`，
+
+   * 读取一律走 `effectiveFaction()`（那里优先用它）。
+
+   * 单势力武将不用填它（退回「明置即确定」的旧判定，两者等价）。
+
+   */
+
+  determinedFaction?: Faction | null;
+
+  lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）
@@ -241,6 +511,53 @@ export interface AttackContext {
   /** 需要的闪数（默认1，吕布·无双=2，马超·铁骑/黄忠·烈弓=Infinity 不可闪避） */
   requiredShan?: number;
   /**
+   * **这张牌这次使用指定的全部目标**（按点选顺序；【杀】与各种伤害锦囊在创建攻击上下文时填）。
+   *
+   * 为什么要有它：伤害是**逐目标**结算的，光看这一份 attack 分不出「这张牌只指定了一个目标」
+   * 还是「指定了多个、我只是其中一个」。严白虎·寄篱走的是 `totalTargets`（只看张数），
+   * 界钟会·【权计】要的是「**你使用的这张牌，唯一目标就是挨打的那位**」——所以要看名单：
+   * 铁索连环的**传导伤害**是从原攻击上下文复制出来的（名单仍是原目标），一比对就露馅，
+   * 不需要再单独加一个 `chain` 标记。
+   */
+  declaredTargets?: string[];
+  /** 本次「使用牌」的编号（许攸·成略：把「这张牌造成的伤害」绑回这一次使用） */
+  cardUseId?: number;
+  /**
+   * 这张【杀】一共指定了几个目标（playSha 填）。严白虎·寄篱只认「**唯一**目标」，
+   * 而逐个结算时攻击上下文是每人一份，光看自己这份分不出是不是唯一目标。
+   */
+  totalTargets?: number;
+  /**
+   * 这张【杀】是不是由技能新造的虚拟牌（`Card.generatedBy` 透传过来）。
+   * 目前只有严白虎·寄篱造的那张（`'jili'`）——它**无色**，所以寄篱的钩子不会再认它；
+   * 这个字段是给技能判定用的第二道保险（别只看颜色）。
+   */
+  generatedBy?: string;
+  /**
+   * 彭羕·嚣逆（**按玩家**）：这次【杀】结算中，名单里的玩家**不能响应**（不能出【闪】）。
+   * 与 `requiredShan === Infinity`（整张杀不可闪避）不同：只锁名单里的人。
+   */
+  unrespondableTargets?: string[];
+  /**
+   * 严白虎·寄篱：这张【杀】结算结束后，其使用者要**再使用一张虚拟同名【杀】**指定他。
+   *
+   * 由技能在他成为目标时置位，走到结算收尾（afterAttackSettledTail）消费掉——只消费一次：
+   * 第二张是**全新的一次使用**（新的 AttackContext），不是把这一份重跑一遍。
+   * ⚠️ 与君孙权·据江的「额外结算一次」是两套机制，别混（见 engine 的两个机制函数）。
+   */
+  jiliUse?: boolean;
+  /**
+   * 这次【杀】结算**无视目标防具**（徐庶·诛害的强化分支）。
+   * 只作用于这一次结算（`equip.ts` 的四个防具判定点统一读它）：仁王盾/藤甲/明光铠的「无效」、
+   * 八卦阵的代闪、藤甲的火焰 +1、白银狮子的防止多余，全部照「装备区没有防具」处理。
+   */
+  ignoreArmor?: boolean;
+  /**
+   * 这次结算是由哪个**技能**发起的（目前只有徐庶·诛害）。技能侧靠它认出「自己发起的那次使用」
+   * （例如「目标每用一张【闪】响应后弃一张牌」）。
+   */
+  skillId?: string;
+  /**
    * 这张【杀】已经被改过目标（大乔·流离）。
    * 只允许改一次，否则两个都会改目标的技能能让它来回弹、死循环。
    */
@@ -253,6 +570,18 @@ export interface AttackContext {
    * 所以逐个结算：一人闪了，队列立刻被清空，其余目标什么也不受。
    */
   fangtianQueue?: string[];
+  /**
+   * 这张【杀】整个结算完之后要接着做什么（替代默认的「回到出牌阶段」）。
+   * 贾诩·乱武要让若干个角色**依次**出杀：一张杀结算完才轮到下一个人，
+   * 所以必须挂在这个收尾点上，不能在 useShaOn 后面直接往下写。
+   */
+  afterSettled?: () => void;
+  /**
+   * 刘禅·享乐问过了吗。
+   * 享乐是「除非使用者弃一张基本牌，否则此【杀】对你无效」：付款之后要继续走
+   * 防具/八卦/等出闪那一段，而那段又会回到同一个检查点，所以得留个记号防止来回问。
+   */
+  xingleChecked?: boolean;
   /**
    * 一人出【闪】是否令此【杀】对**其余目标全部无效**。
    * 只有**国战版**方天画戟是这样（军争版各目标独立结算），所以由 fangtianRule 赋值。
@@ -267,6 +596,14 @@ export interface TrickContext {
   // 过河拆桥/顺手牵羊：目标与指定的明牌区牌
   targetId?: string;
   targetCardId?: string;
+  /** 本次「使用牌」的编号（许攸·成略：把「这张锦囊造成的伤害」绑回这一次使用） */
+  cardUseId?: number;
+  /**
+   * **这张牌开始结算时的输入槽快照**（所有权围栏，见 docs §5.124）：
+   * 收尾要把控制权抢回出牌阶段时，拿它判断「槽里还是不是我结算前那一份」——
+   * 期间若产生了新询问（弃置收口里的旁观技能、成略的询问…），就**只能排队等它答完**。
+   */
+  pendingFence?: { requestId: number | null; slotVersion: number };
   /**
    * 本次使用指定的全部目标（按玩家点选顺序）。
    * 单目标锦囊走 targetId 就够了，但**多目标**锦囊（铁索连环一至两名）只能靠这个。
@@ -277,6 +614,37 @@ export interface TrickContext {
   responderIndex: number;
   // 决斗：当前该谁出杀（target=目标方，source=来源方）
   duelTurn?: 'target' | 'source';
+  /**
+   * 君孙权·据江：「此牌**额外结算一次**」——**同一张牌**不新建使用，只在结算收尾处把
+   * 同一份结算再完整走一遍（追加结算）。`rerunSkill` 只是日志里那个技能名。
+   */
+  extraResolve?: boolean;
+  extraResolveDone?: boolean;
+  rerunSkill?: string;
+  /**
+   * 严白虎·寄篱：这张锦囊结算结束后，其使用者**再使用一张虚拟同名锦囊**指定严白虎。
+   * 与据江的「追加结算」刻意分开：第二张没有实体牌（`materials: []`）、不继承花色点数、
+   * 会重新开无懈窗口——它是**一次全新的卡牌使用**（见 engine 的 useVirtualSameNameCard）。
+   */
+  jiliUse?: boolean;
+  /**
+   * 彭羕·嚣逆：**按玩家**的「不能响应这张牌」——只锁名单里的那些人，
+   * 其余角色（含打【无懈可击】的）照常响应。与下面刘琦的 `unrespondable`
+   * （**整张牌**不能被其他角色响应、连无懈窗口都不开）是两种语义，别混：
+   * 嚣逆只作用于「被指定的那些目标本人」。
+   */
+  unrespondableTargets?: string[];
+  /**
+   * 刘琦·问计：这张牌不能被**其他角色**响应（使用者自己不受限）。
+   *
+   * 它一次拦掉三类响应：① 无懈窗口（openWuxieWindow 直接跳过）；
+   * ② 群体锦囊的「依次响应」（南蛮出杀 / 万箭出闪）→ 直接按弃权结算；
+   * ③ 决斗的「对方打出【杀】」与借刀杀人的「打出【杀】或交武器」→ 直接走弃权那一支。
+   * 【杀】的响应走另一条通道（AttackContext.requiredShan = Infinity，与铁骑/烈弓同一处判定）。
+   */
+  unrespondable?: boolean;
+  /** 寄篱第二张牌的目标（他成为目标那一刻记下来，结算收尾时用） */
+  jiliTargetId?: string;
   /**
    * 决斗：当前响应方在「这一次响应」里已经打出的【杀】数。
    * 对手含无双时每次要出两张【杀】，凑满才换手（见 heroDuelShaRequired）。
@@ -317,6 +685,14 @@ export type Pending =
       askIndex: number;
       /** 把濒死者打到 0 的人，阵亡时要用来触发「杀死角色后」的技能（行殇） */
       killerId?: string;
+      /**
+       * 这一串濒死（求桃 / 阵亡）**整个走完之后**的续接——由发起濒死的那个流程传进来。
+       *
+       * 濒死系统自己不再决定「回到谁的出牌阶段」（见 docs §5.127）：它只负责调用 `done()`，
+       * 控制权交回调用方。分岔到 pendig 里之后（求桃要等玩家回答），`done` 就挂在 pending 上，
+       * 由回答分支（respondDeathSave / onPass）取出来用。
+       */
+      done: () => void;
     }
   // 弃牌阶段：弃到上限
   | { kind: 'discard'; seatId: string; count: number }
@@ -412,6 +788,11 @@ export type Pending =
       note?: string;
       /** 看完把控制权还给谁（通常是发起锦囊的玩家） */
       returnTo?: string;
+      /**
+       * 技能发起的私密查看：看完确认后接着跑这里（而不是把出牌阶段还给 returnTo）。
+       * 蒋钦·尚义要「看完对方手牌，再看你要不要弃一张」这种多步流程。
+       */
+      after?: () => void;
     };
 
 // 选将阶段：每人随机发到 K 张武将，各自选 1（并发，全选完才开局）
@@ -453,6 +834,194 @@ export interface GameState {
    */
   damagedThisTurn: string[];
   /**
+   * 本回合**杀死过角色**的人（何太后·戚乱：「你于此回合内杀死过角色」）。
+   * 与 damagedThisTurn 同一套做法：在 kill 时机的公共入口登记、随回合清空。
+   * 注意要按「回合」而不是「某人的回合」清——戚乱是在**任何**回合结束时检查的。
+   */
+  killedThisTurn: string[];
+  /**
+   * 本回合**从牌堆摸到过**的牌 id（袁术·伪帝：「本回合从牌堆获得过牌的角色」）。
+   *
+   * 在 `drawOne`（deck.ts，摸牌的**唯一**出口）登记、随回合清空。
+   * ⚠️ 记的是**牌**而不是人：drawOne 只负责从牌堆取牌，把它塞进谁手里是调用方决定的，
+   * 所以判定时反过来查「某人的手牌/装备区里有没有这些 id」。已知偏差：这张牌本回合被别人
+   * 拿走（顺手牵羊那类）后，新持有者也会被算作「从牌堆获得过牌」——要做准就得再记「谁摸的」。
+   */
+  gainedFromDeckThisTurn: string[];
+  /**
+   * 「这张牌是**谁**从牌堆摸到的」（牌 id → 座次），随回合清空。袁术·伪帝用它认人。
+   *
+   * 为什么不能只看 `gainedFromDeckThisTurn`（牌 id 列表）：那张牌本回合被别人顺手牵羊拿走之后，
+   * 新持有者按牌 id 查也会被算成「从牌堆获得过牌」。归因放在**意图结束时**做：一张牌第一次
+   * 出现在某人手里、且它在本次抽牌账本里、且还没归过别人 → 才算他摸的。偷来的不会被算。
+   * 已知偏差：同一手意图里「摸到又立刻弃掉」的牌不会归因（它没在意图结束时留在手上）。
+   */
+  deckGainOwner: Record<string, string>;
+  /**
+   * 君孙权·据江「此牌额外结算一次」的去重账本：已经追加结算过的牌 id。
+   * 追加的那一遍里技能钩子会再次看到这张牌，靠它跳过（否则无限递归）。随回合清空。
+   *
+   * ⚠️ 只服务于「追加结算」（据江）那一套；严白虎·寄篱的第二张牌是**新建的虚拟牌**
+   *    （不同 id），不需要账本——它自己也永远不会被再次触发（无色）。
+   */
+  extraResolvedCards: string[];
+  /**
+   * 严白虎·寄篱造出来的虚拟牌**发号器**（id 带序号 → 唯一；记在 state 上 → 同种子可重放）。
+   */
+  jiliVirtualSeq: number;
+  /**
+   * 轮号：从 **1** 开始，座次绕回首位时 +1（见 afterTurnEnd）。徐庶·荐才的
+   * 「获知数量补足到 轮数×3」用它；`roundStart` 时机在 +1 之后派发。
+   */
+  round: number;
+  /**
+   * 本回合的**伤害事件账本**：每次真正落地的伤害记一条（来源、目标、**伤害发生那一刻**
+   * 目标的已确定势力）。徐庶·诛害要问「该角色本回合有没有伤害过与徐庶**势力相同**的角色」——
+   * 势力按当时公开的 `effectiveFaction` 记，**不追溯**（暗将之后亮出来不算，与会盟同一口径）。
+   * 随回合清空（startTurn）。
+   */
+  damageLedgerThisTurn: { sourceId: string; targetId: string; targetFaction: Faction | null }[];
+  /** 孟达·【量反】：本回合从「函」拿进手里的实体牌 id（资格不跨回合） */
+  liangfanHanIds: string[];
+  /**
+   * SP司马昭·【夙智】：回合内的触发计数（**三个子效果共用 3 次额度**，0..3）。
+   * 只在他自己的回合内有效，随回合开始清零。达到 3 即本回合剩余时间失效。
+   */
+  suzhiTriggers: number;
+  /**
+   * 孙綝·【凶虐】①：本回合选定的攻击效果（消费 1 张戮换来）。
+   * `faction` 是那张戮**冻结时**的势力；`mode` 是三分支之一。随他的下个回合开始清空。
+   */
+  xiongnue: { factions: Faction[]; mode: 'dmg' | 'obtain' | 'limit' } | null;
+  /**
+   * 孙綝·【凶虐】②：本回合的出牌阶段结束时消费 2 张戮换来的「受到**其他角色**伤害 -1」，
+   * 持续到**他自己的下个回合开始**（跨过别人的回合）。
+   */
+  xiongnueDefense: boolean;
+  /**
+   * 刘巴·【统度】：本回合**各自的弃牌阶段**里、由该角色**自己**弃置的牌数（按**张**统计，
+   * 不看事件次数）。只在 `turn.phase === 'discard'` 且弃牌者就是当前回合角色时累加，
+   * 随回合清零。用来算 X（至多 3）。
+   */
+  discardPhaseCountsThisTurn: Record<string, number>;
+  /**
+   * 被**濒死**打断的「多步链」的续接队列（王平·将略的军令逐个问、朱灵·决绝的逐个结算，
+   * 以及**任何**在钩子链里打出来濒死的情况——见 engine 的 runHooksFrom）。
+   *
+   * 为什么要单独一份：这类链被打断之后
+   * ① 不能让发起方接着同步跑——`askChoice` 会把濒死求桃的询问**直接顶掉**（被顶的人停在
+   *    0 体力却永远不死，回合还照常往下走）；
+   * ② 也不能只靠 `resumeQueue`——那条队列在「出牌阶段占位 pending」下不会被排空
+   *    （见 `isIdlePending` 的注释），链会一直搁在队列里。
+   * 所以挂到 state 上，由 `resumePlay` 在「控制权该还回去的时候」按**挂上的先后**依次惊醒，
+   * 与 `ongoingTrick`（AOE 锦囊）/ `ongoingChain`（铁索蔓延）同一档。
+   */
+  ongoingSkillChain: (() => void)[];
+  /**
+   * **本回合**的「弃置账本」：谁（`actorId`）弃置了谁（`ownerId`）的哪几张牌。
+   *
+   * ⚠️ 两个维度必须分开：**执行弃置动作的人**和**牌原来属于谁**是两回事——
+   * 「A 用过河拆桥弃 B 的牌」是 `actorId = A, ownerId = B`；「A 令 B 弃置自己一张」是
+   * `actorId = B, ownerId = B`（执行者是 B）。苏飞·【联翩】要的正是**执行者**那一维
+   * （「本回合弃置任意角色的牌的总张数」），只看牌主一定会算错。
+   *
+   * 只记**真正的弃置**：这条账本由 `fireCardDiscarded` 写，而「置入弃牌堆」（朱灵·决绝那类
+   * 直接落牌、使用/打出/判定后进弃牌堆）根本不走它，所以天然不算。
+   * 随回合清空（`startTurn`）；同一回合内**逐个技能实例实时重算**，不要缓存。
+   */
+  turnDiscards: { actorId: string; ownerId: string; cardIds: string[] }[];
+  /**
+   * **一次「使用牌」的编号**（每次使用自增）＋「本回合各次使用实际造成的伤害」账本。
+   *
+   * 许攸·【成略】要求「**这张牌整个生命周期**有没有实际伤害过某个人」——必须绑定**这次使用**
+   * （`cardUseId`），不能按牌名、也不能按「本回合受过伤」判断：同一个人连着用两张【南蛮】，
+   * 第二张结算时不能因为第一张打过他就发阴阳鱼。
+   * 只在**真的扣了血**之后记（被防止/减到 0 不算）；随回合清空。
+   */
+  /**
+   * 诸葛恪·【黩武】：结算期间「谁在盯着」与「有没有人进入濒死并被救回」。
+   * 两次状态（`duwuWatchSeat` = 发起者）——因为黩武的结算会挂起好几次询问，
+   * 用局部变量接不住；随回合清空。
+   */
+  /** 「最近一次伤害」的来源与生成者（黄祖·袭射判断「被袭射的杀打死」用；随回合清） */
+  lastDamageSourceId: string;
+  lastDamageGeneratedBy: string | null;
+  /** 黄祖·袭射②：本回合有人死于袭射的【杀】（存黄祖座位；随回合清） */
+  xisheKilledSeat: string | null;
+  duwuWatchSeat: string | null;
+  duwuRescued: boolean;
+  /**
+   * **输入槽的版本号**：每次 `state.pending` 被写（set / clear / replace / answer / restore）都自增。
+   *
+   * 用来实现「收尾只能抢走自己开始前就存在、且期间从未被碰过的 pending」这条所有权规则
+   * （lost-update / ABA 防护，见 engine 的 capturePendingCheckpoint / takeOverPendingIfUnchanged
+   * 与 docs §5.124）。**不要直接写 `state.pending = …`**——要走那套收口函数，
+   * 否则这个版本号不会动，收尾会误判成「没人碰过」。
+   */
+  pendingSeq: number;
+  /**
+   * **被围栏挡住的收尾待办**（订阅式唤醒，docs §5.124.2）：收尾想抢回出牌阶段但槽里是别人
+   * 刚产生的询问时，把「等它答完再回来」登记在这里；那条 pending 一被 resolve/cancel
+   * （回答询问的清槽点）就直接唤醒，而不是靠轮询队列（轮询在 play 占位下永远不跑）。
+   */
+  /** 等某一条询问（requestId）**完成**的待办（按 requestId 分组；不是「等 pending 变空」） */
+  pendingWaiters: Map<number, (() => void)[]>;
+  /** **回合世代**：每次回合交接（startTurn）自增；迟到的 resumePlay 请求靠它判过期 */
+  turnSeq: number;
+  /**
+   * **打点**（docs §5.124.4）：围栏「本来会挡住」的 takeover 记录——用于把被挡的收尾按**语义**
+   * 聚类（是「恢复交互入口」还是「提交不可延迟的状态迁移」），而不是按函数名猜。
+   * 只记不改行为（当前仍照旧强制覆盖），所以开着它不会有任何行为变化。
+   */
+  blockedTakeovers: {
+    finalizer: string;
+    checkpointSeq: number;
+    currentSeq: number;
+    checkpointKind: string | null;
+    currentKind: string | null;
+    phase: string;
+    turnSeat: string | null;
+    inDying: boolean;
+    resumeQueueLength: number;
+  }[];
+  cardUseSeq: number;
+  useDamages: { useId: number; targetId: string; amount: number }[];
+  /**
+   * 朱灵·【决绝】的触发门槛：本回合**自己的弃牌阶段**里**弃置过手牌**的座位。
+   * ⚠️ 与上面的「弃置总张数」是两个口径：门槛只看「有没有弃过**手牌**」，
+   *    而 X＝本阶段弃置的**全部**牌数（含装备等其他牌）。
+   */
+  handDiscardedInDiscardPhase: string[];
+  /**
+   * 朱灵·【决绝】已在本回合的弃牌阶段失去过 1 点体力（记在本回合内，随回合清空）。
+   */
+  juejueArmed: boolean;
+  /**
+   * **当前阶段**实际受到过伤害的角色（伤被防止不算）。
+   * 董昭·【劝进】要求目标是「在当前**出牌阶段**已经受到过伤害」的角色——注意是**阶段**不是回合，
+   * 所以不能复用 `damagedThisTurn`。进入出牌阶段时清空（与 `lostCardsThisPhase` 同一生命周期口径）。
+   */
+  damagedThisPhase: string[];
+  /** 张鲁·【米道】：本回合已经发动过米道的**使用者**座位（每名同势力角色各自每回合一次） */
+  midaoUsedSeats: string[];
+  /**
+   * 装备「失去事件」的编号（见 timing.EquipLostPayload.eventId）。单调递增，不需要重置。
+   */
+  equipLossSeq: number;
+  /**
+   * 本局的随机源。`createGame` 的 `opts.rng` 会存进来（测试就是靠它做「固定种子」的对局）。
+   *
+   * ⚠️ 以前「随机选一张手牌」「军令随机抽两张」这类地方直接用了 `Math.random()`，
+   * 于是**种子只固定了一部分对局**——同一个种子每次跑出来的局面不同，冒烟/模糊测试
+   * 报出来的问题无法稳定复现（排查时白花了两轮）。新增随机逻辑一律走这个字段。
+   */
+  rng: () => number;
+  /**
+   * 「未加入游戏的武将牌堆」：选将结束后剩下的武将 id（变包的**变更副将**从这堆里
+   * 连续亮将，直到亮出与主将势力相同者）。
+   */
+  heroPool: string[];
+  /**
    * 本回合**进入过弃牌堆**的所有牌（孟获·再起的 X = 其中红桃牌的数量）。
    *
    * 只有 `toDiscard()` 会写这个账本——**不要直接 `state.discard.push(...)`**，
@@ -479,6 +1048,76 @@ export interface GameState {
    * 又引发了濒死等新流程，队列会一直等到那串流程走完、pending 再次为空才继续。
    */
   resumeQueue: (() => void)[];
+
+  /**
+   * 判定阶段里**已经拿在手上、还没结算完**的判定牌（延时锦囊）。
+   *
+   * 为什么要有这本台账：`processJudgmentPhase` 一上来就把 `player.judgment` 清空，
+   * 把整叠牌拿进局部数组逐张往下递（这样「闪电移到下家判定区」才不会两头都在）。
+   * 可一旦判定者本人死在这一步（最典型：自己的【闪电】把自己劈死），死亡清场会接管流程，
+   * 判定阶段**再也不会往下走**——那叠还攥在闭包里的牌就彻底没了（实测 seed=1405：
+   * 一张【兵粮寸断】跟到游戏结束都没回场上）。死亡清场照着这本台账把它们一并弃置。
+   */
+  judgmentInFlight: { seatId: string; cards: Card[] } | null;
+
+  /**
+   * 「本轮」每个座位**造成**的伤害总量（君主·励众：「本轮造成过伤害且造成伤害值最多的角色」）。
+   *
+   * 与 `damagedThisTurn`（本回合**受到**过伤害的人）不是一回事：那个是受伤视角、且只活一个回合。
+   * 这里是「造成」视角，生命周期是**一轮**（从首位走到末位、再回到首位时清空，见 engine 的回合交替处）。
+   */
+  damageThisRound: Record<string, number>;
+  /**
+   * 君主专属装备的**发号器**：每次「从游戏外获得专属装备」都造一张新牌，id 必须唯一。
+   *
+   * 为什么不能写死 id：那张牌不是场外的一张固定实体——它可以被顺手牵羊拿走（进手牌，
+   * 于是【君威】的「场上没有【你的专属装备】」重新成立），此时再发动【君威】就会造出第二张。
+   * 用固定 id 的话两张牌同 id，「一张牌同时存在两个区域」这类不变式立刻被破坏
+   * （模糊测试抓到的：`step` 里让技能带牌发动之后，君威才第一次真的被跑到）。
+   * 记在 state 上而不是模块级计数器，否则同一个种子重放出来的 id 会不一样。
+   */
+  lordEquipSeq: number;
+  /**
+   * 「本回合用过哪些国战标记」——君刘备·章武要「视为使用1枚**与你势力相同的角色本回合使用过**
+   * 的国战标记」，所以每次真用掉一枚就记一笔（记在**用的人**头上）。
+   *
+   * 与 `damagedThisTurn` / `killedThisTurn` 一样是每回合清空的账本（`startTurn` 里清）。
+   * 同一枚被同一人用多次就记多条，章武那边按标记 id 去重成选项。
+   */
+  markerUsesThisTurn: { seatId: string; markerId: MarkerId; usage: MarkerUsage }[];
+  /**
+   * 【授锋】的「本回合出牌阶段用掉的第一张伤害牌」（君袁绍）。
+   *
+   * 「首张」必须记在**使用的那一刻**（引擎在 `markCardUsed` 里顺手登记），不能等结算结束
+   * 再判断：青龙偃月刀那种「第一张【杀】结算到一半又用出第二张」的情况下，第二张的结算
+   * 会先结束，按结算顺序数就会把第二张当成首张。记下 id，结算结束时对一下。
+   *
+   * ⚠️ 用完**不能清成 null**：这本账的 null 含义是「这个出牌阶段还没有伤害牌被使用」，
+   * 清掉的话同一回合的第二张伤害牌会重新被当成「首张」（写测试时踩到过）。
+   * `resolved` 才是「这条已经派发过了」——同一张牌在寄篱那类重跑路径上可能走到两次出口。
+   * 生命周期一个回合（`startTurn` 清成 null）。
+   */
+  firstDamageCard: {
+    seatId: string;
+    /** 使用时那张「生效牌」的 id（丈八是虚拟【杀】的 id，用来和结算出口对上） */
+    cardId: string;
+    /**
+     * 这次使用**对应的实体牌** id 列表（用户给定的实现口径）：
+     * 普通牌＝它自己；丈八两张牌凑的虚拟【杀】＝那两张；纯「视为使用」＝空。
+     * 【授锋】的「获得此伤害牌」就是照这张表去弃牌堆逐张取——所以必须在**使用的那一刻**
+     * 记下来，不能等触发时再去找「刚才那张牌」。
+     */
+    cardIds: string[];
+    resolved: boolean;
+  } | null;
+  /**
+   * 「本回合已经因【雄驰】问过一次」的角色（君曹操）。
+   *
+   * 【雄驰】是「当你**每回合第一次**造成伤害后」——「每回合」指场上每一个回合，
+   * 不是只有自己的回合，所以不能靠 `PlayerFlags`（那套只在自己回合开始时清）。
+   * 生命周期一个回合：与 `damagedThisTurn` 一起在 `startTurn` 清空。
+   */
+  xiongchiDoneSeats: string[];
   /**
    * 排队的额外回合（刘禅·放权、挟天子以令诸侯）。
    * 当前回合结束后先结算队首：该角色（存活的话）进行一个额外回合。
@@ -537,6 +1176,16 @@ export function alivePlayers(state: GameState): Player[] {
  */
 export function toDiscard(state: GameState, ...cards: Card[]): void {
   for (const c of cards) {
+    // 「离开装备区后销毁之」的牌（君主专属装备）：**移出游戏**，不进弃牌堆。
+    // 官方文本就写在牌面上（例：【飞龙夺凤】「当此牌离开装备区后，销毁之」）。
+    if (c.destroyOnLeave) {
+      pushLog(
+        state,
+        'discard',
+        `【${c.equipName ? (EQUIP_NAME[c.equipName] ?? c.equipName) : CARD_TYPE_NAME[c.type]}】离开装备区，销毁之（移出游戏）。`,
+      );
+      continue;
+    }
     // 先递归卸载辎，再收这张装备牌自己（顺序不影响结果，但日志读起来更顺）
     if (c.cargo && c.cargo.length > 0) {
       const cargo = c.cargo;

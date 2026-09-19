@@ -60,12 +60,36 @@ export interface PlayerView {
   heroRevealed?: boolean;
   /** 被【断肠】点名的那张武将牌 id：它的技能全没了（界面上别再列它的技能） */
   nullifiedHeroId?: string | null;
+  /** 已被移除的武将牌（国战：用士兵牌顶替，没有技能，但势力/性别/体力上限保留） */
+  removedHeroIds?: string[];
+  /** 武将牌上的「田」张数（邓艾·屯田） */
+  tianCount?: number;
+  /** 武将牌上的「千幻」张数（于吉·千幻） */
+  qianhuanCount?: number;
+  /** 武将牌上的「魂」张数（左慈·役鬼） */
+  hunCount?: number;
+  /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
+  wounds?: Card[];
+  /** 孟达·【求安】的「函」（公开信息） */
+  han?: Card[];
+  /** 界钟会·【权计】的「权」：公开放在武将牌旁的**实体牌** */
+  quan?: Card[];
+  /** 孙綝·【嗜戮】的「戮」：**武将牌**（公开）→ 只下发数量与牌名 */
+  luCount?: number;
+  luNames?: string[];
+  /** 公孙渊·【怀异】的「异」（公开信息） */
+  yi?: Card[];
   /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */
   shuangxiongColor?: 'red' | 'black' | null;
   // 副将是否已亮将（国战公开信息）
   deputyRevealed?: boolean;
   // 国战标记（公开信息）：持有数量 > 0 的标记
   markers?: { id: MarkerId; label: string; count: number }[];
+  /**
+   * 【荐才】（徐庶·副将技）「获知」的**尚未登场的同势力武将牌**。
+   * 这是**私有信息**：只有本人那一份快照里才有，别人的快照里连字段都没有。
+   */
+  knownHeroes?: { id: string; name: string }[];
   // 武将牌是否翻面朝上（公开信息）：为 true 时该角色跳过下一个回合
   flipped?: boolean;
   /** 是否处于横置状态（铁索连环，公开信息） */
@@ -111,6 +135,14 @@ export interface PromptView {
   mustSelectTargetCount: number;
   // 选将阶段：发给我的武将 id 列表（仅 pickHero 有）
   legalHeroIds?: string[];
+  /**
+   * 选将阶段：**白捡的另一版**武将（仅 pickHero 有，国战「君主↔标准版」）。
+   *
+   * 发将是不重叠发牌（一张武将牌只在一个人的选项里），所以「发到曹操就等于也拿到君曹操」
+   * 只在**君曹操没发到别人手里**时成立；这一栏就是那些确实没人拿、可以随便换的版本。
+   * 界面用它决定要不要显示「换成君主将 / 换成标准版」按钮。
+   */
+  draftVariants?: string[];
   // 出牌阶段：可用的主动技能 id 列表（仅 play 有）
   /** 出牌阶段：可以「连横」交给哪些角色（势备篇，非空即说明手上有带标记的牌） */
   lianhengTargets?: string[];

@@ -1,5 +1,6 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
+import { getHeroForMode } from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -44,6 +45,19 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     chained: p.chained,
     // 断肠点名的武将牌：**公开信息**（失去技能是明面上的事），所有人看得到
     nullifiedHeroId: p.nullifiedHeroId,
+    removedHeroIds: p.removedHeroIds.slice(),
+    // 「田」「千幻」都是扣在武将牌上的牌，公开信息
+    tianCount: p.tian.length,
+    qianhuanCount: p.qianhuan.length,
+    hunCount: p.hun.length,
+    // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
+    wounds: p.wounds.slice(),
+    han: p.han.slice(),
+    yi: p.yi.slice(),
+    // 界钟会·权（实体牌）与孙綝·戮（武将牌：数量 + 牌名）
+    quan: p.quan.slice(),
+    luCount: p.lu.length,
+    luNames: p.lu.map((e) => getHeroForMode(e.heroId, state.mode)?.name ?? e.heroId),
     // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」
     shuangxiongColor: p.flags.shuangxiongColor,
     // 预亮是对手看不到的信息，只放进本人的那一份快照
@@ -51,6 +65,11 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
       ? {
           prelitSkills: p.prelitSkills.slice(),
           prelitableSkills: prelitableSkills(state, p).map((x) => x.name),
+          // 【荐才】（徐庶）获知的未登场同势力武将牌：**私有信息**，只随本人那一份快照下发
+          knownHeroes: p.knownHeroIds.map((id) => ({
+            id,
+            name: getHeroForMode(id, state.mode)?.name ?? id,
+          })),
         }
       : {}),
     hp: Math.max(0, p.hp),

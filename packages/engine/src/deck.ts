@@ -4,7 +4,8 @@ import type { GameState } from './model';
 /**
  * 构建牌堆。**国战与其它模式的牌堆不一样**。
  *
- * 国战牌堆官方 108 张，本版本**已全部收录**（含【无懈可击·国】2 张）。
+ * 国战牌堆官方 108 张 = **54 基本 + 34 锦囊 + 20 装备**（用户核对后提供的构成）。
+ * 锦囊里含三张无懈：♠J【无懈可击】＋ ♦Q / ♣K【无懈可击·国】。
  * 国战独有的【铁索连环】【知己知彼】【以逸待劳】【远交近攻】【五谷丰登】都实现了。
  * 国战独有的装备（麒麟弓/吴六剑/三尖两刃刀/白银狮子/寒冰剑）也都在堆里，
  * 但**特效未做**，悬停提示里会如实标注（同军争那几件）。
@@ -105,7 +106,12 @@ function buildGuozhanDeck(): Card[] {
   cards.push(mk('shunshou', 'diamond', 3));
   cards.push(mk('wuzhong', 'heart', 7));
   cards.push(mk('wuzhong', 'heart', 8));
+  // 无懈三张（官方点数，用户核对后提供）：♠J 普通【无懈可击】＋ ♦Q / ♣K 两张【无懈可击·国】。
+  // ⚠️ 【无懈可击·国】属于**国战标准 108 张**，不是势备篇的牌——原先错放在势备篇里，
+  //    于是标准堆只有 54 基本 + 32 锦囊 + 20 装备 = 106 张（少的就是这两张）。
   cards.push(mk('wuxie', 'spade', 11));
+  cards.push(mk('wuxieguo', 'diamond', 12));
+  cards.push(mk('wuxieguo', 'club', 13));
   cards.push(mk('huogong', 'heart', 2));
   cards.push(mk('huogong', 'diamond', 2));
   cards.push(mk('taoyuan', 'heart', 3));
@@ -322,7 +328,10 @@ export function buildShibeiCards(): Card[] {
   cards.push(mk('treasure', 'diamond', 5, { equipName: 'muniu' })); // 木牛流马
 
   // —— 锦囊 17：全部已实现 ——
-  cards.push(mk('wuxie', 'spade', 13)); // 无懈可击（同基础堆，直接可用）
+  // 势备篇是**独立的一包**（官方：直接加入原国战游戏牌），它自带这三张无懈——用户给出的
+  // 17 张锦囊构成里明确有【无懈可击·国】×2 与【无懈可击】×1（标准堆里那三张是另一套，
+  // 两包各一份，混用后总池 = 108 + 52 = 160，见 docs/guozhan-roster.md §5.76）。
+  cards.push(mk('wuxie', 'spade', 13)); // 无懈可击
   cards.push(mk('wuxieguo', 'diamond', 11)); // 无懈可击·国
   cards.push(mk('wuxieguo', 'club', 13)); // 无懈可击·国
   cards.push(mk('tiaohu', 'heart', 2)); // 调虎离山
@@ -369,8 +378,93 @@ export function seededRng(seed: number): () => number {
 export function drawOne(state: GameState): Card | null {
   if (state.deck.length === 0) {
     if (state.discard.length === 0) return null;
-    state.deck = shuffle(state.discard);
+    // ⚠️ 洗回弃牌堆也要走 `state.rng`：用缺省的 `Math.random` 会让固定种子重放不出来
+    //    （这种「同一个种子每次局面都不同」的坑踩过两轮，一处都不能漏）
+    state.deck = shuffle(state.discard, state.rng);
     state.discard = [];
   }
-  return state.deck.pop() ?? null;
+  const card = state.deck.pop() ?? null;
+  // 「本回合从牌堆获得过牌」的账本（袁术·伪帝）。重洗之后摸到的牌也该算——它们此刻确实
+  // 是从牌堆来的，所以在这里盖戳比「意图前后快照」准（快照法会漏掉重洗那一批）。
+  if (card) state.gainedFromDeckThisTurn.push(card.id);
+  return card;
+}
+
+/**
+ * 君主将的**专属装备**——不在任何牌堆里，只能通过【君威】从**游戏外**取得。
+ *
+ * 【飞龙夺凤】（宝物 ♠2）效果原文（移动版 WIKI，已核）：
+ *   「当你每回合首次使用【杀】对目标角色造成伤害后，你可以获得其一枚阴阳鱼标记或者一张手牌。
+ *     当此牌离开装备区后，销毁之。」
+ *
+ * ⚠️ 另外三件（【六龙骖驾】【定澜夜明珠】【盟军大纛】）的 WIKI 没有页面、搜索配额也用尽了，
+ *    效果文本**待核对**——在查清之前不实现（本仓库不猜规则文本）。
+ */
+export function lordEquipFeilong(seq: number): Card {
+  return {
+    id: `lord-feilong#${seq}`,
+    type: 'treasure',
+    suit: 'spade',
+    rank: 2,
+    equipName: 'feilong',
+    destroyOnLeave: true,
+  };
+}
+
+/**
+ * 【六龙骖驾】（君主将专属宝物，♥K）：**你计算与其他角色的距离 -3**。
+ *
+ * 只能通过君曹操的【君威】从**游戏外**取得；离开装备区即销毁（`Card.destroyOnLeave`）。
+ * ⚠️ 网上另有「它会替换坐骑、且不能再使用坐骑牌」的说法——用户提供的牌面文本里**没有**这一条，
+ *    本实现按用户文本：只有「距离 -3」，也不影响坐骑牌的使用。
+ */
+export function lordEquipLiulong(seq: number): Card {
+  return {
+    id: `lord-liulong#${seq}`,
+    type: 'treasure',
+    suit: 'heart',
+    rank: 13,
+    equipName: 'liulong',
+    destroyOnLeave: true,
+  };
+}
+
+/**
+ * 【盟军大纛】（君袁绍的君主专属装备）——
+ * 「当你受到伤害时，你可以弃置两张牌（弃置的其中一张牌可以是盟军大纛），然后你防止此伤害。
+ *   当此牌离开装备区时，销毁之。」（用户核对后提供的牌面文本）
+ *
+ * 牌面（用户核对后提供）：**装备牌·防具，红桃 3（♥3）**，君袁绍发动【君威】获得。
+ *
+ * ⚠️ 它是**防具**不是宝物（原先占位写成宝物是猜错了）：所以它占 `equipment.armor` 那个槽位，
+ *    效果函数也要看 armor（见 equip.mengjunDajun）。跟既有防具不冲突——仁王盾/藤甲/八卦阵/
+ *    明光铠/护心镜/白银狮子那些判定都是按**牌名**认的，认不出它就不会误判。
+ */
+/**
+ * 【定澜夜明珠】（君孙权的君主专属装备）——
+ * 「锁定技，你每回合首次弃置牌后，摸一张牌。当此牌离开你的装备区时，销毁之。」
+ * （移动版官网《国战模式更新公告》里给的就是这一版文本；用户核对后也给了同一版）
+ *
+ * 牌面（用户核对后提供）：**装备牌·宝物，方块 K（♦K）**，君孙权发动【君威】获得。
+ */
+export function lordEquipDinglan(seq: number): Card {
+  return {
+    id: `lord-dinglan#${seq}`,
+    type: 'treasure',
+    suit: 'diamond',
+    rank: 13,
+    equipName: 'dinglan',
+    destroyOnLeave: true,
+  };
+}
+
+export function lordEquipMengjun(seq: number): Card {
+  return {
+    id: `lord-mengjun#${seq}`,
+    type: 'armor',
+    suit: 'heart',
+    rank: 3,
+    equipName: 'mengjun',
+    destroyOnLeave: true,
+  };
 }

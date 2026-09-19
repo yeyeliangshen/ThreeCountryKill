@@ -9,6 +9,8 @@ import type {
   SeatView,
   ServerMessage,
   Snapshot,
+  GuozhanExtensions,
+  GuozhanRoomConfig,
 } from '@sgs/protocol';
 import { clearSession, loadSession, saveSession } from './session';
 
@@ -24,13 +26,14 @@ export interface LobbyState {
   /** 房主是否开了「选将不限（测试用）」 */
   freePick: boolean;
   /** 房主是否开了「势备篇（+52 张）」（只对国战生效） */
-  shibei: boolean;
+  /** 国战扩展开关（服务端权威；房主在大厅可改，开局后冻结） */
+  config: GuozhanRoomConfig;
 }
 
 interface Store {
   screen: Screen;
   ws: WebSocket | null;
-  // 表单（只在大厅门口填：服务器地址 + 昵称）
+  // 连哪台服务器：**不给玩家填**，由页面地址/开发环境默认值决定（见下方初始化）
   serverAddr: string;
   name: string;
   /** 当前所在房间号（在大厅里是空串）。刷新后从 localStorage 恢复，用来认回房间 */
@@ -46,7 +49,7 @@ interface Store {
   // 内部
   _seatId: string | null;
   // setters
-  setForm: (patch: Partial<Pick<Store, 'serverAddr' | 'name' | 'heroDealCount'>>) => void;
+  setForm: (patch: Partial<Pick<Store, 'name' | 'heroDealCount'>>) => void;
   // 动作
   connect: () => void;
   disconnect: () => void;
@@ -68,7 +71,9 @@ interface Store {
   revealHero: (heroId: string) => void;
   useSkill: (skillId: string, cardIds: string[], targetIds: string[]) => void;
   setFreePick: (on: boolean) => void;
-  setShibei: (on: boolean) => void;
+  setGuozhanConfig: (config: GuozhanRoomConfig) => void;
+  /** 便捷写法：只改某一个开关（其余保持不动） */
+  setExtension: (key: keyof GuozhanExtensions, value: string) => void;
   chooseOption: (optionId: string) => void;
   pickCards: (cardIds: string[]) => void;
   factionCall: (skillId: string) => void;
@@ -125,11 +130,10 @@ export const useStore = create<Store>()((set, get) => {
             mySeatId: msg.mySeatId,
             mode: msg.mode,
             freePick: msg.freePick,
-            shibei: msg.shibei,
+            config: msg.config,
           };
           // 记住「我在哪」：刷新/锁屏回来时靠它自动回到原房间原座位
           saveSession({
-            serverAddr: prev.serverAddr,
             roomCode: msg.roomCode,
             name: prev.name,
             seatId: msg.mySeatId,
@@ -206,8 +210,9 @@ export const useStore = create<Store>()((set, get) => {
   return {
     screen: 'join',
     ws: null,
-    // 开发默认 localhost:8080；生产构建后默认空（用当前页 host，即部署服务器）
-    serverAddr: saved?.serverAddr || (import.meta.env.DEV ? 'localhost:8080' : ''),
+    // 开发默认 localhost:8080；生产构建后空 = 用当前页 host（部署服务器）。
+    // ⚠️ 不再读存档里的地址：登录页已经没有这一栏，留着旧值只会把人指到别的服务器。
+    serverAddr: import.meta.env.DEV ? 'localhost:8080' : '',
     name: saved?.name ?? '',
     roomCode: saved?.roomCode ?? '',
     rooms: [],
@@ -291,7 +296,18 @@ export const useStore = create<Store>()((set, get) => {
     // 选将不限（测试用）：立刻广播，开局时服务端也带上这个标记
     setFreePick: (on) => get().send({ type: 'setFreePick', freePick: on }),
 
-    setShibei: (on) => get().send({ type: 'setShibei', shibei: on }),
+    setGuozhanConfig: (config) => get().send({ type: 'setGuozhanConfig', config }),
+    setExtension: (key, value) => {
+      const cur = get().lobby?.config;
+      if (!cur) return;
+      get().send({
+        type: 'setGuozhanConfig',
+        config: {
+          schemaVersion: cur.schemaVersion,
+          extensions: { ...cur.extensions, [key]: value } as GuozhanExtensions,
+        },
+      });
+    },
 
     startGame: () =>
       get().send({
@@ -300,7 +316,7 @@ export const useStore = create<Store>()((set, get) => {
         heroDealCount: get().heroDealCount,
         // 开局消息把 freePick 一起带上：不带的话服务端会把它当成没设过
         freePick: get().lobby?.freePick ?? false,
-        shibei: get().lobby?.shibei ?? false,
+        config: get().lobby?.config,
       }),
 
     sendIntent: (intent) => get().send({ type: 'intent', intent }),

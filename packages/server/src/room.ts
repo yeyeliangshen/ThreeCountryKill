@@ -2,10 +2,15 @@
 import type { GameMode, Intent, RoomSummary, ServerMessage, SeatView } from '@sgs/protocol';
 import {
   applyIntent,
+  configFromPreset,
   createGame,
+  DEFAULT_GUOZHAN_PRESET,
+  freezeConfig,
   toSnapshot,
+  validateGuozhanConfig,
   type ApplyResult,
   type GameState,
+  type GuozhanRoomConfig,
   type SeatSetup,
 } from '@sgs/engine';
 import type { WebSocket } from 'ws';
@@ -40,6 +45,8 @@ export interface SeatEntry {
   connected: boolean;
   heroId: string | null;
   ws: WebSocket | null;
+  /** 断线时刻（毫秒）；在线时为 null。用来判「离开太久、该把座位收回了」 */
+  disconnectedAt: number | null;
 }
 
 export class Room {
@@ -50,10 +57,15 @@ export class Room {
   pendingMode: GameMode = 'melee';
   /** 测试用：选将不限（房主可开） */
   freePick = false;
-  /** 房主是否开了势备篇（开局前可改，和 freePick 同一套） */
-  shibei = false;
+  /**
+   * 国战扩展开关（开局前房主可改，和 freePick 同一套；**开局后冻结**）。
+   * 新建房间用 `DEFAULT_GUOZHAN_PRESET`（线上默认「标准国战」）。
+   */
+  config: GuozhanRoomConfig = configFromPreset(DEFAULT_GUOZHAN_PRESET);
   game: GameState | null = null;
   started = false;
+  /** 开局那一刻的配置快照（只读）；`started` 之后一切以此为准 */
+  frozenConfig: Readonly<GuozhanRoomConfig> | null = null;
 
   constructor(roomCode: string, maxSeats = 8) {
     this.roomCode = roomCode;
@@ -65,12 +77,24 @@ export class Room {
       connected: false,
       heroId: null,
       ws: null,
+      disconnectedAt: null,
     }));
   }
 
   /** 找第一个空座位（无人落座） */
   findEmpty(): SeatEntry | null {
     return this.seats.find((s) => s.name === null) ?? null;
+  }
+
+  /**
+   * 这个昵称占着哪个座位。
+   *
+   * **一个昵称＝一个用户**：房间里的身份认昵称，不认连接。换设备、清了本地记录、
+   * 或者同一个浏览器开第二个标签页时，靠它认出「这是我自己的座位」，
+   * 而不是又占一个新位子、把旧座位变成离线幽灵。
+   */
+  findByName(name: string): SeatEntry | null {
+    return this.seats.find((s) => s.name === name) ?? null;
   }
 
   /**
@@ -90,23 +114,49 @@ export class Room {
   ): { ok: true; seatId: string } | { ok: false; error: string } {
     const seat = this.seats.find((s) => s.seatId === seatId);
     if (!seat) return { ok: false, error: '座位不存在' };
-    if (seat.name !== null && seat.connected && seat.ws !== ws)
+    // 同名＝同一个人：点自己那个正在线的座位，等于「在别处接着打」，顶掉旧连接而不是被拒
+    const sameSeatOtherConn = seat.name === name && seat.ws !== ws;
+    if (seat.name !== null && seat.connected && seat.ws !== ws && !sameSeatOtherConn)
       return { ok: false, error: '该座位已被占用' };
+
+    // 同昵称＝同一个用户：把**另一个**同名的座位让出来。
+    // 不这么做就会「同名两个人」：旧座位变成离线幽灵，新座位又占一个位置。
+    // ⚠️ 只在未开局时做：开局后座位是游戏状态的一部分（换座＝换人），不能因为同名就动它。
+    const sameNameOther =
+      this.started || seat.name === name
+        ? null
+        : this.seats.find((s) => s.name === name && s.seatId !== seatId) ?? null;
 
     // 换座：先离开原来那个座位（房主换座时身份也要跟着走，见下方再次指派）
     const previous = this.seats.find((s) => s.ws === ws && s.seatId !== seatId);
-    const keepHost = !!previous?.isHost;
+    let keepHost = !!previous?.isHost;
+
+    // 顶掉旧连接：明确告诉他回大厅——否则他那边的界面会静默卡住（收不到 lobby 了）
+    if (sameSeatOtherConn && seat.ws) {
+      this.kickNotice(seat.ws, '同一个昵称在别处登入，这个座位已由新的连接接管。');
+    }
+    if (sameNameOther) {
+      if (sameNameOther.isHost) keepHost = true; // 房主是「人」的属性，跟着人走
+      // ⚠️ 只有**别的连接**才需要通知：同一条连接换座时，那个「同名旧座位」就是它自己
+      //    刚离开的位子——发通知会把它自己顶回大厅。
+      if (sameNameOther.connected && sameNameOther.ws && sameNameOther.ws !== ws) {
+        this.kickNotice(sameNameOther.ws, '同一个昵称在别处登入，这里的座位已合并到那边。');
+      }
+      this.releaseSeat(sameNameOther.seatId);
+    }
     if (previous) this.releaseSeat(previous.seatId);
 
     if (seat.name !== null) {
       // 重连：保留原 name / heroId / isHost
       seat.connected = true;
       seat.ws = ws;
+      seat.disconnectedAt = null;
     } else {
       // 新落座
       seat.name = name;
       seat.connected = true;
       seat.ws = ws;
+      seat.disconnectedAt = null;
     }
     // 房主：新房里第一个落座的人（＝建房者），或刚换座过来的房主
     if (this.hostSeatId === null || keepHost) {
@@ -144,11 +194,50 @@ export class Room {
     seat.ws = null;
     seat.heroId = null;
     seat.isHost = false;
+    seat.disconnectedAt = null;
     if (wasHost) {
       this.hostSeatId = null;
       const next = this.seats.find((s) => s.name !== null);
       if (next) this.setHost(next.seatId);
     }
+  }
+
+  /**
+   * 把「离开太久」的座位收回（等同本人点了「离开房间」）：离线超过 `timeoutMs` 就释放。
+   *
+   * 为什么不一直留着：座位是稀缺资源——一个离线幽灵会占着位子不让别人坐，
+   * 还会拖着一整个房间（含对局状态）留在内存与大厅列表里。
+   * 收回之后，本人再回来走的就是「新登录」那条路（昵称认不到旧座位 → 坐空位）。
+   *
+   * 对局中的座位被收回时，这一位就变成**可接替的空位**（见 `abandonedSeats`）：
+   * 否则整局会永远卡在一个再也不会行动的幽灵身上。
+   *
+   * 返回：`changed` 有没有座位被收回（要重播 lobby）、`emptied` 是不是空了（调用方删房）。
+   */
+  releaseIdle(
+    timeoutMs: number,
+    now = Date.now(),
+  ): { changed: boolean; emptied: boolean } {
+    let changed = false;
+    for (const s of this.seats) {
+      if (s.name === null || s.connected) continue;
+      const since = s.disconnectedAt ?? now;
+      if (now - since <= timeoutMs) continue;
+      pushIdleLog(this, s);
+      this.releaseSeat(s.seatId);
+      changed = true;
+    }
+    return { changed, emptied: this.isEmpty() };
+  }
+
+  /**
+   * 对局中「座位空着、但游戏里还有这个人」的位置——可以让人**接替**打下去。
+   * 判据两条：room 里没人占，且这局是在开局时把他算进去的。
+   */
+  abandonedSeats(): SeatEntry[] {
+    if (!this.started || !this.game) return [];
+    const inGame = new Set(this.game.players.map((p) => p.seatId));
+    return this.seats.filter((s) => s.name === null && inGame.has(s.seatId));
   }
 
   /** 房间里还有没有人**占着座位**（离线也算占着）——空了就该删房 */
@@ -162,10 +251,18 @@ export class Room {
    * 其他人一律进不去，免得半路插进一局正在打的牌。
    * 这是大厅那条「已开局 → 显示但点不进去」的唯一判定处。
    */
-  canJoin(seatId?: string): { ok: true } | { ok: false; error: string } {
+  canJoin(seatId?: string, name?: string): { ok: true } | { ok: false; error: string } {
     if (!this.started) return { ok: true };
-    const seat = seatId ? this.seats.find((s) => s.seatId === seatId) : undefined;
+    const seat = seatId
+      ? this.seats.find((s) => s.seatId === seatId)
+      : name
+        ? this.findByName(name)
+        : undefined;
     if (seat && seat.name !== null && !seat.connected) return { ok: true };
+    // 开局后**空出来的位子**（本人离线太久被收回、或一直没人坐）可以接替：
+    // 那一位在游戏里是有人的，不让人接替的话整局就永远停在那儿了。
+    if (seat ? this.abandonedSeats().some((s) => s.seatId === seat.seatId) : this.abandonedSeats().length > 0)
+      return { ok: true };
     return { ok: false, error: '该房间已开局，无法加入' };
   }
 
@@ -213,11 +310,22 @@ export class Room {
     return { ok: true };
   }
 
-  /** 房主切换「势备篇（+52 张）」 */
-  setShibei(seatId: string, shibei: boolean): { ok: true } | { ok: false; error: string } {
-    if (this.started) return { ok: false, error: '游戏已开始' };
+  /**
+   * 房主改「国战扩展开关」。
+   *
+   * ⚠️ 两条硬规矩（用户给定）：① 只有房主能改；② **开局后不许改**——武将池、势力锦囊、
+   * 野心家状态都没法中途迁移，所以 `started` 之后一律拒绝（配置在开局那一刻冻结）。
+   * ⚠️ 配置来自网络，先过 `validateGuozhanConfig`（类型只是编译期的）。
+   */
+  setGuozhanConfig(
+    seatId: string,
+    config: unknown,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.started) return { ok: false, error: '游戏已开始，扩展开关不能再改' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能改这个设置' };
-    this.shibei = !!shibei;
+    const valid = validateGuozhanConfig(config);
+    if (!valid.ok) return { ok: false, error: `扩展配置不合法：${valid.errors.join('；')}` };
+    this.config = config as GuozhanRoomConfig;
     return { ok: true };
   }
 
@@ -227,7 +335,6 @@ export class Room {
     mode: GameMode,
     heroDealCount?: number,
     freePick?: boolean,
-    shibei?: boolean,
   ): { ok: true } | { ok: false; error: string } {
     if (this.started) return { ok: false, error: '游戏已开始' };
     if (seatId !== this.hostSeatId) return { ok: false, error: '只有房主能开始游戏' };
@@ -246,16 +353,21 @@ export class Room {
     // freePick 是房主在开局前用 setFreePick 设过的状态，开局消息里可以不带。
     // 带 `!!freePick` 会把「设过但没带」冲成 false，开关就白点了。
     if (freePick !== undefined) this.freePick = !!freePick;
-    // 同理：不带 shibei 就别动已设好的状态（写成 !!shibei 会把开关冲掉）
-    if (shibei !== undefined) this.shibei = !!shibei;
     this.game = createGame(setups, this.roomCode, {
       mode,
       heroDealCount,
       freePick: this.freePick,
-      shibei: this.shibei,
+      // 扩展开关用房间里存的那份（房主在大厅设过），**开局即冻结**
+      config: this.frozenConfig ?? this.config,
     });
     this.started = true;
+    this.frozenConfig = freezeConfig(this.config);
     return { ok: true };
+  }
+
+  /** 对外广播/开局用的配置：开局后是冻结的那份 */
+  currentConfig(): Readonly<GuozhanRoomConfig> {
+    return this.frozenConfig ?? this.config;
   }
 
   /** 意图驱动：applyIntent 原子变更权威状态 */
@@ -273,6 +385,11 @@ export class Room {
       connected: s.connected,
       heroId: s.heroId,
     }));
+  }
+
+  /** 把一个连接「请回大厅」：座位上没它了，只能直接发（客户端收到就回大厅并提示） */
+  private kickNotice(ws: WebSocket, reason: string): void {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'roomClosed', reason }));
   }
 
   private sendToSeat(seatId: string, msg: ServerMessage): void {
@@ -295,7 +412,8 @@ export class Room {
           mySeatId: s.seatId,
           mode: this.pendingMode,
           freePick: this.freePick,
-          shibei: this.shibei,
+          config: this.currentConfig() as GuozhanRoomConfig,
+
         });
       }
     }
@@ -320,9 +438,18 @@ export class Room {
       if (s.ws === ws) {
         s.connected = false;
         s.ws = null;
+        s.disconnectedAt = Date.now();
       }
     }
     if (this.started) this.broadcastSnapshots();
     else this.broadcastLobby();
   }
+}
+
+/** 收回「离开太久」的座位时记一笔（服务端日志，方便运维看谁被清了） */
+function pushIdleLog(room: Room, seat: SeatEntry): void {
+  console.log(
+    `[三国杀] 房间 ${room.roomCode}：${seat.name} 离线太久，座位 ${seat.seatId} 已收回` +
+      (room.started ? '（这一局变成可接替的空位）' : ''),
+  );
 }

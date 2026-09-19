@@ -1,4 +1,6 @@
 import type { GameMode } from '@sgs/protocol';
+import { configFromPreset, GUOZHAN_PRESETS } from '@sgs/engine';
+
 import { useStore } from '../store';
 
 // 各模式中文名 + 人数要求（与服务端 modeMinPlayers/modeMaxPlayers 保持一致）
@@ -17,7 +19,8 @@ export function Lobby() {
   const setForm = useStore((s) => s.setForm);
   const setMode = useStore((s) => s.setMode);
   const setFreePick = useStore((s) => s.setFreePick);
-  const setShibei = useStore((s) => s.setShibei);
+  const setExtension = useStore((s) => s.setExtension);
+  const setGuozhanConfig = useStore((s) => s.setGuozhanConfig);
   const startGame = useStore((s) => s.startGame);
   const leaveRoom = useStore((s) => s.leaveRoom);
 
@@ -132,11 +135,75 @@ export function Lobby() {
             >
               <input
                 type="checkbox"
-                checked={lobby.shibei}
-                onChange={(e) => setShibei(e.target.checked)}
+                checked={lobby.config.extensions.shibei === 'current'}
+                onChange={(e) => setExtension('shibei', e.target.checked ? 'current' : 'off')}
               />
               势备篇（+52 张）
             </label>
+            <label
+              className="buchen"
+              title="不臣篇：野心家武将、双势力武将、暴露野心/建立新势力、势力锦囊（牌与机制尚未实装，先占位）"
+            >
+              <input
+                type="checkbox"
+                checked={lobby.config.extensions.buchen === 'current'}
+                onChange={(e) => setExtension('buchen', e.target.checked ? 'current' : 'off')}
+              />
+              不臣篇（占位）
+            </label>
+            <label
+              className="junlintianxia"
+              title="2026 君临天下：启用君主将与专属装备（关闭后君主将不进选将池）"
+            >
+              <input
+                type="checkbox"
+                checked={lobby.config.extensions.junlintianxia === '2026'}
+                onChange={(e) =>
+                  setExtension('junlintianxia', e.target.checked ? '2026' : 'off')
+                }
+              />
+              君临天下（君主将）
+            </label>
+            {(
+              [
+                ['zhen', '君临天下·阵（8 人）'],
+                ['shi', '君临天下·势（8 人）'],
+                ['bian', '君临天下·变（8 人）'],
+                ['quan', '君临天下·权（8 人）'],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className={key} title={`${label}：关闭时该包武将不进选将池`}>
+                <input
+                  type="checkbox"
+                  checked={lobby.config.extensions[key] === 'current'}
+                  onChange={(e) => setExtension(key, e.target.checked ? 'current' : 'off')}
+                />
+                {label}
+              </label>
+            ))}
+            <div className="preset-hint" title="预设只是「一键生成配置」；手动改任何一项就会变成自定义">
+              当前：
+              {(() => {
+                const ext = lobby.config.extensions;
+                const same = (p: 'standard' | 'full2026') =>
+                  JSON.stringify(ext) === JSON.stringify(GUOZHAN_PRESETS[p].extensions);
+                if (same('standard')) return '标准国战';
+                if (same('full2026')) return '全扩展2026';
+                return '自定义';
+              })()}
+            </div>
+            <div className="preset-row">
+              {(['standard', 'full2026'] as const).map((name) => (
+                <button
+                  key={name}
+                  className="preset-btn"
+                  title={name === 'standard' ? '三个扩展全关' : '势备 + 不臣 + 2026 君临天下'}
+                  onClick={() => setGuozhanConfig(configFromPreset(name))}
+                >
+                  {name === 'standard' ? '标准国战' : '全扩展2026'}
+                </button>
+              ))}
+            </div>
             <button className="primary big" disabled={!canStart} onClick={startGame}>
               {canStart ? '开始游戏' : `等待玩家入座（${playerCount}/${modeInfo?.min ?? 2} 人）`}
             </button>

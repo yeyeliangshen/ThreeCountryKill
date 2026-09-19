@@ -11,6 +11,19 @@ import { Room } from './room';
 
 const PORT = Number(process.env.PORT ?? 8080);
 
+/**
+ * 离线座位保留多久（毫秒）。默认 10 分钟，可用 `IDLE_SEAT_MS` 覆盖；
+ * 设成 0（或负数/乱填）＝关掉这个回收机制，离线座位一直留着。
+ */
+function readMs(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+const IDLE_SEAT_MS = readMs('IDLE_SEAT_MS', 10 * 60 * 1000);
+/** 多久扫一遍（毫秒），默认 30 秒，可用 `IDLE_SWEEP_MS` 覆盖 */
+const IDLE_SWEEP_MS = Math.max(1000, readMs('IDLE_SWEEP_MS', 30_000));
+
 // 前端静态资源目录：相对源文件定位（packages/server/src → ../../client/dist），
 // 不依赖运行时 cwd；可用 STATIC_DIR 环境变量覆盖。
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -121,6 +134,27 @@ function send(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
+/**
+ * 定期回收「离开太久」的座位：离线超过 `IDLE_SEAT_MS` 就等同本人离开——
+ * 座位释放（房主照常移交），房间里没人了就删房。本人再回来走的是「新登录」那条路
+ * （昵称认不到旧座位 → 坐空位）；对局中被收回的位置变成**可接替的空位**。
+ */
+function sweepIdleSeats(): void {
+  if (!(IDLE_SEAT_MS > 0)) return;
+  for (const room of [...rooms.values()]) {
+    const { changed, emptied } = room.releaseIdle(IDLE_SEAT_MS);
+    if (emptied) {
+      destroyRoom(room, '房间里没人了，房间已关闭。');
+      continue;
+    }
+    if (changed) {
+      room.broadcastLobby();
+      broadcastHall();
+    }
+  }
+}
+setInterval(sweepIdleSeats, IDLE_SWEEP_MS).unref();
+
 const httpServer = http.createServer(serveStatic);
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -128,6 +162,11 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   const hasStatic = fs.existsSync(path.join(STATIC_DIR, 'index.html'));
   console.log(`[三国杀] 服务端已启动：http://0.0.0.0:${PORT}`);
   console.log(`[三国杀] 本机访问：http://localhost:${PORT}`);
+  console.log(
+    IDLE_SEAT_MS > 0
+      ? `[三国杀] 离线座位保留 ${Math.round(IDLE_SEAT_MS / 1000)} 秒（每 ${Math.round(IDLE_SWEEP_MS / 1000)} 秒扫一次；IDLE_SEAT_MS=0 可关掉）`
+      : '[三国杀] 离线座位回收已关闭（IDLE_SEAT_MS=0）',
+  );
   console.log(
     hasStatic
       ? `[三国杀] 前端静态托管：${STATIC_DIR}`
@@ -224,17 +263,24 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
         // 认回/接替：那个座位有名字但离线。已开局的房间只允许这一种进入方式
-        const joinable = target.canJoin(msg.seatId);
+        // （没带座位号时按**昵称**认：同一个昵称＝同一个人，换了设备也能回来）
+        const joinable = target.canJoin(msg.seatId, name);
         if (!joinable.ok) {
           send(ws, { type: 'error', message: joinable.error });
           break;
         }
         const seat = msg.seatId ? target.seats.find((x) => x.seatId === msg.seatId) : undefined;
-        const reclaiming = !!seat && seat.name !== null && !seat.connected;
+        // 带座位号但那个位子已经空了/不是我的 → 不算「认回」，走下面的按昵称找
+        const reclaiming = !!seat && seat.name === name;
+        // 没带座位号（换了设备、本地没记住）：先按**昵称**找自己的座位，再退到第一个空位。
+        // 不这么找的话，同一个人回来会变成「同名两个人」——旧座位成离线幽灵，新座位又占一位。
+        const mine = target.findByName(name);
         leaveCurrentRoom();
         room = target;
         hallClients.delete(ws);
-        const wantSeatId = reclaiming ? msg.seatId! : (target.findEmpty()?.seatId ?? null);
+        const wantSeatId = reclaiming
+          ? msg.seatId!
+          : (mine?.seatId ?? target.findEmpty()?.seatId ?? null);
         if (wantSeatId) {
           const res = target.claimSeat(wantSeatId, ws, name);
           if (!res.ok) send(ws, { type: 'error', message: res.error });
@@ -318,12 +364,12 @@ wss.on('connection', (ws: WebSocket) => {
         break;
       }
 
-      case 'setShibei': {
+      case 'setGuozhanConfig': {
         if (!room || !seatId) {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.setShibei(seatId, msg.shibei);
+        const res = room.setGuozhanConfig(seatId, msg.config);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;
@@ -337,7 +383,8 @@ wss.on('connection', (ws: WebSocket) => {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick, msg.shibei);
+        // 扩展开关是**房间状态**（房间里存的那份），不从开局消息里读——避免客户端各传各的
+        const res = room.startGame(seatId, msg.mode, msg.heroDealCount, msg.freePick);
         if (!res.ok) {
           send(ws, { type: 'error', message: res.error });
           break;

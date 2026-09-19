@@ -25,6 +25,7 @@ import {
 } from '@sgs/protocol';
 import {
   getHero,
+  lordVariantOf,
   getHeroForMode,
   heroCanUseAs,
   ROLE_NAME,
@@ -82,6 +83,58 @@ function winnerText(mode: GameMode, winner: string, players: PlayerView[]): stri
   const wp = players.find((p) => p.seatId === winner);
   return wp ? `${wp.name} 获胜` : '游戏结束';
 }
+
+
+/** 势力中文名（双势力武将牌显示两个势力，如「魏/蜀」） */
+
+function factionLabel(h: { faction: Faction; secondFaction?: Faction }): string {
+
+  const a = FACTION_NAME[h.faction] ?? h.faction;
+
+  return h.secondFaction ? `${a}/${FACTION_NAME[h.secondFaction] ?? h.secondFaction}` : a;
+
+}
+
+
+
+/** 悬浮在武将牌上的说明：势力 + 体力 + 每条技能的**名称与效果** */
+
+function heroTooltip(h: {
+
+  name: string;
+
+  faction: Faction;
+
+  secondFaction?: Faction;
+
+  maxHp: number;
+
+  skills: { name: string; desc: string }[];
+
+  isLord?: boolean;
+
+}): string {
+
+  const head = [
+
+    `${h.name}${h.isLord ? '（君主将）' : ''}`,
+
+    `势力：${factionLabel(h)}　体力：${h.maxHp}`,
+
+  ];
+
+  const skills =
+
+    h.skills.length === 0
+
+      ? ['（技能文本尚未核对，暂空）']
+
+      : h.skills.map((s) => `【${s.name}】${s.desc}`);
+
+  return [...head, '', ...skills].join('\n');
+
+}
+
 
 /**
  * 出牌阶段：这张牌需要选几个目标（区间，铁索连环是 1 至 2 名）。
@@ -285,6 +338,8 @@ export function Game() {
   const [usePick, setUsePick] = useState<{ cardId: string; uses: CardUse[] } | null>(null);
   // 连横模式：已选好要交出去的牌，等点目标
   const [lianhengCard, setLianhengCard] = useState<string | null>(null);
+  // 连横选中的目标（选中不等于发出：也要点一下确认）
+  const [lianhengPick, setLianhengPick] = useState<string | null>(null);
   /**
    * 【丈八蛇矛】模式：正在挑「两张手牌」。
    *
@@ -302,6 +357,40 @@ export function Game() {
   const [pickedHero, setPickedHero] = useState<string | null>(null);
   // 国战选将：主将 + 副将
   const [mainPick, setMainPick] = useState<string | null>(null);
+  /**
+   * 国战选将：每个发到的格子显示哪一版（君主将 / 标准版）。
+   *
+   * 官方国战里君主将「替换」同名标准武将登场——但你发到的是随机的，所以线上通行做法是
+   * 「发到了标准版就等于也拿到了君主版」。这里就是那个开关：键＝发到的原 id、值＝当前显示
+   * 的版本（缺省就是原 id）。引擎那边由 heroes.ts 的 LORD_VARIANTS 放行（pickHero 校验）。
+   */
+  const [heroSwap, setHeroSwap] = useState<Record<string, string>>({});
+  const shownHeroId = (dealtId: string) => heroSwap[dealtId] ?? dealtId;
+  /**
+   * 换一局（服务器重新发将）时把上一局的选将状态清掉。
+   *
+   * 结束一局后回到房间再开一局，这个组件可能**不会卸载**（screen 一直是 'game'），
+   * 于是上一局的 mainPick / deputyPick / 换版本记录会带到新一局的选将里——那时玩家会看到
+   * 上一局选的人已经亮着，甚至会带着上一局的「换成君主将」。发到的将变了就是新的一局，
+   * 这里以「发将列表」为界清零（同一局里这个键是稳定的）。
+   */
+  const draftPrompt = snapshot?.prompt;
+  const draftKey =
+    draftPrompt?.kind === 'pickHero' ? (draftPrompt.legalHeroIds ?? []).join(',') : '';
+  useEffect(() => {
+    setMainPick(null);
+    setDeputyPick(null);
+    setHeroSwap({});
+  }, [draftKey]);
+  /** 在这个格子上换成另一版（君主 ↔ 标准），已选中的话跟着换 */
+  function swapHeroVersion(dealtId: string) {
+    const cur = shownHeroId(dealtId);
+    const next = lordVariantOf(cur);
+    if (!next) return;
+    setHeroSwap((prev) => ({ ...prev, [dealtId]: next }));
+    if (mainPick === cur) setMainPick(next);
+    if (deputyPick === cur) setDeputyPick(next);
+  }
   const [deputyPick, setDeputyPick] = useState<string | null>(null);
   // 主动技能交互模式
   const [skillMode, setSkillMode] = useState<{
@@ -486,14 +575,37 @@ export function Game() {
     setUsePick({ cardId: card.id, uses });
   }
 
-  /** 点目标：选满 max 就发出去；不足 max 但要凑够 min 就先攒着 */
+  /**
+   * 点目标：**只选中，不发出**——选完还要点「确认使用」。
+   *
+   * 以前单目标牌是「点谁就打谁」，误点一下头像就出去了（【杀】/【顺手牵羊】这种最要命）；
+   * 现在统一成「选中 → 确认」两步，已选中的再点一下＝取消该目标。
+   */
   function pickTarget(targetId: string) {
     if (!selected) return;
-    if (selected.picked.includes(targetId)) return;
+    if (selected.picked.includes(targetId)) {
+      setSelected({ ...selected, picked: selected.picked.filter((t) => t !== targetId) });
+      return;
+    }
     if (selected.picked.length >= selected.max) return;
-    const next = [...selected.picked, targetId];
-    // 还没到上限 → 先攒着，让玩家自己决定要不要再加一个（铁索连环：1 或 2 名）
-    setSelected({ ...selected, picked: next });
+    setSelected({ ...selected, picked: [...selected.picked, targetId] });
+  }
+
+  /** 选中的目标够不够（够就可以点确认了） */
+  function selectedCanConfirm(): boolean {
+    if (!selected) return false;
+    return selected.picked.length >= selected.min && selected.picked.length <= selected.max;
+  }
+
+  /** 确认按钮文案：把「对谁用什么」写清楚，免得又误点 */
+  function selectedConfirmLabel(): string {
+    if (!selected) return '确认使用';
+    const card = myUsableCards.find((c) => c.id === selected.cardId);
+    const name = selected.as ? CARD_TYPE_NAME[selected.as] : card ? cardShortName(card) : '这张牌';
+    const who = selected.picked
+      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
+      .join('、');
+    return `确认：对 ${who} 使用【${name}】`;
   }
 
   /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去 */
@@ -509,23 +621,6 @@ export function Game() {
       targetIds: selected.picked,
     });
     setSelected(null);
-  }
-
-  /** 单目标牌在点满时自动发出，不用再点一次确认 */
-  function pickTargetAuto(targetId: string) {
-    if (!selected) return;
-    if (selected.max === 1) {
-      sendIntent({
-        type: 'playCard',
-        cardId: selected.cardId,
-        ...(selected.as ? { as: selected.as } : {}),
-        ...(selected.asAttribute ? { asAttribute: selected.asAttribute } : {}),
-        targetIds: [...selected.picked, targetId],
-      });
-      setSelected(null);
-      return;
-    }
-    pickTarget(targetId);
   }
 
   // —— 响应杀/濒死/锦囊/无懈：直接出牌（引擎自动检测转化） ——
@@ -639,7 +734,16 @@ export function Game() {
   // 判定当前选中牌的目标提示文案
   function selectedHint(): string {
     if (!selected) return '';
-    if (selected.picked.length === 2) return '请选择武器持有者'; // 借刀杀人
+    const names = selected.picked
+      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
+      .join('、');
+    // 目标够了：把「对谁用」摆出来，并提示还要点一下确认（点目标不再直接出牌）
+    if (selected.picked.length >= selected.min) {
+      if (selected.min === 2) {
+        return `已选：${names}（第 1 个是武器持有者、第 2 个是出杀目标）——点「确认」发出`;
+      }
+      return `目标：${names} —— 点「确认」发出`;
+    }
     if (selected.min === 2) {
       if (selected.picked.length === 0) return '请选择武器持有者';
       return '请选择出杀目标';
@@ -647,7 +751,7 @@ export function Game() {
     if (selected.max > 1) {
       return `请选择 1 至 2 名目标（${selected.self ? '可含自己' : '不含自己'}），已选 ${selected.picked.length} 名`;
     }
-    return '请选择目标（点上方对手）';
+    return '请选择目标（点上方对手，选完再点确认）';
   }
 
   // 技能确认按钮是否可用
@@ -662,6 +766,9 @@ export function Game() {
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
   if (snapshot.turn.phase === 'draft') {
     const options = prompt?.kind === 'pickHero' ? (prompt.legalHeroIds ?? []) : [];
+    // 「君主↔标准版」里白捡的那些（没人拿走才在列表里，见 protocol 的 draftVariants）
+    const variants = prompt?.kind === 'pickHero' ? (prompt.draftVariants ?? []) : [];
+    const canSwapTo = (targetId: string) => options.includes(targetId) || variants.includes(targetId);
     const guozhanCanConfirm = !!mainPick && !!deputyPick && mainPick !== deputyPick;
 
     if (isGuozhan) {
@@ -671,29 +778,56 @@ export function Game() {
           {options.length > 0 ? (
             <>
               <div className="hero-list">
-                {options.map((id) => {
+                {options.map((dealtId) => {
+                  const id = shownHeroId(dealtId);
                   const h = getHero(id);
                   if (!h) return null;
                   const isMain = mainPick === id;
                   const isDeputy = deputyPick === id;
+                  const variantId = lordVariantOf(id);
+                  const variant = variantId && canSwapTo(variantId) ? getHero(variantId) : undefined;
+                  // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
+                  // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
+                  const swapBlocked = isDeputy && !!variant?.isLord;
                   return (
-                    <button
-                      key={id}
-                      className={`hero-card faction-${h.faction} ${isMain || isDeputy ? 'picked' : ''}`}
-                      onClick={() => pickGuozhanHero(id)}
-                    >
-                      <div className="hero-name">{h.name}</div>
-                      <div className="hero-hp">体力 {h.maxHp}</div>
-                      <div className="hero-skills">
-                        {h.skills.map((sk) => (
-                          <div key={sk.name}>
-                            <b>{sk.name}</b>
-                          </div>
-                        ))}
-                      </div>
-                      {isMain && <div className="hero-slot-tag">主将</div>}
-                      {isDeputy && <div className="hero-slot-tag">副将</div>}
-                    </button>
+                    <div key={dealtId} className="hero-cell">
+                      <button
+                        className={`hero-card faction-${h.faction} ${isMain || isDeputy ? 'picked' : ''}`}
+                        title={heroTooltip(h)}
+                        onClick={() => pickGuozhanHero(id)}
+                      >
+                        <div className="hero-name">{h.name}</div>
+                        <div className="hero-meta">
+                          <span className={`hero-faction faction-${h.faction}`}>
+                            {factionLabel(h)}
+                          </span>
+                          <span className="hero-hp">体力 {h.maxHp}</span>
+                        </div>
+                        <div className="hero-skills">
+                          {h.skills.map((sk) => (
+                            <div key={sk.name}>
+                              <b>{sk.name}</b>
+                            </div>
+                          ))}
+                        </div>
+                        {isMain && <div className="hero-slot-tag">主将</div>}
+                        {isDeputy && <div className="hero-slot-tag">副将</div>}
+                      </button>
+                      {variant && (
+                        <button
+                          className="hero-swap"
+                          disabled={swapBlocked}
+                          onClick={() => swapHeroVersion(dealtId)}
+                          title={
+                            swapBlocked
+                              ? '君主将只能作主将：先把它选到主将位再换'
+                              : `换成 ${variant.name}`
+                          }
+                        >
+                          {variant.isLord ? '👑 换成君主将' : '换成标准版'}
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -731,13 +865,19 @@ export function Game() {
                   <button
                     key={id}
                     className={`hero-card ${isPicked ? 'picked' : ''}`}
+                    title={heroTooltip(h)}
                     onClick={() => setPickedHero(id)}
                   >
                     <div className="hero-name">
                       {h.name}
                       {h.id === 'vanilla' && <small>（白板）</small>}
                     </div>
-                    <div className="hero-hp">体力 {h.maxHp}</div>
+                    <div className="hero-meta">
+                      <span className={`hero-faction faction-${h.faction}`}>
+                        {factionLabel(h)}
+                      </span>
+                      <span className="hero-hp">体力 {h.maxHp}</span>
+                    </div>
                     <div className="hero-skills">
                       {h.skills.map((sk) => (
                         <div key={sk.name}>
@@ -843,8 +983,8 @@ export function Game() {
 
   function handleTargetClick(p: PlayerView) {
     if (lianhengCard) {
-      sendIntent({ type: 'lianheng', cardId: lianhengCard, targetSeatId: p.seatId });
-      setLianhengCard(null);
+      // 只选中（同一个再点一下＝取消）；发出交给「确认连横」
+      setLianhengPick((prev) => (prev === p.seatId ? null : p.seatId));
       return;
     }
     if (skillMode) {
@@ -853,14 +993,22 @@ export function Game() {
     }
     if (selected) {
       if (selected.picked.includes(p.seatId)) return; // 已选
-      pickTargetAuto(p.seatId);
+      pickTarget(p.seatId);
     }
   }
 
   // —— 武将面板：原画 + 体力勾玉 + 技能名 ——
   // 亮将：只有**准备阶段开始时**能主动明置（引擎的判定阶段＝准备阶段+判定阶段），
-  // 其余时机想明置只能靠发动技能。所以按钮只在准备阶段露出来。
-  const canRevealNow = myTurn && snapshot.turn.phase === 'judgment' && !skillMode && !selected;
+  // 其余时机想明置只能靠发动技能。所以按钮默认只在准备阶段露出来；
+  // 例外是武将牌自己写着「出牌阶段，你可明置此武将牌」的（小乔·红颜、邹氏·祸水），
+  // 那两条按**张**判——只有写了这句话的那张牌能在出牌阶段亮。
+  const phase = snapshot.turn.phase;
+  const canRevealSlot = (hero: typeof myHero): boolean =>
+    myTurn &&
+    !skillMode &&
+    !selected &&
+    (phase === 'judgment' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
+  const canRevealNow = canRevealSlot(myHero);
   // 铁索连环可以把「自己」选成目标：这时自己的武将面板整体可点
   const canPickSelf =
     !!selected &&
@@ -878,7 +1026,7 @@ export function Game() {
           hidden: !me.heroRevealed,
           slotLabel: '主将',
           onReveal:
-            canRevealNow && !me.heroRevealed && me.heroId
+            canRevealSlot(myHero) && !me.heroRevealed && me.heroId
               ? () => revealHero(me.heroId!)
               : undefined,
         },
@@ -889,7 +1037,7 @@ export function Game() {
           hidden: !me.deputyRevealed,
           slotLabel: '副将',
           onReveal:
-            canRevealNow && !me.deputyRevealed && me.deputyHeroId
+            canRevealSlot(myDeputyHero) && !me.deputyRevealed && me.deputyHeroId
               ? () => revealHero(me.deputyHeroId!)
               : undefined,
         },
@@ -978,7 +1126,9 @@ export function Game() {
             const isTarget = canClickTarget(p);
             const isPickedTarget =
               targeting &&
-              (selected?.picked.includes(p.seatId) || skillMode?.targetIds.includes(p.seatId));
+              (selected?.picked.includes(p.seatId) ||
+                skillMode?.targetIds.includes(p.seatId) ||
+                lianhengPick === p.seatId);
             const isCurrent = snapshot.turn.seatId === p.seatId;
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
@@ -1060,102 +1210,68 @@ export function Game() {
           })}
         </div>
 
-        {/* 提示/操作区 */}
-        {prompt ? (
-          <div className={`prompt prompt-${prompt.kind}`}>
-            <div className="prompt-msg">{prompt.message}</div>
+        {/* 操作区 + 手牌绑成一块（.dock）：窄屏时整块吸附在屏幕底部，
+            按钮与自己的牌永远在眼前；宽屏时靠 CSS 把它压到牌桌底部 */}
+        <div className="dock">
+          {/* 提示/操作区 */}
+          {prompt ? (
+            <div className={`prompt prompt-${prompt.kind}`}>
+              <div className="prompt-msg">{prompt.message}</div>
 
-            {/* 势力技（护驾/激将）：需要打出一张牌时，可以令同势力角色代打。
+              {/* 势力技（护驾/激将）：需要打出一张牌时，可以令同势力角色代打。
               它跨越 respondSha / respondTrick 两种提示，所以放在这里统一渲染 */}
-            {prompt.factionCall && (
-              <button
-                className="primary"
-                onClick={() => sendFactionCall(prompt.factionCall!.skillId)}
-              >
-                发动【{prompt.factionCall.skillName}】（请{' '}
-                {prompt.factionCall.helpers.map((h) => h.name).join('、')} 代打
-                {CARD_TYPE_NAME[prompt.factionCall.needType]}）
-              </button>
-            )}
-
-            {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…） */}
-            {prompt.kind === 'choice' && (
-              <>
-                {prompt.choiceOptions?.map((o) => (
-                  <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
-                    {o.label}
-                  </button>
-                ))}
-              </>
-            )}
-
-            {/* 从一组牌里选若干张（观星看牌堆顶、刚烈弃两张、仁德送牌…）。
-              候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
-            {prompt.kind === 'pickCards' && prompt.pickCards && (
-              <div className="pick-cards">
-                <div className="pick-cards-row">
-                  {prompt.pickCards.map((card) => {
-                    const on = pickSel.includes(card.id);
-                    const name = cardShortName(card);
-                    const catClass = isEquipCard(card)
-                      ? 'cat-equip'
-                      : isDelayedTrick(card)
-                        ? 'cat-delayed'
-                        : isInstantTrick(card)
-                          ? 'cat-trick'
-                          : 'cat-basic';
-                    return (
-                      <button
-                        key={card.id}
-                        className={`card ${isRed(card) ? 'red' : 'black'} legal ${on ? 'picked' : ''} ${catClass}`}
-                        aria-label={cardLabel(card)}
-                        onMouseEnter={
-                          bindTip(
-                            `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
-                            cardDescription(card, snapshot.mode),
-                          ).onMouseEnter
-                        }
-                        onMouseLeave={hideTip}
-                        onClick={() => togglePickCard(card.id)}
-                      >
-                        <span className="c-idx">
-                          <span className="c-rank">{rankLabel(card.rank)}</span>
-                          <span className="c-suit">{SUIT_SYMBOL[card.suit]}</span>
-                        </span>
-                        <span className="c-name">
-                          <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+              {prompt.factionCall && (
                 <button
                   className="primary"
-                  aria-disabled={
-                    pickSel.length < (prompt.pickMin ?? 0) || pickSel.length > (prompt.pickMax ?? 0)
-                  }
-                  onClick={confirmPickCards}
+                  onClick={() => sendFactionCall(prompt.factionCall!.skillId)}
                 >
-                  确定（已选 {pickSel.length} / {prompt.pickMin}
-                  {prompt.pickMin === prompt.pickMax ? '' : `-${prompt.pickMax}`} 张）
+                  发动【{prompt.factionCall.skillName}】（请{' '}
+                  {prompt.factionCall.helpers.map((h) => h.name).join('、')} 代打
+                  {CARD_TYPE_NAME[prompt.factionCall.needType]}）
                 </button>
-              </div>
-            )}
+              )}
 
-            {/* 私密查看（知己知彼）：内容只下发给本人，看完确认 */}
-            {prompt.kind === 'viewCards' && (
-              <div className="prompt-choice view-cards">
-                <div className="view-title">{prompt.viewTitle}</div>
-                {prompt.viewNote && <div className="view-note">{prompt.viewNote}</div>}
-                {prompt.viewCards && prompt.viewCards.length > 0 && (
+              {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…） */}
+              {prompt.kind === 'choice' && (
+                <>
+                  {prompt.choiceOptions?.map((o) => (
+                    <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
+                      {o.label}
+                    </button>
+                  ))}
+                </>
+              )}
+
+              {/* 从一组牌里选若干张（观星看牌堆顶、刚烈弃两张、仁德送牌…）。
+              候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
+              {prompt.kind === 'pickCards' && prompt.pickCards && (
+                <div className="pick-cards">
                   <div className="pick-cards-row">
-                    {prompt.viewCards.map((card) => {
+                    {prompt.pickCards.map((card) => {
+                      const on = pickSel.includes(card.id);
+                      // 选牌是**有序**的（诸葛亮·观星要按点击顺序摆牌堆），所以给选中的牌标个序号
+                      const order = pickSel.indexOf(card.id) + 1;
                       const name = cardShortName(card);
+                      const catClass = isEquipCard(card)
+                        ? 'cat-equip'
+                        : isDelayedTrick(card)
+                          ? 'cat-delayed'
+                          : isInstantTrick(card)
+                            ? 'cat-trick'
+                            : 'cat-basic';
                       return (
-                        <span
+                        <button
                           key={card.id}
-                          className={`card ${isRed(card) ? 'red' : 'black'} readonly`}
-                          title={`${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}\n${cardDescription(card, snapshot.mode)}`}
+                          className={`card ${isRed(card) ? 'red' : 'black'} legal ${on ? 'picked' : ''} ${catClass}`}
+                          aria-label={cardLabel(card)}
+                          onMouseEnter={
+                            bindTip(
+                              `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
+                              cardDescription(card, snapshot.mode),
+                            ).onMouseEnter
+                          }
+                          onMouseLeave={hideTip}
+                          onClick={() => togglePickCard(card.id)}
                         >
                           <span className="c-idx">
                             <span className="c-rank">{rankLabel(card.rank)}</span>
@@ -1164,245 +1280,342 @@ export function Game() {
                           <span className="c-name">
                             <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
                           </span>
-                        </span>
+                          {on && prompt.pickMax !== 1 && (
+                            <span className="c-order" title="点击顺序">
+                              {order}
+                            </span>
+                          )}
+                        </button>
                       );
                     })}
                   </div>
-                )}
-                <button className="primary" onClick={() => sendIntent({ type: 'ack' })}>
-                  确认
-                </button>
-              </div>
-            )}
-
-            {/* 这张牌有多种用法（直接使用 + 转化 + 重铸）：先让玩家挑一种 */}
-            {prompt.kind === 'play' && usePick && (
-              <div className="use-pick">
-                <span className="hint">这张牌怎么用？</span>
-                {usePick.uses.map((u, i) => (
                   <button
-                    key={
-                      u.recast
-                        ? 'recast'
-                        : u.zhangba
-                          ? 'zhangba'
-                          : u.lianheng
-                            ? 'lianheng'
-                            : (u.as ?? `self-${i}`)
-                    }
                     className="primary"
+                    aria-disabled={
+                      pickSel.length < (prompt.pickMin ?? 0) ||
+                      pickSel.length > (prompt.pickMax ?? 0)
+                    }
+                    onClick={confirmPickCards}
+                  >
+                    确定（已选 {pickSel.length} / {prompt.pickMin}
+                    {prompt.pickMin === prompt.pickMax ? '' : `-${prompt.pickMax}`} 张）
+                  </button>
+                </div>
+              )}
+
+              {/* 私密查看（知己知彼）：内容只下发给本人，看完确认 */}
+              {prompt.kind === 'viewCards' && (
+                <div className="prompt-choice view-cards">
+                  <div className="view-title">{prompt.viewTitle}</div>
+                  {prompt.viewNote && <div className="view-note">{prompt.viewNote}</div>}
+                  {prompt.viewCards && prompt.viewCards.length > 0 && (
+                    <div className="pick-cards-row">
+                      {prompt.viewCards.map((card) => {
+                        const name = cardShortName(card);
+                        return (
+                          <span
+                            key={card.id}
+                            className={`card ${isRed(card) ? 'red' : 'black'} readonly`}
+                            title={`${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}\n${cardDescription(card, snapshot.mode)}`}
+                          >
+                            <span className="c-idx">
+                              <span className="c-rank">{rankLabel(card.rank)}</span>
+                              <span className="c-suit">{SUIT_SYMBOL[card.suit]}</span>
+                            </span>
+                            <span className="c-name">
+                              <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
+                            </span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <button className="primary" onClick={() => sendIntent({ type: 'ack' })}>
+                    确认
+                  </button>
+                </div>
+              )}
+
+              {/* 这张牌有多种用法（直接使用 + 转化 + 重铸）：先让玩家挑一种 */}
+              {prompt.kind === 'play' && usePick && (
+                <div className="use-pick">
+                  <span className="hint">这张牌怎么用？</span>
+                  {usePick.uses.map((u, i) => (
+                    <button
+                      key={
+                        u.recast
+                          ? 'recast'
+                          : u.zhangba
+                            ? 'zhangba'
+                            : u.lianheng
+                              ? 'lianheng'
+                              : (u.as ?? `self-${i}`)
+                      }
+                      className="primary"
+                      onClick={() => {
+                        const card = myUsableCards.find((c) => c.id === usePick.cardId);
+                        setUsePick(null);
+                        if (!card) return;
+                        if (u.recast) beginRecast(card);
+                        else if (u.zhangba) beginZhangba(card);
+                        else beginPlay(card, u.as);
+                      }}
+                    >
+                      {u.label}
+                    </button>
+                  ))}
+                  <button className="ghost" onClick={() => setUsePick(null)}>
+                    取消
+                  </button>
+                </div>
+              )}
+
+              {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
+              {prompt.kind === 'play' && !skillMode && !selected && (
+                <>
+                  <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
+                    结束出牌
+                  </button>
+                </>
+              )}
+
+              {/* 技能交互模式 */}
+              {prompt.kind === 'play' && skillMode && (
+                <div className="skill-mode">
+                  <span className="hint">
+                    <b>【{skillMode.skill.name}】</b>
+                    {/* 把「要选几张、已经选了几张」写全：只说「请选择手牌」看不出选上没有 */}
+                    {skillMode.skill.needsCards &&
+                      ` 手牌 ${skillMode.cardIds.length} 张${
+                        skillMode.skill.maxCards
+                          ? ` / 至多 ${skillMode.skill.maxCards({ maxHp: me.maxHp, handCount: me.handCount })}`
+                          : ''
+                      }`}
+                    {skillMode.skill.maxTargets > 0 &&
+                      ` · 目标 ${skillMode.targetIds.length} / ${
+                        skillMode.skill.maxTargets >= 99 ? '不限' : skillMode.skill.maxTargets
+                      }`}
+                    {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请点手牌'}
+                    {skillMode.skill.minTargets > 0 &&
+                      skillMode.targetIds.length < skillMode.skill.minTargets &&
+                      ' · 请点角色'}
+                  </span>
+                  <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
+                    确认技能
+                  </button>
+                  <button className="ghost" onClick={() => setSkillMode(null)}>
+                    取消
+                  </button>
+                </div>
+              )}
+
+              {/* 【丈八蛇矛】：正在挑两张手牌 */}
+              {zhangbaMode && (
+                <>
+                  <span className="hint">
+                    【丈八蛇矛】：点两张手牌当【杀】
+                    {zhangbaMode.mode === 'respond' ? '打出' : '使用'}（已选{' '}
+                    {zhangbaMode.picked.length}/2）
+                  </span>
+                  <button
+                    className="primary"
+                    disabled={zhangbaMode.picked.length !== 2}
+                    onClick={confirmZhangba}
+                  >
+                    确认
+                  </button>
+                  <button className="ghost" onClick={() => setZhangbaMode(null)}>
+                    取消
+                  </button>
+                </>
+              )}
+
+              {/* 连横：已选好牌，等点目标 */}
+              {lianhengCard && prompt.kind === 'play' && (
+                <span className="hint">连横：点一名对手把手牌交给他（势力不同的会摸一张牌）</span>
+              )}
+              {lianhengCard && prompt.kind === 'play' && (
+                <>
+                  <span className="hint">
+                    连横：点一名同势力角色
+                    {lianhengPick
+                      ? `（已选 ${snapshot?.players.find((p) => p.seatId === lianhengPick)?.name ?? '?'}）`
+                      : ''}
+                    —— 点「确认」把牌交给他
+                  </span>
+                  <button
+                    className="primary"
+                    disabled={!lianhengPick}
                     onClick={() => {
-                      const card = myUsableCards.find((c) => c.id === usePick.cardId);
-                      setUsePick(null);
-                      if (!card) return;
-                      if (u.recast) beginRecast(card);
-                      else if (u.zhangba) beginZhangba(card);
-                      else beginPlay(card, u.as);
+                      if (!lianhengPick) return;
+                      sendIntent({
+                        type: 'lianheng',
+                        cardId: lianhengCard,
+                        targetSeatId: lianhengPick,
+                      });
+                      setLianhengCard(null);
+                      setLianhengPick(null);
                     }}
                   >
-                    {u.label}
+                    确认连横
                   </button>
-                ))}
-                <button className="ghost" onClick={() => setUsePick(null)}>
-                  取消
-                </button>
-              </div>
-            )}
+                  <button
+                    className="ghost"
+                    onClick={() => {
+                      setLianhengCard(null);
+                      setLianhengPick(null);
+                    }}
+                  >
+                    取消连横
+                  </button>
+                </>
+              )}
 
-            {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
-            {prompt.kind === 'play' && !skillMode && !selected && (
-              <>
-                <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
-                  结束出牌
-                </button>
-              </>
-            )}
-
-            {/* 技能交互模式 */}
-            {prompt.kind === 'play' && skillMode && (
-              <div className="skill-mode">
-                <span className="hint">
-                  【{skillMode.skill.name}】
-                  {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请选择手牌'}
-                  {skillMode.skill.minTargets > 0 &&
-                    skillMode.targetIds.length < skillMode.skill.minTargets &&
-                    ` · 请选${skillMode.skill.minTargets - skillMode.targetIds.length > 0 ? '目标' : ''}目标`}
-                </span>
-                <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
-                  确认技能
-                </button>
-                <button className="ghost" onClick={() => setSkillMode(null)}>
-                  取消
-                </button>
-              </div>
-            )}
-
-            {/* 【丈八蛇矛】：正在挑两张手牌 */}
-            {zhangbaMode && (
-              <>
-                <span className="hint">
-                  【丈八蛇矛】：点两张手牌当【杀】
-                  {zhangbaMode.mode === 'respond' ? '打出' : '使用'}（已选{' '}
-                  {zhangbaMode.picked.length}/2）
-                </span>
-                <button
-                  className="primary"
-                  disabled={zhangbaMode.picked.length !== 2}
-                  onClick={confirmZhangba}
-                >
-                  确认
-                </button>
-                <button className="ghost" onClick={() => setZhangbaMode(null)}>
-                  取消
-                </button>
-              </>
-            )}
-
-            {/* 连横：已选好牌，等点目标 */}
-            {lianhengCard && prompt.kind === 'play' && (
-              <span className="hint">连横：点一名对手把手牌交给他（势力不同的会摸一张牌）</span>
-            )}
-            {lianhengCard && (
-              <button className="ghost" onClick={() => setLianhengCard(null)}>
-                取消连横
-              </button>
-            )}
-
-            {/* 选目标提示 */}
-            {selected && prompt.kind === 'play' && (
-              <>
-                <span className="hint">{selectedHint()}</span>
-                {selected.max > 1 && (
+              {/* 选目标提示 */}
+              {selected && prompt.kind === 'play' && (
+                <>
+                  <span className="hint">{selectedHint()}</span>
                   <button
                     className="primary"
-                    disabled={
-                      selected.picked.length < selected.min || selected.picked.length > selected.max
-                    }
+                    disabled={!selectedCanConfirm()}
                     onClick={confirmTargets}
                   >
-                    确认目标（{selected.picked.length}）
+                    {selectedConfirmLabel()}
+                  </button>
+                  <button className="ghost" onClick={() => setSelected(null)}>
+                    取消
+                  </button>
+                </>
+              )}
+
+              {/* 诸葛恪·【傲才】：回合外被要求出基本牌时，用牌堆顶两张里的实体牌满足这次响应。
+                  这里只按「将面是不是诸葛恪」显示；回合内点了会被引擎拒（提示【傲才】只能在回合外）。 */}
+              {(prompt.kind === 'respondSha' ||
+                prompt.kind === 'respondDeath' ||
+                prompt.kind === 'respondTrick') &&
+                (me.heroId === 'zhugeke' || me.deputyHeroId === 'zhugeke') && (
+                  <button className="ghost" onClick={() => sendIntent({ type: 'aocai' })}>
+                    【傲才】看牌堆顶两张
                   </button>
                 )}
-                <button className="ghost" onClick={() => setSelected(null)}>
-                  取消
+              {/* 弃权按钮（响应类提示） */}
+              {prompt.kind === 'respondSha' && (
+                <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
+                  弃权（不出闪）
                 </button>
-              </>
-            )}
+              )}
+              {prompt.kind === 'respondDeath' && (
+                <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
+                  弃权（不救）
+                </button>
+              )}
+              {prompt.kind === 'respondTrick' && (
+                <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
+                  弃权
+                </button>
+              )}
+              {prompt.kind === 'wuxieQueue' && (
+                <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
+                  不使用
+                </button>
+              )}
+              {/* 响应里需要【杀】时，装备着丈八蛇矛可以拿两张手牌顶一张 */}
+              {prompt.zhangbaOk && prompt.kind !== 'play' && !zhangbaMode && (
+                <button
+                  className="ghost"
+                  onClick={() => setZhangbaMode({ picked: [], mode: 'respond' })}
+                >
+                  丈八蛇矛：两张手牌当【杀】
+                </button>
+              )}
+              {prompt.kind === 'discard' && (
+                <button
+                  className="primary"
+                  disabled={picks.length !== prompt.mustSelectTargetCount}
+                  onClick={confirmDiscard}
+                >
+                  弃牌（{picks.length}/{prompt.mustSelectTargetCount}）
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="prompt prompt-wait">{myTurn ? '…' : '等待其他玩家行动…'}</div>
+          )}
 
-            {/* 弃权按钮（响应类提示） */}
-            {prompt.kind === 'respondSha' && (
-              <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
-                弃权（不出闪）
-              </button>
-            )}
-            {prompt.kind === 'respondDeath' && (
-              <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
-                弃权（不救）
-              </button>
-            )}
-            {prompt.kind === 'respondTrick' && (
-              <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
-                弃权
-              </button>
-            )}
-            {prompt.kind === 'wuxieQueue' && (
-              <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
-                不使用
-              </button>
-            )}
-            {/* 响应里需要【杀】时，装备着丈八蛇矛可以拿两张手牌顶一张 */}
-            {prompt.zhangbaOk && prompt.kind !== 'play' && !zhangbaMode && (
-              <button
-                className="ghost"
-                onClick={() => setZhangbaMode({ picked: [], mode: 'respond' })}
-              >
-                丈八蛇矛：两张手牌当【杀】
-              </button>
-            )}
-            {prompt.kind === 'discard' && (
-              <button
-                className="primary"
-                disabled={picks.length !== prompt.mustSelectTargetCount}
-                onClick={confirmDiscard}
-              >
-                弃牌（{picks.length}/{prompt.mustSelectTargetCount}）
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="prompt prompt-wait">{myTurn ? '…' : '等待其他玩家行动…'}</div>
-        )}
-
-        {/* 我的手牌 + 木牛流马下扣置的牌（后者标一个「辎」角标） */}
-        <div className="hand">
-          {myUsableCards.map((card) => {
-            const isCargo = cargoIds.has(card.id);
-            const legal = legalSet.has(card.id);
-            const isPick =
-              (prompt?.kind === 'discard' && picks.includes(card.id)) ||
-              (prompt?.kind === 'play' && selected?.cardId === card.id) ||
-              !!zhangbaMode?.picked.includes(card.id);
-            const isSkillCard = !!skillMode && skillMode.cardIds.includes(card.id);
-            const fireClass = card.type === 'sha' && card.attribute === 'fire' ? 'fire-attr' : '';
-            const thunderClass =
-              card.type === 'sha' && card.attribute === 'thunder' ? 'thunder-attr' : '';
-            // 牌面底部的分类色条：基本牌 / 锦囊 / 延时锦囊 / 装备
-            const catClass = isEquipCard(card)
-              ? 'cat-equip'
-              : isDelayedTrick(card)
-                ? 'cat-delayed'
-                : isInstantTrick(card)
-                  ? 'cat-trick'
-                  : 'cat-basic';
-            const name = cardShortName(card);
-            // 技能模式下需要选手牌 → 全手牌可点
-            const skillCardClickable = !!skillMode && skillMode.skill.needsCards;
-            // 丈八模式：整手牌都可点（任意两张都能凑成【杀】）
-            const cardDisabled = zhangbaMode ? false : skillMode ? !skillCardClickable : !legal;
-            return (
-              <button
-                key={card.id}
-                className={`card ${isRed(card) ? 'red' : 'black'} ${legal ? 'legal' : 'dim'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass} ${isCargo ? 'cargo' : ''}`}
-                aria-disabled={cardDisabled}
-                aria-label={cardLabel(card)}
-                onMouseEnter={
-                  bindTip(
-                    `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}${isCargo ? '（木牛流马·辎）' : ''}`,
-                    cardDescription(card, snapshot.mode),
-                  ).onMouseEnter
-                }
-                onMouseLeave={hideTip}
-                onClick={() => {
-                  // 【丈八蛇矛】模式优先：这时候点牌是「凑两张」而不是出牌
-                  if (zhangbaMode) {
-                    toggleZhangbaCard(card.id);
-                    return;
+          {/* 我的手牌 + 木牛流马下扣置的牌（后者标一个「辎」角标） */}
+          <div className="hand">
+            {myUsableCards.map((card) => {
+              const isCargo = cargoIds.has(card.id);
+              const legal = legalSet.has(card.id);
+              const isPick =
+                (prompt?.kind === 'discard' && picks.includes(card.id)) ||
+                (prompt?.kind === 'play' && selected?.cardId === card.id) ||
+                !!zhangbaMode?.picked.includes(card.id);
+              const isSkillCard = !!skillMode && skillMode.cardIds.includes(card.id);
+              // 技能模式要选牌时整手牌都是候选——不能沿用「不合法就变灰」的样式，
+              // 否则可选的牌看起来全是用不了的（这是「选中技能后看不清」的主要来源）
+              const dimmed = skillMode?.skill.needsCards ? false : !legal;
+              const fireClass = card.type === 'sha' && card.attribute === 'fire' ? 'fire-attr' : '';
+              const thunderClass =
+                card.type === 'sha' && card.attribute === 'thunder' ? 'thunder-attr' : '';
+              // 牌面底部的分类色条：基本牌 / 锦囊 / 延时锦囊 / 装备
+              const catClass = isEquipCard(card)
+                ? 'cat-equip'
+                : isDelayedTrick(card)
+                  ? 'cat-delayed'
+                  : isInstantTrick(card)
+                    ? 'cat-trick'
+                    : 'cat-basic';
+              const name = cardShortName(card);
+              // 技能模式下需要选手牌 → 全手牌可点
+              const skillCardClickable = !!skillMode && skillMode.skill.needsCards;
+              // 丈八模式：整手牌都可点（任意两张都能凑成【杀】）
+              const cardDisabled = zhangbaMode ? false : skillMode ? !skillCardClickable : !legal;
+              return (
+                <button
+                  key={card.id}
+                  className={`card ${isRed(card) ? 'red' : 'black'} ${dimmed ? 'dim' : 'legal'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass} ${isCargo ? 'cargo' : ''}`}
+                  aria-disabled={cardDisabled}
+                  aria-label={cardLabel(card)}
+                  onMouseEnter={
+                    bindTip(
+                      `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}${isCargo ? '（木牛流马·辎）' : ''}`,
+                      cardDescription(card, snapshot.mode),
+                    ).onMouseEnter
                   }
-                  if (cardDisabled) return;
-                  if (!prompt) return;
-                  if (skillMode) {
-                    if (skillCardClickable) toggleSkillCard(card.id);
-                    return;
-                  }
-                  if (prompt.kind === 'pickHero') return;
-                  if (prompt.kind === 'play') pickPlayCard(card);
-                  else if (prompt.kind === 'discard') togglePick(card.id);
-                  else pickRespondCard(card);
-                }}
-              >
-                {/* 左上角标：点数 + 花色。闪电/乐不思蜀/兵粮寸断都靠花色点数判定，
+                  onMouseLeave={hideTip}
+                  onClick={() => {
+                    // 【丈八蛇矛】模式优先：这时候点牌是「凑两张」而不是出牌
+                    if (zhangbaMode) {
+                      toggleZhangbaCard(card.id);
+                      return;
+                    }
+                    if (cardDisabled) return;
+                    if (!prompt) return;
+                    if (skillMode) {
+                      if (skillCardClickable) toggleSkillCard(card.id);
+                      return;
+                    }
+                    if (prompt.kind === 'pickHero') return;
+                    if (prompt.kind === 'play') pickPlayCard(card);
+                    else if (prompt.kind === 'discard') togglePick(card.id);
+                    else pickRespondCard(card);
+                  }}
+                >
+                  {/* 左上角标：点数 + 花色。闪电/乐不思蜀/兵粮寸断都靠花色点数判定，
                   所以这两项必须直接看得见 */}
-                <span className="c-idx">
-                  <span className="c-rank">{rankLabel(card.rank)}</span>
-                  <span className="c-suit">{SUIT_SYMBOL[card.suit]}</span>
-                </span>
-                <span className="c-name">
-                  <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
-                </span>
-                {isCargo && <span className="c-cargo">辎</span>}
-              </button>
-            );
-          })}
+                  <span className="c-idx">
+                    <span className="c-rank">{rankLabel(card.rank)}</span>
+                    <span className="c-suit">{SUIT_SYMBOL[card.suit]}</span>
+                  </span>
+                  <span className="c-name">
+                    <span className={name.length >= 5 ? 'long' : undefined}>{name}</span>
+                  </span>
+                  {isCargo && <span className="c-cargo">辎</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -1436,7 +1649,7 @@ export function Game() {
             slots={heroSlots}
             targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
             picked={!!selected?.picked.includes(me.seatId)}
-            onSelect={canPickSelf ? () => pickTargetAuto(me.seatId) : undefined}
+            onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
           />
         </div>
       </aside>
