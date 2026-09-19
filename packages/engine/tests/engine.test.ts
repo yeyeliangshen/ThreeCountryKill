@@ -8601,9 +8601,9 @@ describe('势备篇 · 牌堆与开关', () => {
     expect(jz.every((c) => c.id.startsWith('c'))).toBe(true);
   });
 
-  it('势备篇已实现 49 张进堆（官方 52 张，缺的 3 张见 docs §5.75）', () => {
+  it('势备篇 52 张已全部进堆（官方 28 基本 + 17 锦囊 + 7 装备）', () => {
     const on = buildDeck('guozhan', { shibei: true });
-    expect(on.filter((c) => c.id.startsWith('s'))).toHaveLength(49);
+    expect(on.filter((c) => c.id.startsWith('s'))).toHaveLength(52);
     // 最后补上的两张锦囊
     const hasCard = (suit: Suit, rank: number, type: string) =>
       on.some((c) => c.suit === suit && c.rank === rank && c.type === type && c.id.startsWith('s'));

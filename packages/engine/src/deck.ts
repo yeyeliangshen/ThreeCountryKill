@@ -328,10 +328,12 @@ export function buildShibeiCards(): Card[] {
   cards.push(mk('treasure', 'diamond', 5, { equipName: 'muniu' })); // 木牛流马
 
   // —— 锦囊 17：全部已实现 ——
-  // ⚠️ 这里原先还塞了「无懈可击 ＋ 无懈可击·国 ×2」三张——它们是**国战标准 108 张**里的牌
-  //    （见 buildGuozhanDeck），不该由势备篇提供（两个包同时开会重复）。挪走之后势备篇的锦囊
-  //    只剩 14 张，官方是 17 张——**还缺 3 张**，缺哪 3 张要等势备篇的官方逐张表
-  //    （见 docs/guozhan-roster.md §5.75）。
+  // 势备篇是**独立的一包**（官方：直接加入原国战游戏牌），它自带这三张无懈——用户给出的
+  // 17 张锦囊构成里明确有【无懈可击·国】×2 与【无懈可击】×1（标准堆里那三张是另一套，
+  // 两包各一份，混用后总池 = 108 + 52 = 160，见 docs/guozhan-roster.md §5.76）。
+  cards.push(mk('wuxie', 'spade', 13)); // 无懈可击
+  cards.push(mk('wuxieguo', 'diamond', 11)); // 无懈可击·国
+  cards.push(mk('wuxieguo', 'club', 13)); // 无懈可击·国
   cards.push(mk('tiaohu', 'heart', 2)); // 调虎离山
   cards.push(mk('tiaohu', 'diamond', 10, { lianheng: true })); // 调虎离山（带连横）
   cards.push(mk('shuiyan', 'club', 12)); // 水淹七军
