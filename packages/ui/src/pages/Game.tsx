@@ -1488,6 +1488,16 @@ export function Game() {
                 </>
               )}
 
+              {/* 诸葛恪·【傲才】：回合外被要求出基本牌时，用牌堆顶两张里的实体牌满足这次响应。
+                  这里只按「将面是不是诸葛恪」显示；回合内点了会被引擎拒（提示【傲才】只能在回合外）。 */}
+              {(prompt.kind === 'respondSha' ||
+                prompt.kind === 'respondDeath' ||
+                prompt.kind === 'respondTrick') &&
+                (me.heroId === 'zhugeke' || me.deputyHeroId === 'zhugeke') && (
+                  <button className="ghost" onClick={() => sendIntent({ type: 'aocai' })}>
+                    【傲才】看牌堆顶两张
+                  </button>
+                )}
               {/* 弃权按钮（响应类提示） */}
               {prompt.kind === 'respondSha' && (
                 <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
