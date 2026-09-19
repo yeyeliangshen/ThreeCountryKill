@@ -67,6 +67,10 @@ export const DAMAGE_CARD_TYPES: ReadonlySet<CardType> = new Set<CardType>([
   'huogong',
   'shuiyan',
   'huoshao',
+  // ⚠️ 【闪电】**算伤害牌**（用户 2026-09 裁定）：它确实是「会造成伤害的牌」——
+  //    移动版有的技能甚至写「手牌中除【闪电】外的伤害类卡牌」，只有在闪电属于伤害类时才说得通。
+  //    不想要它的技能应当**自己明确排除**，不要指望这份全局名单替你排。
+  'shandian',
 ]);
 
 /**

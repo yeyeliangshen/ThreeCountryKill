@@ -4810,7 +4810,7 @@ export function currentFactionCount(state: GameState): number {
  *
  * 口径与待核对（见 docs/guozhan-roster.md §5.61）：
  * - 「非伤害牌」＝ 不在 `DAMAGE_CARD_TYPES` 里的牌（【杀】【决斗】【南蛮】【万箭】【火攻】
- *   【水淹七军】【火烧连营】都是伤害牌，一律排除）。
+ *   【水淹七军】【火烧连营】**以及【闪电】**都是伤害牌，一律排除）。
  * - 排除项：「装备牌」走的是另一条路（不经锦囊结算，自然到不了这里）；「延时锦囊牌」由
  *   playDelayedTrick 处理，也不经这里；「势力锦囊牌」＝《不臣篇》那四张（魏【号令天下】/
  *   蜀【克复中原】/ 吴【固国安邦】/ 群【文和乱武】），见 protocol 的 `FACTION_TRICK_TYPES`
