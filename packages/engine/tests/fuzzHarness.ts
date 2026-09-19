@@ -77,7 +77,14 @@ export function allCardIds(state: GameState): string[] {
     for (const c of p.judgment) push(c);
     for (const c of p.tian) push(c);
     for (const c of p.qianhuan) push(c);
+    // ⚠️ 补上「后来才加的」特殊牌区——漏了它们，这些区里的牌对模糊网是**隐形**的：
+    //    孟达·函 / 公孙渊·异 / 界钟会·权（孙綝·戮 与 左慈·魂 存的是**武将牌**、不是牌，故不入网）。
+    for (const c of p.han) push(c);
+    for (const c of p.yi) push(c);
+    for (const c of p.quan) push(c);
   }
+  // 判定阶段「在飞」的那叠牌（判定牌还没归位，只在这个状态里）
+  if (state.judgmentInFlight) for (const c of state.judgmentInFlight.cards) push(c);
   return out;
 }
 
@@ -91,6 +98,13 @@ export function cardLocations(state: GameState, id: string): string[] {
     });
   };
   state.deck.forEach((c, i) => chk(c, `deck[${i}]`));
+  state.discard.forEach((c, i) => chk(c, `discard[${i}]`));
+  if (state.judgmentInFlight) state.judgmentInFlight.cards.forEach((c, i) => chk(c, `inFlight[${i}]`));
+  for (const p of state.players) {
+    p.han.forEach((c, i) => chk(c, `${p.seatId}.han[${i}]`));
+    p.yi.forEach((c, i) => chk(c, `${p.seatId}.yi[${i}]`));
+    p.quan.forEach((c, i) => chk(c, `${p.seatId}.quan[${i}]`));
+  }
   state.discard.forEach((c, i) => chk(c, `discard[${i}]`));
   for (const p of state.players) {
     p.hand.forEach((c, i) => chk(c, `${p.seatId}.hand[${i}]`));
