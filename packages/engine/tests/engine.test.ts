@@ -19125,7 +19125,7 @@ describe('国战 · 君主将（特性）', () => {
       ok(act(state, seatId, { type: 'chooseOption', optionId: 'no' }));
   }
 
-  it('君威·盟军大纛：受伤时弃两张牌防止此伤害，宝物本身也能当其中一张（然后销毁）', () => {
+  it('君威·盟军大纛：受伤时弃两张牌防止此伤害，防具本身也能当其中一张（然后销毁）', () => {
     const state = createGame(
       [
         { seatId: 'A', name: '甲', heroId: 'junyuanshao' },
@@ -19147,7 +19147,11 @@ describe('国战 · 君主将（特性）', () => {
     // ① 发动【君威】：弃一张牌，从游戏外取得【盟军大纛】
     expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('junwei');
     ok(act(state, 'A', { type: 'useSkill', skillId: 'junwei', cardIds: ['a1'], targetIds: [] }));
-    expect(p('A').equipment.treasure?.equipName).toBe('mengjun');
+    // 牌面（用户核对后提供）：装备牌·**防具**，红桃 3
+    expect(p('A').equipment.armor?.equipName).toBe('mengjun');
+    expect(p('A').equipment.armor?.type).toBe('armor');
+    expect(p('A').equipment.armor?.suit).toBe('heart');
+    expect(p('A').equipment.armor?.rank).toBe(3);
     expect(state.discard.some((c) => c.id === 'a1')).toBe(true); // 代价进弃牌堆
 
     // ② 甲用【决斗】打乙：乙出【杀】，甲出不来 → 甲吃 1 点伤害 → 触发【盟军大纛】
@@ -19162,10 +19166,10 @@ describe('国战 · 君主将（特性）', () => {
     // ③ 弃两张：手里剩下的【桃】＋宝物自己（装备区只有它）
     ok(act(state, 'A', { type: 'chooseOption', optionId: 'yes' }));
     expect(state.pending?.kind).toBe('pickCards');
-    const banner = p('A').equipment.treasure!; // 【盟军大纛】（id 带发号，不能写死）
+    const banner = p('A').equipment.armor!; // 【盟军大纛】（防具槽；id 带发号，不能写死）
     ok(act(state, 'A', { type: 'pickCards', cardIds: ['a3', banner.id] }));
     expect(p('A').hp).toBe(4); // 伤害被防止
-    expect(p('A').equipment.treasure).toBeNull();
+    expect(p('A').equipment.armor).toBeNull();
     // 「离开装备区即销毁」：不进弃牌堆，而是移出游戏
     expect(state.discard.some((c) => c.id === banner.id)).toBe(false);
     expect(state.discard.some((c) => c.id === 'a3')).toBe(true);

@@ -342,14 +342,15 @@ export function dinglanAfterDiscard(state: GameState, owner: Player, after: () =
  * - 「受到伤害时」＝ 扣血之前（`damageStep` 的 damageDealt 时机）。防止走的是同一条通道：
  *   设 `holder.flags.damagePrevented = true`，引擎在钩子跑完之后读到就整条伤害作废
  *   （不扣血、不跑伤害后钩子、不进濒死）——与小乔·天香、护心镜一致。
- * - 弃的两张牌取自**持有者自己的**手牌＋装备区；其中一张可以是这张宝物本身
+ * - 弃的两张牌取自**持有者自己的**手牌＋装备区；其中一张可以是这张防具本身
  *   （于是它离开装备区 → `destroyOnLeave` 把它移出游戏）。手牌＋装备区一共不足两张时发不了。
  * - 它不是英雄技能，所以和【飞龙夺凤】一样由 engine 在伤害结算里显式派发。
  * - ⚠️ 待核对：同一时机可能有多个「受到伤害时」技能（天香等），本引擎固定让宝物先问；
  *   官方是按当前回合角色的选择决定结算顺序的（本仓库对同时机一律用固定顺序，见 roster）。
  */
 export function mengjunDajun(state: GameState, holder: Player, after: () => void): void {
-  if (holder.equipment.treasure?.equipName !== 'mengjun') {
+  // ⚠️ 它在**防具**槽（用户核对的牌面：装备牌·防具 红桃3），不是宝物槽
+  if (holder.equipment.armor?.equipName !== 'mengjun') {
     after();
     return;
   }

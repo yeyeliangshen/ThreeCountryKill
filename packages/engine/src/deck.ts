@@ -425,10 +425,11 @@ export function lordEquipLiulong(seq: number): Card {
  * 「当你受到伤害时，你可以弃置两张牌（弃置的其中一张牌可以是盟军大纛），然后你防止此伤害。
  *   当此牌离开装备区时，销毁之。」（用户核对后提供的牌面文本）
  *
- * ⚠️ **待核对**：牌面只核到效果，**花色/点数/装备类型**都没核到（WIKI 没有这张牌的页面，
- *    移动版公告也只写了效果）。按四位君主的专属装备同属「宝物」这一族先记 `treasure`，
- *    花色点数用占位值 ♣2 —— 查到以后改这一个函数即可（专属装备是场外牌，花色点数在
- *    本引擎里只影响拼点/判定那类场景，日常对局用不到）。
+ * 牌面（用户核对后提供）：**装备牌·防具，红桃 3（♥3）**，君袁绍发动【君威】获得。
+ *
+ * ⚠️ 它是**防具**不是宝物（原先占位写成宝物是猜错了）：所以它占 `equipment.armor` 那个槽位，
+ *    效果函数也要看 armor（见 equip.mengjunDajun）。跟既有防具不冲突——仁王盾/藤甲/八卦阵/
+ *    明光铠/护心镜/白银狮子那些判定都是按**牌名**认的，认不出它就不会误判。
  */
 /**
  * 【定澜夜明珠】（君孙权的君主专属装备）——
@@ -451,9 +452,9 @@ export function lordEquipDinglan(seq: number): Card {
 export function lordEquipMengjun(seq: number): Card {
   return {
     id: `lord-mengjun#${seq}`,
-    type: 'treasure',
-    suit: 'club',
-    rank: 2,
+    type: 'armor',
+    suit: 'heart',
+    rank: 3,
     equipName: 'mengjun',
     destroyOnLeave: true,
   };
