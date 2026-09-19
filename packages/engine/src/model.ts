@@ -957,6 +957,22 @@ export interface GameState {
    * （回答询问的清槽点）就直接唤醒，而不是靠轮询队列（轮询在 play 占位下永远不跑）。
    */
   pendingWaiters: (() => void)[];
+  /**
+   * **打点**（docs §5.124.4）：围栏「本来会挡住」的 takeover 记录——用于把被挡的收尾按**语义**
+   * 聚类（是「恢复交互入口」还是「提交不可延迟的状态迁移」），而不是按函数名猜。
+   * 只记不改行为（当前仍照旧强制覆盖），所以开着它不会有任何行为变化。
+   */
+  blockedTakeovers: {
+    finalizer: string;
+    checkpointSeq: number;
+    currentSeq: number;
+    checkpointKind: string | null;
+    currentKind: string | null;
+    phase: string;
+    turnSeat: string | null;
+    inDying: boolean;
+    resumeQueueLength: number;
+  }[];
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

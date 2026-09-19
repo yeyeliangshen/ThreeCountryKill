@@ -2158,13 +2158,26 @@ function resumePlay(
     return;
   }
   state.turn.phase = 'play';
-  // ⚠️ 围栏判断**第五次尝试仍然暂不启用**：订阅式唤醒（runPendingWaiters）已经接好、
-  //    唤醒点也确认会跑，但启用后冒烟依旧挂同样的 6 条（4 条固定种子判不出胜负 + 牌张守恒不变式）。
-  //    说明问题不只在「什么时候醒」——**某些流程确实依赖收尾立刻把控制权抢回来**（不只是晚一点），
-  //    单纯「不覆盖、延后」会改变它们的行为。⇒ 下一刀必须先**测量**：给被挡住的场合打日志/计数，
-  //    看清到底是哪些收尾被挡、挡住后流程走向哪里，再决定是给它豁免（例如伤害/濒死/回合交接
-  //    这三类白名单）还是改流程。别再盲改。
-  void since;
+  // **打点（只记不改）**：围栏「本来会挡住」的场合记一条结构化记录，用于把被挡的 takeover
+  // 按**语义**聚类（恢复交互入口 vs 提交不可延迟的状态迁移）——行为保持不变（照旧覆盖），
+  // 所以开着它本身不会让任何测试变红。设 SGS_TRACE_TAKEOVER=1 会顺带打到 stdout。
+  if (since && !canTakeOverPending(state, since)) {
+    const rec = {
+      finalizer: 'resumePlay',
+      checkpointSeq: since.slotVersion,
+      currentSeq: state.pendingSeq,
+      checkpointKind: null as string | null,
+      currentKind: state.pending ? state.pending.kind : null,
+      phase: String(state.turn.phase),
+      turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
+      inDying: state.pending?.kind === 'respondDeath',
+      resumeQueueLength: state.resumeQueue.length,
+    };
+    state.blockedTakeovers.push(rec);
+    if (process.env.SGS_TRACE_TAKEOVER) {
+      console.log('[takeover-blocked]', JSON.stringify(rec));
+    }
+  }
   setPending(state, { kind: 'play', seatId: sourceId });
 }
 
@@ -5285,7 +5298,7 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
         (p) => p.alive && collectTimingHooks(state, p, 'cardUseEnded', false).length > 0,
       );
     if (!needed) {
-      resumePlay(state, ctx.sourceId);
+      resumePlay(state, ctx.sourceId, ctx.pendingFence);
       return;
     }
     runAllPlayersHooks(
@@ -5296,7 +5309,7 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
         sourceId: ctx.sourceId,
         targetIds: ctx.targetIds ?? (ctx.targetId ? [ctx.targetId] : []),
       },
-      () => resumePlay(state, ctx.sourceId),
+      () => resumePlay(state, ctx.sourceId, ctx.pendingFence),
     );
   };
   const first = state.firstDamageCard;
@@ -9579,6 +9592,7 @@ export function createGame(
     duwuRescued: false,
     pendingSeq: 0,
     pendingWaiters: [],
+    blockedTakeovers: [],
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],
