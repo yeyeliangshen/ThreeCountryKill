@@ -11897,36 +11897,71 @@ function fenji(ctx: HookContext, who: Player): void {
  *    `maxHp` 是按国战常见值暂填 4（待核对），请在 roster 里按「部分实现」看待它们。
  *    它们只在 `buchen: 'current'` 时进选将池（见 extensions.ts 的 BuchenExtension）。
  */
-function dualHero(id: string, name: string, f1: Faction, f2: Faction): Hero {
+function dualHero(
+  id: string,
+  name: string,
+  f1: Faction,
+  f2: Faction,
+  hp: number,
+): Hero {
   return {
     id,
     name,
     faction: f1,
     secondFaction: f2,
-    maxHp: 4, // ⚠️ 待核对：国战牌面的阴阳鱼数还没核到
+    // 用户给出的国战牌面阴阳鱼数 ×2（本仓库体力是整数的口径）：2 阴阳鱼 → 4，1.5 → 3
+    maxHp: hp,
+    gender: 'male',
+    modes: ['guozhan'],
+    skills: [], // ⚠️ 技能文本尚未核到（技能**名**见 docs/guozhan-roster.md §5.83）
+  };
+}
+
+const BUCHEN_DUAL: Hero[] = [
+  dualHero('mengda', '孟达', 'wei', 'shu', 4),
+  dualHero('tangzi', '唐咨', 'wei', 'wu', 4),
+  dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu', 4),
+  dualHero('zhanglu', '张鲁', 'wei', 'qun', 3),
+  dualHero('liuqi', '刘琦', 'qun', 'shu', 3),
+  dualHero('shixie', '士燮', 'wu', 'qun', 3),
+  dualHero('xiahouba', '夏侯霸', 'wei', 'shu', 4),
+  dualHero('wenqin', '文钦', 'wei', 'wu', 4),
+  dualHero('pengyang', '彭羕', 'shu', 'qun', 3),
+  dualHero('panjun', '潘濬', 'shu', 'wu', 3),
+  dualHero('sufei', '苏飞', 'wu', 'qun', 4),
+  dualHero('xuyou', '许攸', 'wei', 'qun', 3),
+];
+
+/**
+ * 不臣篇的**野心家武将**（势力本身就是「野」）——与「因人数超限被转成野心家」完全是两回事
+ * （用户反复强调过：前者才关联「暴露野心 → 建立新势力」）。它们只能作主将（`pickHero` 已拦副将），
+ * 且只在 `buchen: 'current'` 时进选将池。
+ *
+ * ⚠️ 与双势力同一状态：**技能文本未核到**（技能名见 docs/guozhan-roster.md §5.83），
+ *    能力、暴露野心/建立新势力流程都还没实装。
+ */
+function ambitionistHero(id: string, name: string, hp: number): Hero {
+  return {
+    id,
+    name,
+    faction: 'ambitionist',
+    maxHp: hp,
     gender: 'male',
     modes: ['guozhan'],
     skills: [],
   };
 }
 
-const BUCHEN_DUAL: Hero[] = [
-  dualHero('mengda', '孟达', 'wei', 'shu'),
-  dualHero('tangzi', '唐咨', 'wei', 'wu'),
-  dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu'),
-  dualHero('zhanglu', '张鲁', 'wei', 'qun'),
-  dualHero('liuqi', '刘琦', 'qun', 'shu'),
-  dualHero('shixie', '士燮', 'wu', 'qun'),
-  dualHero('xiahouba', '夏侯霸', 'wei', 'shu'),
-  dualHero('wenqin', '文钦', 'wei', 'wu'),
-  dualHero('pengyang', '彭羕', 'shu', 'qun'),
-  dualHero('panjun', '潘濬', 'shu', 'wu'),
-  dualHero('sufei', '苏飞', 'wu', 'qun'),
-  dualHero('xuyou', '许攸', 'wei', 'qun'),
+const BUCHEN_AMBITIONIST: Hero[] = [
+  ambitionistHero('sp_simazhao', 'SP司马昭', 3), // 1.5 阴阳鱼
+  ambitionistHero('gongsunyuan', '公孙渊', 4),
+  ambitionistHero('sunchen', '孙綝', 4),
+  ambitionistHero('jie_zhonghui', '界钟会', 4),
 ];
 
 export const HEROES: Hero[] = [
   ...BUCHEN_DUAL,
+  ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,
   JUN_SUNQUAN,

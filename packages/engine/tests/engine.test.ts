@@ -906,7 +906,11 @@ describe('国战模式', () => {
     let diff2 = '';
     for (let i = 0; i < dealsA.length; i++) {
       for (let j = i + 1; j < dealsA.length; j++) {
-        if (getHero(dealsA[i]!)?.faction !== getHero(dealsA[j]!)?.faction) {
+        // 「不同阵营」要按**共同势力**判：双势力武将（魏/蜀 之类）与蜀将算同阵营，
+        // 所以这里找的是「连一个共同势力都没有」的一对（见 determineDualFaction）
+        const f1 = [getHero(dealsA[i]!)?.faction, getHero(dealsA[i]!)?.secondFaction].filter(Boolean);
+        const f2 = [getHero(dealsA[j]!)?.faction, getHero(dealsA[j]!)?.secondFaction].filter(Boolean);
+        if (!f1.some((f) => f2.includes(f))) {
           diff1 = dealsA[i]!;
           diff2 = dealsA[j]!;
           break;
