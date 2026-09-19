@@ -521,7 +521,11 @@ export interface SkillApi {
    * 走的是和实体【杀】完全一样的结算（防具、八卦阵、流离、等出闪），
    * 只是没有实体牌（也不会进任何牌堆）。
    */
-  castVirtualSha: (sourceSeatId: string, targetId: string, opts?: { logKind?: string }) => void;
+  castVirtualSha: (
+    sourceSeatId: string,
+    targetId: string,
+    opts?: { logKind?: string; attribute?: DamageAttribute },
+  ) => void;
   /**
    * 让某人**用一张实体牌**对某人使用【杀】（牌从手里扣掉、走正常结算）。
    *

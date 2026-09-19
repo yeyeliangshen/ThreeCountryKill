@@ -2362,8 +2362,9 @@ function afterShaTargetResolve(
     return;
   }
 
-  // 不可闪避（马超·铁骑/黄忠·烈弓判定为红色或满足条件）
-  if (attack.requiredShan === Infinity) {
+  // 不可闪避（马超·铁骑/黄忠·烈弓判定为红色或满足条件）；
+  // 以及彭羕·嚣逆那种**按玩家**的「该目标不能响应此牌」
+  if (attack.requiredShan === Infinity || attack.unrespondableTargets?.includes(target.seatId)) {
     finishAttack(state, attack);
     return;
   }
@@ -5265,7 +5266,10 @@ function resolveJuedou(state: GameState, ctx: TrickContext): void {
   }
   // 刘琦·问计：其他角色不能响应 → 决斗的目标打不出【杀】，直接按弃权结算。
   // （决斗轮到**使用者本人**时不受影响——他不是「其他角色」）
-  if (ctx.unrespondable && targetId !== ctx.sourceId) {
+  if (
+    (ctx.unrespondable && targetId !== ctx.sourceId) ||
+    ctx.unrespondableTargets?.includes(targetId)
+  ) {
     pushLog(state, 'resolve', `${target.name} 不能响应【决斗】，直接结算。`);
     passDuel(state, targetId, ctx);
     return;
@@ -5324,7 +5328,10 @@ function resolveJiedao(state: GameState, ctx: TrickContext): void {
     return;
   }
   // 刘琦·问计：其他角色不能响应 → 武器持有者打不出【杀】，直接交出武器
-  if (ctx.unrespondable && holderId !== ctx.sourceId) {
+  if (
+    (ctx.unrespondable && holderId !== ctx.sourceId) ||
+    ctx.unrespondableTargets?.includes(holderId)
+  ) {
     pushLog(state, 'resolve', `${holder.name} 不能响应【借刀杀人】，直接交出武器。`);
     passJiedao(state, holderId, ctx);
     return;
@@ -6349,7 +6356,10 @@ function respondForCurrent(state: GameState, ctx: TrickContext, rId: string): vo
     return;
   }
   // 刘琦·问计：不能被响应的是**其他角色**（使用者自己照常响应）→ 直接按「弃权」结算
-  if (ctx.unrespondable && rId !== ctx.sourceId) {
+  if (
+    (ctx.unrespondable && rId !== ctx.sourceId) ||
+    ctx.unrespondableTargets?.includes(rId)
+  ) {
     pushLog(
       state,
       'resolve',
@@ -8451,6 +8461,7 @@ function makeSkillApi(
         type: 'sha',
         suit: 'spade',
         rank: 0,
+        ...(opts?.attribute ? { attribute: opts.attribute } : {}),
       };
       resolvePlayedSha(state, source, targetId, card, 'sha', {
         kind: opts?.logKind ?? 'skill',

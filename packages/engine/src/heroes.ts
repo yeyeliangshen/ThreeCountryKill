@@ -13220,7 +13220,6 @@ const TANGZI: Hero = {
 
 const BUCHEN_DUAL: Hero[] = [
   dualHero('wenqin', '文钦', 'wei', 'wu', 4),
-  dualHero('pengyang', '彭羕', 'shu', 'qun', 3),
   dualHero('panjun', '潘濬', 'shu', 'wu', 3),
   dualHero('sufei', '苏飞', 'wu', 'qun', 4),
   dualHero('xuyou', '许攸', 'wei', 'qun', 3),
@@ -14232,6 +14231,239 @@ const SUNCHEN: Hero = {
   ],
 };
 
+/**
+ * 彭羕 —— 达命 / 嚣逆（不臣篇·下，**蜀/群双势力**，1.5 阴阳鱼 → 3；移动版现行口径，见 §5.108）。
+ *
+ * 【达命】（**其他/自己**的同势力角色进入**出牌阶段时**，可发动）：弃置 1 张**锦囊牌** →
+ *   横置一名角色（「进入连环状态」是**置位**，不是铁索那种 toggle）→ 摸 X 张
+ *   （X＝**有连环角色的势力数**，按已确定势力去重、未确定不计）→ 二选一：
+ *   ① 当前回合角色**回复 1 点体力**（⚠️ 移动版现行为**直接回复**，**不是**旧版的「视为使用【桃】」）；
+ *   ② 当前回合角色**视为对另一名角色使用一张雷【杀】**——**纯虚拟牌、subcards=[]**（无实体可被
+ *      奸雄/授锋/求安取用），**不计入出杀次数**（`castVirtualSha` 走 resolvePlayedSha，天然不占次数），
+ *      但**不自动无视距离**：目标仍要过普通【杀】的攻击范围校验。
+ * 【嚣逆】（锁定技）：满足「场上还有**其他**同势力角色」且「彭羕手牌数是同势力里**最大**（**并列也算**）」
+ *   时——彭羕使用牌指定目标后，**被指定的那些目标本人不能响应此牌**；其他角色用牌指定彭羕后，
+ *   **只有彭羕自己不能响应**。条件是**指定目标那一刻**实时判定的，之后再变手牌不追溯。
+ *   ⚠️ 它是**按玩家**的「不能响应」（`unrespondableTargets`），不是整张牌的全局标志：
+ *   别人照样能对这张牌打【无懈可击】、其他目标也照样能出【闪】/打出【杀】。
+ */
+/** 「有连环角色的势力数」（达命的 X）：已确定势力去重，未确定势力不计 */
+export function chainedFactionCount(state: GameState): number {
+  const seen = new Set<string>();
+  for (const p of state.players) {
+    if (!p.alive || !p.chained) continue;
+    const f = effectiveFaction(state, p);
+    if (f) seen.add(f);
+  }
+  return seen.size;
+}
+
+/** 嚣逆是否生效：还有**其他**同势力角色，且自己手牌数是同势力最大（并列算） */
+function xiaoniActive(state: GameState, me: Player): boolean {
+  const mine = effectiveFaction(state, me);
+  if (!mine) return false;
+  const allies = state.players.filter(
+    (p) => p.alive && p.seatId !== me.seatId && effectiveFaction(state, p) === mine,
+  );
+  if (allies.length === 0) return false; // 「同势力的**其他**角色」——孤家不算
+  const maxHand = Math.max(me.hand.length, ...allies.map((a) => a.hand.length));
+  return me.hand.length === maxHand; // 并列最多也满足
+}
+
+/** 【达命】：同势力角色进入出牌阶段时，彭羕可以弃一张锦囊、横置一人、摸 X、二选一 */
+function askDaming(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  // 别人的出牌阶段走 othersPlayPhase（payload.turnSeatId）；**自己的**走 playPhase（没有 payload）
+  const activeId =
+    (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId ?? me.seatId;
+  const active = getPlayer(state, activeId);
+  if (!active || !active.alive) return;
+  const mine = effectiveFaction(state, me);
+  if (!mine || effectiveFaction(state, active) !== mine) return; // 必须是同势力（都要求已确定）
+  const tricks = handAndEquipOf(me).filter((c) => !isBasicCard(c) && !isEquipCard(c));
+  if (tricks.length === 0) return; // 没有锦囊可弃 → 不弹窗口
+  const chainables = state.players.filter(
+    (p) => p.alive && !p.chained && !immuneToChaining(state, p),
+  );
+  if (chainables.length === 0) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【达命】：${active.name} 进入出牌阶段，是否弃置一张锦囊牌发动？`,
+    [
+      { id: 'yes', label: '发动（弃一张锦囊）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        '【达命】：选择弃置的一张锦囊牌',
+        tricks,
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const cost = chosen[0];
+          if (!cost) return;
+          ctx.api.discardCards(p2.seatId, [cost], () => {
+            // 横置（置位，不是 toggle）
+            ctx.api.askChoice(
+              st2,
+              p2.seatId,
+              '【达命】：横置哪名角色（进入连环状态）？',
+              chainables.map((t) => ({ id: t.seatId, label: t.name })),
+              (st3, p3, targetId) => {
+                const target = getPlayer(st3, targetId);
+                if (!target) return;
+                target.chained = true; // 已排除「已横置/免疫横置」的候选
+                pushLog(
+                  st3,
+                  'skill',
+                  `${p3.name} 发动【达命】：弃置【${cardLabel(cost)}】，横置了 ${target.name}。`,
+                  { seat: p3.seatId },
+                );
+                // 重新统计 X（横置之后再数）
+                const x = chainedFactionCount(st3);
+                let got = 0;
+                for (let i = 0; i < x; i++) {
+                  const c = drawOne(st3);
+                  if (!c) break;
+                  p3.hand.push(c);
+                  got++;
+                }
+                pushLog(
+                  st3,
+                  'skill',
+                  `${p3.name} 的【达命】：有连环角色的势力数 ${x}，摸了 ${got} 张。`,
+                  { seat: p3.seatId },
+                );
+                // 二选一：① 当前回合角色回复 1 点体力（**不是**虚拟【桃】）
+                const slashTargets = st3.players.filter(
+                  (t) =>
+                    t.alive &&
+                    t.seatId !== active.seatId &&
+                    canTarget(st3, active.seatId, t.seatId) &&
+                    !heroBlocksBeingTarget(st3, t, { id: '', type: 'sha', suit: 'spade', rank: 0 }, active),
+                );
+                const opts = [
+                  { id: 'recover', label: `令 ${active.name} 回复 1 点体力` },
+                  ...(slashTargets.length > 0
+                    ? [{ id: 'slash', label: `令 ${active.name} 视为对一名角色使用雷【杀】` }]
+                    : []),
+                ];
+                ctx.api.askChoice(st3, p3.seatId, '【达命】：选择一项', opts, (st4, p4, choice) => {
+                  if (choice === 'recover') {
+                    const healed = ctx.api.heal(active, 1);
+                    pushLog(st4, 'skill', `${active.name} 因【达命】回复 ${healed} 点体力。`, {
+                      seat: active.seatId,
+                    });
+                    return;
+                  }
+                  ctx.api.askChoice(
+                    st4,
+                    p4.seatId,
+                    '【达命】：令其视为对谁使用雷【杀】？',
+                    slashTargets.map((t) => ({ id: t.seatId, label: t.name })),
+                    (st5, p5, victimId) => {
+                      ctx.api.castVirtualSha(active.seatId, victimId, {
+                        logKind: 'skill',
+                        attribute: 'thunder',
+                      });
+                      pushLog(
+                        st5,
+                        'skill',
+                        `${p5.name} 的【达命】：${active.name} 视为对 ${getPlayer(st5, victimId)?.name ?? '?'} 使用了一张雷【杀】。`,
+                        { seat: active.seatId },
+                      );
+                    },
+                  );
+                });
+              },
+            );
+          });
+        },
+      );
+    },
+  );
+}
+
+/**
+ * 【嚣逆】分支①：**彭羕自己用牌**（挂在来源侧的 `useCard`）→ 这次使用的**所有目标**不能响应。
+ * 多目标牌逐个目标都写进名单（不是把整张牌做成「全场不可响应」）。
+ */
+function xiaoniOnMyUse(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (!xiaoniActive(state, me)) return;
+  const payload = ctx.payload as { attack?: AttackContext; targetIds?: string[] } | undefined;
+  const atk = payload?.attack;
+  const tctx = payload as unknown as TrickContext | undefined;
+  const ids = atk ? [atk.targetId] : (payload?.targetIds ?? []);
+  if (ids.length === 0) return;
+  if (atk) atk.unrespondableTargets = [...(atk.unrespondableTargets ?? []), ...ids];
+  else if (tctx) tctx.unrespondableTargets = [...(tctx.unrespondableTargets ?? []), ...ids];
+  pushLog(state, 'skill', `${me.name} 的【嚣逆】：被指定的目标不能响应这张牌。`, {
+    seat: me.seatId,
+  });
+}
+
+/**
+ * 【嚣逆】分支②：**别人用牌指定了彭羕**（杀走目标侧的 `becomeTarget`、锦囊走 `trickTargeted`）
+ * → **只有彭羕自己**不能响应（别人照常打【无懈可击】、其他目标照常出闪）。
+ */
+function xiaoniOnTargeted(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (!xiaoniActive(state, me)) return;
+  const payload = ctx.payload as
+    | { targetId?: string; attack?: AttackContext; targetIds?: string[]; trickCtx?: TrickContext }
+    | undefined;
+  const atk = payload?.attack;
+  const tctx = payload?.trickCtx;
+  const targetedMe = atk
+    ? atk.targetId === me.seatId && atk.sourceId !== me.seatId
+    : !!(tctx && tctx.sourceId !== me.seatId && (payload?.targetIds ?? []).includes(me.seatId));
+  if (!targetedMe) return;
+  if (atk) atk.unrespondableTargets = [...(atk.unrespondableTargets ?? []), me.seatId];
+  else if (tctx) tctx.unrespondableTargets = [...(tctx.unrespondableTargets ?? []), me.seatId];
+  pushLog(state, 'skill', `${me.name} 的【嚣逆】：${me.name} 不能响应这张牌。`, {
+    seat: me.seatId,
+  });
+}
+
+const PENGYANG: Hero = {
+  id: 'pengyang',
+  name: '彭羕',
+  pack: 'buchen',
+  faction: 'shu',
+  secondFaction: 'qun',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  hooks: [
+    // 达命：自己与别人的出牌阶段开始分别走 playPhase / othersPlayPhase
+    { timing: 'playPhase', skillId: '达命', handler: askDaming },
+    { timing: 'othersPlayPhase', skillId: '达命', handler: askDaming },
+    // 嚣逆：自己用牌挂来源侧的 useCard（杀与锦囊都会派给使用者）；
+    // 别人指定彭羕时——杀走目标侧的 becomeTarget、锦囊走 trickTargeted（带完整目标列表）
+    { timing: 'useCard', skillId: '嚣逆', locked: true, handler: xiaoniOnMyUse },
+    { timing: 'becomeTarget', skillId: '嚣逆', locked: true, handler: xiaoniOnTargeted },
+    { timing: 'trickTargeted', skillId: '嚣逆', locked: true, handler: xiaoniOnTargeted },
+  ],
+  skills: [
+    {
+      name: '达命',
+      desc: '一名与你势力相同的角色进入出牌阶段时，你可以弃置一张锦囊牌，横置一名角色，然后摸 X 张牌（X 为有连环角色的势力数），令该角色回复 1 点体力或其视为对另一名角色使用一张不计入次数的雷【杀】。',
+    },
+    {
+      name: '嚣逆',
+      desc: '锁定技，若场上有与你势力相同的其他角色且你的手牌数为其中最多，你使用牌指定目标后，这些目标不能响应此牌；其他角色使用牌指定你为目标后，你不能响应此牌。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -14262,6 +14494,7 @@ export const HEROES: Hero[] = [
   LIUBA,
   XIAHOUBA,
   SUNCHEN,
+  PENGYANG,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

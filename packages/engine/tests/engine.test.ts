@@ -829,6 +829,8 @@ describe('国战模式', () => {
     const isLord = (id: string) => getHero(id)?.isLord === true;
     for (let i = 0; i < deals.length; i++) {
       for (let j = i + 1; j < deals.length; j++) {
+        // 野心家武将（野势力）只能作主将、也不能和另一个野武将配成一副将 → 这一档跳过
+        if (factionOf(deals[i]!) === 'ambitionist') continue;
         if (factionOf(deals[i]!) !== factionOf(deals[j]!)) continue;
         const li = isLord(deals[i]!);
         const lj = isLord(deals[j]!);
@@ -19394,6 +19396,119 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
     ok(act(state, A, { type: 'pass' })); // 不出闪
     expect(a.hp).toBe(hpBefore);
+  });
+});
+
+
+/**
+ * 彭羕（不臣篇·下；蜀/群双势力）——【达命】/【嚣逆】（文档 §5.108）。
+ * 锁：达命第一分支是 **recoverHp(1)**（移动版现行，不是虚拟【桃】）；X＝**有连环角色的势力数**；
+ * 嚣逆是**按玩家**的「不能响应」（只锁被指定的人，别人照常打无懈），且并列最多也算。
+ */
+describe('国战 · 彭羕（达命 / 嚣逆）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('达命：同势力角色进回合 → 弃一张锦囊、横置一人、X＝有连环角色的势力数、回复 1 点体力', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'pengyang', faction: 'shu', hand: [mk('a1', 'wuzhong', 'heart')], hp: 2, maxHp: 3 },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hp: 3, maxHp: 4, hand: [] },
+        // 注：回合从丙结束会绕回**甲自己**（彭羕也是合法的「同势力当前回合角色」）
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      C,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, C, { type: 'endPhase' })); // 轮到乙（蜀，与彭羕同势力）
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('达命');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] })); // 弃一张锦囊
+    // 横置丙（魏）→ 有连环角色的势力数 = 1 → 彭羕摸 1
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('横置');
+    const handBefore = a.hand.length;
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(c.chained).toBe(true); // 是「置位」不是 toggle
+    expect(a.hand.length).toBe(handBefore + 1); // X = 1
+    // 二选一：回复（**不是**虚拟【桃】）——当前回合角色是甲自己 → 甲 +1、手牌不因用桃变化
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('选择一项');
+    const aHandBefore = a.hand.length;
+    ok(act(state, A, { type: 'chooseOption', optionId: 'recover' }));
+    expect(a.hp).toBe(3);
+    expect(a.hand.length).toBe(aHandBefore); // 没有「使用【桃】」那回事
+    void b;
+    expect(state.log.some((e) => e.message.includes('达命'))).toBe(true);
+  });
+
+  it('嚣逆：彭羕（手牌并列最多）用【杀】→ 目标不能响应（无出的闪窗口）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'pengyang',
+        faction: 'shu',
+        hand: [sha('a1'), mk('a2', 'tao', 'heart'), mk('a3', 'tao', 'heart')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [mk('b1', 'tao', 'heart'), mk('b2', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [mk('c1', 'shan', 'heart')] },
+    ], A);
+    const c = state.players.find((p) => p.seatId === C)!;
+    // 条件是「**指定目标之后**」实时判：打出【杀】后甲 2 张 = 乙 2 张（并列最多）→ 嚣逆生效
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    expect(state.pending?.kind).not.toBe('respondSha'); // 丙不能出闪
+    expect(c.hp).toBe(3);
+    expect(c.hand.some((x) => x.id === 'c1')).toBe(true); // 闪还在手里
+    expect(state.log.some((e) => e.message.includes('嚣逆'))).toBe(true);
+  });
+
+  it('嚣逆：孤家（场上没有其他同势力角色）不生效 → 正常等出闪', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'pengyang', faction: 'shu', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [mk('b1', 'shan', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha'); // 没别的蜀 → 嚣逆不生效
   });
 });
 

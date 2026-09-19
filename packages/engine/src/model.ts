@@ -502,6 +502,11 @@ export interface AttackContext {
    */
   generatedBy?: string;
   /**
+   * 彭羕·嚣逆（**按玩家**）：这次【杀】结算中，名单里的玩家**不能响应**（不能出【闪】）。
+   * 与 `requiredShan === Infinity`（整张杀不可闪避）不同：只锁名单里的人。
+   */
+  unrespondableTargets?: string[];
+  /**
    * 严白虎·寄篱：这张【杀】结算结束后，其使用者要**再使用一张虚拟同名【杀】**指定他。
    *
    * 由技能在他成为目标时置位，走到结算收尾（afterAttackSettledTail）消费掉——只消费一次：
@@ -582,6 +587,13 @@ export interface TrickContext {
    * 会重新开无懈窗口——它是**一次全新的卡牌使用**（见 engine 的 useVirtualSameNameCard）。
    */
   jiliUse?: boolean;
+  /**
+   * 彭羕·嚣逆：**按玩家**的「不能响应这张牌」——只锁名单里的那些人，
+   * 其余角色（含打【无懈可击】的）照常响应。与下面刘琦的 `unrespondable`
+   * （**整张牌**不能被其他角色响应、连无懈窗口都不开）是两种语义，别混：
+   * 嚣逆只作用于「被指定的那些目标本人」。
+   */
+  unrespondableTargets?: string[];
   /**
    * 刘琦·问计：这张牌不能被**其他角色**响应（使用者自己不受限）。
    *
