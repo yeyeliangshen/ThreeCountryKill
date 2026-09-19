@@ -4556,6 +4556,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       return onRespondCard(state, seatId, intent);
     case 'pass':
       return onPass(state, seatId);
+    case 'aocai':
+      return onAocai(state, seatId);
     case 'endPhase':
       return onEndPhase(state, seatId);
     case 'discard':
@@ -7626,6 +7628,88 @@ function onRespondCardInner(
     return onRespondFactionCall(state, seatId, intent, pending);
   }
   return err('当前你不能响应');
+}
+
+/**
+ * 诸葛恪·【傲才】：**回合外**被要求使用/打出**基本牌**时，观看牌堆顶两张，用其中一张
+ * **满足请求的实体基本牌**完成这次响应——**不经过手牌**（`toHand=false`）、**不是虚拟牌**（真花色点数）。
+ *
+ * 实现要点（§5.116）：
+ * - 只在自己回合外、且**当前确实有一条在等这位回答的响应询问**时可用；
+ * - 请求的牌种从 pending 现算（【闪】/【杀】/【桃】），不匹配的基本牌**不能**拿去顶；
+ * - **没匹配就什么都不发生**：牌堆顶两张**原样不动**（不是「先摸两张再塞回去」）；
+ * - 结算复用既有的响应分支（`respondSha`/`respondDeathSave`/`onRespondTrick`）：
+ *   把这张实体牌**临时放进手牌**让那些分支按既有逻辑打出去（它们只认手牌），
+ *   结算完再确保它已经离开手牌（正常会进弃牌堆）。
+ */
+function onAocai(state: GameState, seatId: string): ApplyResult {
+  const p = getPlayer(state, seatId);
+  if (!p || !p.alive) return err('无效的操作者');
+  if (!activeHeroes(state, p).some((h) => h.aocai === true)) return err('你没有这个技能');
+  // 回合外
+  if (state.seatOrder[state.turn.seatIndex] === seatId) return err('【傲才】只能在你的回合外发动');
+  const pending = state.pending;
+  if (!pending) return err('当前没有需要响应的牌');
+  // 这次请求要什么基本牌
+  let needType: 'sha' | 'shan' | 'tao' | null = null;
+  if (pending.kind === 'respondSha' && pending.responderId === seatId) needType = 'shan';
+  else if (pending.kind === 'respondDeath' && pending.askQueue[pending.askIndex] === seatId)
+    needType = 'tao';
+  else if (pending.kind === 'respondTrick' && pending.responderId === seatId) {
+    const t = pending.ctx.card.type;
+    if (t === 'wanjian') needType = 'shan';
+    else if (t === 'nanman' || t === 'juedou' || t === 'jiedao') needType = 'sha';
+  }
+  if (!needType) return err('当前不是「需要使用或打出基本牌」的请求');
+  // 观看牌堆顶两张（**不动牌**）
+  const top = state.deck.slice(0, 2);
+  const matches = top.filter((c) => c.type === needType);
+  if (matches.length === 0) {
+    pushLog(state, 'skill', `${p.name} 的【傲才】：牌堆顶没有可用的【${CARD_TYPE_NAME[needType]}】。`, {
+      seat: p.seatId,
+    });
+    return { ok: true };
+  }
+  const use = (card: (typeof matches)[number]): ApplyResult => {
+    // 从牌堆取走那一张（不进手牌）
+    const idx = state.deck.findIndex((c) => c.id === card.id);
+    if (idx < 0) return err('牌堆里找不到这张牌');
+    state.deck.splice(idx, 1);
+    pushLog(
+      state,
+      'skill',
+      `${p.name} 发动【傲才】：观看牌堆顶两张，用【${CARD_TYPE_NAME[card.type]}】响应。`,
+      { seat: p.seatId },
+    );
+    // 临时进手牌 → 复用既有响应分支（真花色点数、照常进弃牌堆）
+    p.hand.push(card);
+    const asIntent = { type: 'respondCard' as const, cardId: card.id };
+    // ⚠️ 显式判 respondTrick 是给 TS 重新收窄用的（闭包里直接读 pending.ctx 会报类型错）
+    const res =
+      pending.kind === 'respondSha'
+        ? respondSha(state, seatId, asIntent)
+        : pending.kind === 'respondDeath'
+          ? respondDeathSave(state, seatId, asIntent, pending)
+          : pending.kind === 'respondTrick'
+            ? onRespondTrick(state, seatId, asIntent, pending.ctx)
+            : err('当前不能响应');
+    // 兜底：万一那条分支没有把它打出去（异常路径），别留一张凭空多出来的手牌
+    removeCard(p.hand, card.id);
+    return res;
+  };
+  if (matches.length === 1 && matches[0]) return use(matches[0]);
+  askChoice(
+    state,
+    seatId,
+    '【傲才】：选择要用哪一张牌响应',
+    matches.map((c) => ({ id: c.id, label: `【${CARD_TYPE_NAME[c.type]}】${c.suit}${c.rank}` })),
+    (st, pl, picked) => {
+      const chosen = st.deck.find((c) => c.id === picked);
+      if (chosen) use(chosen);
+      void pl;
+    },
+  );
+  return { ok: true };
 }
 
 function respondSha(

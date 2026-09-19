@@ -428,6 +428,11 @@ export interface Hero {
    */
   exemptFromKillPenalty?: boolean;
   /**
+   * 诸葛恪·【傲才】（§5.116）：**回合外**被要求使用/打出**基本牌**时，可以观看牌堆顶两张，
+   * 用其中一张**满足请求的实体基本牌**完成这次使用/打出（不进手牌、不是虚拟牌）。
+   */
+  aocai?: boolean;
+  /**
    * **目标级**的「本回合【杀】次数豁免」：整张牌**提议的全部目标**都满足条件时才允许突破次数上限。
    * 夏侯霸·【豹烈】②是第一个用例（目标当前体力 ≥ 自己当前体力）。
    * ⚠️ 语义是「这张杀的这批目标能不能豁免」，**不是**「有技能就无限出杀」——
@@ -13922,6 +13927,7 @@ const ZHUGEKE: Hero = {
   gender: 'male',
   modes: ['guozhan'],
   combos: ['dingfeng'], // 珠联璧合【丁奉】
+  aocai: true,
   activeSkills: [DUWU_SKILL],
   skills: [
     {
