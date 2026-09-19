@@ -226,6 +226,14 @@ export interface Hero {
    */
   lordBanner?: Faction;
   /**
+   * **同一个武将本体的 id**（用户给定的口径）：标准版与它的君主版（以及将来的界/谋等版本）
+   * 共用同一个 `canonicalId`，默认就是自己的 id。
+   *
+   * 用途：组双将时禁止「同一本体的两个版本」（曹操 + 君曹操）。将来加界曹操/谋曹操，
+   * 只要让它们也填 `canonicalId: 'caocao'` 就自动受这条约束，不用改判定代码。
+   */
+  canonicalId?: string;
+  /**
    * 「这个武将给**同势力角色**授予一个出牌阶段技能」——值是那条技能的 id（目前只有君孙权的督授）。
    * 与 `lordBanner` 同一类：引擎按它去场上找提供者（见 `factionGrantedActiveSkills`）。
    */
@@ -3590,6 +3598,8 @@ const JUN_CAOCAO: Hero = lordHero(
   'wei',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【六龙骖驾】）、【雄驰】、【征戎】，三条都已实现。',
   {
+    // 与标准版【曹操】是同一个武将本体：两者不能同时当主将+副将（见 heroCanonicalId）
+    canonicalId: 'caocao',
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
       {
@@ -3724,6 +3734,7 @@ const JUN_LIUBEI: Hero = lordHero(
   'shu',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【飞龙夺凤】）、【章武】、【励众】都已实现。',
   {
+    canonicalId: 'liubei', // 与【刘备】同一本体
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
       {
@@ -3921,6 +3932,7 @@ const JUN_SUNQUAN: Hero = lordHero(
   'wu',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【定澜夜明珠】）、【督授】、【据江】已实现。',
   {
+    canonicalId: 'sunquan', // 与【孙权】同一本体
     // 督授：给**同势力角色**一个出牌阶段技能（引擎按这个 id 找提供者，见 factionGrantedActiveSkills）
     factionSkillId: 'dushou',
     skills: [
@@ -4110,6 +4122,7 @@ const JUN_YUANSHAO: Hero = lordHero(
   'qun',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【盟军大纛】）、【会盟】、【授锋】已实现。',
   {
+    canonicalId: 'yuanshao', // 与【袁绍】同一本体
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
       {
@@ -12142,6 +12155,24 @@ const LORD_VARIANTS: Record<string, string> = {
   yuanshao: 'junyuanshao',
   junyuanshao: 'yuanshao',
 };
+
+/**
+ * 一个武将的**本体 id**：同一武将的不同版本（标准版 / 君主版 / 将来的界·谋…）返回同一个值。
+ *
+ * 用户给定的口径：**同一个本体的两个版本不能同时当主将+副将**（「曹操 + 君曹操」这种组合
+ * 是同一名武将，规则上不允许）；这也顺带说明了将来加「界曹操」时该怎么处理——填同一个
+ * `canonicalId` 即可，判定代码不用改。默认（没填 `canonicalId` 的武将）就是它自己的 id。
+ */
+export function heroCanonicalId(heroId: string | null | undefined): string | undefined {
+  if (!heroId) return undefined;
+  return getHero(heroId)?.canonicalId ?? heroId;
+}
+
+/** 这两张武将牌是不是**同一个武将的两个版本** */
+export function sameHeroBody(a: string, b: string): boolean {
+  const ca = heroCanonicalId(a);
+  return !!ca && ca === heroCanonicalId(b);
+}
 
 /** 这张武将牌可以换成的另一版（君主版 / 标准版）；没有对应版本时返回 undefined */
 export function lordVariantOf(heroId: string | null | undefined): string | undefined {

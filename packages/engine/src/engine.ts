@@ -98,7 +98,10 @@ import {
   hasYuxi,
   draftAllowsHero,
   factionGrantedActiveSkills,
+  heroCanonicalId,
   knownFactionCount,
+  sameHeroBody,
+
   sameKnownFaction,
   skillOnField,
   fengyangBlocksEquip,
@@ -8690,6 +8693,11 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     if (!deputyId) return err('国战需选 2 位武将（主将 + 副将）');
     if (!draftAllowsHero(state, seatId, deputyId)) return err('副将不在你发到的将中');
     if (deputyId === intent.heroId) return err('主将与副将不能相同');
+    // 同一武将的两个版本也不能同场（曹操 + 君曹操、将来的界曹操 + 曹操…）——用户给定口径：
+    // 它们共享同一个武将本体，记在 Hero.canonicalId 上，不按名字硬编码
+    if (sameHeroBody(intent.heroId, deputyId)) {
+      return err('主将与副将不能是同一个武将的不同版本');
+    }
     // ⚠️ 待核对：君主版与它的标准版能不能同时当主副将（【君曹操】+【曹操】）——官方没写明，
     //    本仓库**不猜**，因此不拦（原先我按「君主替换同名标准武将」推了一条禁令，发现既没有
     //    出处又挡掉了几条既有用例，已撤）。只守住有依据的那条：一张武将牌不能落到两个人手里。

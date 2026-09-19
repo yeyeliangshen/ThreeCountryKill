@@ -29,6 +29,10 @@ import {
   isSmallFaction,
   factionHelpers,
   isMalePlayer,
+  heroCanonicalId,
+
+  sameHeroBody,
+
   knownFactionCount,
 
   type GameState,
@@ -18719,69 +18723,93 @@ describe('国战 · 君主将（特性）', () => {
   }
 
   it('君主将只能作主将', () => {
-    const state = gzDeal({ A: ['caocao', 'juncaocao'], B: ['guanyu', 'zhangfei'] });
+    const state = gzDeal({ A: ['caocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
     // 君曹操当副将 → 拒绝
     const bad = act(state, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'juncaocao' });
     expect(bad.ok).toBe(false);
     // 君主作主将、同势力普通武将作副将 → 可以
-    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
     expect(state.players.find((p) => p.seatId === 'A')!.heroId).toBe('juncaocao');
   });
 
   it('君主将 ↔ 标准版：发到哪一版都等于两版都能选（国战）', () => {
     // ① 发到标准版【曹操】→ 可以直接选君主版【君曹操】当主将
-    const s1 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
-    ok(act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'xiahoudun' }));
+    const s1 = gzDeal({ A: ['caocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    ok(act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
     expect(s1.players.find((p) => p.seatId === 'A')!.heroId).toBe('juncaocao');
 
     // ② 反过来：发到【君曹操】→ 也可以选标准版【曹操】
-    const s2 = gzDeal({ A: ['juncaocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
-    ok(act(s2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xiahoudun' }));
+    const s2 = gzDeal({ A: ['juncaocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    ok(act(s2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'zhenji' }));
     expect(s2.players.find((p) => p.seatId === 'A')!.heroId).toBe('caocao');
 
     // ③ 副将位同样可以换成「标准版」（发到君曹操 → 副将用曹操）
-    const s3 = gzDeal({ A: ['juncaocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
-    ok(act(s3, 'A', { type: 'pickHero', heroId: 'xiahoudun', deputyHeroId: 'caocao' }));
+    const s3 = gzDeal({ A: ['juncaocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    ok(act(s3, 'A', { type: 'pickHero', heroId: 'zhenji', deputyHeroId: 'caocao' }));
 
     // ④ 换过去也仍然守规矩：君主将只能作主将
-    const s4 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
-    const bad = act(s4, 'A', { type: 'pickHero', heroId: 'xiahoudun', deputyHeroId: 'juncaocao' });
+    const s4 = gzDeal({ A: ['caocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    const bad = act(s4, 'A', { type: 'pickHero', heroId: 'zhenji', deputyHeroId: 'juncaocao' });
     expect(bad.ok).toBe(false);
 
     // ⑤ 没有对应版本的武将不能凭空选出来（发到曹操 ≠ 能选君刘备）
-    const s5 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
-    const bad2 = act(s5, 'A', { type: 'pickHero', heroId: 'junliubei', deputyHeroId: 'xiahoudun' });
+    const s5 = gzDeal({ A: ['caocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    const bad2 = act(s5, 'A', { type: 'pickHero', heroId: 'junliubei', deputyHeroId: 'zhenji' });
     expect(bad2.ok).toBe(false);
   });
 
   it('选将：一张武将牌只能落到一个人手里（君主/标准版的互换也守这条）', () => {
     // 乙手里有【君曹操】→ 甲（发到的是标准版【曹操】）就不能换成君曹操
-    const s1 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['juncaocao', 'xuchu'] });
-    const bad = act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'xiahoudun' });
+    const s1 = gzDeal({ A: ['caocao', 'zhenji'], B: ['juncaocao', 'xuchu'] });
+    const bad = act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' });
     expect(bad.ok).toBe(false);
     // 提示里也不该出现它（界面据此决定要不要显示「换成君主将」按钮）
     const promptA = toSnapshot(s1, 'A').prompt;
-    expect(promptA?.legalHeroIds).toEqual(['caocao', 'xiahoudun']);
+    expect(promptA?.legalHeroIds).toEqual(['caocao', 'zhenji']);
     expect(promptA?.draftVariants).toEqual([]);
     // 反过来也一样：甲拿到的是【君曹操】时，标准版【曹操】在乙手里就用不了
-    const s2 = gzDeal({ A: ['juncaocao', 'xiahoudun'], B: ['caocao', 'xuchu'] });
-    expect(act(s2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xiahoudun' }).ok).toBe(
+    const s2 = gzDeal({ A: ['juncaocao', 'zhenji'], B: ['caocao', 'xuchu'] });
+    expect(act(s2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'zhenji' }).ok).toBe(
       false,
     );
     // 没人拿走的那一版才是白捡的（乙手里没有君曹操）
-    const s3 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['xuchu', 'dianwei'] });
+    const s3 = gzDeal({ A: ['caocao', 'zhenji'], B: ['xuchu', 'dianwei'] });
     expect(toSnapshot(s3, 'A').prompt?.draftVariants).toEqual(['juncaocao']);
-    ok(act(s3, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'xiahoudun' }));
+    ok(act(s3, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
 
     // 君主 + 别的魏将没问题（s3 里君曹操是白捡的、夏侯惇是发到的）
     ok(act(s3, 'B', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'dianwei' }));
   });
 
+  it('同一武将的两个版本不能同场（曹操 + 君曹操）：按 canonicalId 判，不按名字', () => {
+    // 与选将时的「版本切换」配套：君曹操是从发到的【曹操】换过去的那一版，
+    // 同一个武将本体不能既当主将又当副将。
+    const s1 = gzDeal({ A: ['caocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    expect(heroCanonicalId('juncaocao')).toBe('caocao');
+    expect(heroCanonicalId('caocao')).toBe('caocao');
+    expect(heroCanonicalId('guanyu')).toBe('guanyu'); // 没填就是自己
+    expect(sameHeroBody('juncaocao', 'caocao')).toBe(true);
+    expect(sameHeroBody('junliubei', 'caocao')).toBe(false);
+    const bad = act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' });
+    expect(bad.ok).toBe(false);
+    // 换个别的魏将就没问题
+    ok(act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
+    // 四位君主都登记了本体 id（将来加界曹操/谋曹操，填同一个 canonicalId 就自动受约束）
+    for (const [lord, base] of [
+      ['juncaocao', 'caocao'],
+      ['junliubei', 'liubei'],
+      ['junsunquan', 'sunquan'],
+      ['junyuanshao', 'yuanshao'],
+    ] as const) {
+      expect(heroCanonicalId(lord)).toBe(base);
+    }
+  });
+
   it('君主将与同势力**所有**武将珠联璧合（不限于官方组合表）', () => {
     // 君曹操 + 曹操：官方组合表里没有这一对，但君主与同势力全员珠联璧合
     // （标记在选将结束时统一发放，所以两家都要选完）
-    const state = gzDeal({ A: ['juncaocao', 'caocao'], B: ['guanyu', 'zhangfei'] });
-    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    const state = gzDeal({ A: ['juncaocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
     ok(act(state, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
     // 珠联璧合与阴阳鱼都是**双将同时明置**时才发的（onHeroRevealed）
     const ask = state.pending;
@@ -18790,8 +18818,8 @@ describe('国战 · 君主将（特性）', () => {
     const a = state.players.find((p) => p.seatId === 'A')!;
     expect(a.markers.zhulian).toBe(1);
     // 对照：两个普通魏将（曹操 + 夏侯惇）不在官方组合表里 → 没有珠联璧合
-    const state2 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['guanyu', 'zhangfei'] });
-    ok(act(state2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xiahoudun' }));
+    const state2 = gzDeal({ A: ['caocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    ok(act(state2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'zhenji' }));
     ok(act(state2, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
     const ask2 = state2.pending;
     if (ask2?.kind === 'choice' && ask2.seatId === 'A')
@@ -18800,8 +18828,8 @@ describe('国战 · 君主将（特性）', () => {
   });
 
   it('君主将亮将时主副将同时亮出（没有「只亮一张」的选项）', () => {
-    const state = gzDeal({ A: ['juncaocao', 'caocao'], B: ['guanyu', 'zhangfei'] });
-    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    const state = gzDeal({ A: ['juncaocao', 'zhenji'], B: ['guanyu', 'zhangfei'] });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
     ok(act(state, 'B', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
     // 选将结束 → 第一回合（甲）准备阶段会问「是否明置武将牌」
     const p = state.pending;
@@ -18819,8 +18847,8 @@ describe('国战 · 君主将（特性）', () => {
   });
 
   it('君主阵亡：同势力角色各失去 1 点体力，异势力不受影响', () => {
-    const state = gzDeal({ A: ['juncaocao', 'caocao'], B: ['caoren', 'xuchu'], C: ['guanyu', 'zhangfei'] });
-    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    const state = gzDeal({ A: ['juncaocao', 'zhenji'], B: ['caoren', 'xuchu'], C: ['guanyu', 'zhangfei'] });
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
     ok(act(state, 'B', { type: 'pickHero', heroId: 'caoren', deputyHeroId: 'xuchu' }));
     ok(act(state, 'C', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
     const a = state.players.find((p) => p.seatId === 'A')!;
@@ -19644,7 +19672,7 @@ describe('国战 · 君主将（特性）', () => {
     const c = seatSet(state, 'C', 'zhangliao', 'wei', []);
     c.heroRevealed = false; // 丙两张都暗着 → 会走「由观看者挑一张」那条分支
     c.deputyRevealed = false;
-    c.deputyHeroId = 'xiahoudun';
+    c.deputyHeroId = 'zhenji';
     b.markers.xianqu = 1;
     state.turn = { seatIndex: 1, phase: 'play' };
     state.pending = { kind: 'play', seatId: 'B' };
@@ -19673,7 +19701,7 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.pending?.kind).toBe('viewCards'); // 只有甲看得到
     if (state.pending?.kind !== 'viewCards') return;
     expect(state.pending.seatId).toBe('A');
-    expect(state.pending.note).toContain('夏侯惇');
+    expect(state.pending.note).toContain('甄姬');
     ok(act(state, 'A', { type: 'ack' }));
 
     // 看完之后：不是「甲的出牌阶段」，而是乙的结束阶段正常收尾 → 轮到丙
@@ -20077,12 +20105,12 @@ describe('国战 · 君主将（特性）', () => {
   it('君主阵亡的连带掉血把同势力打进濒死 → 换他求桃', () => {
     // 四家：甲（魏·君主）、乙（魏）、丙（蜀）、丁（吴）——留两人活着，免得死两个就判胜
     const state = gzDeal({
-      A: ['juncaocao', 'caocao'],
+      A: ['juncaocao', 'zhenji'],
       B: ['caoren', 'xuchu'],
       C: ['guanyu', 'zhangfei'],
       D: ['zhouyu', 'lvmeng'],
     });
-    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'caocao' }));
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
     ok(act(state, 'B', { type: 'pickHero', heroId: 'caoren', deputyHeroId: 'xuchu' }));
     ok(act(state, 'C', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
     ok(act(state, 'D', { type: 'pickHero', heroId: 'zhouyu', deputyHeroId: 'lvmeng' }));
