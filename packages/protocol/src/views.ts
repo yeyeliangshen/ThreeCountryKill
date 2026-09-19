@@ -76,6 +76,11 @@ export interface PlayerView {
   deputyRevealed?: boolean;
   // 国战标记（公开信息）：持有数量 > 0 的标记
   markers?: { id: MarkerId; label: string; count: number }[];
+  /**
+   * 【荐才】（徐庶·副将技）「获知」的**尚未登场的同势力武将牌**。
+   * 这是**私有信息**：只有本人那一份快照里才有，别人的快照里连字段都没有。
+   */
+  knownHeroes?: { id: string; name: string }[];
   // 武将牌是否翻面朝上（公开信息）：为 true 时该角色跳过下一个回合
   flipped?: boolean;
   /** 是否处于横置状态（铁索连环，公开信息） */

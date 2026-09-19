@@ -359,6 +359,13 @@ export interface Player {
    * 不随回合清空（是「我想用这个技能」的持续声明），也不公开给对手。
    */
   prelitSkills: string[];
+  /**
+   * 【荐才】（徐庶）私下「获知」的武将牌 id：**尚未登场**（还在 `state.heroPool` 里）
+   * 且与徐庶已确定势力相同。只给本人看（快照里走 `knownHeroes` 那一条）。
+   * ⚠️ 真源是 `state.heroPool`：某张牌真的登场后，它就不再算「尚未登场」——
+   *    每次使用时与 heroPool 取交集，所以这里留着旧 id 也不会算错。
+   */
+  knownHeroIds: string[];
 
   /**
    * 周泰·不屈的「创」：濒死时从牌堆顶扣在武将牌上的牌（**置于武将牌上**，
@@ -469,6 +476,17 @@ export interface AttackContext {
    * ⚠️ 与君孙权·据江的「额外结算一次」是两套机制，别混（见 engine 的两个机制函数）。
    */
   jiliUse?: boolean;
+  /**
+   * 这次【杀】结算**无视目标防具**（徐庶·诛害的强化分支）。
+   * 只作用于这一次结算（`equip.ts` 的四个防具判定点统一读它）：仁王盾/藤甲/明光铠的「无效」、
+   * 八卦阵的代闪、藤甲的火焰 +1、白银狮子的防止多余，全部照「装备区没有防具」处理。
+   */
+  ignoreArmor?: boolean;
+  /**
+   * 这次结算是由哪个**技能**发起的（目前只有徐庶·诛害）。技能侧靠它认出「自己发起的那次使用」
+   * （例如「目标每用一张【闪】响应后弃一张牌」）。
+   */
+  skillId?: string;
   /**
    * 这张【杀】已经被改过目标（大乔·流离）。
    * 只允许改一次，否则两个都会改目标的技能能让它来回弹、死循环。
@@ -758,6 +776,18 @@ export interface GameState {
    * 严白虎·寄篱造出来的虚拟牌**发号器**（id 带序号 → 唯一；记在 state 上 → 同种子可重放）。
    */
   jiliVirtualSeq: number;
+  /**
+   * 轮号：从 **1** 开始，座次绕回首位时 +1（见 afterTurnEnd）。徐庶·荐才的
+   * 「获知数量补足到 轮数×3」用它；`roundStart` 时机在 +1 之后派发。
+   */
+  round: number;
+  /**
+   * 本回合的**伤害事件账本**：每次真正落地的伤害记一条（来源、目标、**伤害发生那一刻**
+   * 目标的已确定势力）。徐庶·诛害要问「该角色本回合有没有伤害过与徐庶**势力相同**的角色」——
+   * 势力按当时公开的 `effectiveFaction` 记，**不追溯**（暗将之后亮出来不算，与会盟同一口径）。
+   * 随回合清空（startTurn）。
+   */
+  damageLedgerThisTurn: { sourceId: string; targetId: string; targetFaction: Faction | null }[];
   /**
    * 装备「失去事件」的编号（见 timing.EquipLostPayload.eventId）。单调递增，不需要重置。
    */

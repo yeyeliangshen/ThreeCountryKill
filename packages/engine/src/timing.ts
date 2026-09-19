@@ -150,6 +150,20 @@ export type Timing =
   | 'pindianRevealed'
   | 'death' // 死亡
   | 'roundEnd' // 一轮结束（座次绕回首位；君主·励众在这里结算）
+  | 'roundStart' // 一轮开始（轮号 +1 之后、新一轮第一个回合开始之前；徐庶·荐才在这里获知武将牌）
+  /**
+   * 伤害**将要落地**（最终伤害值已定、尚未扣血、`flags.damagePrevented` 还没读）。
+   * 与 `damageDealt`（只派给**目标**）不同，这个时机派给**全场**——徐庶·荐才那类
+   * 「旁观者防止别人受到的致命伤害」才收得到；置 `target.flags.damagePrevented = true`
+   * 即可让整笔伤害作废。
+   */
+  | 'beforeDamageApply'
+  /**
+   * 「**任何**角色使用或打出【闪】之后」——派给全场（可挂起）。
+   * 与只派给 responder 的 `shanUsed`（张角·雷击那种「你使用/打出闪」）不同：
+   * 徐庶·诛害的「此【杀】的目标每用一张【闪】响应后弃一张牌」是**旁观者**的技能，收不到前者。
+   */
+  | 'anyShanUsed'
   /**
    * **一张「伤害牌」使用完、整个结算结束时**（派给**所有存活角色**，
    * payload: { card, userSeatId }）。
@@ -498,7 +512,6 @@ export interface SkillApi {
    * 用它替换现有副将（新副将暗置、体力上限按新的两张牌重算）。马谡·制蛮、荀攸·奇策、
    * 吕范、左慈都用它。
    */
-  changeDeputyHero: (seatId: string) => void;
   /**
    * 让某名玩家**私密地**看一些内容（别人的手牌，或暗置武将牌的名字），
    * 他确认之后接着跑 `after`（不传就交回出牌阶段）。
@@ -515,12 +528,28 @@ export interface SkillApi {
       returnTo?: string;
     },
   ) => void;
+  /**
+   * 变更副将（从**未加入游戏的武将牌堆**里连续亮将，直到亮出与主将势力相同者）。
+   * `opts.preferred`：先按这个顺序在这些**尚未登场**的牌里找（徐庶·荐才「非唯一大势力时
+   * 可以优先从已获知的武将里选」）——仍然要求与主将势力相同，不是凭空造牌。
+   * ⚠️ 变更**不会**改变已经确定的体力上限（官方「变更」规则）。
+   */
+  changeDeputyHero: (seatId: string, opts?: { preferred?: string[] }) => void;
   useShaOn: (
     sourceSeatId: string,
     targetId: string,
     card: Card,
     opts?: {
       logKind?: string;
+      /** 这次【杀】结算**无视目标防具**（徐庶·诛害的强化分支） */
+      ignoreArmor?: boolean;
+      /** 记录「这次结算由哪个技能发起」（技能侧据此认领这一次使用，如诛害的「闪后弃牌」） */
+      skillId?: string;
+      /**
+       * 【丈八蛇矛】式用法：除 `card` 之外**再垫一张**手牌，两张一起当【杀】用
+       * （生效的是一张虚拟【杀】；诛害要允许「两张牌转化出的杀」，官方口径明确过）。
+       */
+      extraCardIds?: string[];
       /** 这张【杀】**整个结算完**（含出闪/伤害/濒死）之后接着做的事 */
       after?: () => void;
     },

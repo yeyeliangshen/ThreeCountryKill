@@ -553,6 +553,17 @@ function markDamaged(state: GameState, timing: Timing, player: Player, payload?:
   // 正好就是「谁造成的」那个视角。自伤不派发这个时机，所以自伤不算（已在注释里说明）。
   if (timing === 'afterDamageDealt') {
     player.flags.dealtDamageThisTurn = true;
+    // 徐庶·诛害的强化条件：「该角色本回合有没有伤害过与徐庶**势力相同**的角色」。
+    // 记「伤害发生那一刻」目标的已确定势力（effectiveFaction）——暗将之后亮出来不追溯。
+    const ledgerAttack = (payload as { attack?: AttackContext } | undefined)?.attack;
+    if (ledgerAttack?.targetId) {
+      const victim = getPlayer(state, ledgerAttack.targetId);
+      state.damageLedgerThisTurn.push({
+        sourceId: player.seatId,
+        targetId: ledgerAttack.targetId,
+        targetFaction: victim ? effectiveFaction(state, victim) : null,
+      });
+    }
     // 本轮伤害账本（君主·励众）：按**来源**累加，一轮走完清空（见 afterTurnEnd 的回合交替处）
     const dmg = (payload as { damage?: number } | undefined)?.damage ?? 0;
     if (dmg > 0) {
@@ -1043,6 +1054,8 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.deckGainOwner = {};
   // 寄篱「这张牌已经重跑过」同样只在**本回合**内有效（严白虎）
   state.extraResolvedCards = [];
+  // 伤害事件账本（诛害的强化条件）也是「本回合」口径
+  state.damageLedgerThisTurn = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
   state.discardThisTurn = [];
   // 武将牌翻面朝上：跳过这一个回合，翻回正面（据守/放逐的代价）
@@ -1861,12 +1874,40 @@ function afterTurnEnd(state: GameState): void {
   // 所以在这里先派发 roundEnd，再清账本、开新回合。
   if (next < state.turn.seatIndex) {
     dispatchRoundEnd(state, () => {
+      // 新一轮：轮号先 +1，再派发「每轮开始时」（徐庶·荐才的获知挂在它上面），
+      // 都走完才开这一轮的第一个回合。
+      state.round += 1;
       state.damageThisRound = {};
-      startTurn(state, next);
+      // 「每轮开始时」同样是**有钩子才走**：多一层可挂起嵌套会改变续接先后（教训见 beforeDamageApply）
+      const needsRoundStart = state.players.some(
+        (p) => p.alive && collectTimingHooks(state, p, 'roundStart', true).length > 0,
+      );
+      if (needsRoundStart) {
+        dispatchRoundStart(state, () => startTurn(state, next));
+      } else {
+        startTurn(state, next);
+      }
     });
     return;
   }
   startTurn(state, next);
+}
+
+/**
+ * 派发「一轮开始」的钩子（依次问每个存活角色，允许钩子挂起）。
+ * 只在这里被调用：回合交替检测到座次绕回首位、轮号 +1 之后（见 afterTurnEnd）。
+ */
+function dispatchRoundStart(state: GameState, after: () => void): void {
+  const players = state.players.filter((p) => p.alive);
+  const step = (i: number): void => {
+    const p = players[i];
+    if (!p) {
+      after();
+      return;
+    }
+    runHooksPausable(state, 'roundStart', p, {}, () => step(i + 1));
+  };
+  step(0);
 }
 
 /**
@@ -3090,8 +3131,18 @@ function damageStep(
   target.flags.damagePrevented = false;
   target.flags.damageReduce = 0;
   const finishDamage = (): void => {
+    // 「伤害将要落地」先派给**全场**（徐庶·荐才那类旁观者要防止别人受到的致命伤害）。
+    // 放在最前面：此时 dmg 已定、flag 刚清，置 damagePrevented 即整笔作废。
+    // 「伤害将要落地」派给**全场**（徐庶·荐才那类**旁观者**要防止别人受到的致命伤害）。
+    // ⚠️ 它比原来的链条多一层可挂起嵌套，会改变续接队列的先后（实测踩过：多这一层就把
+    //    【恪守】判定牌的清理续接挤掉了，判定牌凭空消失）——所以**场上真有人挂这个时机**
+    //    才走这一层，其余情况原样走旧路径。
+    const needsPreDamage = state.players.some(
+      (p) => p.alive && collectTimingHooks(state, p, 'beforeDamageApply', true).length > 0,
+    );
     // 宝物【盟军大纛】（君主专属）：**受到伤害时**弃两张牌防止此伤害。它是装备牌的效果，
     // 不走英雄钩子，所以和【飞龙夺凤】一样在这里显式派发；装备持有者自己决定要不要弃。
+    const afterPreDamage = (): void =>
     mengjunDajun(state, target, () =>
       runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
       const prevented = target.flags.damagePrevented;
@@ -3117,6 +3168,11 @@ function damageStep(
         });
       }),
     );
+    if (needsPreDamage) {
+      runBeforeDamageApply(state, { targetId: target.seatId, damage: dmg, attack }, afterPreDamage);
+    } else {
+      afterPreDamage();
+    }
   };
   // 先给**来源**一个机会（张任·穿心那种「防止自己造成的伤害」），再走目标那边
   const dmgSource =
@@ -3128,6 +3184,28 @@ function damageStep(
     return;
   }
   finishDamage();
+}
+
+/**
+ * 「伤害将要落地」派给全场（可挂起）。**旁观者**的技能（徐庶·荐才）靠它入手；
+ * 目标自己的「受到伤害时」还是走 `damageDealt`（那条链路在它之后）。
+ */
+function runBeforeDamageApply(
+  state: GameState,
+  payload: { targetId: string; damage: number; attack: AttackContext },
+  after: () => void,
+  i = 0,
+): void {
+  const list = state.players.filter((p) => p.alive);
+  const step = (k: number): void => {
+    const p = list[k];
+    if (!p) {
+      after();
+      return;
+    }
+    runHooksPausable(state, 'beforeDamageApply', p, payload, () => step(k + 1));
+  };
+  step(i);
 }
 
 /**
@@ -3160,7 +3238,7 @@ function finalizeDamage(
       action: 'shield',
     });
   }
-  return capDamageByBailong(state, target, d, source);
+  return capDamageByBailong(state, target, d, source, attack);
 }
 
 /**
@@ -6473,6 +6551,7 @@ function resolvePlayedSha(
   asType: CardType,
   log: { kind: string; text: string },
   after?: () => void,
+  opts?: { ignoreArmor?: boolean; skillId?: string },
 ): void {
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
@@ -6490,6 +6569,9 @@ function resolvePlayedSha(
     attribute: card.attribute,
     cardColor: colorSeenAs(state, source, card),
     requiredShan: 1,
+    // 技能发起的这一次结算：无视防具（诛害强化）与来源技能标记（认领这一次使用）
+    ...(opts?.ignoreArmor ? { ignoreArmor: true } : {}),
+    ...(opts?.skillId ? { skillId: opts.skillId } : {}),
     afterSettled: after,
   };
   pushLog(state, log.kind, log.text);
@@ -7021,6 +7103,13 @@ function respondSha(
  * 护驾（同势力代打）也走这里——代打的那张闪同样算发起者的。
  */
 function afterShanPlayed(state: GameState, who: Player, attack: AttackContext): void {
+  // 「**任何**角色使用/打出【闪】之后」先派给全场（徐庶·诛害的「每用一张【闪】须弃一张牌」
+  // 是旁观者的技能，只派给 responder 的 shanUsed 收不到）。无双那种连出多张时，每张各派一次。
+  // ⚠️ 同 beforeDamageApply：多这一层可挂起嵌套会改变续接先后，**场上有人挂这个时机**才走它。
+  const needsAnyShan = state.players.some(
+    (p) => p.alive && collectTimingHooks(state, p, 'anyShanUsed', true).length > 0,
+  );
+  const afterAnyShan = (): void =>
   // 「你使用或打出【闪】」的时机（张角·雷击）。可挂起：雷击要问目标、还要判定。
   runHooksPausable(state, 'shanUsed', who, { attack }, () => {
     // 吕布·无双：需出 2 张闪，出 1 张后减 1，>1 则继续等
@@ -7034,6 +7123,30 @@ function afterShanPlayed(state: GameState, who: Player, attack: AttackContext): 
     attack.dodged = true;
     finishAttack(state, attack);
   });
+  if (needsAnyShan) {
+    runAnyShanUsed(state, { attack, responderId: who.seatId }, afterAnyShan);
+  } else {
+    afterAnyShan();
+  }
+}
+
+/** 「任何角色使用/打出【闪】后」派给全场（可挂起）——诛害的「闪后弃牌」挂它 */
+function runAnyShanUsed(
+  state: GameState,
+  payload: { attack: AttackContext; responderId: string },
+  after: () => void,
+  i = 0,
+): void {
+  const list = state.players.filter((p) => p.alive);
+  const step = (k: number): void => {
+    const p = list[k];
+    if (!p) {
+      after();
+      return;
+    }
+    runHooksPausable(state, 'anyShanUsed', p, payload, () => step(k + 1));
+  };
+  step(i);
 }
 
 /**
@@ -7905,19 +8018,33 @@ function makeSkillApi(
       if (old) fireEquipLost(state, target, old, done);
       else done();
     },
-    changeDeputyHero: (seatId) => {
+    changeDeputyHero: (seatId, opts) => {
       const owner = getPlayer(state, seatId);
       if (!owner || !owner.deputyHeroId) return;
       const mainHero = getHeroForMode(owner.heroId, state.mode);
       if (!mainHero) return;
-      // 官方：从**未加入游戏的武将牌堆**里连续亮将，直到亮出与主将势力相同者
+      // 官方：从**未加入游戏的武将牌堆**里连续亮将，直到亮出与主将势力相同者。
+      // `opts.preferred`（徐庶·荐才）：势力不是全场唯一大势力时，可以先从**已获知**的那批里挑
+      // ——同样得是「尚未登场 + 与主将势力相同」的牌，只是把顺序提前，不是凭空造牌。
+      const preferred = (opts?.preferred ?? []).filter((id) => state.heroPool.includes(id));
+      // 「与主将势力相同」按**已确定势力**判断（`effectiveFaction`）——双势力主将确定下来之后
+      // 要找的是那个势力的牌，而不是印面上的第一个势力。暗置时退回主将的印刷势力。
+      const wantFaction = effectiveFaction(state, owner) ?? mainHero.faction;
       let picked: string | null = null;
       const revealed: string[] = [];
-      while (state.heroPool.length > 0) {
+      for (const id of preferred) {
+        const hero = getHeroForMode(id, state.mode);
+        if (hero && hero.faction === wantFaction) {
+          state.heroPool.splice(state.heroPool.indexOf(id), 1);
+          picked = id;
+          break;
+        }
+      }
+      while (!picked && state.heroPool.length > 0) {
         const id = state.heroPool.shift()!;
         const hero = getHeroForMode(id, state.mode);
         revealed.push(hero?.name ?? id);
-        if (hero && hero.faction === mainHero.faction) {
+        if (hero && hero.faction === wantFaction) {
           picked = id;
           break;
         }
@@ -7936,13 +8063,9 @@ function makeSkillApi(
       owner.deputyHeroId = picked;
       // 新副将入场是**暗置**的（要重新明置）
       owner.deputyRevealed = false;
-      // 体力上限按新副将重算（移除不影响上限，但变更是换人，官方按新的算）
-      const newDeputy = getHeroForMode(picked, state.mode);
-      if (newDeputy) {
-        const mainHp = mainHero.maxHp - (mainHero.mainSlotHalfYang ? 1 : 0);
-        owner.maxHp = Math.floor((mainHp + newDeputy.maxHp) / 2);
-        if (owner.hp > owner.maxHp) owner.hp = owner.maxHp;
-      }
+      // ⚠️ **不重算体力上限**——官方「变更」规则：变更副将不会重新改变角色已经确定的体力上限。
+      //    （原来这里按新副将重算，而且漏了 `deputySlotHalfYang`：严白虎/徐庶那种副将技的
+      //     -1 阴阳鱼会在变更后凭空长回来——两个问题一起修掉。变更的新副将也不重走开局组合计算。）
       pushLog(
         state,
         'skill',
@@ -7991,18 +8114,29 @@ function makeSkillApi(
         opts?.after?.();
         return;
       }
-      consumeCard(state, src, card);
+      // 【丈八蛇矛】式用法：再有 extraCardIds 时，生效的是一张**虚拟**【杀】，
+      // 几张材料牌一起进弃牌堆（口径同丈八：颜色按材料算、属性无）。
+      const effective =
+        opts?.extraCardIds && opts.extraCardIds.length > 0
+          ? virtualShaFrom(
+              [card, ...opts.extraCardIds.map((id) => src.hand.find((c) => c.id === id)).filter((c): c is Card => !!c)],
+              state,
+              src,
+            )
+          : card;
+      consumeCard(state, src, effective);
       resolvePlayedSha(
         state,
         src,
         targetId,
-        card,
+        effective,
         'sha',
         {
           kind: opts?.logKind ?? 'skill',
           text: `${src.name} 对 ${tgt.name} 使用了【杀】。`,
         },
         opts?.after,
+        { ignoreArmor: opts?.ignoreArmor, skillId: opts?.skillId },
       );
     },
     discardTargetCard: (targetSeatId, cardId, after) => {
@@ -8751,6 +8885,7 @@ export function createGame(
     chained: false,
     usedOncePerGame: {},
     prelitSkills: [],
+    knownHeroIds: [],
     removedHeroIds: [],
     tempGrantedSkills: [],
     tian: [],
@@ -8840,6 +8975,8 @@ export function createGame(
     deckGainOwner: {},
     extraResolvedCards: [],
     jiliVirtualSeq: 0,
+    round: 1,
+    damageLedgerThisTurn: [],
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],

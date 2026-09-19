@@ -5742,28 +5742,109 @@ function weidiTargets(state: GameState, player: Player): Player[] {
  *   转换点加重置代码）。第 2 次直接 `flags.damagePrevented = true` 并移除这张武将牌。
  */
 /**
- * 徐庶 —— 诛害 / 举荐（不臣篇·上，蜀，**2 阴阳鱼 → 4**，称号·难为完臣；已核）。
+ * 【荐才】「获知尚未登场的同势力武将牌」：把已知数量**补足**到 `轮数 × 3`。
  *
- * 取 **2021 线下实体卡**口径（三版并存，这一版的两个技能都能完整实现）：
- * - 诛害：其他角色的结束阶段，若该角色本回合造成过伤害，则你可以对其使用一张【杀】。
- * - 举荐（副将技）：你计算体力上限时减少 1 个单独的阴阳鱼。结束阶段，你可弃置一张非基本牌
- *   并令一名与你势力相同的角色选择一项：1.摸两张牌；2.回复 1 点体力。然后其可变更一次副将。
+ * 两个要点（用户口径）：
+ * - **「增至 X 张」，不是「每轮再看 X 张」**：先与武将牌堆取交集（已经真的登场的牌不再算
+ *   「尚未登场」，自然让出名额），再把缺口补齐。
+ * - 只是**私有信息**：牌仍然留在 `state.heroPool`（不算获得、不进手牌），只写进
+ *   `player.knownHeroIds`——快照里只发给本人那一份（`knownHeroes`）。
+ */
+function jiancaiKnow(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const mine = effectiveFaction(state, me);
+  if (!mine) return;
+  // 已获知里「已经登场」的牌让位（与武将牌堆取交集）
+  me.knownHeroIds = me.knownHeroIds.filter((id) => state.heroPool.includes(id));
+  const want = state.round * 3;
+  if (me.knownHeroIds.length >= want) return;
+  const pool = state.heroPool.filter((id) => {
+    if (me.knownHeroIds.includes(id)) return false;
+    return getHeroForMode(id, state.mode)?.faction === mine;
+  });
+  const take = pool.slice(0, want - me.knownHeroIds.length);
+  if (take.length === 0) return;
+  me.knownHeroIds.push(...take);
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 发动【荐才】：获知了 ${take.length} 张尚未登场的同势力武将牌。`,
+    { seat: me.seatId },
+  );
+}
+
+/**
+ * 【荐才】保护：与徐庶势力相同的角色将受到**足以令其进入濒死**的伤害时，
+ * 防止**整笔**伤害，然后变更徐庶自己的副将（徐庶就是当前副将，所以换完【荐才】也就离场了）。
  *
- * ⚠️ 版本差异（另两版未采用，写在这里备查）：
- * - **移动版 2021**：诛害多了「若其本回合对与你势力相同的角色造成过伤害，则此【杀】无视其防具、
- *   且其用【闪】响应后须弃一张牌」；副将是【荐才】（明置时/每轮开始时获知 X 名未登场的同势力
- *   武将，X＝轮数×3；同势力角色受到不小于其体力值的伤害时可防止之并变更副将，小势力时优先从
- *   获知的武将里选）——需要「轮数」计数与「获知武将牌」的信息通道，本引擎暂不具备。
- * - **2023 典藏版**：两个技能都换掉了（谦策：同势力角色使用锦囊指定目标后，可令目标中的大势力
- *   角色不能响应此牌；举荐②：同势力角色进入濒死时，令其回复体力至 1 点，然后你变更副将）。
+ * 判定用的是**已定的最终伤害值**（`beforeDamageApply` 的 payload，减伤/护心镜之前）——
+ * 比官方口径略微容易触发，已记在文档里。
+ */
+function askJiancai(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as { targetId?: string; damage?: number } | undefined;
+  const targetId = payload?.targetId;
+  const dmg = payload?.damage ?? 0;
+  const target = targetId ? getPlayer(state, targetId) : undefined;
+  if (!target || !target.alive || dmg <= 0) return;
+  const mine = effectiveFaction(state, me);
+  if (!mine) return;
+  // 「与你势力相同的角色」——没写「其他角色」，所以徐庶自己也可以被自己保护
+  if (effectiveFaction(state, target) !== mine) return;
+  if (target.hp - dmg > 0) return; // 不会进入濒死 → 不触发
+  if (me.removedHeroIds.includes('xushu')) return; // 武将牌已经被移除（士兵牌顶替）→ 没有这个技能
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【荐才】：${target.name} 将受到 ${dmg} 点伤害（会进入濒死），是否防止之并变更你的副将？`,
+    [
+      { id: 'yes', label: '发动（防止伤害 + 变更副将）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const t = getPlayer(st, target.seatId);
+      if (t) t.flags.damagePrevented = true; // 整笔伤害作废（引擎在 damageDealt 之后统一读这个标记）
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 发动【荐才】：防止了 ${target.name} 受到的 ${dmg} 点伤害，然后变更自己的副将。`,
+        { seat: p.seatId },
+      );
+      // 势力**不是全场唯一大势力**时，可以优先从已获知的武将里挑新副将
+      const uniqueBig = isBigFaction(st, mine) && bigFactions(st).length === 1;
+      const preferred = uniqueBig ? undefined : p.knownHeroIds.slice();
+      if (uniqueBig) {
+        pushLog(st, 'skill', `${p.name} 的势力是全场唯一大势力，只能走普通变更副将。`, {
+          seat: p.seatId,
+        });
+      }
+      ctx.api.changeDeputyHero(p.seatId, preferred ? { preferred } : undefined);
+    },
+  );
+}
+
+/**
+ * 徐庶 —— 【诛害】/【荐才】（不臣篇·上，蜀，**2 阴阳鱼 → 4**，称号·难为完臣）。
  *
- * 实现要点：
- * - 诛害挂 `othersTurnEnd`（派给**非**回合玩家，payload.turnSeatId 就是那个结束回合的人）；
- *   「本回合造成过伤害」读 `flags.dealtDamageThisTurn`（蒋琬费祎·生息那套公共登记，自伤不算）。
- *   使用走 `api.useShaOn`——它只做「用一张实体牌使用【杀】」的完整结算、**不查距离**，
- *   正好满足「无距离限制」。
- * - 举荐是「结束阶段」= 徐庶自己的 `turnEnd`；三步询问（弃牌 → 选同势力角色 → 二选一 →
- *   是否变更副将）都走钩子里的 askChoice/askPickCards（不传 returnTo，引擎的续接队列会接住）。
+ * 口径＝**用户给出的等价规则实现文本**（2026-09，移动版现行；见 docs/guozhan-roster.md §5.89）：
+ * - 【诛害】：**其他角色进入结束阶段时**，若该角色本回合**造成过伤害**，你可以对他**使用一张【杀】**
+ *   ——正常走完整的使用流程（使用→指定目标→防具→闪响应→结算→伤害），**有距离限制**，
+ *   实体【杀】/转化【杀】/【丈八蛇矛】两张牌凑的虚拟【杀】都允许。
+ *   若该角色本回合还**伤害过与徐庶势力相同的角色**，这张【杀】强化：
+ *   **无视其防具**，且其**每实际使用（或视为使用）一张【闪】响应后，弃置 1 张牌**。
+ * - 【荐才】（**副将技**）：① 副将位时组合体力上限再减 1 个单独阴阳鱼（`deputySlotHalfYang`）；
+ *   ② **这张副将明置时**与**每轮开始时**，私下获知「尚未登场且与自己势力相同的武将牌」，
+ *   数量**补足到 轮数×3**（是「增至 X 张」不是「每轮再看 X 张」）；
+ *   ③ 与徐庶同势力的角色将受到**足以令其进入濒死**的伤害时，可以**防止整笔伤害**，
+ *   然后**变更自己的副将**——势力不是**全场唯一大势力**时，可以**优先从已获知的那批武将里挑**。
+ *
+ * ⚠️ 版本差异：仓库原先按 **2021 线下实体卡**口径实现的是【诛害】+【举荐】（举荐＝结束阶段弃一张
+ *   非基本牌、令同势力角色二选一摸牌/回血，然后可变更副将；那一版留在 git 历史里）。用户核对后
+ *   给的现行口径是「诛害带强化 + 副将技【荐才】」，本轮按后者改写。
+ * ⚠️ 变更副将**不重算体力上限**（官方「变更」规则）：荐才换掉徐庶之后，上限不会变。
  */
 const XUSHU: Hero = {
   id: 'xushu',
@@ -5776,7 +5857,7 @@ const XUSHU: Hero = {
   modes: ['guozhan'],
   // 珠联璧合（国战徐庶）：赵云、卧龙诸葛亮
   combos: ['zhaoyun', 'wolong'],
-  deputySlotSkills: ['举荐'],
+  deputySlotSkills: ['荐才'],
   deputySlotHalfYang: true,
   hooks: [
     {
@@ -5790,36 +5871,97 @@ const XUSHU: Hero = {
         const ending = getPlayer(ctx.state, endingId);
         if (!ending || !ending.alive) return;
         if (!ending.flags.dealtDamageThisTurn) return; // 「若该角色本回合造成过伤害」
-        if (!me.hand.some((c) => c.type === 'sha')) return;
+        // 【诛害】**有距离限制**（文本里没有「无距离限制」；强化分支的「无视防具」也不等于无视距离）
+        if (!canTarget(ctx.state, me.seatId, endingId)) return;
+        // 强化条件：该角色本回合**伤害过与徐庶势力相同的角色**。
+        // 势力按**伤害发生那一刻**的公开状态记（effectiveFaction，暗将＝未确定），不追溯。
+        const mine = effectiveFaction(ctx.state, me);
+        const enhanced =
+          mine !== null &&
+          ctx.state.damageLedgerThisTurn.some(
+            (e) => e.sourceId === endingId && e.targetFaction === mine,
+          );
+        const shaCards = usableShaCards(ctx.state, me);
+        // 【丈八蛇矛】：两张手牌当【杀】（官方口径明确诛害可以用它）
+        const zhangbaOk = me.equipment.weapon?.equipName === 'zhangba' && me.hand.length >= 2;
+        if (shaCards.length === 0 && !zhangbaOk) return;
         ctx.api.askChoice(
           ctx.state,
           me.seatId,
-          `是否发动【诛害】，对 ${ending.name} 使用一张【杀】？（无距离限制）`,
+          enhanced
+            ? `是否发动【诛害】，对 ${ending.name} 使用一张【杀】？（其本回合伤害过你的同势力角色 → 此【杀】无视其防具、其每用一张【闪】响应后须弃一张牌）`
+            : `是否发动【诛害】，对 ${ending.name} 使用一张【杀】？`,
           [
             { id: 'yes', label: '发动' },
             { id: 'no', label: '不发动' },
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            pushLog(st, 'skill', `${p.name} 发动【诛害】，对 ${ending.name} 使用一张【杀】。`);
-            const shaCards = p.hand.filter((c) => c.type === 'sha');
-            if (shaCards.length === 0) return;
-            const use = (card: Card): void => {
-              ctx.api.useShaOn(p.seatId, ending.seatId, card, { logKind: 'skill' });
+            pushLog(
+              st,
+              'skill',
+              enhanced
+                ? `${p.name} 发动【诛害】（强化），对 ${ending.name} 使用一张【杀】：无视其防具，其每用一张【闪】响应后须弃一张牌。`
+                : `${p.name} 发动【诛害】，对 ${ending.name} 使用一张【杀】。`,
+            );
+            const use = (card: Card, extra?: string[]): void => {
+              ctx.api.useShaOn(p.seatId, ending.seatId, card, {
+                logKind: 'skill',
+                ignoreArmor: enhanced,
+                skillId: '诛害',
+                ...(extra ? { extraCardIds: extra } : {}),
+              });
             };
-            if (shaCards.length === 1) {
+            const options = [
+              ...shaCards.map((c) => ({ id: c.id, label: `使用【${cardLabel(c)}】` })),
+              ...(zhangbaOk
+                ? [{ id: 'zhangba', label: '【丈八蛇矛】：两张手牌当【杀】' }]
+                : []),
+            ];
+            // 手里一张【杀】都没有、但有【丈八蛇矛】：直接进「选两张牌」
+            if (shaCards.length === 0 && zhangbaOk) {
+              ctx.api.askPickCards(
+                st,
+                p.seatId,
+                '【诛害】·【丈八蛇矛】：选择两张手牌当【杀】',
+                p.hand.slice(),
+                2,
+                2,
+                (_st3, _p3, chosen) => {
+                  const [c1, c2] = chosen;
+                  if (!c1 || !c2) return;
+                  use(c1, [c2.id]);
+                },
+              );
+              return;
+            }
+            if (options.length === 1) {
               use(shaCards[0]!);
               return;
             }
-            ctx.api.askPickCards(
+            ctx.api.askChoice(
               st,
               p.seatId,
-              '【诛害】：选择要使用的【杀】',
-              shaCards,
-              1,
-              1,
-              (_st2, _p2, chosen) => {
-                const c = chosen[0];
+              '【诛害】：怎么出这张【杀】？',
+              options,
+              (st2, p2, how) => {
+                if (how === 'zhangba') {
+                  ctx.api.askPickCards(
+                    st2,
+                    p2.seatId,
+                    '【诛害】·【丈八蛇矛】：选择两张手牌当【杀】',
+                    p2.hand.slice(),
+                    2,
+                    2,
+                    (_st3, _p3, chosen) => {
+                      const [c1, c2] = chosen;
+                      if (!c1 || !c2) return;
+                      use(c1, [c2.id]);
+                    },
+                  );
+                  return;
+                }
+                const c = p2.hand.find((x) => x.id === how);
                 if (c) use(c);
               },
             );
@@ -5827,114 +5969,53 @@ const XUSHU: Hero = {
         );
       },
     },
+    // 【诛害】强化分支的另一半：这张【杀】的目标**每实际使用一张【闪】响应后，弃置 1 张牌**
+    // （「不能响应」那类不涉及；八卦阵的视为出闪在这条路上走不到——强化杀无视防具，八卦阵直接不触发）
     {
-      timing: 'turnEnd',
-      skillId: '举荐',
+      timing: 'anyShanUsed',
+      skillId: '诛害',
       handler: (ctx) => {
-        const me = ctx.player;
-        const nonBasic = me.hand.filter((c) => !isBasicCard(c));
-        if (nonBasic.length === 0) return;
-        const mine = effectiveFaction(ctx.state, me);
-        if (!mine) return;
-        const mates = ctx.state.players.filter(
-          (p) => p.alive && effectiveFaction(ctx.state, p) === mine,
-        );
-        if (mates.length === 0) return;
-        const pickTarget = (): void => {
-          const choose = (target: Player): void => {
-            ctx.api.askChoice(
-              ctx.state,
-              target.seatId,
-              `【举荐】${me.name} 令你选择一项`,
-              [
-                { id: 'draw', label: '摸两张牌' },
-                { id: 'heal', label: '回复 1 点体力' },
-              ],
-              (st2, p2, picked2) => {
-                if (picked2 === 'draw') {
-                  for (let i = 0; i < 2; i++) {
-                    const c = drawOne(st2);
-                    if (c) p2.hand.push(c);
-                  }
-                  pushLog(st2, 'skill', `${p2.name} 因【举荐】摸了 2 张牌。`);
-                } else {
-                  const healed = ctx.api.heal(p2, 1);
-                  pushLog(st2, 'skill', `${p2.name} 因【举荐】回复 ${healed} 点体力。`);
-                }
-                // 然后其可变更一次副将
-                ctx.api.askChoice(
-                  st2,
-                  p2.seatId,
-                  '【举荐】：是否变更一次副将？',
-                  [
-                    { id: 'yes', label: '变更副将' },
-                    { id: 'no', label: '不变更' },
-                  ],
-                  (st3, p3, picked3) => {
-                    if (picked3 !== 'yes') return;
-                    pushLog(st3, 'skill', `${p3.name} 因【举荐】变更副将。`);
-                    ctx.api.changeDeputyHero(p3.seatId);
-                  },
-                );
-              },
-            );
-          };
-          if (mates.length === 1) {
-            choose(mates[0]!);
-            return;
-          }
-          ctx.api.askChoice(
-            ctx.state,
-            me.seatId,
-            '【举荐】：令哪名与你势力相同的角色选择？',
-            mates.map((p) => ({ id: p.seatId, label: p.name })),
-            (_st, _p, id) => {
-              const t = getPlayer(ctx.state, id);
-              if (t) choose(t);
-            },
-          );
-        };
-        ctx.api.askChoice(
+        const payload = ctx.payload as { attack?: AttackContext; responderId?: string } | undefined;
+        const attack = payload?.attack;
+        if (!attack || attack.skillId !== '诛害' || !attack.ignoreArmor) return;
+        if (attack.targetId !== payload?.responderId) return; // 只认「这张杀的目标」的闪
+        const victim = getPlayer(ctx.state, attack.targetId);
+        if (!victim || !victim.alive) return;
+        const pool = handAndEquipOf(victim); // 「能够自行弃置的牌」＝手牌 + 装备区
+        if (pool.length === 0) return; // 没有可弃的牌 → 这一步没有实际效果
+        ctx.api.askPickCards(
           ctx.state,
-          me.seatId,
-          '是否发动【举荐】？（弃置一张非基本牌，令一名同势力角色二选一）',
-          [
-            { id: 'yes', label: '发动' },
-            { id: 'no', label: '不发动' },
-          ],
-          (st, p, picked) => {
-            if (picked !== 'yes') return;
-            const pool = p.hand.filter((c) => !isBasicCard(c));
-            if (pool.length === 0) return;
-            ctx.api.askPickCards(
-              st,
-              p.seatId,
-              '【举荐】：弃置一张非基本牌',
-              pool,
-              1,
-              1,
-              (st2, p2, chosen) => {
-                const card = chosen[0];
-                if (!card) return;
-                ctx.api.discardCard(p2.seatId, card, () => {
-                  pushLog(st2, 'skill', `${p2.name} 发动【举荐】，弃置了一张非基本牌。`);
-                  pickTarget();
-                });
-              },
-            );
+          victim.seatId,
+          '【诛害】：你用【闪】响应了强化【杀】，须弃置一张牌',
+          pool,
+          1,
+          1,
+          (st, t, chosen) => {
+            const card = chosen[0];
+            if (!card) return;
+            ctx.api.discardCard(t.seatId, card, () => {
+              pushLog(st, 'skill', `${t.name} 因【诛害】弃置了【${cardLabel(card)}】。`, {
+                seat: t.seatId,
+              });
+            });
           },
         );
       },
     },
+    // 【荐才】①「这张副将明置时」与②「每轮开始时」：私下获知武将牌（补足到 轮数×3）
+    { timing: 'heroRevealed', skillId: '荐才', handler: jiancaiKnow },
+    { timing: 'roundStart', skillId: '荐才', handler: jiancaiKnow },
+    // 【荐才】③：同势力角色将受到**会令其进入濒死**的伤害 → 防止整笔 + 变更自己的副将
+    { timing: 'beforeDamageApply', skillId: '荐才', handler: askJiancai },
   ],
   skills: [
     {
       name: '诛害',
-      desc: '其他角色的结束阶段，若该角色本回合造成过伤害，则你可以对其使用一张【杀】。',
+      desc: '其他角色的结束阶段，若该角色本回合造成过伤害，则你可以对其使用一张【杀】。若其本回合对与你势力相同的角色造成过伤害，则此【杀】无视其防具，且其每使用一张【闪】响应后须弃置一张牌。',
     },
     {
-      name: '举荐',
-      desc: '副将技，你计算体力上限时减少 1 个单独的阴阳鱼。结束阶段，你可弃置一张非基本牌并令一名与你势力相同的角色选择一项：1.摸两张牌；2.回复 1 点体力。然后其可变更一次副将。',
+      name: '荐才',
+      desc: '副将技，你计算体力上限时减少 1 个单独的阴阳鱼。当你明置此武将牌后或每轮开始时，你获知 X 张尚未登场的与你势力相同的武将牌（X 为轮数×3，已获知的仍有效）。当你与你势力相同的角色将受到会令其进入濒死的伤害时，你可以防止此伤害，然后变更你的副将；若你的势力不为全场唯一大势力，你可以优先从已获知的武将牌中选择新的副将。',
     },
   ],
 };

@@ -58,8 +58,13 @@ export function setEquipAskHooks(h: {
   discardCardsForEquip = h.discardCards;
 }
 
-/** 攻击方武器是否无视目标防具（青釭剑） */
-export function ignoresArmor(source: Player | undefined): boolean {
+/**
+ * 这一次【杀】结算是否**无视目标防具**。
+ *   青釭剑：装备者的所有【杀】都无视；
+ *   徐庶·诛害的强化分支：只作用于**那一次**使用（`attack.ignoreArmor`，不永久关掉防具）。
+ */
+export function ignoresArmor(source: Player | undefined, attack?: AttackContext): boolean {
+  if (attack?.ignoreArmor) return true;
   return source?.equipment.weapon?.equipName === 'qinggang';
 }
 
@@ -73,7 +78,7 @@ export function armorNullifiesSha(state: GameState, attack: AttackContext): stri
   const target = getPlayer(state, attack.targetId);
   if (!target) return null;
   const armor = target.equipment.armor?.equipName;
-  if (!armor || ignoresArmor(source)) return null;
+  if (!armor || ignoresArmor(source, attack)) return null;
   // 仁王盾：**黑色**的【杀】对你无效——注意是无色杀（丈八蛇矛一红一黑）不受影响
   if (armor === 'renwang' && attack.cardColor === 'black') return '仁王盾';
   // 藤甲：普通【杀】对你无效（火杀/雷杀为属性杀，仍然生效）
@@ -99,7 +104,7 @@ export function tryBaguaDodge(state: GameState, attack: AttackContext): boolean 
     (!target.equipment.armor &&
       effectiveHeroes(state, target).some((h) => h.hasBaguaAlways === true));
   if (!hasBagua) return false;
-  if (ignoresArmor(source)) return false;
+  if (ignoresArmor(source, attack)) return false;
   const judge = state.deck.pop();
   if (!judge) return false;
   state.discard.push(judge);
@@ -125,7 +130,7 @@ export function damageBonus(state: GameState, attack: AttackContext): number {
   if (
     target.equipment.armor?.equipName === 'tengjia' &&
     attack.attribute === 'fire' &&
-    !ignoresArmor(source)
+    !ignoresArmor(source, attack)
   ) {
     bonus += 1;
   }
@@ -158,10 +163,11 @@ export function capDamageByBailong(
   target: Player,
   damage: number,
   source: Player | undefined,
+  attack?: AttackContext,
 ): number {
   if (damage <= 1) return damage;
   if (target.equipment.armor?.equipName !== 'bailong') return damage;
-  if (ignoresArmor(source)) return damage;
+  if (ignoresArmor(source, attack)) return damage;
   pushLog(state, 'resolve', `${target.name} 的【白银狮子】防止了多余的伤害。`, {
     seat: target.seatId,
     action: 'shield',

@@ -1,5 +1,6 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
+import { getHeroForMode } from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -58,6 +59,11 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
       ? {
           prelitSkills: p.prelitSkills.slice(),
           prelitableSkills: prelitableSkills(state, p).map((x) => x.name),
+          // 【荐才】（徐庶）获知的未登场同势力武将牌：**私有信息**，只随本人那一份快照下发
+          knownHeroes: p.knownHeroIds.map((id) => ({
+            id,
+            name: getHeroForMode(id, state.mode)?.name ?? id,
+          })),
         }
       : {}),
     hp: Math.max(0, p.hp),

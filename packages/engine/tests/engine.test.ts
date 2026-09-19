@@ -17523,7 +17523,7 @@ describe('国战 · 严白虎（雉盗 / 寄篱）', () => {
 });
 
 /** 徐庶·诛害 / 举荐（不臣篇·上，蜀，2 阴阳鱼→4；取 2021 线下实体卡口径） */
-describe('国战 · 徐庶（诛害 / 举荐）', () => {
+describe('国战 · 徐庶（诛害 / 荐才）', () => {
   function gz(
     seats: {
       seatId: string;
@@ -17534,8 +17534,14 @@ describe('国战 · 徐庶（诛害 / 举荐）', () => {
       deputyHeroId?: string;
       revealed?: boolean;
       hp?: number;
+      /** 手动指定体力上限（用来模拟『副将技 -1 单独阴阳鱼』之后的组合值） */
+      maxHp?: number;
+      equip?: Card[];
+      /** 预置「已获知」的武将牌 id（荐才①②） */
+      known?: string[];
     }[],
     actor?: string,
+    opts?: { pool?: string[] },
   ) {
     const state = createGame(
       seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
@@ -17552,19 +17558,25 @@ describe('国战 · 徐庶（诛害 / 举荐）', () => {
       const shown = s.revealed !== false;
       p.heroRevealed = shown;
       p.deputyRevealed = shown;
-      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
       p.hp = s.hp ?? p.maxHp;
       p.hand = (s.hand ?? []).slice();
       p.flags = emptyFlags();
+      if (s.known) p.knownHeroIds = s.known.slice();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
     }
     const first = actor ?? state.seatOrder[0]!;
     state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
     state.pending = { kind: 'play', seatId: first };
     state.log = [];
+    if (opts?.pool) state.heroPool = opts.pool.slice();
     return state;
   }
 
-  it('诛害：别人回合结束时，若他这回合造成过伤害，可以对他出一张【杀】（无距离限制）', () => {
+  it('诛害：别人回合结束时，若他这回合造成过伤害，可以对他出一张【杀】（相邻 → 距离够）', () => {
     const state = gz(
       [
         // 甲这回合打了丙（造成过伤害）；乙是徐庶
@@ -17611,53 +17623,139 @@ describe('国战 · 徐庶（诛害 / 举荐）', () => {
     expect(state.pending?.kind).toBe('play');
   });
 
-  it('举荐：结束阶段弃一张非基本牌，令同势力角色二选一，然后其可变更副将', () => {
+  it('诛害：徐庶与结束回合的人距离不够 → 不询问（诛害**有距离限制**）', () => {
     const state = gz(
       [
-        // 甲是徐庶，手里一张非基本牌（武器）+ 一张基本牌
-        {
-          seatId: A,
-          name: '甲',
-          // 举荐是**副将技**，所以徐庶得放在副将位（主将用白板）
-          heroId: 'vanilla',
-          deputyHeroId: 'xushu',
-          faction: 'shu',
-          hand: [wpn('a1'), mk('a2', 'tao', 'heart')],
-        },
-        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 2 },
-        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'qun', hand: [] },
+        // 徐庶在 3 号位：与甲隔了一个人（距离 2），又没有武器 → 攻击范围 1 → 够不到
+        { seatId: C, name: '丙', heroId: 'xushu', faction: 'shu', hand: [sha('c1')] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
       ],
       A,
     );
-    const b = state.players.find((p) => p.seatId === B)!;
-    ok(act(state, A, { type: 'endPhase' })); // 出牌阶段结束 → 弃牌（2 张不超上限）→ 结束阶段
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('举荐');
-    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    // 弃一张非基本牌：只有那把武器
-    expect(state.pending?.kind).toBe('pickCards');
-    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
-    expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
-    // 选一名同势力角色（甲自己与乙都是蜀）
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('举荐');
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
-    // 乙二选一：回复 1 点体力
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
-    ok(act(state, B, { type: 'chooseOption', optionId: 'heal' }));
-    expect(b.hp).toBe(3);
-    // 然后乙可以变更一次副将
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('变更');
-    ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
-    expect(state.log.some((e) => e.message.includes('举荐'))).toBe(true);
-    // 控制权交到下家（乙的回合）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 乙不出闪 → 甲本回合造成过伤害
+    ok(act(state, A, { type: 'endPhase' }));
     skipRevealAsk(state);
-    expect(state.pending?.kind).toBe('play');
+    expect(state.log.some((e) => e.message.includes('诛害'))).toBe(false);
   });
 
-  it('举荐：手里没有非基本牌时不询问', () => {
+  it('诛害（强化）：本回合伤害过徐庶同势力角色 → 此【杀】无视其防具、其每用一张【闪】须弃一张牌', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [sha('a1'), mk('a2', 'shan', 'heart'), mk('a3', 'tao', 'heart')],
+          equip: [armor('a9', 'renwang')],
+        },
+        // 徐庶手里只有一张**黑桃**【杀】：正常会被甲的【仁王盾】挡住
+        { seatId: B, name: '乙', heroId: 'xushu', faction: 'shu', hand: [sha('b1', 'spade')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    // 甲这回合先砍丙一刀（丙已明置＝蜀 → 「伤害过与徐庶势力相同的角色」成立 → 强化）
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('无视其防具');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 无视防具 → 仁王盾不生效，走到「等出闪」
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲出【闪】
+    // 【闪】响应之后，甲还要弃置一张牌（自己选：这里弃【桃】）
+    expect(state.pending?.kind).toBe('pickCards');
+    if (state.pending?.kind === 'pickCards') expect(state.pending.title).toContain('诛害');
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a3'] }));
+    expect(state.discard.some((c) => c.id === 'a3')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('因【诛害】弃置'))).toBe(true);
+  });
+
+  it('诛害：当时是**暗置**（未确定势力）的角色 → 只按普通【诛害】处理（不追溯势力）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        { seatId: B, name: '乙', heroId: 'xushu', faction: 'shu', hand: [sha('b1')] },
+        // 丙印面是蜀，但当时两张武将牌都暗着 → 伤害发生那一刻「未确定势力」
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', revealed: false, hand: [] },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, A, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.title).toContain('诛害');
+      expect(state.pending.title).not.toContain('无视其防具');
+    }
+  });
+
+  it('荐才①：副将明置时获知 3 张未登场的同势力武将牌；轮数 +1 后补足到 6 张（不是再看 3 张）', () => {
+    const state = gz(
+      // 乙在第一位、甲在第二位：这样「乙结束回合 → 轮到甲」不会触发轮次 +1
+      [
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          deputyHeroId: 'xushu',
+          faction: 'shu',
+          hand: [],
+          hp: 8,
+          maxHp: 8,
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      ],
+      B,
+      {
+        pool: ['zhangfei', 'guanyu', 'zhaoyun', 'wolong', 'machao', 'huangzhong', 'pangtong', 'xuchu'],
+      },
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.deputyRevealed = false;
+    const endTurns = (n: number): void => {
+      for (let k = 0; k < n; k++) {
+        const p = state.pending;
+        if (p?.kind !== 'play') throw new Error('不是出牌阶段：' + String(p?.kind));
+        ok(act(state, p.seatId, { type: 'endPhase' }));
+        skipRevealAsk(state);
+      }
+    };
+    // 轮到甲的**准备阶段**：明置副将徐庶（国战只有准备阶段能主动明置）
+    ok(act(state, B, { type: 'endPhase' }));
+    expect(state.round).toBe(1);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('明置武将牌');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'deputy' }));
+    expect(a.deputyRevealed).toBe(true);
+    expect(a.knownHeroIds).toHaveLength(3); // 第 1 轮：3×1
+    // 只是「获知」：牌仍然留在武将牌堆里
+    expect(a.knownHeroIds.every((id) => state.heroPool.includes(id))).toBe(true);
+    // 走完这一轮（甲 → 丙 → 绕回乙）→ 「每轮开始时」补足
+    endTurns(2);
+    expect(state.round).toBe(2);
+    expect(a.knownHeroIds).toHaveLength(6); // 补足到 3×2，而不是 3+6
+    // 其中一张「已经登场」→ 它让出名额，下一次补足时换成别的牌
+    const entered = a.knownHeroIds[0]!;
+    state.heroPool = state.heroPool.filter((id) => id !== entered);
+    endTurns(3);
+    expect(state.round).toBe(3);
+    // 武将牌堆里剩下的同势力牌不够 9 张 → 「能知道多少就知道多少」（用户口径）；且已登场的那张不再占名额
+    expect(a.knownHeroIds.length).toBeLessThanOrEqual(9);
+    expect(a.knownHeroIds.length).toBeGreaterThanOrEqual(6);
+    expect(a.knownHeroIds).not.toContain(entered);
+  });
+
+  it('荐才②：同势力角色将被打进濒死 → 防止整笔伤害 + 变更副将（不重算上限、非唯一大势力可优先从已获知里挑）', () => {
     const state = gz(
       [
         {
@@ -17666,14 +17764,66 @@ describe('国战 · 徐庶（诛害 / 举荐）', () => {
           heroId: 'vanilla',
           deputyHeroId: 'xushu',
           faction: 'shu',
-          hand: [mk('a1', 'shan', 'heart')],
+          hand: [],
+          hp: 1,
+          // 模拟「副将技 -1 单独阴阳鱼」之后的组合上限：变更副将**不该**把它重算回 4
+          maxHp: 3,
+          known: ['wolong'],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      B,
+      { pool: ['zhaoyun', 'wolong', 'xuchu'] },
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' })); // 甲不出闪 → 1 点伤害足够让他进濒死（1 → 0）
+    // 【荐才】：防止整笔伤害
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('荐才');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hp).toBe(1); // 伤害被整笔防止
+    // 非唯一大势力 → 优先从**已获知**里挑：池子里第一个蜀将本来是赵云，但已知的卧龙优先
+    expect(a.deputyHeroId).toBe('wolong');
+    expect(a.maxHp).toBe(3); // 变更副将**不重算**体力上限
+    expect(state.heroPool).not.toContain('wolong');
+    expect(state.log.some((e) => e.message.includes('荐才'))).toBe(true);
+  });
+
+  it('荐才②：徐庶的势力是全场唯一大势力 → 仍然可以发动，但只能走普通变更副将', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          deputyHeroId: 'xushu',
+          faction: 'shu',
+          hand: [],
+          hp: 1,
+          maxHp: 3,
+          known: ['wolong'],
         },
         { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        // 蜀 3、魏 1 → 蜀是**唯一**大势力
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [sha('d1')] },
       ],
-      A,
+      D,
+      { pool: ['zhaoyun', 'wolong'] },
     );
-    ok(act(state, A, { type: 'endPhase' }));
-    expect(state.log.some((e) => e.message.includes('举荐'))).toBe(false);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, D, { type: 'playCard', cardId: 'd1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('荐才');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hp).toBe(1); // 照样防止伤害
+    // 不能享受「优先从已获知里挑」→ 走普通流程：池子里第一个同势力（蜀）武将＝赵云
+    expect(a.deputyHeroId).toBe('zhaoyun');
+    expect(state.log.some((e) => e.message.includes('唯一大势力'))).toBe(true);
   });
 });
 
