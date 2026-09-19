@@ -2054,6 +2054,12 @@ function resumePlay(state: GameState, sourceId: string): void {
     return;
   }
   state.turn.phase = 'play';
+  // ⚠️ 已知缺口（本轮试修失败，见 docs §5.118）：这一行是**无条件覆盖**——如果此刻正挂着
+  //    一条询问（例如弃置收口里旁观技能刚发起的「是否获得其中一张」），它就把询问冲掉了。
+  //    试过加 `if (state.pending === null)` 保护：夙智③ 那条用例确实通了，但**冒烟/模糊测试
+  //    大面积卡死**（这条路径的调用方太多，包括一些「收尾时必须把出牌阶段抢回来」的场合，
+  //    它们的 pending 恰恰不是 null）→ 已回退。正确的修法要更窄：只放过「**由这次收尾自己
+  //    新产生**的询问」，别放行更早的陈旧 pending。
   state.pending = { kind: 'play', seatId: sourceId };
 }
 

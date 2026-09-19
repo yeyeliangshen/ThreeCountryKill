@@ -4020,7 +4020,13 @@ skip 1 条（决绝打死人，根因见上）。
   `activeHeroes`/`collectTimingHooks` 拿得到；`anyCardDiscarded` 的时机名也对得上。
 - ✅ handler 的门槛也没问题：`suzhiAvailable` 只要求「自己的回合 + 额度未满」，测试里两条都成立；
   它要拿的牌在 `state.discard` 里也查得到（过河拆桥先 `toDiscard` 再进收口）。
-→ **剩下的嫌疑只剩「钩子里发问之后的收尾把 pending 顶掉」**（和 §5.111 那条钩子链↔濒死同源）。
-下一轮的第一刀：在 `anyCardDiscarded` 的 handler 里发问之后，打印 `state.pending` 与调用栈，
-确认是 `endTrickResolution` 那条尾巴把它冲掉的，然后按 §5.111 的思路（`ongoingSkillChain`
-或让钩子链认「响应型 pending」）一起收。
+→ **卡点确认了**：就是 `resumePlay` 收尾那句**无条件**的
+`state.pending = { kind: 'play', seatId: sourceId }`——弃置收口里旁观技能刚发起的询问，
+被这次收尾直接冲掉。
+**试修的两种结果（都记下来，别再走一遍）**：
+1. ❌ 给它加 `if (state.pending === null)` 保护：夙智③ 那张用例**确实通了**，
+   但**冒烟/模糊测试大面积卡死**——这条路径的调用方太多，其中不少正是「收尾时必须把
+   出牌阶段抢回来」的场合（它们的 pending 恰恰不是 null）→ 已回退。
+2. ⏳ 正确的修法要更窄：只放过「**这次收尾自己新产生**的询问」，别放行更早的陈旧 pending
+   （可用一个「本轮收尾的 pending 版本号」或比较 pending 对象身份来实现）。
+   这条与 §5.111 的钩子链↔濒死是同一层，建议一并做。

@@ -18858,10 +18858,11 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
   //    而夙智③是**旁观者**技能（"其他角色因弃置…"）——钩子挂在 SP司马昭身上，牌主是别人时
   //    根本收不到这个事件。修法：在 fireCardDiscarded 里补一圈「派给全场」的时机
   //    （与 othersUseCard / anyShanUsed 同一套写法）。先跳过，别把「假绿」当已验证。
-  // ⚠️ 仍 skip：本轮已经把「其他角色因弃置进弃牌堆」**派给全场**的新时机接上了
-  //    （`anyCardDiscarded`），并补了「过河拆桥拆装备」那条不进弃置收口的旧洞，
-  //    但这张用例仍然等不到询问——时间不够继续追，留 root cause 给下一轮：
-  //    下一步要查的是 handler 里的 `suzhiAvailable`（额度/回合限制）与询问挂起时序。
+  // ⚠️ 仍 skip（本轮试修失败，见 docs §5.118）：新时机 anyCardDiscarded 已接上、拆装备的
+  //    旧洞也补了，卡点确认在 `resumePlay` 那句**无条件**的「把出牌阶段摆回去」——
+  //    它把这条询问冲掉了。加 null 保护能让本用例通过，但会让冒烟/模糊测试大面积卡死
+  //    （不少收尾路径正需要那句话把 pending 抢回来）→ 回退。下一轮按更窄的修法做：
+  //    只放过「这次收尾自己新产生的询问」，别放行更早的陈旧 pending。
   it.skip('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'guohe', 'heart')], hp: 4, maxHp: 4 },
