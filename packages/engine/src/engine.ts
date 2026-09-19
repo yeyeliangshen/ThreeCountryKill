@@ -863,6 +863,17 @@ function isIdlePending(pending: GameState['pending']): boolean {
 function drainResume(state: GameState): void {
   // 兜底：续接互相触发形成死循环时别把进程挂死
   let guard = 0;
+  // 被濒死打断的多步链（军令的逐个问、决绝的逐个结算、钩子链里打出的濒死）：
+  // 它可能**没有**经过 resumePlay（例如钩子链里的伤害没有 resumeTo），所以这里也认一次——
+  // 两处都从同一个队列里 shift，谁先到谁跑，不会跑两遍。
+  while (isIdlePending(state.pending) && state.ongoingSkillChain.length > 0 && !state.gameOver) {
+    if (++guard > 100) {
+      pushLog(state, 'system', '续接队列超过 100 次，可能存在死循环，已中止。');
+      state.ongoingSkillChain.length = 0;
+      break;
+    }
+    runResume(state.ongoingSkillChain.shift()!);
+  }
   // ⚠️ 「没人被问话」不只是 `pending === null`：出牌/弃牌阶段的 pending 只是**占位空位**
   //    （技能在阶段里发问靠的就是覆盖它接管控制权，见 askChoice 那段注释）。
   //    只认 null 的话，绝大多数意图结束时都留着占位空位，队列整步整步地被跳过——
@@ -1001,6 +1012,12 @@ function runHooksFrom(
       );
       return;
     }
+    // ⚠️ 已知缺口（本轮没修，见 docs §5.111）：钩子**间接**把某人打进**濒死**时
+    //    （pending 变成 respondDeath 求桃队列）这里仍然直接接着跑，后面的流程
+    //    （回合交接、下一张牌）会把求桃询问顶掉：被顶的人停在 0 体力却永远不死。
+    //    试过在这里认 respondDeath 并把续接挂到 ongoingSkillChain——冒烟/模糊测试里
+    //    大量对局卡在 4000 步不结束（钩子链的续接与濒死收口的次序纠缠在一起），
+    //    所以先如实留在这里，等单独一轮把「钩子链 ↔ 濒死」的收口理清再修。
   }
   onDone(false);
 }
@@ -1971,6 +1988,14 @@ function dispatchRoundEnd(state: GameState, after: () => void): void {
 /** 回到某玩家的出牌阶段（伤害结算后恢复来源回合） */
 function resumePlay(state: GameState, sourceId: string): void {
   if (state.gameOver) return;
+  // 被濒死打断的多步链（军令逐个问、决绝逐个结算、钩子链里打出的濒死…）：先接着跑它们，
+  // 别急着把出牌阶段占位 pending 摆回去（摆回去这些链就再也醒不过来了）。
+  // 按**挂上的先后**醒（先挂的是更外层的等待者，它跑完自己会再调 resumePlay）。
+  if (state.ongoingSkillChain.length > 0) {
+    const run = state.ongoingSkillChain.shift()!;
+    run();
+    return;
+  }
   // 铁索连环蔓延被濒死打断 → 先把剩下的人打完
   if (state.ongoingChain) {
     runChainSpread(state, () => resumePlay(state, sourceId));
@@ -3942,6 +3967,12 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
   // ⚠️ 必须在下面那几行之前问：阵亡会把「明置」标志翻成 false→true（国战亮双将），
   //    而【会盟】要的是「他**生前**在不在明置计数里」。
   const wasDetermined = dying.heroRevealed || dying.deputyRevealed;
+  // ⚠️ 「阵亡令同势力各失去 1 点体力」是**君主将**的固定特性（官方公告：君主将阵亡时…），
+  //    不是国战的通用阵亡规则。以前这里对所有阵亡都调 lordDeathLoss，等于每死一个人
+  //    同势力就全体掉 1 血（连坐）。在翻明置标志前按武将牌判一次，只对君主生效。
+  const wasLord = [dying.heroId, dying.deputyHeroId].some(
+    (id) => !!id && getHero(id)?.isLord === true,
+  );
   dying.alive = false;
   dying.hp = 0;
   // 国战：阵亡时亮双将
@@ -3996,10 +4027,12 @@ function doDeath(state: GameState, dyingId: string, killerId?: string): void {
             // 回到当前回合玩家（伤害来源）的出牌阶段
             resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
           };
-          // 君主阵亡：**与你势力相同的角色各失去 1 点体力**（官方君主将的固定特性之一）。
+          // 君主阵亡：**与你势力相同的角色各失去 1 点体力**（官方君主将的固定特性之一，
+          // 只有君主将阵亡才触发——判定见上面的 wasLord）。
           // 失去体力可能把人打进濒死，所以逐个来：谁进了濒死就把「剩下的」压进续接队列，
           // 等那串濒死结算完了接着掉（同一次同步执行里连开两串濒死会把 pending 覆盖掉）。
-          lordDeathLoss(state, dying, 0, cleanup);
+          if (wasLord) lordDeathLoss(state, dying, 0, cleanup);
+          else cleanup();
         });
       };
       if (from > 0 && to === 0) {
@@ -7305,6 +7338,19 @@ export const ARMY_ORDERS: { id: string; label: string }[] = [
 ];
 
 /**
+ * 军令的「伤害 / 失去体力」结算完之后继续往下走（王平·将略那边是逐个问下一个执行者）。
+ *
+ * ⚠️ 这两条效果**可能把人打进濒死**：那时 pending 被求桃队列占着（respondDeath），
+ * 这时**不能**接着同步问下一个人——`askChoice` 会把求桃询问直接顶掉，被顶的人停在 0 体力
+ * 却永远不死。把后续挂到 `state.ongoingSkillChain`，等濒死/阵亡那串走完、`resumePlay`
+ * 接管时再继续。没进濒死（pending 是空的）就照旧同步往下走，整条链仍然是同步完成的。
+ */
+function afterArmyOrderInterrupt(state: GameState, after: () => void): void {
+  if (state.pending) state.ongoingSkillChain.push(after);
+  else after();
+}
+
+/**
  * 结算一条军令。
  *
  * `after` 在整条军令结算完（可能经过好几次询问）之后调用。
@@ -7338,8 +7384,13 @@ function applyArmyOrder(
         others.map((p) => ({ id: p.seatId, label: p.name })),
         (st, _p, tid) => {
           const t = getPlayer(st, tid);
-          if (t) api.dealDamage(t, 1, executorSeatId);
-          after();
+          if (!t) {
+            after();
+            return;
+          }
+          api.dealDamage(t, 1, executorSeatId, undefined, () =>
+            afterArmyOrderInterrupt(state, after),
+          );
         },
       );
       return;
@@ -7373,8 +7424,8 @@ function applyArmyOrder(
       return;
     }
     case 'lose_hp':
-      api.loseHp(executor, 1);
-      after();
+      // 同上：失去体力也可能进濒死
+      api.loseHp(executor, 1, () => afterArmyOrderInterrupt(state, after));
       return;
     case 'seal':
       executor.flags.cannotPlayCardsThisTurn = true;
@@ -7458,6 +7509,93 @@ function applyArmyOrder(
       after();
       return;
   }
+}
+
+/**
+ * **军令的公共流程——`api.armyOrder` 与 `api.armyOrderMulti` 的唯一实现。**
+ *
+ * 官方流程只有一条：**发起者**从随机两张军令里挑一张交给执行者，执行者各自决定要不要执行，
+ * 执行的人才结算那一条；整条链走完（中间可能挂起好几次询问）再回调 `done`。
+ * 「一个执行者」和「一队执行者」的区别**只有名单长度**，所以两边都别再各写一份——
+ * 这里以前就是两份拷贝，改一处漏一处（`armyOrderMulti` 的多余一次 shuffle、死人跳过之类）。
+ *
+ * `done(st, executedSeatIds)`：`executedSeatIds` 是**真正执行了**的人（拒绝的、中途阵亡的、
+ * 名单里本来就没有的都不在里面）。单人的 `api.armyOrder` 用 `includes` 折成 boolean。
+ */
+function runArmyOrder(
+  state: GameState,
+  opts: { initiatorSeatId: string; executorSeatIds: string[]; resumeTo?: string },
+  done: (st: GameState, executedSeatIds: string[]) => void,
+): void {
+  const { initiatorSeatId, executorSeatIds, resumeTo } = opts;
+  const initiator = getPlayer(state, initiatorSeatId);
+  const named = executorSeatIds
+    .map((id) => getPlayer(state, id))
+    .filter((p): p is Player => !!p);
+  // 整条链走完的收口：先让技能结算自己的收益，再把控制权还回去。
+  // 技能在出牌阶段发起时 resumeTo 就是技能使用者——不还的话 pending 会停在 null，
+  // 出牌方再也动不了（和 pindian 是同一个坑）。
+  const finish = (st: GameState, executed: string[]): void => {
+    done(st, executed);
+    if (st.pending === null && resumeTo) resumePlay(st, resumeTo);
+  };
+  if (!initiator || named.length === 0) {
+    finish(state, []);
+    return;
+  }
+  // 发起者从随机两张军令里挑一张交给执行者（随机源必须是 state.rng，见 fuzz ⑦）
+  const two = shuffle([...ARMY_ORDERS], state.rng).slice(0, 2);
+  const only = named.length === 1 ? named[0]! : undefined;
+  askChoice(
+    state,
+    initiatorSeatId,
+    only ? `【军令】：从两张里挑一张交给 ${only.name}` : '【军令】：从两张里挑一条',
+    two.map((o) => ({ id: o.id, label: o.label })),
+    (st, _p, tokenId) => {
+      const token = ARMY_ORDERS.find((o) => o.id === tokenId);
+      if (!token) {
+        finish(st, []);
+        return;
+      }
+      const executed: string[] = [];
+      // 一个人一个人地问：军令效果本身会挂起（伤害→濒死、弃牌要挑牌），
+      // 所以下一步必须等 applyArmyOrder 的 after 回调，不能写在循环里。
+      const step = (st2: GameState, i: number): void => {
+        const executor = named[i];
+        if (!executor) {
+          finish(st2, executed);
+          return;
+        }
+        // 中途阵亡的人跳过（军令可能把前一个人打死，也可能有人被移除）
+        if (!executor.alive) {
+          step(st2, i + 1);
+          return;
+        }
+        askChoice(
+          st2,
+          executor.seatId,
+          `【军令】${initiator.name} 令你执行：${token.label}。是否执行？`,
+          [
+            { id: 'yes', label: '执行军令' },
+            { id: 'no', label: '不执行' },
+          ],
+          (st3, p3, picked) => {
+            if (picked !== 'yes') {
+              pushLog(st3, 'skill', `${p3.name} 拒绝执行军令。`);
+              step(st3, i + 1);
+              return;
+            }
+            pushLog(st3, 'skill', `${p3.name} 执行军令：${token.label}。`);
+            executed.push(executor.seatId);
+            applyArmyOrder(st3, token.id, initiatorSeatId, executor.seatId, () =>
+              step(st3, i + 1),
+            );
+          },
+        );
+      };
+      step(st, 0);
+    },
+  );
 }
 
 /**
@@ -8476,118 +8614,16 @@ function makeSkillApi(
         text: `${source.name} 视为对 ${target.name} 使用了一张【杀】。`,
       });
     },
+    // 军令：两条入口共用上面那一个 `runArmyOrder`，这里只做「单人 / 名单」的适配
     armyOrder: (initiatorSeatId, executorSeatId, onDone) => {
-      const initiator = getPlayer(state, initiatorSeatId);
-      const executor = getPlayer(state, executorSeatId);
-      // 整条链走完的收口：先让技能结算自己的收益，再把控制权还回去。
-      // 技能在出牌阶段发起时 resumeTo 就是技能使用者——不还的话 pending 会停在
-      // null，出牌方再也动不了（和 pindian 是同一个坑）。
-      const finish = (st: GameState, executed: boolean): void => {
-        onDone(st, executed);
-        if (st.pending === null && resumeTo) resumePlay(st, resumeTo);
-      };
-      if (!initiator || !executor) {
-        finish(state, false);
-        return;
-      }
-      // 发起者从随机两张军令里挑一张交给执行者
-      const two = shuffle([...ARMY_ORDERS], state.rng).slice(0, 2);
-      askChoice(
+      runArmyOrder(
         state,
-        initiatorSeatId,
-        `【军令】：从两张里挑一张交给 ${executor.name}`,
-        two.map((o) => ({ id: o.id, label: o.label })),
-        (st, _p, tokenId) => {
-          const token = ARMY_ORDERS.find((o) => o.id === tokenId);
-          if (!token) {
-            finish(st, false);
-            return;
-          }
-          askChoice(
-            st,
-            executorSeatId,
-            `【军令】${initiator.name} 令你执行：${token.label}。是否执行？`,
-            [
-              { id: 'yes', label: '执行军令' },
-              { id: 'no', label: '不执行' },
-            ],
-            (st2, p2, picked) => {
-              if (picked !== 'yes') {
-                pushLog(st2, 'skill', `${p2.name} 拒绝执行军令。`);
-                finish(st2, false);
-                return;
-              }
-              pushLog(st2, 'skill', `${p2.name} 执行军令：${token.label}。`);
-              applyArmyOrder(st2, token.id, initiatorSeatId, executorSeatId, () =>
-                finish(st2, true),
-              );
-            },
-          );
-        },
+        { initiatorSeatId, executorSeatIds: [executorSeatId], resumeTo },
+        (st, executed) => onDone(st, executed.includes(executorSeatId)),
       );
     },
     armyOrderMulti: (initiatorSeatId, executorSeatIds, onDone) => {
-      const initiator = getPlayer(state, initiatorSeatId);
-      // 收口与 armyOrder 一致：先让技能结算收益，再把控制权还回去
-      const finish = (st: GameState, executed: string[]): void => {
-        onDone(st, executed);
-        if (st.pending === null && resumeTo) resumePlay(st, resumeTo);
-      };
-      if (!initiator) {
-        finish(state, []);
-        return;
-      }
-      // 发起者同样从随机两张里挑一条，然后**依次**问每个执行者（王平·将略）
-      const two = shuffle([...ARMY_ORDERS], state.rng).slice(0, 2);
-      askChoice(
-        state,
-        initiatorSeatId,
-        '【军令】：从两张里挑一条',
-        two.map((o) => ({ id: o.id, label: o.label })),
-        (st, _p, tokenId) => {
-          const token = ARMY_ORDERS.find((o) => o.id === tokenId);
-          if (!token) {
-            finish(st, []);
-            return;
-          }
-          const executed: string[] = [];
-          // 一个人一个人地问：军令效果本身会挂起（伤害→濒死、弃牌要挑牌），
-          // 所以下一步必须等 applyArmyOrder 的 after 回调，不能写在循环里。
-          const step = (st2: GameState, i: number): void => {
-            const seatId = executorSeatIds[i];
-            const executor = seatId ? getPlayer(st2, seatId) : undefined;
-            if (!seatId || !executor) {
-              finish(st2, executed);
-              return;
-            }
-            // 中途阵亡的人跳过（军令可能把前一个人打死，也可能有人被移除）
-            if (!executor.alive) {
-              step(st2, i + 1);
-              return;
-            }
-            askChoice(
-              st2,
-              seatId,
-              `【军令】${initiator.name} 令你执行：${token.label}。是否执行？`,
-              [
-                { id: 'yes', label: '执行军令' },
-                { id: 'no', label: '不执行' },
-              ],
-              (st3, p3, picked) => {
-                if (picked !== 'yes') {
-                  pushLog(st3, 'skill', `${p3.name} 拒绝执行军令。`);
-                  step(st3, i + 1);
-                  return;
-                }
-                pushLog(st3, 'skill', `${p3.name} 执行军令：${token.label}。`);
-                executed.push(seatId);
-                applyArmyOrder(st3, token.id, initiatorSeatId, seatId, () => step(st3, i + 1));
-              },
-            );
-          };
-          step(st, 0);
-        },
-      );
+      runArmyOrder(state, { initiatorSeatId, executorSeatIds, resumeTo }, onDone);
     },
     grantTempSkill: (heroId, skillName, toSeatId) => {
       const target = toSeatId
@@ -9165,6 +9201,7 @@ export function createGame(
     discardPhaseCountsThisTurn: {},
     handDiscardedInDiscardPhase: [],
     juejueArmed: false,
+    ongoingSkillChain: [],
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],

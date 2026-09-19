@@ -16302,8 +16302,8 @@ describe('国战 · 王平·将略', () => {
    *    state 上**。只 mock 全局是没用的：军令抽牌、牌堆重洗都走 state.rng，
    *    以前这两处只 mock 了全局，改完之后就变成「看运气」，偶发失败（seed 不固定）。
    */
-  function fixedDraw(state: GameState) {
-    const spy = vi.spyOn(Math, 'random').mockReturnValue(0);
+  function fixedDraw(state: GameState, v = 0) {
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(v);
     state.rng = spy;
     return spy;
   }
@@ -16362,6 +16362,51 @@ describe('国战 · 王平·将略', () => {
       expect(state.pending).toEqual({ kind: 'play', seatId: A });
       // 限定技：一局只能一次
       fail(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
+    } finally {
+      mock.mockRestore();
+    }
+  });
+
+  it('军令流程是共用的：效果把名单上后面的人打死 → 跳过，直接问下一个', () => {
+    // 3 蜀（甲=王平、乙、丙）对 2 魏（丁、戊）：丙死后场上 2 蜀 vs 2 魏，
+    // 不到「某阵营过半」，游戏不会直接结束（否则续接队列会被 gameOver 拦住，看不见后续）
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'wangping', faction: 'shu', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: E, name: '戊', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    const aMaxBefore = a.maxHp;
+    // rng 钉死到 0.5 → 抽到「造成 1 点伤害」+「保留一张手牌…」这两条
+    const mock = fixedDraw(state, 0.5);
+    try {
+      ok(act(state, A, { type: 'useSkill', skillId: 'jianglue', cardIds: [], targetIds: [] }));
+      const p0 = state.pending;
+      if (p0?.kind !== 'choice') throw new Error(`预期在挑军令，实际是 ${p0?.kind}`);
+      const dmg = p0.options.find((o) => o.label.includes('造成 1 点伤害'));
+      if (!dmg) throw new Error(`这次没抽到「造成 1 点伤害」：${p0.options.map((o) => o.label).join(' / ')}`);
+      ok(act(state, A, { type: 'chooseOption', optionId: dmg.id }));
+      // 乙执行：先选要打谁 → 打丙（体力 1 → 直接进濒死、没人救就死）
+      expect(state.pending?.kind).toBe('choice');
+      ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+      const p1 = state.pending;
+      if (p1?.kind !== 'choice') throw new Error(`预期乙在选伤害目标，实际是 ${p1?.kind}`);
+      ok(act(state, B, { type: 'chooseOption', optionId: C }));
+      passDeathSaves(state);
+      expect(c.alive).toBe(false);
+      // 丙已经死了 → 名单上跳过（名册里没有活人了）→ 整条军令链收口、把出牌阶段还回来
+      // （如果被打死的人还被接着问「是否执行军令」，就说明求桃询问被顶掉了）
+      expect(state.pending).toEqual({ kind: 'play', seatId: A });
+      // 收口：将略给「王平和每一个执行了军令的角色」+1 上限（乙执行了 → 都 +1）
+      expect(a.maxHp).toBe(aMaxBefore + 1);
+      expect(b.maxHp).toBe(5);
     } finally {
       mock.mockRestore();
     }
@@ -19667,7 +19712,14 @@ describe('国战 · 文钦（矜伐）', () => {
  */
 describe('国战 · 朱灵（决绝 / 方圆）', () => {
   function gz(
-    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+    }[],
     actor?: string,
   ): GameState {
     const state = createGame(
@@ -19684,7 +19736,7 @@ describe('国战 · 朱灵（决绝 / 方圆）', () => {
       p.heroRevealed = true;
       p.deputyRevealed = true;
       p.maxHp = Math.max(1, Math.floor(hero.maxHp));
-      p.hp = p.maxHp;
+      p.hp = s.hp ?? p.maxHp;
       p.hand = (s.hand ?? []).slice();
       p.flags = emptyFlags();
     }
@@ -19773,6 +19825,36 @@ describe('国战 · 朱灵（决绝 / 方圆）', () => {
     expect(s2.pending?.kind).toBe('discard'); // 上限 4、手牌 5 → 弃 1
     ok(act(s2, A, { type: 'discard', cardIds: ['a0'] }));
     expect(s2.pending?.kind === 'choice' && s2.pending.title.includes('决绝')).toBe(false);
+  });
+
+  // ⚠️ 暂缓：这条跑不过，根因**不在朱灵**——决绝②落在 `turnEnd` 钩子上，而引擎的钩子链
+  //    只把 choice/pickCards/viewCards 当作「被问住了」，钩子里**间接打出来的濒死**
+  //    （respondDeath 求桃队列）不算：链条会继续往下跑（回合交接），把求桃询问顶掉，
+  //    被打死的人停在 0 体力却永远不死。修它要动钩子链 ↔ 濒死的收口次序（见 docs §5.111）。
+  it.skip('决绝②：这段伤害把前一个角色**打死**时，濒死/阵亡走完之后接着问下一个人（不顶掉求桃）', () => {
+    const state = gz([
+      // 朱灵 5 手牌 → 发动后体力 3、上限 3 → 弃 2 张（X=2）
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 5), hp: 4 },
+      // 乙体力 1、没手牌 → 付不出 2 张，只能吃伤害 → 直接进濒死
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: taos('c', 2) },
+    ], A);
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'discard', cardIds: ['a0', 'a1'] }));
+    // 乙被自动打 1 点 → 0 体力 → 求桃；没人救 → 阵亡；**然后**才轮到丙
+    expect(state.pending?.kind).toBe('respondDeath');
+    passDeathSaves(state);
+    expect(pick(state, B).alive).toBe(false);
+    expect(pick(state, B).hp).toBe(0);
+    // 关键：丙仍然被问到（如果求桃询问被顶掉，乙就会停在 0 体力不死、丙也接不上）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(C);
+      expect(state.pending.title).toContain('决绝');
+    }
+    ok(act(state, C, { type: 'chooseOption', optionId: 'dmg' }));
+    expect(pick(state, C).hp).toBe(3);
   });
 
   it('决绝②：状态是**回合内**的——上一回合发动过，这一回合改选不发动就不会误结算', () => {

@@ -14773,7 +14773,12 @@ function askJuejueSettle(ctx: HookContext): void {
         return;
       }
       pushLog(st, 'skill', `${v.name} 因【决绝】受到 1 点普通伤害。`, { seat: v.seatId });
-      ctx.api.dealDamage(v, 1, me.seatId, undefined, () => step(i + 1));
+      // ⚠️ 这 1 点伤害可能把目标打进濒死：那时 pending 被求桃队列占着，**不能**接着同步
+      //    问下一个人（会把求桃询问顶掉）。挂到 ongoingSkillChain，等濒死那串走完再继续。
+      ctx.api.dealDamage(v, 1, me.seatId, undefined, () => {
+        if (st.pending) st.ongoingSkillChain.push(() => step(i + 1));
+        else step(i + 1);
+      });
     };
     if (opts.length === 1) {
       settle(state, victim, 'dmg'); // 手牌不够 X → 只能吃伤害，不给「执行不了的选项」

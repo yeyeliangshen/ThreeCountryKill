@@ -857,6 +857,19 @@ export interface GameState {
    */
   discardPhaseCountsThisTurn: Record<string, number>;
   /**
+   * 被**濒死**打断的「多步链」的续接队列（王平·将略的军令逐个问、朱灵·决绝的逐个结算，
+   * 以及**任何**在钩子链里打出来濒死的情况——见 engine 的 runHooksFrom）。
+   *
+   * 为什么要单独一份：这类链被打断之后
+   * ① 不能让发起方接着同步跑——`askChoice` 会把濒死求桃的询问**直接顶掉**（被顶的人停在
+   *    0 体力却永远不死，回合还照常往下走）；
+   * ② 也不能只靠 `resumeQueue`——那条队列在「出牌阶段占位 pending」下不会被排空
+   *    （见 `isIdlePending` 的注释），链会一直搁在队列里。
+   * 所以挂到 state 上，由 `resumePlay` 在「控制权该还回去的时候」按**挂上的先后**依次惊醒，
+   * 与 `ongoingTrick`（AOE 锦囊）/ `ongoingChain`（铁索蔓延）同一档。
+   */
+  ongoingSkillChain: (() => void)[];
+  /**
    * 朱灵·【决绝】的触发门槛：本回合**自己的弃牌阶段**里**弃置过手牌**的座位。
    * ⚠️ 与上面的「弃置总张数」是两个口径：门槛只看「有没有弃过**手牌**」，
    *    而 X＝本阶段弃置的**全部**牌数（含装备等其他牌）。
