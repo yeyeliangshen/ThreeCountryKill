@@ -552,7 +552,14 @@ export interface SkillApi {
   castVirtualSha: (
     sourceSeatId: string,
     targetId: string,
-    opts?: { logKind?: string; attribute?: DamageAttribute },
+    opts?: {
+      logKind?: string;
+      attribute?: DamageAttribute;
+      /** 纯虚拟牌的来源标记（黄祖·袭射的杀 = `'xishe'`；用于因果链判断） */
+      generatedBy?: string;
+      /** 目标级「不能响应」判定（黄祖·袭射：目标体力值 < 黄祖时不能出闪） */
+      unrespondableTo?: (st: GameState, target: Player) => boolean;
+    },
   ) => void;
   /**
    * 让某人**用一张实体牌**对某人使用【杀】（牌从手里扣掉、走正常结算）。

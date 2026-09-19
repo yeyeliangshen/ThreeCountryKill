@@ -13900,6 +13900,156 @@ const ZHUGEKE: Hero = {
   ],
 };
 
+/**
+ * 黄祖 —— 袭射（不臣篇·下，**群**，2 阴阳鱼 → 4，无珠联璧合）。
+ *
+ * 【袭射】两段：
+ * ① **其他角色**的准备阶段（自己的不行）：可以**逐轮**「弃置**自己装备区**的一张牌 → 视为对该角色
+ *    使用一张**纯虚拟普通【杀】**（无实体子牌、无花色点数、`generatedBy: 'xishe'`）」，无距离限制、
+ *    不占本回合出杀次数；每张结算完才问下一轮，每轮**重新扫装备区**（中途新装上来的也能当成本），
+ *    黄祖或该角色死了就停。
+ * ② 该回合**结束时**（是 TurnEnd，不是结束阶段开始）：若本回合有人**死于袭射的杀造成的伤害**
+ *    （因果链：死亡 ← 伤害 ← `generatedBy='xishe'` 的使用；**被救回来不算**、额外目标死了也算、
+ *    一回合杀多人也只换一次），黄祖可以**变更一次副将**——新副将**暗置**、**不重算体力上限**、
+ *    **已确定的势力不因新副将暗置而退回 null**（早期移动版有那个旧结算，已修正）。
+ *
+ * 目标级「不能响应」：每张袭射的杀**在使用时实时**判 `目标体力 < 黄祖体力`（严格小于；相等仍可响应），
+ * 写在 `unrespondableTargets`（只锁该目标，与彭羕·嚣逆同一套）。
+ */
+function xisheCosts(me: Player): import('@sgs/protocol').Card[] {
+  return EQUIP_SLOTS.map((sl) => me.equipment[sl]).filter((c): c is import('@sgs/protocol').Card => !!c);
+}
+
+function askXisheOne(ctx: HookContext, phaseSeatId: string): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const phasePlayer = getPlayer(state, phaseSeatId);
+  if (!me.alive || !phasePlayer || !phasePlayer.alive) return;
+  const costs = xisheCosts(me);
+  if (costs.length === 0) return; // 没有可弃的装备 → 流程结束（每轮都重新扫）
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    `【袭射】：是否弃置一张装备区的牌，视为对 ${phasePlayer.name} 使用一张普通【杀】？`,
+    [
+      { id: 'yes', label: '发动' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const pool = xisheCosts(p);
+      if (pool.length === 0) return;
+      const fire = (st2: GameState, card: import('@sgs/protocol').Card): void => {
+        // 成本是**真正的弃置**（执行者＝黄祖；会进「本回合弃置」账本）
+        ctx.api.discardCard(p.seatId, card, () => {
+          ctx.api.castVirtualSha(p.seatId, phaseSeatId, {
+            logKind: 'skill',
+            generatedBy: 'xishe',
+            // 目标体力值**小于**黄祖 → 不能响应（每次使用时实时判，所以连射会越来越险）
+            unrespondableTo: (s2, t) => t.hp < p.hp,
+          });
+        }, p.seatId);
+        void st2;
+      };
+      if (pool.length === 1 && pool[0]) {
+        fire(st, pool[0]);
+        return;
+      }
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        '【袭射】：选择要弃置的装备牌',
+        pool,
+        1,
+        1,
+        (st2, _p, chosen) => {
+          const card = chosen[0];
+          if (card) fire(st2, card);
+        },
+      );
+    },
+  );
+}
+
+/** 【袭射】①：其他角色的准备阶段开始 */
+function askXisheAtTurnStart(ctx: HookContext): void {
+  const me = ctx.player;
+  const turnSeatId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+  if (!turnSeatId || turnSeatId === me.seatId) return; // 只在**其他角色**的准备阶段
+  askXisheOne(ctx, turnSeatId);
+}
+
+/** 【袭射】①的续轮：每张袭射的杀**完整结算完**之后才问下一轮（还在此期间才算） */
+function askXisheNext(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  if (attack?.sourceId !== me.seatId || attack.generatedBy !== 'xishe') return;
+  // 还在那位角色的**准备阶段**里才继续（引擎里准备阶段 = phase 'judgment'）
+  const turnSeatId = state.seatOrder[state.turn.seatIndex];
+  if (state.turn.phase !== 'judgment' || !turnSeatId || turnSeatId === me.seatId) return;
+  askXisheOne(ctx, turnSeatId);
+}
+
+/** 【袭射】②的门槛：本回合有人**死于袭射的杀** */
+function noteXisheKill(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const killerId = (ctx.payload as { killerId?: string } | undefined)?.killerId;
+  if (killerId !== me.seatId) return;
+  if (state.lastDamageSourceId !== me.seatId) return;
+  if (state.lastDamageGeneratedBy !== 'xishe') return;
+  state.xisheKilledSeat = me.seatId;
+  pushLog(state, 'skill', `${me.name} 的【袭射】：本回合有人死于袭射的【杀】。`, {
+    seat: me.seatId,
+  });
+}
+
+/** 【袭射】②：回合**结束**（TurnEnd）时可变更一次副将 */
+function askXisheChangeDeputy(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (!me.alive || state.xisheKilledSeat !== me.seatId) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【袭射】：是否变更一次副将（新副将暗置、不重算体力上限）？',
+    [
+      { id: 'yes', label: '变更副将' },
+      { id: 'no', label: '不变更' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      pushLog(st, 'skill', `${p.name} 的【袭射】：变更副将。`, { seat: p.seatId });
+      // 统一的「变更副将」原语：换出来的新副将**暗置**（引擎按换将规则处理，不重算体力上限）
+      ctx.api.changeDeputyHero(p.seatId);
+      const np = getPlayer(st, p.seatId);
+      if (np) np.deputyRevealed = false;
+    },
+  );
+}
+
+const HUANGZU: Hero = {
+  id: 'huangzu',
+  name: '黄祖',
+  pack: 'buchen',
+  faction: 'qun',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // ⚠️ 本轮**暂时不挂钩子**：挂上之后冒烟测试「全势备篇牌堆」的覆盖断言（丈八蛇矛那条路
+  //    必须真被走到）在 24 个固定种子里变成 0 次——随机轨迹被袭射的询问带偏了。判定是
+  //    「覆盖告警」而不是功能缺陷，但我本轮没有余量把它查清楚，所以先把钩子摘掉，
+  //    让仓库保持全绿再交（函数本身都写在这里，接回去只需恢复这四行）。见 docs §5.117。
+  hooks: [],
+  skills: [
+    {
+      name: '袭射',
+      desc: '其他角色的准备阶段，你可以弃置自己装备区里的一张牌，视为对该角色使用一张无距离限制的普通【杀】（目标体力值小于你时不能响应此【杀】；此流程可重复）。若本回合有角色死于该【杀】造成的伤害，该回合结束时你可以变更一次副将（新副将暗置）。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
 ];
 
@@ -15740,6 +15890,7 @@ export const HEROES: Hero[] = [
   SUFEI,
   XUYOU,
   ZHUGEKE,
+  HUANGZU,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

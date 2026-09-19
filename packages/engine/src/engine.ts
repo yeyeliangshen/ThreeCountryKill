@@ -1088,6 +1088,9 @@ function startTurn(state: GameState, seatIndex: number): void {
   // 这样结束阶段读到的就是这一整个回合的弃置（含判定/摸牌/出牌/弃牌各阶段）
   state.turnDiscards = [];
   state.useDamages = [];
+  state.xisheKilledSeat = null;
+  state.lastDamageSourceId = '';
+  state.lastDamageGeneratedBy = null;
   state.duwuWatchSeat = null;
   state.duwuRescued = false;
   state.liangfanHanIds = [];
@@ -3313,6 +3316,9 @@ function damageStep(
           if (!hxPrevented) {
             target.hp -= finalDmg;
             // 「这一次使用实际伤害过谁」的账本（许攸·成略）：只记真扣了血的
+            // 「最近一次伤害」的生成者/来源（黄祖·袭射要判断「是不是被袭射的杀打死的」）
+            state.lastDamageSourceId = attack.sourceId;
+            state.lastDamageGeneratedBy = attack.generatedBy ?? null;
             if (attack.cardUseId) {
               state.useDamages.push({
                 useId: attack.cardUseId,
@@ -6802,7 +6808,12 @@ function resolvePlayedSha(
   asType: CardType,
   log: { kind: string; text: string },
   after?: () => void,
-  opts?: { ignoreArmor?: boolean; skillId?: string },
+  opts?: {
+    ignoreArmor?: boolean;
+    skillId?: string;
+    /** 目标级「不能响应」判定（真则把该目标写进 unrespondableTargets） */
+    unrespondableTo?: (st: GameState, target: Player) => boolean;
+  },
 ): void {
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
@@ -6817,6 +6828,8 @@ function resolvePlayedSha(
     targetId,
     // 这条路（借刀/离间/视为使用一张杀）每次只结算一个目标
     declaredTargets: [targetId],
+    ...(card.generatedBy ? { generatedBy: card.generatedBy } : {}),
+    ...(opts?.unrespondableTo?.(state, target) ? { unrespondableTargets: [targetId] } : {}),
     damage: 1,
     dodged: false,
     attribute: card.attribute,
@@ -8756,10 +8769,14 @@ function makeSkillApi(
         suit: 'spade',
         rank: 0,
         ...(opts?.attribute ? { attribute: opts.attribute } : {}),
+        ...(opts?.generatedBy ? { generatedBy: opts.generatedBy } : {}),
       };
       resolvePlayedSha(state, source, targetId, card, 'sha', {
         kind: opts?.logKind ?? 'skill',
         text: `${source.name} 视为对 ${target.name} 使用了一张【杀】。`,
+      }, undefined, {
+        // 目标级的「不能响应」判定（黄祖·袭射：目标体力值小于黄祖时不能出闪）
+        unrespondableTo: opts?.unrespondableTo,
       });
     },
     // 军令：两条入口共用上面那一个 `runArmyOrder`，这里只做「单人 / 名单」的适配
@@ -9052,6 +9069,9 @@ function makeSkillApi(
       fireEquipLost(state, owner, card, done);
     },
     loseHp: (target, amount, after) => {
+      // 失去体力不是伤害 → 清掉「最近一次伤害」的记录，免得陈旧值被当成致死原因
+      state.lastDamageSourceId = '';
+      state.lastDamageGeneratedBy = null;
       target.hp -= amount;
       pushLog(
         state,
@@ -9364,6 +9384,9 @@ export function createGame(
     xiongnueDefense: false,
     discardPhaseCountsThisTurn: {},
     turnDiscards: [],
+    xisheKilledSeat: null,
+    lastDamageSourceId: '',
+    lastDamageGeneratedBy: null,
     duwuWatchSeat: null,
     duwuRescued: false,
     cardUseSeq: 0,

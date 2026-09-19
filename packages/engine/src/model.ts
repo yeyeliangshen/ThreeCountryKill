@@ -927,6 +927,11 @@ export interface GameState {
    * 两次状态（`duwuWatchSeat` = 发起者）——因为黩武的结算会挂起好几次询问，
    * 用局部变量接不住；随回合清空。
    */
+  /** 「最近一次伤害」的来源与生成者（黄祖·袭射判断「被袭射的杀打死」用；随回合清） */
+  lastDamageSourceId: string;
+  lastDamageGeneratedBy: string | null;
+  /** 黄祖·袭射②：本回合有人死于袭射的【杀】（存黄祖座位；随回合清） */
+  xisheKilledSeat: string | null;
   duwuWatchSeat: string | null;
   duwuRescued: boolean;
   cardUseSeq: number;
