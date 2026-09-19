@@ -162,9 +162,12 @@ function step(state: GameState, rand: () => number): string {
 }
 
 describe('随机对局冒烟：全势备篇牌堆不卡死、不抛错', () => {
-  it('24 局（固定种子）都跑到分出胜负', () => {
+  it('40 局（固定种子）都跑到分出胜负', () => {
     let totalSteps = 0;
-    for (let seed = 1; seed <= 24; seed++) {
+    // ⚠️ 种子范围从 24 扩到 40：黄祖·袭射的钩子接上后随机轨迹变了，原来那 24 个种子里
+    //    【丈八蛇矛】那条路一次都没走到（覆盖率断言从「通过」变成 0 次）。**断言没有放宽**——
+    //    只是换更多固定样本，保证覆盖率断言重新成立（docs §5.117）。
+    for (let seed = 1; seed <= 40; seed++) {
       const rand = rng(seed);
       const n = 5 + (seed % 3);
       const setup: SeatSetup[] = Array.from({ length: n }, (_, i) => ({

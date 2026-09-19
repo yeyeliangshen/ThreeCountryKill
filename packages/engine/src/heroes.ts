@@ -14066,11 +14066,12 @@ const HUANGZU: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
-  // ⚠️ 本轮**暂时不挂钩子**：挂上之后冒烟测试「全势备篇牌堆」的覆盖断言（丈八蛇矛那条路
-  //    必须真被走到）在 24 个固定种子里变成 0 次——随机轨迹被袭射的询问带偏了。判定是
-  //    「覆盖告警」而不是功能缺陷，但我本轮没有余量把它查清楚，所以先把钩子摘掉，
-  //    让仓库保持全绿再交（函数本身都写在这里，接回去只需恢复这四行）。见 docs §5.117。
-  hooks: [],
+  hooks: [
+    { timing: 'othersTurnStart', skillId: '袭射', handler: askXisheAtTurnStart },
+    { timing: 'attackSettled', skillId: '袭射', handler: askXisheNext },
+    { timing: 'playerDied', skillId: '袭射', handler: noteXisheKill },
+    { timing: 'turnEnd', skillId: '袭射', handler: askXisheChangeDeputy },
+  ],
   skills: [
     {
       name: '袭射',
