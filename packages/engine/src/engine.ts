@@ -2044,7 +2044,11 @@ function playSha(
     })();
   // 刘琦·问计：被标记的那张**实体牌**「无使用次数限制」——既不受上限约束，也不计入次数
   const wenji = wenjiMarked(source, card.id);
-  if (!limitless && !wenji && source.flags.shaCountThisTurn >= maxSha)
+  // 夏侯霸·豹烈②（接口是通用的「目标级豁免」）：**这批目标全都满足条件**才允许突破次数上限
+  const bypassLimit = activeHeroes(state, source).some(
+    (h) => h.shaBypassLimit?.(state, source, targetIds) === true,
+  );
+  if (!limitless && !wenji && !bypassLimit && source.flags.shaCountThisTurn >= maxSha)
     return err('本回合出杀数已达上限');
   // 目标数规则：方天画戟（同名两模式两套）+ 丁奉·短兵（额外一名距离 1 的）
   const rule = shaTargetRule(state, source, card);
@@ -2068,9 +2072,14 @@ function playSha(
     // 锁定技（空城等）：不能成为此牌的目标
     if (heroBlocksBeingTarget(state, target, card, source)) return err('该角色不能成为此牌的目标');
     // 距离校验：攻击范围 ≥ 距离（天义拼点赢则本回合无视距离）
+    // 夏侯霸·豹烈②：**目标级**的无距离限制（只对满足条件的目标放行，其余照常判距离）
+    const noDistanceToTarget = activeHeroes(state, source).some(
+      (h) => h.ignoreShaDistanceTo?.(state, source, targetId) === true,
+    );
     if (
       !source.flags.ignoreShaDistanceThisTurn &&
       !wenji &&
+      !noDistanceToTarget &&
       !canTarget(state, source.seatId, targetId)
     )
       return err('目标超出攻击范围');

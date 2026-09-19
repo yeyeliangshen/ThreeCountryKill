@@ -409,6 +409,18 @@ export interface Hero {
    */
   biluan?: boolean;
   /**
+   * **目标级**的「本回合【杀】次数豁免」：整张牌**提议的全部目标**都满足条件时才允许突破次数上限。
+   * 夏侯霸·【豹烈】②是第一个用例（目标当前体力 ≥ 自己当前体力）。
+   * ⚠️ 语义是「这张杀的这批目标能不能豁免」，**不是**「有技能就无限出杀」——
+   * 目标里只要有一个不满足，就不豁免（与文本「对体力值不小于你的角色使用【杀】」一致）。
+   */
+  shaBypassLimit?: (state: GameState, owner: Player, targetIds: string[]) => boolean;
+  /**
+   * **目标级**的「使用【杀】无视距离」：只对满足条件的目标放行，其余目标照常判距离。
+   * 夏侯霸·【豹烈】②：目标当前体力 ≥ 自己当前体力时对**该目标**无距离限制。
+   */
+  ignoreShaDistanceTo?: (state: GameState, owner: Player, targetId: string) => boolean;
+  /**
    * 袁术·庸肆（锁定技）：**若场上没有【玉玺】**，你视为装备着【玉玺】。
    *
    * 两处消费方都走 `hasYuxi()`（equip.ts 的摸牌加成 + engine 的出牌阶段开始时视为使用
@@ -444,6 +456,8 @@ export type FieldSkill =
   | 'shaLimit'
   | 'distanceFrom'
   | 'biluan'
+  | 'shaBypassLimit'
+  | 'ignoreShaDistanceTo'
   | 'extraDraw'
   | 'handLimit'
   | 'cannotBeTargetOf'
@@ -490,6 +504,8 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'shaLimit',
   'distanceFrom',
   'biluan',
+  'shaBypassLimit',
+  'ignoreShaDistanceTo',
   'extraDraw',
   'handLimit',
   'cannotBeTargetOf',
@@ -13203,7 +13219,6 @@ const TANGZI: Hero = {
 };
 
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('xiahouba', '夏侯霸', 'wei', 'shu', 4),
   dualHero('wenqin', '文钦', 'wei', 'wu', 4),
   dualHero('pengyang', '彭羕', 'shu', 'qun', 3),
   dualHero('panjun', '潘濬', 'shu', 'wu', 3),
@@ -13738,6 +13753,163 @@ const LIUBA: Hero = {
   ],
 };
 
+/**
+ * 夏侯霸 —— 豹烈（不臣篇·下，**魏/蜀双势力**，2 阴阳鱼 → 4；移动版现行口径，见 §5.106）。
+ *
+ * 【豹烈】（**锁定技**）两个子效果，底层拆开（UI 上仍是一个技能）：
+ * ① **进入出牌阶段时**（`playPhase`，锁定、不可选择不发动）：把「**攻击范围内包含夏侯霸**」的
+ *   其他势力（都已确定势力）角色**做一次快照**，按座次依次处理——其可以**使用**一张【杀】
+ *   指定夏侯霸（走完整使用流程，可被闪、可触发技能；实体杀/转化杀/丈八都行，与徐庶·诛害同一套
+ *   取牌方式）；**不使用**则由**夏侯霸**弃置其一张牌（明牌可选、手牌随机，沿用引擎既有的
+ *   `discardTargetCard` 语义）；某人整张【杀】结算完之后才轮到下一个人；夏侯霸中途死亡即刻停止。
+ * ② 夏侯霸对**当前体力 ≥ 自己当前体力**的角色使用【杀】时，**无距离限制、无次数限制**——
+ *   两个都是**目标级**修正（新增通用接口 `Hero.ignoreShaDistanceTo` / `Hero.shaBypassLimit`）：
+ *   距离只对满足条件的目标放行；次数只有**整张杀的这批目标全都满足**才豁免，且每次声明使用都
+ *   现场读双方当前体力（不缓存）。
+ *
+ * 待办（见 §5.106）：① 引擎的杀使用入口（`useShaOn`）一次只支持**单个**目标，所以【豹烈①】里
+ *   方天画戟那种「合法多目标杀（含夏侯霸）」的用法暂时打不出来（文本允许）；② 未确定势力角色
+ *   暂不进入【豹烈①】候选（详细规则集写「与你势力不同的角色」，与会盟/问计同一口径）。
+ */
+function askBaoliePlayPhase(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const api = ctx.api;
+  const mine = effectiveFaction(state, me);
+  if (!mine) return;
+  // 候选**快照**：已确定势力、与夏侯霸不同势力、且**其攻击范围内包含夏侯霸**（方向别写反）
+  const cands = state.players.filter((t) => {
+    if (!t.alive || t.seatId === me.seatId) return false;
+    const tf = effectiveFaction(state, t);
+    if (!tf || tf === mine) return false;
+    return canTarget(state, t.seatId, me.seatId); // canTarget(from,to) = 攻击范围 ≥ 距离
+  });
+  const step = (i: number): void => {
+    if (i >= cands.length) return;
+    if (!me.alive) return; // 夏侯霸中途死亡 → 后续豹烈①停止
+    const t = getPlayer(state, cands[i]!.seatId);
+    if (!t || !t.alive) {
+      step(i + 1);
+      return;
+    }
+    const shas = usableShaCards(state, t); // 实体杀 + 转化杀（武圣那类）
+    const withZhangba = t.equipment.weapon?.equipName === 'zhangba' && t.hand.length >= 2;
+    const use = (card: Card, extra?: string[]): void => {
+      pushLog(state, 'skill', `${t.name} 因【豹烈】对 ${me.name} 使用一张【杀】。`, {
+        seat: t.seatId,
+      });
+      // 走完整使用流程；after = 这张【杀】整个结算完之后才轮到下一个人
+      api.useShaOn(t.seatId, me.seatId, card, {
+        logKind: 'skill',
+        ...(extra ? { extraCardIds: extra } : {}),
+        after: () => step(i + 1),
+      });
+    };
+    const punish = (): void => {
+      // 不使用【杀】→ **夏侯霸**（不是对方）弃置其一张牌；明牌可选、手牌随机
+      const picks = handAndEquipOf(t).filter((c) => !t.hand.some((x) => x.id === c.id));
+      api.askChoice(
+        state,
+        me.seatId,
+        `${t.name} 没有使用【杀】，【豹烈】：弃置其一张牌`,
+        [
+          ...picks.map((c) => ({ id: c.id, label: `弃置【${cardLabel(c)}】` })),
+          { id: 'random', label: '随机弃置其一张手牌' },
+          { id: 'none', label: '其没有可弃置的牌' },
+        ].filter((o) => o.id !== 'none' || picks.length === 0),
+        (st, p, picked) => {
+          if (picked === 'none') {
+            step(i + 1);
+            return;
+          }
+          p.seatId; // 选择者就是夏侯霸（api.askChoice 已按 me.seatId 发问）
+          ctx.api.discardTargetCard(
+            t.seatId,
+            picked === 'random' ? undefined : picked,
+            () => {
+              pushLog(st, 'skill', `${p.name} 因【豹烈】弃置了 ${t.name} 的一张牌。`, {
+                seat: p.seatId,
+              });
+              step(i + 1);
+            },
+          );
+        },
+      );
+    };
+    const options = [
+      { id: 'no', label: '不使用【杀】（由其弃你一张牌）' },
+      ...shas.map((c) => ({ id: c.id, label: `使用【${cardLabel(c)}】` })),
+      ...(withZhangba ? [{ id: 'zhangba', label: '【丈八蛇矛】：两张手牌当【杀】' }] : []),
+    ];
+    if (shas.length === 0 && !withZhangba) {
+      punish();
+      return;
+    }
+    api.askChoice(state, t.seatId, `【豹烈】：是否对 ${me.name} 使用一张【杀】？`, options, (st, _p, picked) => {
+      if (picked === 'no') {
+        punish();
+        return;
+      }
+      if (picked === 'zhangba') {
+        api.askPickCards(
+          st,
+          t.seatId,
+          '【豹烈】·【丈八蛇矛】：选择两张手牌当【杀】',
+          t.hand.slice(),
+          2,
+          2,
+          (_st2, _p2, chosen) => {
+            const [c1, c2] = chosen;
+            if (!c1 || !c2) {
+              punish();
+              return;
+            }
+            use(c1, [c2.id]);
+          },
+        );
+        return;
+      }
+      const c = t.hand.find((x) => x.id === picked);
+      if (c) use(c);
+      else punish();
+    });
+  };
+  step(0);
+}
+
+const XIAHOUBA: Hero = {
+  id: 'xiahouba',
+  name: '夏侯霸',
+  pack: 'buchen',
+  faction: 'wei',
+  secondFaction: 'shu',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  combos: ['jiangwei'], // 珠联璧合：姜维
+  skillFields: { 豹烈: ['shaBypassLimit', 'ignoreShaDistanceTo'] },
+  // ② 两个**目标级**修正（每次使用现场读双方当前体力，不缓存）
+  ignoreShaDistanceTo: (_state, owner, targetId) => {
+    const t = _state.players.find((p) => p.seatId === targetId);
+    return !!t && t.seatId !== owner.seatId && t.hp >= owner.hp;
+  },
+  shaBypassLimit: (state, owner, targetIds) => {
+    if (targetIds.length === 0) return false;
+    // **整批目标全都满足**才豁免：有一个低血目标就不算
+    return targetIds.every((id) => {
+      const t = state.players.find((p) => p.seatId === id);
+      return !!t && t.seatId !== owner.seatId && t.hp >= owner.hp;
+    });
+  },
+  hooks: [{ timing: 'playPhase', skillId: '豹烈', locked: true, handler: askBaoliePlayPhase }],
+  skills: [
+    {
+      name: '豹烈',
+      desc: '锁定技，你进入出牌阶段时，所有攻击范围内包含你的其他势力角色依次可以对你使用一张【杀】，若不使用，你弃置其一张牌；你使用【杀】指定体力值不小于你的角色为目标时，无距离和次数限制。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -13767,6 +13939,7 @@ export const HEROES: Hero[] = [
   MIFANG,
   MENGDA,
   LIUBA,
+  XIAHOUBA,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

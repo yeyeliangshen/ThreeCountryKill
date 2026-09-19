@@ -19147,6 +19147,111 @@ describe('国战 · 刘巴（统度 / 清隐）', () => {
   });
 });
 
+
+/**
+ * 夏侯霸（不臣篇·下；魏/蜀双势力）——【豹烈】（文档 §5.106）。
+ * 锁：①「对方的攻击范围内含夏侯霸」是方向（不是夏侯霸的攻击范围）、不使用则由夏侯霸弃其一张牌；
+ * ②「目标当前体力 ≥ 自己当前体力」的目标级无距离/无次数（整批目标全满足才豁免次数）。
+ */
+describe('国战 · 夏侯霸（豹烈）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('豹烈②：对体力**不小于**自己的远处目标，无距离限制；对低血目标仍按距离判', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'xiahouba', faction: 'wei', hand: [sha('a1'), sha('a2')], hp: 2, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hp: 3, hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 1, hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hp: 1, hand: [] },
+    ], A);
+    // 丙在距离 2 上（甲没有武器）→ 3 ≥ 2 但 hp 1 < 2 → 超范围
+    fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    // 乙在距离 1 上不受影响；换「距离 2 且体力 3」的目标来验无距离限制：用丁改体力
+    const d = state.players.find((p) => p.seatId === D)!;
+    d.hp = 3;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [D] }));
+    ok(act(state, D, { type: 'pass' }));
+    expect(d.hp).toBe(2); // 2 + 1? 命中 1 点（a1 是普通杀 → 1 点）
+  });
+
+  it('豹烈②：次数豁免要求**整批目标**都满足体力条件', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'xiahouba', faction: 'wei', hand: [sha('a1'), sha('a2'), sha('a3')], hp: 2, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hp: 4, hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hp: 1, hand: [] },
+    ], A);
+    // 第 1 张：正常次数内
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 第 2 张：次数已满，但目标是高血（4 ≥ 2）→ 豹烈豁免
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    // 第 3 张：目标是低血（1 < 2）→ 不豁免
+    fail(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [C] }));
+  });
+
+  it('豹烈①：出牌阶段开始时问「攻击范围内含夏侯霸」的异势力角色；不使用则由夏侯霸弃其一张牌', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'xiahouba', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), mk('b2', 'tao', 'heart')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [sha('c1')] },
+      ],
+      C,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 丙结束 → 轮到甲：出牌阶段开始时【豹烈】自动（锁定技）问乙
+    ok(act(state, C, { type: 'endPhase' }));
+    skipRevealAsk(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B); // 问的是**对方**
+      expect(state.pending.title).toContain('豹烈');
+    }
+    const bBefore = b.hand.length;
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 不使用【杀】
+    // 不使用 → 夏侯霸弃其一张牌（随机弃手牌那条路）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'random' }));
+    expect(b.hand.length).toBe(bBefore - 1);
+  });
+});
+
 /** 技能判定也走「判定牌生效前」：鬼才/鬼道能改判、天妒能收牌 */
 describe('国战 · 技能判定接入改判时机', () => {
   function gz(
