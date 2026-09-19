@@ -495,7 +495,17 @@ export interface SkillApi {
    */
   castVirtualTrick: (
     sourceSeatId: string,
-    spec: { type: TrickType; suit: Suit; rank?: number },
+    spec: {
+      type: TrickType;
+      suit: Suit;
+      rank?: number;
+      /**
+       * 这张虚拟牌是用哪些**实体牌**凑出来的（吴景·调归：把一张装备牌当【调虎离山】）。
+       * 引擎把它挂到虚拟牌的 `materials` 上——「获得此牌」那类效果按它找实体牌
+       * （见 engine 里 `damageCardIds` 的注释：虚拟牌本身在任何区域都找不到）。
+       */
+      materials?: Card[];
+    },
     targetIds?: string[],
   ) => void;
   /**

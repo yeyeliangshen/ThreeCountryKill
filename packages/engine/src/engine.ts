@@ -9332,6 +9332,9 @@ function makeSkillApi(
         type: spec.type,
         suit: spec.suit,
         rank: spec.rank ?? 0,
+        // 实体子牌（调归那种「把一张牌当某锦囊使用」）：虚拟牌本身不在任何区域，
+        // 想找到「这次用的是什么牌」的效果只能靠这份清单（见 Card.materials 的说明）
+        ...(spec.materials && spec.materials.length > 0 ? { materials: spec.materials } : {}),
       };
       pushLog(state, 'trick', `${source.name} 视为使用了【${CARD_TYPE_NAME[spec.type]}】。`, {
         seat: source.seatId,

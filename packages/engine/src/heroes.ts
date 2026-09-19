@@ -7138,6 +7138,8 @@ const WUJING: Hero = {
             type: 'tiaohu',
             suit: material.suit,
             rank: material.rank,
+            // 带上实体子牌：虚拟牌自己找不到，靠这份清单让「获得此牌」那类效果有据可依
+            materials: [material],
           },
           targets,
         );
