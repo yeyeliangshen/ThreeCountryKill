@@ -157,6 +157,8 @@ const err = (message: string): ApplyResult => ({ ok: false, error: message });
 export interface PendingCheckpoint {
   requestId: number | null;
   slotVersion: number;
+  /** 拍快照时「正在进行的那一次使用」的编号（诊断用：判断挡住我的是不是同一次使用） */
+  useId?: number;
 }
 
 /** 给**文档/测试**用的稳定 id：按对象身份发号，不改变 pending 的既有形状 */
@@ -177,6 +179,7 @@ export function capturePendingCheckpoint(state: GameState): PendingCheckpoint {
   return {
     requestId: cur ? pendingIdOf(cur) : null,
     slotVersion: state.pendingSeq,
+    useId: cur && typeof cur === 'object' && 'ctx' in cur ? (cur as { ctx?: { cardUseId?: number } }).ctx?.cardUseId : undefined,
   };
 }
 
@@ -2162,6 +2165,11 @@ function resumePlay(
   // 按**语义**聚类（恢复交互入口 vs 提交不可延迟的状态迁移）——行为保持不变（照旧覆盖），
   // 所以开着它本身不会让任何测试变红。设 SGS_TRACE_TAKEOVER=1 会顺带打到 stdout。
   if (since && !canTakeOverPending(state, since)) {
+    // 关键诊断：挡住我的这条询问，属于**同一张牌的使用**还是**另一次（嵌套）使用**？
+    // 同一次 → 说明这条收尾跑早了（同一个结算还没问完就想抢控制权）= 真 bug；
+    // 不同次 → 是嵌套使用（借刀里的杀、无懈链…）→ 让路是对的。
+    const cur = state.pending as { ctx?: { cardUseId?: number } } | null;
+    const curUse = cur && typeof cur === 'object' && 'ctx' in cur ? cur.ctx?.cardUseId : undefined;
     const rec = {
       finalizer: 'resumePlay',
       checkpointSeq: since.slotVersion,
@@ -2172,6 +2180,9 @@ function resumePlay(
       turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
       inDying: state.pending?.kind === 'respondDeath',
       resumeQueueLength: state.resumeQueue.length,
+      sameUse: curUse !== undefined ? String(curUse === since.useId) : 'n/a',
+      blockedUse: String(curUse ?? 'n/a'),
+      myUse: String(since.useId ?? 'n/a'),
     };
     state.blockedTakeovers.push(rec);
     if (process.env.SGS_TRACE_TAKEOVER) {
