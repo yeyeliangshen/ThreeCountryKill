@@ -8616,6 +8616,40 @@ describe('势备篇 · 牌堆与开关', () => {
     expect(on).toHaveLength(160); // 综合国战的起始摸牌堆
   });
 
+  it('势备篇 17 张锦囊逐张对官方表（花色点数）', () => {
+    // 用户给出的官方逐张表——两包各自提供实体副本，**允许重名**（全开时真有两张 ♣K 国无懈）
+    const key = (c: Card) => `${c.type}:${c.suit}${c.rank}`;
+    const TRICKS = ['wuxie', 'wuxieguo', 'tiaohu', 'shuiyan', 'lutong', 'xietianzi', 'huoshao', 'chiling', 'lianjun'];
+    const on = buildDeck('guozhan', { shibei: true }).filter((c) => c.id.startsWith('s') && TRICKS.includes(c.type));
+    expect(on.map(key).sort()).toEqual(
+      [
+        'xietianzi:spade1', // ♠A 挟天子以令诸侯
+        'xietianzi:diamond1', // ♦A
+        'xietianzi:diamond4', // ♦4
+        'huoshao:spade3', // ♠3 火烧连营
+        'huoshao:heart12', // ♥Q
+        'huoshao:club11', // ♣J
+        'tiaohu:heart2', // ♥2 调虎离山
+        'tiaohu:diamond10', // ♦10
+        'shuiyan:heart13', // ♥K 水淹七军
+        'shuiyan:club12', // ♣Q
+        'lutong:spade12', // ♠Q 勠力同心
+        'lutong:club10', // ♣10
+        'chiling:club3', // ♣3 敕令
+        'lianjun:heart1', // ♥A 联军盛宴
+        'wuxie:spade13', // ♠K 无懈可击
+        'wuxieguo:diamond11', // ♦J 无懈可击·国
+        'wuxieguo:club13', // ♣K 无懈可击·国
+      ].sort(),
+    );
+    // 标准堆那三张是另一套（♠J / ♦Q / ♣K）
+    const std = buildDeck('guozhan')
+      .filter((c) => c.type === 'wuxie' || c.type === 'wuxieguo')
+      .map(key)
+      .sort();
+    expect(std).toEqual(['wuxie:spade11', 'wuxieguo:diamond12', 'wuxieguo:club13'].sort());
+  });
+
   it('连横标记按官方表落在牌上', () => {
     const on = buildDeck('guozhan', { shibei: true });
     const marked = on.filter((c) => c.id.startsWith('s') && c.lianheng);
