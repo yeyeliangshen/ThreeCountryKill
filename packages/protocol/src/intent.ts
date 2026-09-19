@@ -34,6 +34,7 @@ export type Intent =
       extraCardIds?: string[];
     }
   // 不响应（弃权）
+  | { type: 'aocai' } // 诸葛恪·傲才：用牌堆顶的实体基本牌满足当前响应
   | { type: 'pass' }
   // 结束当前阶段（出牌阶段结束等）
   | { type: 'endPhase' }
