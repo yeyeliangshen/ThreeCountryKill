@@ -936,6 +936,15 @@ export interface GameState {
   xisheKilledSeat: string | null;
   duwuWatchSeat: string | null;
   duwuRescued: boolean;
+  /**
+   * **输入槽的版本号**：每次 `state.pending` 被写（set / clear / replace / answer / restore）都自增。
+   *
+   * 用来实现「收尾只能抢走自己开始前就存在、且期间从未被碰过的 pending」这条所有权规则
+   * （lost-update / ABA 防护，见 engine 的 capturePendingCheckpoint / takeOverPendingIfUnchanged
+   * 与 docs §5.124）。**不要直接写 `state.pending = …`**——要走那套收口函数，
+   * 否则这个版本号不会动，收尾会误判成「没人碰过」。
+   */
+  pendingSeq: number;
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

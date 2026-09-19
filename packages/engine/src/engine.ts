@@ -140,6 +140,82 @@ const err = (message: string): ApplyResult => ({ ok: false, error: message });
  * 一定要传 returnTo（通常是发起技能的玩家），否则选完之后 pending 会停在
  * null，出牌方再也动不了——整局就卡死了。
  */
+/**
+ * 「输入槽」（`state.pending`）的**所有权围栏**——解决 lost update / ABA。
+ *
+ * 问题：收尾代码带着「我结束后应该回到出牌阶段」这个**旧世界的假设**去写 pending，
+ * 但它执行期间钩子可能已经创建了一条**更新、更高优先级**的询问；收尾用旧假设覆盖它，
+ * 那条询问就永远没人回答（四条 skip 的共同根因，见 docs §5.118/§5.124）。
+ *
+ * 规则（一句话）：
+ * **收尾只能抢走「自己开始之前就存在、且期间从未被碰过」的 pending；
+ *   一旦收尾执行期间产生了新的询问，那条询问拥有输入槽，收尾只能排队等它答完。**
+ *
+ * 判据 = `requestId`（是哪一次询问）**加上** `slotVersion`（从我拍快照后槽有没有被碰过）。
+ * 只有 requestId 会栽在 ABA 上（旧 A → 被覆盖 → 又复原成同一个 A），所以要带版本号。
+ */
+export interface PendingCheckpoint {
+  requestId: number | null;
+  slotVersion: number;
+}
+
+/** 给**文档/测试**用的稳定 id：按对象身份发号，不改变 pending 的既有形状 */
+const pendingIds = new WeakMap<object, number>();
+let pendingIdSeq = 0;
+function pendingIdOf(pending: object): number {
+  let id = pendingIds.get(pending);
+  if (id === undefined) {
+    id = ++pendingIdSeq;
+    pendingIds.set(pending, id);
+  }
+  return id;
+}
+
+/** 进入收尾前拍一张快照 */
+export function capturePendingCheckpoint(state: GameState): PendingCheckpoint {
+  const cur = state.pending;
+  return {
+    requestId: cur ? pendingIdOf(cur) : null,
+    slotVersion: state.pendingSeq,
+  };
+}
+
+/** 槽被任何人写过（set / clear / replace / answer / restore）时调用——版本号是围栏的另一半 */
+export function notePendingSlotWrite(state: GameState): void {
+  state.pendingSeq++;
+}
+
+/**
+ * 收尾能不能占用输入槽：
+ * - 槽是空的 → 可以；
+ * - 槽里还是**我拍快照时那一份**、且版本号没变 → 可以（陈旧的旧 pending 允许抢回）；
+ * - 否则（期间产生了新询问 / 被覆盖过又复原）→ **不可以**，收尾必须排队。
+ */
+export function canTakeOverPending(
+  state: GameState,
+  checkpoint: PendingCheckpoint,
+): boolean {
+  const cur = state.pending;
+  if (!cur) return true;
+  return (
+    checkpoint.requestId !== null &&
+    pendingIdOf(cur) === checkpoint.requestId &&
+    state.pendingSeq === checkpoint.slotVersion
+  );
+}
+
+/** 收尾收口的用法：`takeOverPendingIfUnchanged` 返回 false 时，调用方应把续接排进队列等它答完 */
+export function takeOverPendingIfUnchanged(
+  state: GameState,
+  checkpoint: PendingCheckpoint,
+  next: Pending,
+): boolean {
+  if (!canTakeOverPending(state, checkpoint)) return false;
+  state.pending = next;
+  notePendingSlotWrite(state);
+  return true;
+}
+
 export function askChoice(
   state: GameState,
   seatId: string,
@@ -9461,6 +9537,7 @@ export function createGame(
     lastDamageGeneratedBy: null,
     duwuWatchSeat: null,
     duwuRescued: false,
+    pendingSeq: 0,
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],

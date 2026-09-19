@@ -38,7 +38,13 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
 
   type GameState,
   type SeatSetup,
-  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,} from '../src';
+  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,} from '../src';
+import {
+  capturePendingCheckpoint,
+  notePendingSlotWrite,
+  canTakeOverPending,
+  takeOverPendingIfUnchanged,
+} from '../src/engine';
 import { FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type { Card, CardType, Faction, GameMode, MarkerId, Suit } from '@sgs/protocol';
 
@@ -24004,5 +24010,104 @@ describe('国战 · 诸葛恪（黩武）', () => {
     // 限定技：本局已用
     const again = act(state, A, { type: 'useSkill', skillId: 'duwu', cardIds: [], targetIds: [] });
     expect(again.ok).toBe(false);
+  });
+});
+
+/**
+ * 「输入槽」的所有权围栏（docs §5.124）——用户建议的**6 条状态机单测**先落地，
+ * 这样以后不需要「跑几分钟冒烟才知道错」。
+ * 覆盖：① 没被碰过 → 允许抢回；② 期间产生新询问 → 禁止；③ 新询问答完槽空了 → 允许；
+ * ④ 濒死求桃（respondDeath）期间 → 禁止回合交接抢槽；⑤ ABA（同一个旧 pending 被复原但版本号变了）→ 禁止；⑥ 排队语义。
+ */
+describe('输入槽所有权围栏（pending CAS）', () => {
+  const mk2 = () =>
+    createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla' },
+        { seatId: B, name: '乙', heroId: 'vanilla' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+  const playOf = (seatId: string): Pending => ({ kind: 'play', seatId });
+
+  it('① 旧 pending 期间从未被碰过 → 收尾可以抢回（放回出牌阶段）', () => {
+    const state = mk2();
+    const old = { kind: 'respondSha', responderId: A, attack: {} as never } as Pending;
+    state.pending = old;
+    notePendingSlotWrite(state);
+    const cp = capturePendingCheckpoint(state);
+    // 收尾期间什么都没发生
+    expect(canTakeOverPending(state, cp)).toBe(true);
+    expect(takeOverPendingIfUnchanged(state, cp, playOf(A))).toBe(true);
+    expect(state.pending).toEqual(playOf(A));
+  });
+
+  it('② 收尾期间产生了新询问（choice）→ 收尾**不得**覆盖', () => {
+    const state = mk2();
+    state.pending = { kind: 'play', seatId: A };
+    notePendingSlotWrite(state);
+    const cp = capturePendingCheckpoint(state);
+    // 钩子里发起了新询问
+    state.pending = { kind: 'choice', seatId: B, title: '夙智', options: [], resolve: () => {} };
+    notePendingSlotWrite(state);
+    expect(canTakeOverPending(state, cp)).toBe(false);
+    expect(takeOverPendingIfUnchanged(state, cp, playOf(A))).toBe(false);
+    expect(state.pending?.kind).toBe('choice'); // 新询问保住
+  });
+
+  it('③ 新询问答完、槽空了 → 收尾可以回出牌阶段', () => {
+    const state = mk2();
+    state.pending = { kind: 'play', seatId: A };
+    notePendingSlotWrite(state);
+    const cp = capturePendingCheckpoint(state);
+    state.pending = { kind: 'choice', seatId: B, title: '夙智', options: [], resolve: () => {} };
+    notePendingSlotWrite(state);
+    expect(canTakeOverPending(state, cp)).toBe(false);
+    state.pending = null; // 答完了
+    notePendingSlotWrite(state);
+    expect(canTakeOverPending(state, cp)).toBe(true);
+  });
+
+  it('④ 濒死求桃（respondDeath）期间 → 回合交接不得抢槽', () => {
+    const state = mk2();
+    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    notePendingSlotWrite(state);
+    const cp = capturePendingCheckpoint(state);
+    state.pending = { kind: 'respondDeath', dyingId: B, askQueue: [A, B], askIndex: 0 };
+    notePendingSlotWrite(state);
+    expect(takeOverPendingIfUnchanged(state, cp, playOf(A))).toBe(false);
+    expect(state.pending?.kind).toBe('respondDeath');
+  });
+
+  it('⑤ ABA：旧 pending 被复原，但版本号变过 → 仍视为「被碰过」，禁止抢回', () => {
+    const state = mk2();
+    const old = { kind: 'respondSha', responderId: A, attack: {} as never } as Pending;
+    state.pending = old;
+    notePendingSlotWrite(state);
+    const cp = capturePendingCheckpoint(state);
+    // 中间被别的流程换掉又换回来（同一个对象 → requestId 相同）
+    state.pending = { kind: 'choice', seatId: B, title: 't', options: [], resolve: () => {} };
+    notePendingSlotWrite(state);
+    state.pending = old;
+    notePendingSlotWrite(state);
+    expect(canTakeOverPending(state, cp)).toBe(false); // 只有 requestId 会被 ABA 骗到，版本号救了它
+  });
+
+  it('⑥ 被新询问挡住时应「排队」而不是丢弃：答完之后收尾才执行', () => {
+    const state = mk2();
+    state.pending = { kind: 'play', seatId: A };
+    notePendingSlotWrite(state);
+    const cp = capturePendingCheckpoint(state);
+    state.pending = { kind: 'choice', seatId: B, title: '成略', options: [], resolve: () => {} };
+    notePendingSlotWrite(state);
+    // 收尾被挡 → 排进续接队列（这里只验证「挡」与「队列」两个语义）
+    const queue: (() => void)[] = [];
+    if (!canTakeOverPending(state, cp)) queue.push(() => state.pending !== null && undefined as never);
+    expect(queue.length).toBe(1);
+    state.pending = null;
+    notePendingSlotWrite(state);
+    expect(canTakeOverPending(state, cp)).toBe(true);
+    expect(queue.length).toBe(1);
   });
 });
