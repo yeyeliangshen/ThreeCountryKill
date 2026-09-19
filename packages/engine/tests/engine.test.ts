@@ -23242,6 +23242,24 @@ describe('国战 · 界钟会（权计 / 排异）', () => {
     expect(pick(state, C).quan.length).toBe(0);
   });
 
+  it('权计②：**群体锦囊**也带「这次使用指定的目标」——只剩一个目标时算「仅指定一个目标」', () => {
+    // 2 人局：南蛮的目标只有 1 个 → 满足「仅指定一个目标」，且该目标确实被这张牌打伤
+    const state = gz(
+      [
+        { seatId: A, name: '钟会', heroId: 'jie_zhonghui', faction: 'ambitionist', hand: [mk('n1', 'nanman', 'spade')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, maxHp: 4 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    if (state.pending?.kind === 'respondTrick') ok(act(state, B, { type: 'pass' }));
+    expect(pick(state, B).hp).toBe(3); // 南蛮 1 点
+    // 这张南蛮「只指定了一个目标」→ 权计的主动分支成立
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期权计询问，实际是 ${ask?.kind}`);
+    expect(ask.title).toContain('权计');
+  });
+
   it('权计②：铁索传导给**非目标**的伤害不算；对原目标那笔照常算', () => {
     const state = gz(
       [

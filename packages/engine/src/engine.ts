@@ -4939,6 +4939,11 @@ function startTrickResolution(
       }
       return true;
     });
+    // ⚠️ 群体锦囊也要把「本次使用指定的目标」**冻结**下来（用户点名的 P0 技术债）：
+    //    没有这份名单时，界钟会·权计/许攸·成略这类「按**这一次使用**的目标数判断」的技能
+    //    只能保守地「不认」；而规则上「只指定了一个目标的南蛮」是满足「仅指定一个目标」的。
+    //    名单就是响应队列（已被不能被指定的角色过滤掉，与「最终确定的目标」一致）。
+    ctx.targetIds = ctx.responders.slice();
   }
   // 单目标响应锦囊：responders = [target]
   if (type === 'juedou' || type === 'huogong' || type === 'jiedao') {
