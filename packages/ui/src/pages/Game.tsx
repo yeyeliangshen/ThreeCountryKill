@@ -310,10 +310,26 @@ export function Game() {
    *
    * 官方国战里君主将「替换」同名标准武将登场——但你发到的是随机的，所以线上通行做法是
    * 「发到了标准版就等于也拿到了君主版」。这里就是那个开关：键＝发到的原 id、值＝当前显示
-   * 的版本（缺省就是原 id）。引擎那边由 lords.ts 的 LORD_VARIANTS 放行（pickHero 校验）。
+   * 的版本（缺省就是原 id）。引擎那边由 heroes.ts 的 LORD_VARIANTS 放行（pickHero 校验）。
    */
   const [heroSwap, setHeroSwap] = useState<Record<string, string>>({});
   const shownHeroId = (dealtId: string) => heroSwap[dealtId] ?? dealtId;
+  /**
+   * 换一局（服务器重新发将）时把上一局的选将状态清掉。
+   *
+   * 结束一局后回到房间再开一局，这个组件可能**不会卸载**（screen 一直是 'game'），
+   * 于是上一局的 mainPick / deputyPick / 换版本记录会带到新一局的选将里——那时玩家会看到
+   * 上一局选的人已经亮着，甚至会带着上一局的「换成君主将」。发到的将变了就是新的一局，
+   * 这里以「发将列表」为界清零（同一局里这个键是稳定的）。
+   */
+  const draftPrompt = snapshot?.prompt;
+  const draftKey =
+    draftPrompt?.kind === 'pickHero' ? (draftPrompt.legalHeroIds ?? []).join(',') : '';
+  useEffect(() => {
+    setMainPick(null);
+    setDeputyPick(null);
+    setHeroSwap({});
+  }, [draftKey]);
   /** 在这个格子上换成另一版（君主 ↔ 标准），已选中的话跟着换 */
   function swapHeroVersion(dealtId: string) {
     const cur = shownHeroId(dealtId);
