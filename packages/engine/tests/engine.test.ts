@@ -8609,7 +8609,11 @@ describe('势备篇 · 牌堆与开关', () => {
       on.some((c) => c.suit === suit && c.rank === rank && c.type === type && c.id.startsWith('s'));
     expect(hasCard('heart', 1, 'lianjun')).toBe(true); // 联军盛宴
     expect(hasCard('club', 3, 'chiling')).toBe(true); // 敕令
-    expect(on.filter((c) => c.type === 'wuxieguo')).toHaveLength(2); // 无懈可击·国 ×2
+    // 【无懈可击·国】两包各一份（标准堆那两张是 'g' 开头）：全开时合计 4 张、
+    // 势备篇自己那份 2 张——这是 §5.76 的目标架构（108 + 52 = 160）
+    expect(on.filter((c) => c.type === 'wuxieguo')).toHaveLength(4);
+    expect(on.filter((c) => c.type === 'wuxieguo' && c.id.startsWith('s'))).toHaveLength(2);
+    expect(on).toHaveLength(160); // 综合国战的起始摸牌堆
   });
 
   it('连横标记按官方表落在牌上', () => {
