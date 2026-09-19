@@ -23063,3 +23063,357 @@ describe('国战 · 潘濬（聪察 / 公清）', () => {
     expect(state.log.some((e) => e.message.includes('公清'))).toBe(false);
   });
 });
+
+/**
+ * 界钟会（不臣篇·下，**武将牌本身就是「野」**，2 阴阳鱼；文档 §5.113）。
+ * 锁：① 权计按**伤害事件**（一次 2 点只有一次机会）、触发②只认「你使用的牌的唯一目标就是挨打的那位」
+ * （铁索传导/技能直伤/多目标都不算）；② 「权」是**真实实体牌**、手牌与装备区都能放、手牌上限动态 +1；
+ * ③ 排异是**新版**：出牌阶段**限两次**、固定摸 2、目标含自己、先摸后比、严格大于才吃 1 点技能伤害。
+ */
+describe('国战 · 界钟会（权计 / 排异）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+      quan?: Card[];
+      weapon?: { equipName: string; range: number };
+      chained?: boolean;
+    }[],
+    actor?: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = 'vanilla';
+      p.faction = s.faction;
+      p.determinedFaction = null;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.quan = (s.quan ?? []).slice();
+      if (s.weapon) p.equipment.weapon = weapon('w0', s.weapon.equipName, s.weapon.range);
+      if (s.chained) p.chained = true;
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+  const quans = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+  const taos = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+  /** 把当前挂起的【权计】走完（发动 → 摸1 → 选牌） */
+  function quanjiYes(state: GameState, seatId: string, cardId?: string) {
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('权计')) {
+      ok(act(state, seatId, { type: 'chooseOption', optionId: 'yes' }));
+    }
+    if (state.pending?.kind === 'pickCards') {
+      const pool = state.pending.cards;
+      const chosen = cardId ? pool.find((c) => c.id === cardId) : pool[0];
+      ok(act(state, seatId, { type: 'pickCards', cardIds: [chosen!.id] }));
+    }
+  }
+
+  it('权计①：一次 2 点伤害只给**一次**机会（按伤害事件，不按点数）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [jiu('j1'), sha('a2')] },
+        { seatId: B, name: '钟会', heroId: 'jie_zhonghui', faction: 'ambitionist', hand: taos('b', 1) },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    expect(pick(state, B).hp).toBe(2); // 4 - 2
+    // 只有一次询问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('权计');
+    quanjiYes(state, B);
+    expect(pick(state, B).quan.length).toBe(1);
+    // 结算完不再有第二次
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('权计')).toBe(false);
+  });
+
+  it('权计①：两次独立伤害事件 → 可以分别发动两次', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [sha('s1'), sha('s2')],
+          weapon: { equipName: 'zhuge', range: 1 }, // 诸葛连弩：本回合可出无限张杀
+        },
+        { seatId: B, name: '钟会', heroId: 'jie_zhonghui', faction: 'ambitionist', hand: taos('b', 2) },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 's1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    quanjiYes(state, B);
+    ok(act(state, A, { type: 'playCard', cardId: 's2', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    quanjiYes(state, B);
+    expect(pick(state, B).quan.length).toBe(2);
+  });
+
+  it('权计②：自己使用单目标牌对其唯一目标造成伤害 → 可发动（先摸 1 再放「权」）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: B, name: '钟会', heroId: 'jie_zhonghui', faction: 'ambitionist', hand: [sha('b1'), tao('b2')] },
+      ],
+      B,
+    );
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, A, { type: 'pass' }));
+    expect(pick(state, A).hp).toBe(3);
+    // 先摸 1（手上多一张），再选一张放「权」
+    const before = pick(state, B).hand.length;
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('权计');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(pick(state, B).hand.length).toBe(before + 1); // 已经摸过了
+    const p2 = state.pending;
+    if (p2?.kind !== 'pickCards') throw new Error(`预期选「权」的牌，实际是 ${p2?.kind}`);
+    // 候选含**手牌与装备区**（这里只有手牌）
+    expect(p2.cards.length).toBeGreaterThanOrEqual(before + 1);
+    const chosen = p2.cards[0]!;
+    ok(act(state, B, { type: 'pickCards', cardIds: [chosen.id] }));
+    // 「权」是**真实实体牌**，不是计数标记
+    expect(pick(state, B).quan.map((c) => c.id)).toEqual([chosen.id]);
+    expect(state.log.some((e) => e.message.includes('置于武将牌上作为「权」'))).toBe(true);
+  });
+
+  it('权计②：多目标的牌（南蛮入侵）不算「仅指定一个目标」', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+        { seatId: C, name: '钟会', heroId: 'jie_zhonghui', faction: 'ambitionist', hand: [mk('n1', 'nanman', 'spade')] },
+      ],
+      C,
+    );
+    ok(act(state, C, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    // 甲、乙依次响应（都不出杀）→ 各自受到 1 点伤害，但都不是「唯一目标」→ 不触发权计
+    let guard = 0;
+    while (state.pending?.kind === 'respondTrick' && guard++ < 5) {
+      const asked = state.pending.responderId;
+      ok(act(state, asked, { type: 'pass' }));
+    }
+    expect(pick(state, A).hp).toBe(3);
+    expect(pick(state, B).hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('权计'))).toBe(false);
+    expect(pick(state, C).quan.length).toBe(0);
+  });
+
+  it('权计②：铁索传导给**非目标**的伤害不算；对原目标那笔照常算', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [], chained: true },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [], chained: true },
+        {
+          seatId: C,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: [{ id: 'f1', type: 'sha', suit: 'heart', rank: 12, attribute: 'fire' }, tao('c2')],
+        },
+      ],
+      C,
+    );
+    ok(act(state, C, { type: 'playCard', cardId: 'f1', targetIds: [A] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, A, { type: 'pass' }));
+    // 直接伤害（唯一目标）→ 弹权计。⚠️ 铁索蔓延排在这条钩子链**之后**（钩子里的询问会挂起整条链），
+    //    所以先把权计走完，蔓延才会接着跑
+    expect(pick(state, A).hp).toBe(3);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('权计');
+    quanjiYes(state, C);
+    expect(pick(state, C).quan.length).toBe(1);
+    // 蔓延给乙（乙**不是**这张杀的目标）→ 受到传导伤害，但不再弹第二次权计
+    expect(pick(state, B).hp).toBe(3);
+    expect(pick(state, C).quan.length).toBe(1);
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('权计')).toBe(false);
+  });
+
+  it('权计：装备区里的牌也能成为「权」（写的是「一张牌」，不是「一张手牌」）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1')] },
+        {
+          seatId: B,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: [],
+          weapon: { equipName: 'qinggang', range: 2 },
+        },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    const p2 = state.pending;
+    if (p2?.kind !== 'pickCards') throw new Error(`预期选「权」的牌，实际是 ${p2?.kind}`);
+    // 候选里有装备区那把剑
+    const w = p2.cards.find((c) => c.equipName === 'qinggang');
+    expect(w).toBeTruthy();
+    ok(act(state, B, { type: 'pickCards', cardIds: [w!.id] }));
+    expect(pick(state, B).quan.map((c) => c.id)).toEqual([w!.id]);
+    expect(pick(state, B).equipment.weapon).toBeNull(); // 从装备区摘下来了
+  });
+
+  it('权计：每有 1 张「权」，手牌上限 +1（动态读，不缓存）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        {
+          seatId: B,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: taos('b', 5), // 摸牌阶段再摸 2 → 7 张
+          hp: 4,
+          quan: quans('q', 2), // 上限 = 4（体力）+ 2（权）= 6 → 7 张手牌只需弃 1
+        },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 轮到钟会
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('聪察')) {
+      ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    }
+    ok(act(state, B, { type: 'endPhase' })); // 进弃牌阶段
+    expect(state.pending?.kind).toBe('discard');
+    if (state.pending?.kind === 'discard') expect(state.pending.count).toBe(1); // 7 - 6
+  });
+
+  it('排异：出牌阶段**限两次**（新版），第三次不行', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        {
+          seatId: B,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: taos('b', 2),
+          quan: quans('q', 3),
+        },
+      ],
+      B,
+    );
+    // 有多张「权」时会问「移去哪一张」，每次都要答掉
+    const use = () => {
+      const r = act(state, B, { type: 'useSkill', skillId: 'paiyi', cardIds: [], targetIds: [A] });
+      if (r.ok && state.pending?.kind === 'pickCards') {
+        ok(act(state, B, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+      }
+      return r;
+    };
+    ok(use()); // 第 1 次
+    ok(use()); // 第 2 次
+    const third = use();
+    expect(third.ok).toBe(false); // 第 3 次被挡下
+    expect(pick(state, B).quan.length).toBe(1); // 3 - 2
+    expect(pick(state, A).hand.length).toBe(4); // 甲两次各摸 2
+  });
+
+  it('排异：固定摸 2（不是旧版的摸 X）、目标是「一名角色」含自己、严格大于才吃伤害', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        {
+          seatId: B,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: taos('b', 3), // 3 张手牌
+          quan: quans('q', 1),
+        },
+      ],
+      B,
+    );
+    // 甲 0 手牌 → 摸 2 后是 2，不大于钟会的 3 → 不吃伤害（证明是**摸完之后**比）
+    ok(act(state, B, { type: 'useSkill', skillId: 'paiyi', cardIds: [], targetIds: [A] }));
+    expect(pick(state, A).hand.length).toBe(2);
+    expect(pick(state, A).hp).toBe(4);
+    // 再来一次：这次甲已经有 2 张，再摸 2 = 4 > 钟会 3 → 吃 1 点
+    // hmm：钟会自己也要抽——不对，他这次不再摸牌，所以还是 3 张
+    const r = act(state, B, { type: 'useSkill', skillId: 'paiyi', cardIds: [], targetIds: [A] });
+    if (!r.ok) {
+      // 「权」不够：先补一张再试
+      pick(state, B).quan.push(mk('q9', 'tao', 'heart'));
+      ok(act(state, B, { type: 'useSkill', skillId: 'paiyi', cardIds: [], targetIds: [A] }));
+    }
+    expect(pick(state, A).hand.length).toBe(4);
+    expect(pick(state, A).hp).toBe(3); // 4 > 3 → 1 点普通伤害
+  });
+
+  it('排异：可以选择自己（自己摸 2，不会对自己造成伤害）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [] },
+        {
+          seatId: B,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: taos('b', 1),
+          quan: quans('q', 1),
+        },
+      ],
+      B,
+    );
+    const hp0 = pick(state, B).hp;
+    ok(act(state, B, { type: 'useSkill', skillId: 'paiyi', cardIds: [], targetIds: [B] }));
+    expect(pick(state, B).hand.length).toBe(3); // 1 + 2
+    expect(pick(state, B).hp).toBe(hp0); // 自己不会「大于自己」
+    expect(pick(state, B).quan.length).toBe(0); // 权进了弃牌堆
+    expect(state.discard.length).toBeGreaterThan(0);
+  });
+
+  it('排异：1 点**普通技能伤害**（无实体牌）不会触发权计②', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: taos('a', 4) },
+        {
+          seatId: B,
+          name: '钟会',
+          heroId: 'jie_zhonghui',
+          faction: 'ambitionist',
+          hand: taos('b', 1),
+          quan: quans('q', 1),
+        },
+      ],
+      B,
+    );
+    ok(act(state, B, { type: 'useSkill', skillId: 'paiyi', cardIds: [], targetIds: [A] }));
+    expect(pick(state, A).hp).toBe(3); // 甲摸 2 后 4 > 1 → 1 点伤害
+    // 技能直伤没有实体牌 → 不是「使用仅指定一个目标的牌造成伤害」→ 不弹权计
+    expect(state.log.some((e) => e.message.includes('权计'))).toBe(false);
+    expect(pick(state, B).quan.length).toBe(0);
+  });
+});

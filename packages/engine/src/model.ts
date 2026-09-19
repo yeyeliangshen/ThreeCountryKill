@@ -206,6 +206,12 @@ export interface PlayerFlags {
    */
   nonLockedSkillsDisabled: boolean;
   /**
+   * 「**每个出牌阶段**限 N 次」的技能计数（界钟会·排异是第一个用例）。
+   * ⚠️ 与 `skillUsedThisTurn` 分开：那个是**回合**内限一次，这个是**阶段**内限次——
+   * 额外出牌阶段会重新拿到额度（用户口径），所以随**出牌阶段开始**清零。
+   */
+  skillUsesThisPhase: Record<string, number>;
+  /**
    * 本回合不能使用或打出手牌（军令「本回合不能使用或打出手牌」那一项）。
    * 比 skipPlay 窄：还能发动技能、结束阶段照常。
    */
@@ -301,6 +307,7 @@ export function emptyFlags(): PlayerFlags {
     skipJudgment: false,
     handLimitBonus: 0,
     drawCountDelta: 0,
+    skillUsesThisPhase: {},
     damageBonusThisTurn: 0,
     ignoreShaDistanceThisTurn: false,
     nonLockedSkillsDisabled: false,
@@ -420,6 +427,11 @@ export interface Player {
    */
   lu: { heroId: string; faction: Faction | null }[];
   /**
+   * 界钟会·【权计】的「权」：**真实的实体牌**（从手牌或装备区移来），公开放在武将牌旁。
+   * 它不是手牌、不算装备区，排异时被移去（进弃牌堆）；每有 1 张，手牌上限 +1（动态读，不缓存）。
+   */
+  quan: Card[];
+  /**
    * 潘濬·【聪察】①的「观察」标记：**正在观察本角色**的潘濬座位。
    *
    * 每个观察来源**各自一条**（两个潘濬观察同一个人时互不覆盖，各自结算自己的那一次）；
@@ -498,6 +510,16 @@ export interface AttackContext {
   cardColor?: 'red' | 'black' | null;
   /** 需要的闪数（默认1，吕布·无双=2，马超·铁骑/黄忠·烈弓=Infinity 不可闪避） */
   requiredShan?: number;
+  /**
+   * **这张牌这次使用指定的全部目标**（按点选顺序；【杀】与各种伤害锦囊在创建攻击上下文时填）。
+   *
+   * 为什么要有它：伤害是**逐目标**结算的，光看这一份 attack 分不出「这张牌只指定了一个目标」
+   * 还是「指定了多个、我只是其中一个」。严白虎·寄篱走的是 `totalTargets`（只看张数），
+   * 界钟会·【权计】要的是「**你使用的这张牌，唯一目标就是挨打的那位**」——所以要看名单：
+   * 铁索连环的**传导伤害**是从原攻击上下文复制出来的（名单仍是原目标），一比对就露馅，
+   * 不需要再单独加一个 `chain` 标记。
+   */
+  declaredTargets?: string[];
   /**
    * 这张【杀】一共指定了几个目标（playSha 填）。严白虎·寄篱只认「**唯一**目标」，
    * 而逐个结算时攻击上下文是每人一份，光看自己这份分不出是不是唯一目标。

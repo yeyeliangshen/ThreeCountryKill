@@ -1402,6 +1402,8 @@ function enterPlayPhase(state: GameState, player: Player): void {
     state.discardPhaseCountsThisTurn = {};
     state.handDiscardedInDiscardPhase = [];
     state.juejueArmed = false;
+    // 「每个出牌阶段限 N 次」的额度：新出牌阶段（含额外出牌阶段）重新发放
+    player.flags.skillUsesThisPhase = {};
     runHooksPausable(state, 'playPhase', player, undefined, () => {
       // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
       if (player.flags.skipPlay) {
@@ -2269,6 +2271,8 @@ function startAttack(
     requiredShan: wenjiMarked(source, card.id) ? Infinity : 1,
     // 本次【杀】一共指定了几个目标（严白虎·寄篱只认「唯一目标」）
     totalTargets: ordered.length,
+    // 这次使用指定的**全部**目标名单（界钟会·权计要「唯一目标就是挨打的那位」）
+    declaredTargets: ordered.slice(),
     // 【方天画戟】：其余目标排在这里，逐个结算
     fangtianQueue: ordered.slice(1),
     // 国战版「一人闪则其余无效」；军争版各目标独立结算
@@ -5712,6 +5716,7 @@ function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
     cardId: ctx.card.id,
     asType: 'huoshao',
     targetId: target.seatId,
+    declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
     attribute: 'fire',
@@ -6175,6 +6180,7 @@ function resolveShuiYan(state: GameState, ctx: TrickContext): void {
         cardId: ctx.card.id,
         asType: 'shuiyan',
         targetId: p.seatId,
+        declaredTargets: declaredTargetsOf(ctx),
         damage: 1,
         dodged: false,
         attribute: 'thunder',
@@ -6566,6 +6572,7 @@ function passDuel(state: GameState, seatId: string, ctx: TrickContext): ApplyRes
     cardId: ctx.card.id,
     asType: ctx.card.type,
     targetId: victim.seatId,
+    declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
   };
@@ -6637,6 +6644,7 @@ function respondHuogongCard(
     cardId: ctx.card.id,
     asType: ctx.card.type,
     targetId: target.seatId,
+    declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
     attribute: 'fire',
@@ -6705,6 +6713,18 @@ function respondJiedaoSha(
 }
 
 /**
+ * 这次牌的使用**指定的目标名单**（界钟会·【权计】的「唯一目标」判据要用）。
+ *
+ * 拿不到就返回 undefined —— 调用方（伤害上下文）会因此**不认**这一次「使用牌造成伤害」，
+ * 这是安全的默认：宁可漏判，也别把多目标/无目标的东西算成单目标。
+ */
+function declaredTargetsOf(ctx: TrickContext): string[] | undefined {
+  if (ctx.targetIds && ctx.targetIds.length > 0) return ctx.targetIds.slice();
+  if (ctx.targetId) return [ctx.targetId];
+  return undefined;
+}
+
+/**
  * 一张**已经打出**的【杀】进入结算（借刀杀人 / 离间的强制出杀、以及势力技代打）。
  *
  * 与 startAttack 的区别：牌不是从 source 手里拿的（可能由别人代打），也不计入出杀次数。
@@ -6734,6 +6754,8 @@ function resolvePlayedSha(
     cardId: card.id,
     asType,
     targetId,
+    // 这条路（借刀/离间/视为使用一张杀）每次只结算一个目标
+    declaredTargets: [targetId],
     damage: 1,
     dodged: false,
     attribute: card.attribute,
@@ -6826,6 +6848,7 @@ function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyR
     cardId: ctx.card.id,
     asType: 'sha',
     targetId: victim.seatId,
+    declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
   };
@@ -6922,6 +6945,7 @@ function passAoeTrick(state: GameState, seatId: string, ctx: TrickContext): Appl
     cardId: ctx.card.id,
     asType: ctx.card.type,
     targetId: victim.seatId,
+    declaredTargets: declaredTargetsOf(ctx),
     damage: 1,
     dodged: false,
   };
@@ -9037,6 +9061,9 @@ function onUseSkill(
   // 限 1 次/回合
   if (skill.oncePerTurn && player.flags.skillUsedThisTurn[skill.id])
     return err('该技能本回合已使用');
+  // 「每个出牌阶段限 N 次」（界钟会·排异）
+  if (skill.perPhaseLimit && (player.flags.skillUsesThisPhase[skill.id] ?? 0) >= skill.perPhaseLimit)
+    return err(`该技能本阶段已使用 ${skill.perPhaseLimit} 次`);
   if (skill.oncePerGame && player.usedOncePerGame[skill.id]) return err('该限定技本局已使用');
   // 目标数校验
   if (intent.targetIds.length < skill.minTargets || intent.targetIds.length > skill.maxTargets)
@@ -9050,6 +9077,8 @@ function onUseSkill(
   }
   // 标记已使用（执行前标记，防重入）
   if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = true;
+  if (skill.perPhaseLimit)
+    player.flags.skillUsesThisPhase[skill.id] = (player.flags.skillUsesThisPhase[skill.id] ?? 0) + 1;
   if (skill.oncePerGame) player.usedOncePerGame[skill.id] = true;
   // 注入引擎内部 API（避免 heroes→engine 循环依赖）
   const api = makeSkillApi(state, { resumeTo: player.seatId, actor: player.seatId });
@@ -9058,6 +9087,11 @@ function onUseSkill(
   if (typeof result === 'string') {
     // 执行失败：回滚标记
     if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = false;
+    if (skill.perPhaseLimit)
+      player.flags.skillUsesThisPhase[skill.id] = Math.max(
+        0,
+        (player.flags.skillUsesThisPhase[skill.id] ?? 1) - 1,
+      );
     if (skill.oncePerGame) player.usedOncePerGame[skill.id] = false;
     return err(result);
   }
@@ -9157,6 +9191,7 @@ export function createGame(
     han: [],
     yi: [],
     lu: [],
+    quan: [],
     congchaWatchedBy: [],
     nullifiedHeroId: null,
     wounds: [],

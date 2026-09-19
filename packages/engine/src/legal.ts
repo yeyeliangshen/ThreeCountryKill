@@ -412,6 +412,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     if (
       skill.canUse(state, player) &&
       !(skill.oncePerTurn && player.flags.skillUsedThisTurn[skill.id]) &&
+      !(skill.perPhaseLimit && (player.flags.skillUsesThisPhase[skill.id] ?? 0) >= skill.perPhaseLimit) &&
       !(skill.oncePerGame && player.usedOncePerGame[skill.id])
     ) {
       legalSkillIds.push(skill.id);

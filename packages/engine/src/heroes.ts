@@ -87,6 +87,12 @@ export interface ActiveSkill {
   /** 限 1 次/回合 */
   oncePerTurn?: boolean;
   /**
+   * **每个出牌阶段**限 N 次（界钟会·排异：限两次）。
+   * 与 oncePerTurn 正交：这个是**阶段**内的额度，额外出牌阶段会重新拿到；
+   * 计数在 `flags.skillUsesThisPhase`，随出牌阶段开始清零。
+   */
+  perPhaseLimit?: number;
+  /**
    * 限定技：**每局**只能用一次（不随回合重置）。
    * 与 oncePerTurn 可以同时为假；两者都填就都受约束。
    */
@@ -15091,8 +15097,199 @@ function ambitionistHero(id: string, name: string, hp: number): Hero {
   };
 }
 
+/**
+ * 界钟会 —— 权计 / 排异（不臣篇·下，**武将牌本身就是「野」**，2 阴阳鱼 → **4**，
+ * 珠联璧合【姜维】；技能按**移动版当前国战版**，用户核对后给出等价实现口径）。
+ *
+ * ⚠️ **版本差异（用户点名）**：这是移动版当前的「不臣篇-下」**国战**版，不是身份场界钟会、
+ *    也不是线下典藏版——【排异】早已从旧版「出牌阶段限一次、摸 X（X＝权数，至多 7）」
+ *    改成 **出牌阶段限两次、固定摸 2**。本仓库按新版实现（`perPhaseLimit: 2`）。
+ *
+ * 【权计】两个触发入口，结算完全相同：
+ * - ① 自己**受到一次伤害后**——按**伤害事件**，不按点数：一次 2 点伤害只给一次机会
+ *   （与郭嘉/曹丕那条用户已拍板的口径同一类）。
+ * - ② 自己**使用一张仅指定一个目标的牌**，该牌的效果对那个目标**实际造成伤害后**。
+ *   判据是「这次使用指定的**目标名单**就是挨打的那位」（`attack.declaredTargets`），于是：
+ *   **铁索传导**给非目标的伤害不算（传导是从原攻击上下文复制出来的，名单仍是原目标）；
+ *   **技能直伤**不算（`cardId` 为空，排异那类）；**多目标牌**不算（方天画戟的多目标杀、
+ *   南蛮/万箭）。牌种不限定（杀、决斗、单目标伤害锦囊都算）。
+ *   结算：**先摸 1 张**，再把**自己的一张牌**（手牌或装备区；本仓库不自行扩到判定区）
+ *   置于武将牌上成为「权」（真实实体牌，见 `Player.quan`）。
+ * - **每有 1 张「权」，手牌上限 +1**（动态读，不缓存；权被移去立刻 −1）。
+ *
+ * 【排异】出牌阶段**限两次**：移去 1 张「权」（真实牌 → 弃牌堆，是「移去」不是「弃置」）
+ * → 令**一名角色**（含自己，文本没有「其他」）摸 2 张 → 若其手牌数**严格大于**界钟会
+ * （**摸完之后**再比）→ 其受到界钟会造成的 **1 点普通伤害**（技能直伤：没有实体牌、
+ * 不能闪、不能无懈，但正常走受伤/濒死/死亡那一整套）。
+ */
+/** 【权计】①/②共用的判据：这一次伤害算不算触发 */
+function quanjiTrigger(attack: AttackContext | undefined, me: Player): boolean {
+  if (!attack) return false;
+  // ① 自己**受到**伤害（这个钩子每次伤害事件只派发一次，所以天然是「按事件不按点数」）
+  if (attack.targetId === me.seatId) return true;
+  // ② 自己**使用**的牌，唯一目标就是挨打的那位
+  if (attack.sourceId !== me.seatId) return false;
+  if (!attack.cardId) return false; // 技能直伤（排异那类）没有实体牌
+  const list = attack.declaredTargets;
+  if (!list || list.length !== 1 || list[0] !== attack.targetId) return false;
+  return true;
+}
+
+/** 【权计】：摸 1 张，然后把**自己的一张牌**（手牌或装备区）置于武将牌上成为「权」 */
+function askQuanji(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  if (!quanjiTrigger(attack, me)) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【权计】：是否摸一张牌，然后将一张牌置于武将牌上作为「权」？',
+    [
+      { id: 'yes', label: '发动（摸一张，然后放一张「权」）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      // 顺序：**先摸 1 张**，再选自家的牌
+      const drawn = drawOne(st);
+      if (drawn) p.hand.push(drawn);
+      pushLog(st, 'skill', `${p.name} 发动【权计】：摸一张牌。`, { seat: p.seatId });
+      // ⚠️ 「一张牌」不是「一张手牌」：手牌与**装备区**都可以（国战版公开说明点名了装备牌）
+      const cands = handAndEquipOf(p);
+      if (cands.length === 0) return;
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        '【权计】：选择一张牌置于武将牌上作为「权」',
+        cands,
+        1,
+        1,
+        (st2, p2, chosen) => {
+          const card = chosen[0];
+          if (!card) return;
+          const put = (): void => {
+            p2.quan.push(card);
+            pushLog(
+              st2,
+              'skill',
+              `${p2.name} 将【${cardLabel(card)}】置于武将牌上作为「权」。`,
+              { seat: p2.seatId },
+            );
+          };
+          const slot = EQUIP_SLOTS.find((sl) => p2.equipment[sl]?.id === card.id);
+          if (slot) {
+            // 装备区的牌：先摘下来（正常触发「失去装备」那套联动），再进「权」
+            ctx.api.loseEquip(p2.seatId, card, put);
+            return;
+          }
+          removeCard(p2.hand, card.id);
+          put();
+        },
+      );
+    },
+  );
+}
+
+/** 【排异】：出牌阶段限两次，移去一张「权」，令一名角色摸 2 张；其手牌数大于你就吃 1 点伤害 */
+const PAIYI_SKILL: ActiveSkill = {
+  id: 'paiyi',
+  name: '排异',
+  // 新版口径：**每个出牌阶段限两次**（额外出牌阶段重新拿到额度）
+  perPhaseLimit: 2,
+  minTargets: 1,
+  maxTargets: 1,
+  needsCards: false,
+  canUse: (state, player) => player.quan.length > 0,
+  execute: (state, player, intent, api) => {
+    if (player.quan.length === 0) return '你没有「权」';
+    const targetId = intent.targetIds[0];
+    const target = targetId ? getPlayer(state, targetId) : undefined;
+    if (!target || !target.alive) return '请选择一名存活角色（可以是自己）';
+    /** 移去这张「权」之后的全部结算（选牌/自动选牌两条路共用） */
+    const resolve = (st: GameState, quanCard: import('@sgs/protocol').Card): void => {
+      removeCard(player.quan, quanCard.id);
+      // 「移去」＝置入弃牌堆（是一张正常实体牌；不是「弃置」，不派发因弃置那套收口）
+      toDiscard(st, quanCard);
+      pushLog(
+        st,
+        'skill',
+        `${player.name} 发动【排异】：移去一张「权」（${cardLabel(quanCard)}）。`,
+        { seat: player.seatId },
+      );
+      // 先摸 2 张，**摸完之后**再比手牌数
+      for (let i = 0; i < 2; i++) {
+        const c = drawOne(st);
+        if (c) target.hand.push(c);
+      }
+      pushLog(st, 'skill', `${target.name} 摸两张牌。`, { seat: target.seatId });
+      if (target.hand.length > player.hand.length) {
+        pushLog(
+          st,
+          'skill',
+          `${target.name} 的手牌数（${target.hand.length}）大于 ${player.name}（${player.hand.length}），受到 1 点伤害。`,
+          { seat: player.seatId },
+        );
+        // 普通技能伤害：没有实体牌（权计② 不会因此触发）、不能闪、不能无懈
+        api.dealDamage(target, 1, player.seatId);
+      }
+    };
+    const only = player.quan[0];
+    if (player.quan.length === 1 && only) {
+      resolve(state, only);
+      return undefined;
+    }
+    api.askPickCards(
+      state,
+      player.seatId,
+      '【排异】：选择要移去的一张「权」',
+      player.quan.slice(),
+      1,
+      1,
+      (st, _p, chosen) => {
+        const card = chosen[0];
+        if (card) resolve(st, card);
+      },
+    );
+    return undefined;
+  },
+};
+
+const JIE_ZHONGHUI: Hero = {
+  id: 'jie_zhonghui',
+  name: '界钟会',
+  pack: 'buchen',
+  // ⚠️ 国战版：**武将牌本身就是「野」**（不是魏势力人数超限后才转的野心家）
+  faction: 'ambitionist',
+  maxHp: 4, // 2 阴阳鱼
+  gender: 'male',
+  modes: ['guozhan'],
+  combos: ['jiangwei'], // 珠联璧合【姜维】
+  // 「每有 1 张权，手牌上限 +1」不可关（非锁定技失效也照算）
+  lockedFields: ['handLimit'],
+  skillFields: { 权计: ['handLimit'], 排异: [] },
+  handLimit: (state, player) => Math.max(0, player.hp) + player.quan.length,
+  hooks: [
+    // ①「受到伤害后」（按伤害事件，不按点数）与 ②「使用仅指定一个目标的牌造成伤害后」
+    // 两个时机分别派发，但都汇进同一个判据 + 同一个询问
+    { timing: 'afterDamage', skillId: '权计', handler: askQuanji },
+    { timing: 'afterDamageDealt', skillId: '权计', handler: askQuanji },
+  ],
+  activeSkills: [PAIYI_SKILL],
+  skills: [
+    {
+      name: '权计',
+      desc: '当你受到一次伤害后，或当你使用仅指定一个目标的牌对该目标造成伤害后，你可以摸一张牌，然后将你的一张牌置于武将牌上，称为「权」。你每有一张「权」，手牌上限+1。',
+    },
+    {
+      name: '排异',
+      desc: '出牌阶段限两次，你可以移去一张「权」，然后令一名角色摸两张牌：若其手牌数大于你，你对其造成1点伤害。',
+    },
+  ],
+};
+
 const BUCHEN_AMBITIONIST: Hero[] = [
-  ambitionistHero('jie_zhonghui', '界钟会', 4),
+  JIE_ZHONGHUI,
   SP_SIMAZHAO,
   GONGSUNYUAN,
 ];
