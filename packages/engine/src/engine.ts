@@ -2193,7 +2193,17 @@ function becomeTargetSelf(state: GameState, target: Player, attack: AttackContex
       // 只允许改一次——否则两个都会改目标的技能能让这张杀来回弹、死循环。
       if (box.redirectTo && box.redirectTo !== target.seatId && !attack.redirected) {
         const newTarget = getPlayer(state, box.redirectTo);
-        if (newTarget && newTarget.alive) {
+        // 严白虎·雉盗：本回合他「只能指定自己与锁定角色」——**改目标也要守**。
+        // 2026 官方社区规则题明确过：他锁定大乔后，大乔不能把这张【杀】流离给第三人。
+        // 来源（这张杀的使用者）身上挂着限制时，新目标必须仍在合法范围内。
+        const src = getPlayer(state, attack.sourceId);
+        const blocked =
+          !!src &&
+          src.flags.cardTargetOnlySeat !== null &&
+          newTarget !== undefined &&
+          newTarget.seatId !== src.seatId &&
+          newTarget.seatId !== src.flags.cardTargetOnlySeat;
+        if (newTarget && newTarget.alive && !blocked) {
           attack.targetId = newTarget.seatId;
           attack.redirected = true;
           pushLog(state, 'skill', `此【杀】的目标改为 ${newTarget.name}。`);
