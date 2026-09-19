@@ -32,6 +32,7 @@ import {
   type GameState,
   type SeatSetup,
 } from '../src';
+import { FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type { Card, CardType, Faction, GameMode, MarkerId, Suit } from '@sgs/protocol';
 
 // —— 测试辅助 ——
@@ -19676,6 +19677,58 @@ describe('国战 · 君主将（特性）', () => {
     if (state.pending?.kind !== 'choice') return;
     expect(state.pending.title).toContain('章武');
     expect(state.pending.options.map((o) => o.id)).toEqual(['yinyangyu', 'no']);
+  });
+
+  it('据江排除的是「势力锦囊牌」（不臣篇那四张），挟天子/联军/勠力不算', () => {
+    // 结构性：名单就是《不臣篇》那四张（尚未实装，先把 id 占好）
+    expect([...FACTION_TRICK_TYPES].sort()).toEqual(
+      ['guoanjianbang', 'haolingtianxia', 'kefuzhongyuan', 'wenheluanwu'].sort(),
+    );
+    for (const t of ['xietianzi', 'lianjun', 'lutong']) {
+      expect(FACTION_TRICK_TYPES.has(t)).toBe(false);
+    }
+
+    // 行为：五家＝两吴三蜀 → 蜀是大势力、吴不是（据江生效）；甲（君孙权）自己用【勠力同心】
+    // 选「小势力」→ 这张牌指定了自己，而且它不是势力锦囊 → 额外结算一次：
+    // 第一次结算把他横置，第二次结算时他已横置 → 摸一张牌。
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'junsunquan' },
+        { seatId: 'B', name: '乙', heroId: 'ganning' },
+        { seatId: 'C', name: '丙', heroId: 'guanyu' },
+        { seatId: 'D', name: '丁', heroId: 'zhangfei' },
+        { seatId: 'E', name: '戊', heroId: 'zhaoyun' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    seatSet(state, 'A', 'junsunquan', 'wu', [mk('a1', 'lutong')]);
+    seatSet(state, 'B', 'ganning', 'wu', []);
+    seatSet(state, 'C', 'guanyu', 'shu', []);
+    seatSet(state, 'D', 'zhangfei', 'shu', []);
+    seatSet(state, 'E', 'zhaoyun', 'shu', []);
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+    const a = state.players.find((x) => x.seatId === 'A')!;
+
+    ok(act(state, 'A', { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    let guard = 0;
+    while (state.pending && guard++ < 10) {
+      const p = state.pending;
+      if (p.kind === 'choice') {
+        // 「对所有大势力还是所有小势力角色使用？」→ 选小势力
+        const small = p.options.find((o) => o.label.includes('小'));
+        ok(act(state, p.seatId, { type: 'chooseOption', optionId: (small ?? p.options[0]!).id }));
+      } else if (p.kind === 'wuxieQueue') {
+        passWuxie(state);
+      } else break;
+    }
+    expect(a.chained).toBe(true); // 第一次结算：横置
+    expect(a.hand.length).toBe(1); // 第二次结算：已横置 → 摸一张
+    expect(state.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
   });
 
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {

@@ -3846,8 +3846,9 @@ export function factionGrantedActiveSkills(state: GameState, player: Player): Ac
  * - 「非伤害牌」＝ 不在 `DAMAGE_CARD_TYPES` 里的牌（【杀】【决斗】【南蛮】【万箭】【火攻】
  *   【水淹七军】【火烧连营】都是伤害牌，一律排除）。
  * - 排除项：「装备牌」走的是另一条路（不经锦囊结算，自然到不了这里）；「延时锦囊牌」由
- *   playDelayedTrick 处理，也不经这里；「势力锦囊牌」见 protocol 的 `FACTION_TRICK_TYPES`
- *   （按本引擎的实现线索枚举，待核对）。
+ *   playDelayedTrick 处理，也不经这里；「势力锦囊牌」＝《不臣篇》那四张（魏【号令天下】/
+ *   蜀【克复中原】/ 吴【固国安邦】/ 群【文和乱武】），见 protocol 的 `FACTION_TRICK_TYPES`
+ *   （用户核对后的官方定义；那四张尚未进本仓库牌堆，名单先登记着）。
  * - 「与你势力相同的角色」按**已确定势力**口径（effectiveFaction）：暗置的角色没有势力，
  *   不算；君孙权自己也在内。
  * - 「吴势力不为大势力」用 `isBigFaction`（与势备篇的大势力同一口径；没有势备篇时
