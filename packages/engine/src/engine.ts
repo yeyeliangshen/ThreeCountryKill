@@ -9002,6 +9002,7 @@ export function createGame(
     round: 1,
     damageLedgerThisTurn: [],
     liangfanHanIds: [],
+    midaoUsedSeats: [],
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],

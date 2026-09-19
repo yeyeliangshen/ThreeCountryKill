@@ -798,6 +798,8 @@ export interface GameState {
   damageLedgerThisTurn: { sourceId: string; targetId: string; targetFaction: Faction | null }[];
   /** 孟达·【量反】：本回合从「函」拿进手里的实体牌 id（资格不跨回合） */
   liangfanHanIds: string[];
+  /** 张鲁·【米道】：本回合已经发动过米道的**使用者**座位（每名同势力角色各自每回合一次） */
+  midaoUsedSeats: string[];
   /**
    * 装备「失去事件」的编号（见 timing.EquipLostPayload.eventId）。单调递增，不需要重置。
    */
