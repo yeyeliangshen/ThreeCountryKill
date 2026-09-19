@@ -789,6 +789,7 @@ export function Game() {
                   // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
                   // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
                   const swapBlocked = isDeputy && !!variant?.isLord;
+                  const art = heroArt(id);
                   return (
                     <div key={dealtId} className="hero-cell">
                       <button
@@ -796,19 +797,23 @@ export function Game() {
                         title={heroTooltip(h)}
                         onClick={() => pickGuozhanHero(id)}
                       >
-                        <div className="hero-name">{h.name}</div>
-                        <div className="hero-meta">
-                          <span className={`hero-faction faction-${h.faction}`}>
-                            {factionLabel(h)}
-                          </span>
-                          <span className="hero-hp">体力 {h.maxHp}</span>
-                        </div>
-                        <div className="hero-skills">
-                          {h.skills.map((sk) => (
-                            <div key={sk.name}>
-                              <b>{sk.name}</b>
-                            </div>
-                          ))}
+                        {/* 原画（没有对应文件的武将自动不显示这一格，见 heroArt.ts） */}
+                        {art && <img className="hero-card-art" src={art} alt="" />}
+                        <div className="hero-card-body">
+                          <div className="hero-name">{h.name}</div>
+                          <div className="hero-meta">
+                            <span className={`hero-faction faction-${h.faction}`}>
+                              {factionLabel(h)}
+                            </span>
+                            <span className="hero-hp">体力 {h.maxHp}</span>
+                          </div>
+                          <div className="hero-skills">
+                            {h.skills.map((sk) => (
+                              <div key={sk.name}>
+                                <b>{sk.name}</b>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                         {isMain && <div className="hero-slot-tag">主将</div>}
                         {isDeputy && <div className="hero-slot-tag">副将</div>}
@@ -861,6 +866,7 @@ export function Game() {
                 const h = getHero(id);
                 if (!h) return null;
                 const isPicked = pickedHero === id;
+                const art = heroArt(id);
                 return (
                   <button
                     key={id}
@@ -868,22 +874,25 @@ export function Game() {
                     title={heroTooltip(h)}
                     onClick={() => setPickedHero(id)}
                   >
-                    <div className="hero-name">
-                      {h.name}
-                      {h.id === 'vanilla' && <small>（白板）</small>}
-                    </div>
-                    <div className="hero-meta">
-                      <span className={`hero-faction faction-${h.faction}`}>
-                        {factionLabel(h)}
-                      </span>
-                      <span className="hero-hp">体力 {h.maxHp}</span>
-                    </div>
-                    <div className="hero-skills">
-                      {h.skills.map((sk) => (
-                        <div key={sk.name}>
-                          <b>{sk.name}</b>
-                        </div>
-                      ))}
+                    {art && <img className="hero-card-art" src={art} alt="" />}
+                    <div className="hero-card-body">
+                      <div className="hero-name">
+                        {h.name}
+                        {h.id === 'vanilla' && <small>（白板）</small>}
+                      </div>
+                      <div className="hero-meta">
+                        <span className={`hero-faction faction-${h.faction}`}>
+                          {factionLabel(h)}
+                        </span>
+                        <span className="hero-hp">体力 {h.maxHp}</span>
+                      </div>
+                      <div className="hero-skills">
+                        {h.skills.map((sk) => (
+                          <div key={sk.name}>
+                            <b>{sk.name}</b>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </button>
                 );

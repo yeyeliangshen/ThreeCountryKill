@@ -349,7 +349,8 @@ button:disabled {
 }
 .hero-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  /* 卡片里现在还有一张 58 宽的原画，所以最窄一列从 120 放到 168（否则名字被挤成竖排） */
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
   gap: 10px;
 }
 /* 一个发到的「格子」：武将牌 +（君主将/标准版）切换按钮 */
@@ -417,6 +418,24 @@ button:disabled {
   border: 1px solid var(--panel-2);
   border-radius: 10px;
   padding: 10px;
+}
+/* 选将卡片：左边一张小原画（440×622 缩到 58×82，比例一致所以不裁切），右边名字/势力/技能 */
+.draft .hero-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.hero-card-art {
+  flex: none;
+  width: 58px;
+  height: 82px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--panel-2);
+}
+.hero-card-body {
+  flex: 1;
+  min-width: 0;
 }
 .hero-card.picked {
   border-color: var(--gold);
