@@ -19307,7 +19307,9 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
     ], A);
     const a = state.players.find((p) => p.seatId === A)!;
-    const poolBefore = state.heroPool.length;
+    // 测试环境没有选将流程 → 手动给「未登场武将牌堆」塞几张，用来验「额外取 2 张」
+    state.heroPool = ['zhangfei', 'zhaoyun', 'huangzhong', 'machao'];
+    const poolBefore2 = state.heroPool.length;
     // 甲杀乙（乙 1 血 → 濒死 → 无人救 → 死亡）
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' })); // 不出闪 → 濒死
@@ -19320,7 +19322,7 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     expect(a.lu.length).toBeGreaterThanOrEqual(2);
     expect(a.lu.map((e) => e.heroId)).toContain('guanyu');
     // 亲手杀死 → 再从未登场堆取（池子少了牌）
-    expect(state.heroPool.length).toBeLessThan(poolBefore);
+    expect(state.heroPool.length).toBeLessThan(poolBefore2);
   });
 
   it('凶虐①：出牌阶段开始消费 1 张戮（自己选）、武将牌**返回**未登场堆；加伤模式只对该势力生效', () => {
