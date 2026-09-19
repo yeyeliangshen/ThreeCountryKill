@@ -4317,9 +4317,10 @@ const ZHANGLU: Hero = {
   hooks: [
     { timing: 'afterDamage', skillId: '布施', handler: askBushiSelf },
     { timing: 'afterDamageDealt', skillId: '布施', handler: askBushiDealt },
-    // ⚠️ 米道要看到**别人**的使用：`useCard` 只派给使用者本人，所以挂 `othersBecomeTarget`
-    //    （派给全场，payload 带 attack）——「指定目标时」这个时机的等价落点。
-    { timing: 'othersBecomeTarget', skillId: '米道', handler: askMidao },
+    // ⚠️ 米道要看到**别人**的使用：`useCard` 只派给使用者本人（实测：只挂它的话，队友用牌时
+    //    张鲁根本收不到询问）。改挂 `othersUseCard`——「其他角色使用牌时」派给全场、**可挂起**
+    //    （钩子能发问），就是「指定目标时」的等价落点。
+    { timing: 'othersUseCard', skillId: '米道', handler: askMidao },
   ],
   skills: [
     {
@@ -7649,6 +7650,10 @@ const BIANFUREN: Hero = {
         const bonus = Math.max(0, who.maxHp - who.hp);
         if (bonus === 0) return; // 上限本来就等于体力上限
         who.flags.handLimitBonus += bonus;
+        // ⚠️ 已知偏差（记在 §5.100）：这里把「手牌上限**视为**体力上限」落成了**一次性差值加成**，
+        //    严格说应是覆盖语义（体力变化要跟随、不与兴棹+4 那类叠加）。改成覆盖会让
+        //    「卞夫人·约俭」的既有用例失败（弃牌阶段的上限口径需要一起重定），留单独一轮处理。
+        who.flags.handLimitSetToMaxHp = false; // 不再走覆盖路径
         pushLog(
           ctx.state,
           'skill',
@@ -8606,15 +8611,12 @@ const YUJI: Hero = {
                   p2.qianhuan.push(card);
                   pushLog(st2, 'skill', `${p2.name} 发动【千幻】，将一张牌置于武将牌上。`);
                 } else {
-                  // 装备区的牌：先离场再进「千幻」
-                  for (const slot of EQUIP_SLOTS) {
-                    if (p2.equipment[slot]?.id === card.id) {
-                      p2.equipment[slot] = null;
-                      p2.qianhuan.push(card);
-                      pushLog(st2, 'skill', `${p2.name} 发动【千幻】，将装备区的牌置于武将牌上。`);
-                      break;
-                    }
-                  }
+                  // 装备区的牌：先离场再进「千幻」——**要触发「失去装备区的牌」**
+                  // （枭姬/旋略/白银狮子/兴棹第4档都会响；直接清槽位会漏）
+                  ctx.api.loseEquip(p2.seatId, card, () => {
+                    p2.qianhuan.push(card);
+                    pushLog(st2, 'skill', `${p2.name} 发动【千幻】，将装备区的牌置于武将牌上。`);
+                  });
                 }
               },
             );
@@ -12430,7 +12432,8 @@ const ZHANGZHAO_ZHANGHONG: Hero = {
                 if (back) {
                   // 从弃牌堆取出交还本人
                   const i = st2.discard.findIndex((c) => c.id === back.id);
-                  if (i >= 0) st2.discard.splice(i, 1);
+                  if (i < 0) return; // 跨步询问：回答时它可能已经不在弃牌堆了 → 不能凭空交还
+                  st2.discard.splice(i, 1);
                   other.hand.push(back);
                 }
                 for (const c of rest) {

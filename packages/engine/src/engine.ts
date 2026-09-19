@@ -193,7 +193,11 @@ export function askPickCards(
  * 多个武将给出上限时取最宽松的那个，最后再加上本回合的标记加成（阴阳鱼）。
  */
 function handLimit(state: GameState, player: Player): number {
-  const heroes = revealedHeroes(state.mode, player);
+  // ⚠️ 用 `effectiveHeroes`（唯一入口）而不是 `revealedHeroes`：断肠点名/借来的技能也要算
+  const heroes = effectiveHeroes(state, player);
+  // 曹节·约俭的「手牌上限视为体力上限」目前仍走 handLimitBonus（见 §5.100 的已知偏差说明），
+  // 这一支保留给将来的覆盖语义实现：`handLimitSetToMaxHp` 打开时上限直接等于体力上限。
+  if (player.flags.handLimitSetToMaxHp) return Math.max(0, player.maxHp);
   const base =
     heroes.length === 0
       ? Math.max(0, player.hp)
@@ -3438,7 +3442,20 @@ function askDamageWeaponEffects(
       (st, _p, picked) => {
         const card = nowMounts.find((c) => c.id === picked);
         if (card) {
-          const slot = target.equipment.plusMount?.id === card.id ? 'plusMount' : 'minusMount';
+          // 跨步询问：回答时这张坐骑可能已经不在（被搬走/弃掉）→ 按 id 重新定位，
+          // 别去动**另一张**坐骑（此前会置空错的槽、还可能把旧牌再推一次弃牌堆）
+          const slot = (['plusMount', 'minusMount'] as const).find(
+            (sl) => target.equipment[sl]?.id === card.id,
+          );
+          if (!slot) return;
+          // 吴景·风扬：异势力角色不能弃置同队列成员装备区里的牌
+          if (fengyangBlocksEquip(st, source!.seatId, target, card)) {
+            pushLog(st, 'resolve', `${target.name} 的【${cardLabel(card)}】受【风扬】保护，未被弃置。`, {
+              seat: target.seatId,
+              action: 'shield',
+            });
+            return;
+          }
           target.equipment[slot] = null;
           toDiscard(st, card);
           pushLog(
@@ -3490,12 +3507,15 @@ function askDamageWeaponEffects(
       // 伤害被防止 → 没有伤害结算（铁索不蔓延、不进濒死）
       const finishPrevented = (): void => resumePlay(st, st.seatOrder[st.turn.seatIndex]!);
       const lostEquips = victims.filter((c) => isEquipCard(c));
+      // 一次动作同时失去多张装备 → **共用同一个 eventId**（旋略只问一次、兴棹只算一批）
+      const batchId = lostEquips.length > 1 ? ++st.equipLossSeq : undefined;
       const step = (i: number): void => {
         if (i >= lostEquips.length) {
           finishPrevented();
           return;
         }
-        fireEquipLost(st, target, lostEquips[i]!, () => step(i + 1));
+        const eq = lostEquips[i]!;
+        fireEquipLost(st, target, eq, () => step(i + 1), batchId ? { id: batchId, cards: [eq] } : undefined);
       };
       step(0);
     },
@@ -6613,9 +6633,33 @@ function resolvePlayedSha(
     afterSettled: after,
   };
   pushLog(state, log.kind, log.text);
-  runHooksPausable(state, 'useCard', source, { attack, card }, () => {
-    becomeTargetFor(state, target, attack);
-  });
+  runHooksPausable(state, 'useCard', source, { attack, card }, () =>
+    // 「**其他**角色使用牌时」：`useCard` 只派给使用者本人，旁观者技能（张鲁·米道）收不到，
+    // 所以这里再派一圈给**其他**玩家（可挂起，钩子可以发问）。
+    runOthersUseCard(state, source.seatId, { attack, card }, () => {
+      becomeTargetFor(state, target, attack);
+    }),
+  );
+}
+
+/** 「其他角色使用牌时」依次问每个非使用者（可挂起） */
+function runOthersUseCard(
+  state: GameState,
+  sourceSeatId: string,
+  payload: { attack: AttackContext; card: Card },
+  after: () => void,
+  i = 0,
+): void {
+  const others = state.players.filter((p) => p.alive && p.seatId !== sourceSeatId);
+  const step = (k: number): void => {
+    const p = others[k];
+    if (!p) {
+      after();
+      return;
+    }
+    runHooksPausable(state, 'othersUseCard', p, payload, () => step(k + 1));
+  };
+  step(i);
 }
 
 function passJiedao(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
@@ -8736,6 +8780,17 @@ function makeSkillApi(
     handLimit: (seatId) => {
       const p = getPlayer(state, seatId);
       return p ? handLimit(state, p) : 0;
+    },
+    loseEquip: (seatId, card, after) => {
+      const owner = getPlayer(state, seatId);
+      const done = after ?? (() => {});
+      const slot = EQUIP_SLOTS.find((sl) => owner?.equipment[sl]?.id === card.id);
+      if (!owner || !slot) {
+        done();
+        return;
+      }
+      owner.equipment[slot] = null;
+      fireEquipLost(state, owner, card, done);
     },
     loseHp: (target, amount, after) => {
       target.hp -= amount;

@@ -18522,8 +18522,7 @@ describe('国战 · 张鲁（布施 / 米道）', () => {
     }
   });
 
-  // ⚠️ 已知问题：米道改成挂 othersBecomeTarget 后，这条用例里询问仍未出现（挂点没打通），
-  //    实现侧保持现状并记为待查；先跳过，避免把「假绿」当成已验证。
+  // 挂点已改成 othersUseCard，但这条用例里询问仍未出现（挂点或测试架设还需一轮）→ 先跳过
   it.skip('米道：同势力角色用实体黑杀 → 交一张手牌、由张鲁改花色为红 → 仁王盾挡不住', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade')] },

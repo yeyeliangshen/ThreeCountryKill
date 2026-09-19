@@ -12,6 +12,11 @@ export type Timing =
    * 发动权在**当前回合的那个角色**，所以问的是 payload 的那位，而不是技能拥有者。
    */
   | 'othersTurnStart'
+  /**
+   * **其他角色**使用牌时（派给非使用者，payload 带 `{ attack, card }`，可挂起）。
+   * 张鲁·米道挂在它上面：`useCard` 只派给**使用者本人**，旁观者技能收不到。
+   */
+  | 'othersUseCard'
   | 'judgePhase' // 判定阶段开始
   | 'beforeJudge' // 判定牌生效前（鬼才替判 / 天妒取牌）
   | 'drawPhase' // 摸牌阶段开始（可改摸牌数：突袭）
@@ -266,6 +271,12 @@ export interface SkillApi {
   handLimit: (seatId: string) => number;
   /** 失去体力（不是伤害：没有来源、不触发卖血技，但会进濒死）。`after` 同上。 */
   loseHp: (target: Player, amount: number, after?: () => void) => void;
+  /**
+   * 把一张**装备区**里的牌移出并触发「失去装备区的牌」（equipLost，含枭姬/旋略/白银狮子等）。
+   * 用于技能把装备移去非手牌的去处（于吉·千幻：置于武将牌上）——
+   * 直接清槽位不会触发失去装备那套联动。
+   */
+  loseEquip: (seatId: string, card: Card, after?: () => void) => void;
   /**
    * 回复体力（上限夹取，并触发「回复体力后」的技能）。
    * 返回**实际**回复量；再经过 `afterHeal` 时对方拿到的也是这个数。

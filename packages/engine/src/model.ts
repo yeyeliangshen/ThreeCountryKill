@@ -190,6 +190,12 @@ export interface PlayerFlags {
    */
   xingzhaoEquipEventId: number;
   /**
+   * 曹节·约俭：「本回合手牌上限**等于**（视为）其体力上限」——是**覆盖**语义，
+   * 所以记成开关、由 `handLimit()` 每次现算，而不是一次性加差值（否则体力一变就跟着错、还会与
+   * 兴棹+4 之类叠加）。
+   */
+  handLimitSetToMaxHp: boolean;
+  /**
    * 非锁定技失效（新国战·铁骑那类）：本回合内该角色的非锁定技全部不起作用。
    * 由 afterTurnEnd 统一清掉（「直到回合结束」）。
    */
@@ -293,6 +299,7 @@ export function emptyFlags(): PlayerFlags {
     damageBonusThisTurn: 0,
     ignoreShaDistanceThisTurn: false,
     nonLockedSkillsDisabled: false,
+    handLimitSetToMaxHp: false,
     xingzhaoEquipEventId: -1,
     cannotPlayCardsThisTurn: false,
     cannotPlayColor: null,
