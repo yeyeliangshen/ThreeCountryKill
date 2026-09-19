@@ -13608,6 +13608,136 @@ const GONGSUNYUAN: Hero = {
   ],
 };
 
+/**
+ * 刘巴 —— 统度 / 清隐（不臣篇·下，蜀，1.5 阴阳鱼 → 3；移动版现行口径，见 §5.105）。
+ *
+ * 【统度】与刘巴势力相同的角色进入**结束阶段时**，**由该角色本人决定**是否摸 X 张：
+ *   X＝其**本回合弃牌阶段弃置的牌数**（按**张**算，**至多 3**）。只数弃牌阶段（出牌阶段弃的
+ *   代价牌不算）、只数该角色自己弃的；X＝0 时不弹无意义窗口。
+ *   ⚠️ 版本差异：较早的 2021 规则集写成「刘巴**可以令其**摸」，当前移动版页面写的是
+ *   「**该角色可以**摸」——本仓库取移动版口径（决定权在结束阶段角色本人）。
+ * 【清隐】（**限定技**）：出牌阶段，所有与刘巴势力相同的角色把体力**回复至各自上限**（走正常
+ *   回复流程，各人独立算回复量），然后**移除刘巴这张武将牌**（走公共的 removeHeroCard：
+ *   主将/副将位都行，替换为该势力同性别的士兵牌；不是把槽位置空、也不是删技能）。
+ *   ⚠️「移除武将牌」与「变更副将」是两回事（后者会另抽一张新副将替换），不要共用实现。
+ */
+function tongduX(state: GameState, seatId: string): number {
+  return Math.min(state.discardPhaseCountsThisTurn[seatId] ?? 0, 3);
+}
+
+/** 统度：某人的结束阶段 → 若他与刘巴同势力且 X>0，问**他本人**要不要摸 X 张 */
+function askTongdu(
+  state: GameState,
+  me: Player,
+  endingSeatId: string | undefined,
+  api: SkillApi,
+): void {
+  if (!endingSeatId) return;
+  const ending = getPlayer(state, endingSeatId);
+  if (!ending || !ending.alive) return;
+  const mine = effectiveFaction(state, me);
+  if (!mine) return;
+  if (effectiveFaction(state, ending) !== mine) return; // 同势力（都要求已确定）
+  const x = tongduX(state, ending.seatId);
+  if (x <= 0) return; // 不弹「摸 0 张」的无意义窗口
+  // 当前移动版口径：**由结束阶段的角色本人决定**是否摸
+  api.askChoice(
+    state,
+    ending.seatId,
+    `【统度】（${me.name}）：是否摸 ${x} 张牌？（本回合弃牌阶段弃了 ${state.discardPhaseCountsThisTurn[ending.seatId] ?? 0} 张）`,
+    [
+      { id: 'yes', label: `摸 ${x} 张` },
+      { id: 'no', label: '不摸' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      let got = 0;
+      for (let i = 0; i < x; i++) {
+        const c = drawOne(st);
+        if (!c) break;
+        p.hand.push(c);
+        got++;
+      }
+      pushLog(st, 'skill', `${p.name} 因【统度】摸了 ${got} 张牌。`, { seat: p.seatId });
+    },
+  );
+}
+
+const LIUBA: Hero = {
+  id: 'liuba',
+  name: '刘巴',
+  pack: 'buchen', // 不臣篇·下（不臣篇开关关闭时不进选将池）
+  faction: 'shu',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'qingyin',
+      name: '清隐',
+      oncePerGame: true, // 限定技
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: () => true,
+      execute: (state, player, _intent, api) => {
+        const mine = effectiveFaction(state, player);
+        pushLog(state, 'skill', `${player.name} 发动【清隐】。`, { seat: player.seatId });
+        // 先回血（各自回复至上限，走正常回复流程）——即使没人受伤也要继续移除武将牌
+        const allies = mine
+          ? state.players.filter((p) => p.alive && effectiveFaction(state, p) === mine)
+          : [];
+        const healedNames: string[] = [];
+        for (const t of allies) {
+          const amount = Math.max(0, t.maxHp - t.hp);
+          if (amount <= 0) continue;
+          const healed = api.heal(t, amount);
+          healedNames.push(`${t.name}（+${healed}）`);
+        }
+        if (healedNames.length > 0) {
+          pushLog(state, 'skill', `${player.name} 的【清隐】：${healedNames.join('、')} 回复至体力上限。`, {
+            seat: player.seatId,
+          });
+        }
+        // 再移除刘巴这张武将牌（主将/副将位都行；替换为该势力同性别的士兵牌）
+        api.removeHeroCard(player.seatId, 'liuba');
+        return undefined;
+      },
+    },
+  ],
+  hooks: [
+    // 自己的结束阶段走 turnEnd；**别人**的结束阶段走 othersTurnEnd（国战里「他人的阶段」的既有机制）
+    {
+      timing: 'turnEnd',
+      skillId: '统度',
+      locked: true,
+      handler: (ctx) => askTongdu(ctx.state, ctx.player, ctx.player.seatId, ctx.api),
+    },
+    {
+      timing: 'othersTurnEnd',
+      skillId: '统度',
+      locked: true,
+      handler: (ctx) =>
+        askTongdu(
+          ctx.state,
+          ctx.player,
+          (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId,
+          ctx.api,
+        ),
+    },
+  ],
+  skills: [
+    {
+      name: '统度',
+      desc: '与你势力相同的角色进入结束阶段时，该角色可以摸 X 张牌（X 为其本回合弃牌阶段弃置的牌数，至多 3）。',
+    },
+    {
+      name: '清隐',
+      desc: '限定技，出牌阶段，你可以令所有与你势力相同的角色将体力回复至其体力上限，然后移除此武将牌。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -13636,6 +13766,7 @@ export const HEROES: Hero[] = [
   ZHANGLU,
   MIFANG,
   MENGDA,
+  LIUBA,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

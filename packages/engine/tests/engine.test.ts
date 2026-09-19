@@ -19056,6 +19056,97 @@ describe('国战 · 公孙渊（怀异 / 恣睢）', () => {
   });
 });
 
+
+/**
+ * 刘巴（不臣篇·下，蜀）——【统度】/【清隐】（文档 §5.105）。
+ * 口径要点：统度只数**弃牌阶段**自己弃的牌（按张、至多 3）、X=0 不弹窗、**由结束阶段角色本人决定**；
+ * 清隐是限定技：先让同势力角色各自回复至**上限**（走正常回复流程），再移除刘巴这张武将牌。
+ */
+describe('国战 · 刘巴（统度 / 清隐）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const taoCards = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+
+  it('统度：同势力角色弃牌阶段弃了 X 张 → 结束阶段**他自己**决定摸 X 张', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'liuba', faction: 'shu', hand: [] },
+        // 乙（蜀）：体力上限 3、手里 2 张（回合开始还会摸 2 → 4 张）→ 弃牌阶段要弃 1 张
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: taoCards('b', 2), hp: 3, maxHp: 3 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      ],
+      A,
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    ok(act(state, A, { type: 'endPhase' })); // 甲结束 → 轮到乙
+    skipRevealAsk(state);
+    ok(act(state, B, { type: 'endPhase' })); // 乙结束出牌阶段 → 进弃牌阶段
+    expect(state.pending?.kind).toBe('discard');
+    ok(act(state, B, { type: 'discard', cardIds: ['b0'] })); // 弃 1 张
+    // 结束阶段：统度问**乙本人**
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(B);
+      expect(state.pending.title).toContain('统度');
+    }
+    const before = b.hand.length;
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.hand.length).toBe(before + 1); // 弃了 1 张 → 摸 1 张
+  });
+
+  it('清隐：同势力角色各自回复至上限，然后移除刘巴这张武将牌（限定技）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'liuba', faction: 'shu', hp: 1, maxHp: 3 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hp: 2, maxHp: 4 },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hp: 1, maxHp: 4 },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'qingyin', targetIds: [] }));
+    expect(a.hp).toBe(3); // 各自回到上限（不是 +1）
+    expect(b.hp).toBe(4);
+    expect(c.hp).toBe(1); // 不同势力不受影响
+    expect(a.removedHeroIds).toContain('liuba'); // 刘巴这张武将牌被移除
+    expect(state.log.some((e) => e.message.includes('清隐'))).toBe(true);
+  });
+});
+
 /** 技能判定也走「判定牌生效前」：鬼才/鬼道能改判、天妒能收牌 */
 describe('国战 · 技能判定接入改判时机', () => {
   function gz(

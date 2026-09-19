@@ -823,6 +823,12 @@ export interface GameState {
    */
   suzhiTriggers: number;
   /**
+   * 刘巴·【统度】：本回合**各自的弃牌阶段**里、由该角色**自己**弃置的牌数（按**张**统计，
+   * 不看事件次数）。只在 `turn.phase === 'discard'` 且弃牌者就是当前回合角色时累加，
+   * 随回合清零。用来算 X（至多 3）。
+   */
+  discardPhaseCountsThisTurn: Record<string, number>;
+  /**
    * **当前阶段**实际受到过伤害的角色（伤被防止不算）。
    * 董昭·【劝进】要求目标是「在当前**出牌阶段**已经受到过伤害」的角色——注意是**阶段**不是回合，
    * 所以不能复用 `damagedThisTurn`。进入出牌阶段时清空（与 `lostCardsThisPhase` 同一生命周期口径）。

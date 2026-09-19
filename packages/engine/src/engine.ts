@@ -1375,6 +1375,7 @@ function enterPlayPhase(state: GameState, player: Player): void {
     // 新的一轮出牌阶段：清空「本阶段受过伤的人」（董昭·劝进的候选池）
     state.damagedThisPhase = [];
   state.suzhiTriggers = 0;
+  state.discardPhaseCountsThisTurn = {};
     runHooksPausable(state, 'playPhase', player, undefined, () => {
       // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
       if (player.flags.skipPlay) {
@@ -2989,6 +2990,13 @@ function fireCardDiscarded(
   // 宝物【定澜夜明珠】（君主专属）：「你每回合首次弃置牌后摸一张牌」。
   // 装备牌的效果不走英雄钩子，所以和【飞龙夺凤】【盟军大纛】一样在这里显式派发；
   // 排在英雄钩子（礼让）前面——同时机固定顺序，见 roster 的说明。
+  // 刘巴·【统度】：只数**弃牌阶段**里**该角色自己**弃置的牌（按张）。
+  // ⚠️ 这里用「牌主＝当前回合角色」近似「弃置者＝该角色」——在**他自己的弃牌阶段**里，
+  //    别人的效果弃他的牌（如过河拆桥）不可能发生，所以这个近似是安全的。
+  if (state.turn.phase === 'discard' && state.seatOrder[state.turn.seatIndex] === owner.seatId) {
+    state.discardPhaseCountsThisTurn[owner.seatId] =
+      (state.discardPhaseCountsThisTurn[owner.seatId] ?? 0) + cards.length;
+  }
   dinglanAfterDiscard(state, owner, () =>
     runHooksPausable(state, 'cardDiscarded', owner, { cards }, after),
   );
@@ -9101,6 +9109,7 @@ export function createGame(
     midaoUsedSeats: [],
     damagedThisPhase: [],
     suzhiTriggers: 0,
+    discardPhaseCountsThisTurn: {},
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],
