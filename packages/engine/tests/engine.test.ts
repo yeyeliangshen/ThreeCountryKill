@@ -2003,22 +2003,52 @@ describe('国战进阶（Step 7）', () => {
   });
 
   // 2. 野心家分配
-  it('野心家分配：4 人局 3 蜀 → 最后一个蜀变为野心家', () => {
-    const state = makeGuozhanDraft([
-      { seatId: A, name: '甲', main: 'guanyu', deputy: 'zhangfei' },
-      { seatId: B, name: '乙', main: 'zhaoyun', deputy: 'machao' },
-      { seatId: C, name: '丙', main: 'huangzhong', deputy: 'guanyu' },
-      { seatId: D, name: '丁', main: 'xuchu', deputy: 'zhenji' },
-    ]);
-    const a = state.players.find((p) => p.seatId === A)!;
-    const b = state.players.find((p) => p.seatId === B)!;
-    const c = state.players.find((p) => p.seatId === C)!;
-    const d = state.players.find((p) => p.seatId === D)!;
-    expect(a.faction).toBe('shu');
-    expect(b.faction).toBe('shu');
-    // C 是最后一个蜀 → 变为野心家（3 蜀 > ceil(4/2)=2，多 1 人）
-    expect(c.faction).toBe('ambitionist');
-    expect(d.faction).toBe('wei');
+    /** 把回合摆到某人的**准备阶段**并挂一个询问——国战只有这个时机能主动明置武将牌 */
+    const atJudgment = (st: GameState, id: string) => {
+      st.turn = { seatIndex: st.seatOrder.indexOf(id), phase: 'judgment' };
+      st.pending = {
+        kind: 'choice',
+        seatId: id,
+        title: '准备阶段：是否明置武将牌？',
+        options: [
+          { id: 'all', label: '全部明置' },
+          { id: 'none', label: '暂不明置' },
+        ],
+        resolve: () => {},
+      };
+    };
+  it('野心家身份：明置时判——4 人局第 3 个蜀（超半数）转野心家，早亮的两个留蜀', () => {
+    // 官方口径：明置武将、确定势力的**那一刻**，如果加入该势力会让它「超过全场人数的一半」，
+    // 就不加入、改为野心家。所以是**明置先后**决定谁留下（不是开局按座次预先指定）。
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'guanyu' },
+        { seatId: 'B', name: '乙', heroId: 'zhaoyun' },
+        { seatId: 'C', name: '丙', heroId: 'huangzhong' },
+        { seatId: 'D', name: '丁', heroId: 'xuchu' },
+      ],
+      'TEST',
+      { mode: 'guozhan', freePick: true },
+    );
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'zhaoyun', deputyHeroId: 'machao' }));
+    ok(act(state, 'C', { type: 'pickHero', heroId: 'huangzhong', deputyHeroId: 'guanyu' }));
+    ok(act(state, 'D', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+    const p = (id: string) => state.players.find((x) => x.seatId === id)!;
+    // 还没亮将前，谁都不是野心家
+    expect(p('A').faction).toBe('shu');
+    // 按顺序逐个明置（都在各自的准备阶段）
+    atJudgment(state, 'A');
+    ok(act(state, 'A', { type: 'revealHero', heroId: 'guanyu' }));
+    atJudgment(state, 'B');
+    ok(act(state, 'B', { type: 'revealHero', heroId: 'zhaoyun' }));
+    expect(p('A').faction).toBe('shu');
+    expect(p('B').faction).toBe('shu');
+    // 第 3 个蜀（丙）：3 蜀 > 4/2 = 2 → 转野心家
+    atJudgment(state, 'C');
+    ok(act(state, 'C', { type: 'revealHero', heroId: 'huangzhong' }));
+    expect(p('C').faction).toBe('ambitionist');
+    expect(p('D').faction).toBe('wei'); // 魏不受影响
   });
 
   // 3. 鏖战桃当杀
@@ -4007,6 +4037,21 @@ describe('新增武将（按最新国战标准）', () => {
     expect(a.markers.zhulian ?? 0).toBe(0);
   });
 
+  function atJudgment(state: GameState, id: string): void {
+    // 把回合摆到某人的**准备阶段**并挂一个询问——国战只有这个时机能主动明置武将牌
+    state.turn = { seatIndex: state.seatOrder.indexOf(id), phase: 'judgment' };
+    state.pending = {
+      kind: 'choice',
+      seatId: id,
+      title: '准备阶段：是否明置武将牌？',
+      options: [
+        { id: 'all', label: '全部明置' },
+        { id: 'none', label: '暂不明置' },
+      ],
+      resolve: () => {},
+    };
+  }
+
   it('（休眠规则）君主将只能作主将 / 亮将双亮并获【珠联璧合】/ 不成野心家', () => {
     const lord = getHero('caocao')!;
     const deputySkip = getHero('liubei')!;
@@ -4030,7 +4075,7 @@ describe('新增武将（按最新国战标准）', () => {
       expect(a.deputyRevealed).toBe(true); // 双将同亮
       expect(a.markers.zhulian).toBe(1);
 
-      // ③ 不成野心家：3 魏里最后一个本该转野心家，跳过君主往前顺延
+      // ③ 不成野心家：3 魏里最后明置的是君主（会超过 4/2）→ 君主自己也不转（2026 君主规则）
       const seats4: SeatSetup[] = [
         { seatId: A, name: '甲' },
         { seatId: B, name: '乙' },
@@ -4044,8 +4089,16 @@ describe('新增武将（按最新国战标准）', () => {
       ok(act(s3, D, { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
       const c = s3.players.find((p) => p.seatId === C)!;
       const b = s3.players.find((p) => p.seatId === B)!;
-      expect(c.faction).toBe('wei'); // 君主保持魏
-      expect(b.faction).toBe('ambitionist'); // 跳过君主，顺延到上一个魏
+      // 先亮两个普通魏（此时 2 魏 ≤ 4/2，都没事）
+      atJudgment(s3, A);
+      ok(act(s3, A, { type: 'revealHero', heroId: 'xuchu' }));
+      atJudgment(s3, B);
+      ok(act(s3, B, { type: 'revealHero', heroId: 'simayi' }));
+      // 最后明置的是君主：算上他会是 3 魏 > 2，但君主不会成为野心家 → 保持魏
+      atJudgment(s3, C);
+      ok(act(s3, C, { type: 'revealHero', heroId: 'caocao' }));
+      expect(c.faction).toBe('wei');
+      expect(b.faction).toBe('wei'); // 早亮的两个也不受影响（按明置先后判，只有「加入会超编」的那个才转）
     } finally {
       delete (lord as { isLord?: boolean }).isLord;
       delete (deputySkip as { isLord?: boolean }).isLord;
@@ -19744,6 +19797,49 @@ describe('国战 · 君主将（特性）', () => {
     expect(a.chained).toBe(true); // 第一次结算：横置
     expect(a.hand.length).toBe(1); // 第二次结算：已横置 → 摸一张
     expect(state.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
+  });
+
+  it('「野心家」标记：首次明置主将后获得，能当阴阳鱼/珠联璧合/先驱用（≠野心家身份）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'guanyu' },
+        { seatId: 'B', name: '乙', heroId: 'xuchu' },
+        { seatId: 'C', name: '丙', heroId: 'lvbu' },
+      ],
+      'TEST',
+      { mode: 'guozhan', freePick: true },
+    );
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+    ok(act(state, 'C', { type: 'pickHero', heroId: 'lvbu', deputyHeroId: 'diaochan' }));
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    // 明置**主将**（关羽）→ 拿到「野心家」标记；身份仍是蜀（这俩只是名字撞车）
+    state.turn = { seatIndex: 0, phase: 'judgment' };
+    state.pending = {
+      kind: 'choice',
+      seatId: 'A',
+      title: '准备阶段：是否明置武将牌？',
+      options: [{ id: 'all', label: '全部明置' }],
+      resolve: () => {},
+    };
+    ok(act(state, 'A', { type: 'revealHero', heroId: 'guanyu' }));
+    expect(a.faction).toBe('shu');
+    expect(a.markers.ambitionist).toBe(1);
+
+    // 把它当【阴阳鱼】使用：摸一张，并按「实际当成的那一种」记账（章武照它复现）
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'A' };
+    state.log = [];
+    const before = a.hand.length;
+    expect(toSnapshot(state, 'A').prompt?.legalSkillIds).toContain('mark_ambitionist');
+    ok(act(state, 'A', { type: 'useSkill', skillId: 'mark_ambitionist', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'yinyangyu' }));
+    expect(a.markers.ambitionist).toBeUndefined(); // 标记消耗掉了
+    expect(a.hand.length).toBe(before + 1); // 阴阳鱼：摸一张
+    expect(state.markerUsesThisTurn).toEqual([
+      { seatId: 'A', markerId: 'yinyangyu', usage: 'draw' },
+    ]);
   });
 
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {

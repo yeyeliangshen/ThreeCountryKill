@@ -36,7 +36,9 @@ export const MARKER_DESC: Record<MarkerId, string> = {
   xianqu: '出牌阶段弃置：将手牌补至 4 张，并观看一名其他角色的一张暗置武将牌。',
   yinyangyu: '出牌阶段弃置：摸 1 张牌；或在弃牌阶段弃置：本回合手牌上限 +2。',
   zhulian: '弃置：摸 2 张牌，或回复 1 点体力。',
-  ambitionist: '弃置：视为使用其余三种标记中的任意一种。（暂无武将可获得）',
+  ambitionist:
+    '弃置：当作【阴阳鱼】【珠联璧合】【先驱】中的任意一种使用。（首次明置主将牌后获得一枚；' +
+    '它不是「野心家身份」，两者只是名字撞车）',
 };
 
 /** 摸 n 张（牌堆耗尽就少摸），返回实际摸到的张数 */
@@ -230,6 +232,72 @@ const ZHULIAN: ActiveSkill = {
 };
 
 /**
+ * 【野心家】标记：当作【阴阳鱼】【珠联璧合】【先驱】中的任意一种使用。
+ *
+ * 用户核对后的口径：**它不是「野心家身份」**（那个决定你属于哪个势力、怎么获胜），
+ * 只是一枚「万能国战标记」。所以【章武】的账本要记**实际被当成哪一种标记、走了哪个分支**，
+ * 而不是记一个 `ambitionist`（见 noteMarkerUsed 的三参）。
+ */
+const AMBITIONIST: ActiveSkill = {
+  id: `${MARKER_SKILL_PREFIX}ambitionist`,
+  name: '野心家',
+  minTargets: 0,
+  maxTargets: 0,
+  canUse: () => true,
+  execute: (state, player, _intent, api) => {
+    if (markerCount(player, 'ambitionist') <= 0) return '没有【野心家】标记';
+    api.askChoice(
+      state,
+      player.seatId,
+      '【野心家】标记：当作哪一枚国战标记使用？',
+      [
+        { id: 'yinyangyu', label: '【阴阳鱼】（摸一张牌）' },
+        { id: 'zhulian', label: '【珠联璧合】（摸两张 / 回复 1 点体力）' },
+        { id: 'xianqu', label: '【先驱】（补至四张并观看其未明置的副将）' },
+      ],
+      (st, p, picked) => {
+        consumeMarker(p, 'ambitionist');
+        const via = `【${p.name}】用【野心家】标记当作`;
+        if (picked === 'zhulian') {
+          useZhulian(st, p, api, `${via}【珠联璧合】`, {
+            returnTo: p.seatId,
+            onPicked: (s2, usage) => noteMarkerUsed(s2, p.seatId, 'zhulian', usage),
+          });
+          return;
+        }
+        if (picked === 'xianqu') {
+          const others = st.players.filter((x) => x.alive && x.seatId !== p.seatId);
+          if (others.length === 0) {
+            noteMarkerUsed(st, p.seatId, 'xianqu', 'view');
+            useXianqu(st, p, undefined, api, `${via}【先驱】`);
+            return;
+          }
+          api.askChoice(
+            st,
+            p.seatId,
+            '【野心家】标记当作【先驱】：观看哪名其他角色未明置的副将？',
+            others.map((x) => ({ id: x.seatId, label: x.name })),
+            (st2, p2, seatId) => {
+              noteMarkerUsed(st2, p2.seatId, 'xianqu', 'view');
+              useXianqu(st2, p2, getPlayer(st2, seatId), api, `${via}【先驱】`, {
+                returnTo: p2.seatId,
+              });
+            },
+            p.seatId,
+          );
+          return;
+        }
+        // 阴阳鱼（出牌阶段那条：摸一张）
+        noteMarkerUsed(st, p.seatId, 'yinyangyu', 'draw');
+        useYinyangyu(st, p, `${via}【阴阳鱼】`);
+      },
+      player.seatId,
+    );
+    return undefined;
+  },
+};
+
+/**
  * 当前持有的标记所能发起的「出牌阶段」技能。
  * 非国战模式没有标记，直接返回空。
  */
@@ -239,5 +307,6 @@ export function markerActiveSkills(state: GameState, player: Player): ActiveSkil
   if (markerCount(player, 'xianqu') > 0) out.push(XIANQU);
   if (markerCount(player, 'yinyangyu') > 0) out.push(YINYANGYU);
   if (markerCount(player, 'zhulian') > 0) out.push(ZHULIAN);
+  if (markerCount(player, 'ambitionist') > 0) out.push(AMBITIONIST);
   return out;
 }

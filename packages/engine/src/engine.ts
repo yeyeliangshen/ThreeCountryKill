@@ -7427,8 +7427,10 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     });
     return false;
   }
-  // 这一翻之前他有没有确定的势力（会盟要看「某个势力的角色数是不是从 0 变成了别的数」）
+  // 这一翻之前他有没有确定的势力（会盟要看「某个势力的角色数是不是从 0 变成了别的数」），
+  // 以及主将牌是不是**这一翻**第一次明置（「野心家」标记跟着主将走）
   const wasDetermined = player.heroRevealed || player.deputyRevealed;
+  const wasMainRevealed = player.heroRevealed;
   const mainHero = getHero(player.heroId);
   const deputyHero = getHero(player.deputyHeroId);
   const isLordPair = !!mainHero?.isLord || !!deputyHero?.isLord;
@@ -7454,7 +7456,39 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     return false;
   }
   if (changed) {
+    // ㈠ 野心家**身份**：明置、确定势力的那一刻，如果加入该势力会让它**超过全场人数的一半**，
+    //     就不加入、改为野心家（用户核对后的官方口径）。
+    //     ⚠️ 是「超过一半」不是「达到一半」：8 人局 4 个魏没问题、第 5 个才野；6 人局 3 个可以、
+    //        第 4 个才野；5 人局只允许 2 个（3 就超了）。
+    //     ⚠️ 按**明置先后**逐个人判（谁先亮谁留下），不是开局按座次预先指定。
+    //     君主将不会成为野心家（2026 君主规则），所以 `isLordPair` 直接跳过。
+    if (state.mode === 'guozhan' && !wasDetermined && !isLordPair && player.faction) {
+      const total = state.players.length;
+      if (knownFactionCount(state, player.faction) > total / 2) {
+        const from = player.faction;
+        player.faction = 'ambitionist';
+        pushLog(
+          state,
+          'faction',
+          `${player.name} 明置时【${FACTION_NAME[from] ?? from}】已有 ${knownFactionCount(state, from)} 人（超过全场 ${total} 人的一半），他不加入该势力、成为野心家。`,
+          { seat: player.seatId },
+        );
+      }
+    }
     onHeroRevealed(state, player);
+    // ㈡ 「野心家」**标记**：首次明置**主将**牌后获得一枚，可以当作【阴阳鱼】【珠联璧合】
+    //     【先驱】中任意一种使用（用户核对后的当前规则：这枚标记**不等于**野心家身份，
+    //     不是野心家的人照样能拿到）。
+    //     例外：主将因人数超限而转成野心家**身份**的人不发（那是名字撞车的另一个东西）。
+    if (!wasMainRevealed && player.heroRevealed && player.faction !== 'ambitionist') {
+      addMarker(player, 'ambitionist');
+      pushLog(
+        state,
+        'marker',
+        `${player.name} 首次明置主将，获得【野心家】标记（可当作阴阳鱼 / 珠联璧合 / 先驱使用）。`,
+        { seat: player.seatId },
+      );
+    }
     // 「当你明置此武将牌后」（糜夫人·闺秀）：把 payload 交给钩子，技能自己判断是不是自己那张
     runHooksPausable(state, 'heroRevealed', player, { heroId: hero.id }, () => {
       // 【会盟】：他这一翻让某个势力**首次出现在场上**（0 → 1）时派发。
@@ -8691,31 +8725,10 @@ function finishDraft(state: GameState): void {
     }
     p.hp = p.maxHp;
   }
-  // 野心家分配：某阵营人数 > 总人数/2 → 多余者变为野心家
-  if (state.mode === 'guozhan') {
-    const total = state.players.length;
-    const factionPlayers = new Map<string, Player[]>();
-    for (const p of state.players) {
-      const f = p.faction ?? 'neutral';
-      if (!factionPlayers.has(f)) factionPlayers.set(f, []);
-      factionPlayers.get(f)!.push(p);
-    }
-    for (const [f, players] of factionPlayers) {
-      if (f !== 'ambitionist' && f !== 'neutral' && players.length > Math.ceil(total / 2)) {
-        const excess = players.length - Math.ceil(total / 2);
-        // 按座位顺序从后往前，把最后加入该阵营的玩家变为野心家。
-        // 君主不会成为野心家，所以跳过（见 heroes.ts 的 isLord）。
-        let remaining = excess;
-        for (let i = players.length - 1; i >= 0 && remaining > 0; i--) {
-          const cand = players[i]!;
-          if (getHero(cand.heroId)?.isLord) continue;
-          cand.faction = 'ambitionist';
-          pushLog(state, 'faction', `${cand.name} 因阵营人数过多，变为野心家。`);
-          remaining--;
-        }
-      }
-    }
-  }
+  // 野心家身份**不在这里判**：官方是「明置武将、确定势力的那一刻」逐个人判定的
+  // （谁先亮谁留在势力里，超编的那个是**后亮**的），见 revealHeroCard 里的判定。
+  // 旧实现在这里是按座次从后往前把「超编」的人一律判成野心家——既换错了人，
+  // 阈值也差一个（用 ceil 而不是「超过一半」）。
   // 变包的「变更副将」要从未加入游戏的武将牌堆里连续亮将——在这里先把剩下的存下来
   {
     const dealt = new Set<string>();
