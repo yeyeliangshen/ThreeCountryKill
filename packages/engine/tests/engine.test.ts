@@ -7988,9 +7988,9 @@ describe('国战装备特效（麒麟弓 / 寒冰剑 / 白银狮子 / 三尖两�
     const c = state.players.find((p) => p.seatId === C)!;
     // 乙装备吴六剑（范围 2）
     b.equipment.weapon = weapon('w1', 'wuliu', 2);
-    // 吴六剑本身的范围是 2 → 持有者 1+2=3，但他**不算「其他角色」**，所以只有武器范围
-    expect(attackRange(state, b)).toBe(3);
-    expect(attackRange(state, a)).toBe(2); // 同势力（蜀，已明置）→ 基础 1 + 吴六剑 1
+    // 攻击范围＝武器牌上印的数（吴六剑 2）；持有者自己**不算「其他角色」**，拿不到那个 +1
+    expect(attackRange(state, b)).toBe(2);
+    expect(attackRange(state, a)).toBe(2); // 同势力（蜀，已明置）→ 空手 1 + 吴六剑 1
     expect(attackRange(state, c)).toBe(1); // 不同势力 → 不加
     // 甲若暗置就没有势力 → 也拿不到加成
     a.heroRevealed = false;
@@ -22638,5 +22638,428 @@ describe('国战 · 刘琦（问计 / 屯江）', () => {
     ], A);
     // 已确定势力：群（刘琦）、魏（乙＋丙，同一势力算 1）；丁还暗着 → 不计
     expect(currentFactionCount(state)).toBe(2);
+  });
+});
+
+/**
+ * 潘濬（不臣篇·下，**蜀/吴双势力**，1.5 阴阳鱼；文档 §5.112）。
+ * 锁：① 监听的是「**首次确定势力**」（`factionDetermined`），不是「亮将」；
+ * ② 同不同势力比的是**结算当时已确定的实际势力**，不是卡面；
+ * ③ 公清读**攻击范围**（<3 设为 1 / =3 不动 / >3 加 1），**不是距离、不算坐骑**。
+ */
+describe('国战 · 潘濬（聪察 / 公清）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      deputyHeroId?: string;
+      faction: Faction;
+      determinedFaction?: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+      revealed?: boolean;
+      weapon?: { equipName: string; range: number };
+      minusMount?: boolean;
+      judgment?: Card[];
+    }[],
+    actor?: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = s.deputyHeroId ?? 'vanilla';
+      p.faction = s.faction;
+      p.determinedFaction = s.determinedFaction ?? null;
+      const shown = s.revealed !== false;
+      p.heroRevealed = shown;
+      p.deputyRevealed = shown;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.judgment = (s.judgment ?? []).slice();
+      if (s.weapon) p.equipment.weapon = weapon('w0', s.weapon.equipName, s.weapon.range);
+      if (s.minusMount)
+        p.equipment.minusMount = {
+          id: 'mm0',
+          type: 'minusMount',
+          suit: 'spade',
+          rank: 1,
+          equipName: 'chitu',
+        };
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+  const handOf = (state: GameState, id: string) => pick(state, id).hand.length;
+  const taos = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+
+  it('聪察①：准备阶段只能观察「尚未确定势力」的其他角色（已明置的、野心家、自己都不算）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+        { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'shu', revealed: false },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'ambitionist' },
+        { seatId: E, name: '戊', heroId: 'vanilla', faction: 'wu', revealed: false },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 甲结束 → 轮到潘濬，准备阶段
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期【聪察】询问，实际是 ${ask?.kind}`);
+    expect(ask.seatId).toBe(B);
+    expect(ask.title).toContain('聪察');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    const pickAsk = state.pending;
+    if (pickAsk?.kind !== 'choice') throw new Error(`预期选角色，实际是 ${pickAsk?.kind}`);
+    // 只有两个暗置的（丙、戊）：明置的甲、已确定为野心家的丁、以及潘濬自己都不在名单里
+    expect(pickAsk.options.map((o) => o.id).sort()).toEqual([C, E].sort());
+  });
+
+  it('聪察①：目标首次确定势力且与你相同 → 双方各摸 2；第二张牌翻过来不算第二次', () => {
+    // ⚠️ 5 人局：3 人局里「第二个蜀」会超过全场一半而被转成野心家（官方超编规则），
+    //    那就测不到「同势力各摸 2」这一支了
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+        {
+          seatId: C,
+          name: '丙',
+          heroId: 'zhangfei',
+          deputyHeroId: 'guanyu',
+          faction: 'shu',
+          revealed: false,
+          hand: taos('c', 2),
+        },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
+        { seatId: E, name: '戊', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(pick(state, C).congchaWatchedBy).toEqual([B]);
+    ok(act(state, B, { type: 'endPhase' })); // 潘濬结束 → 轮到丙（准备阶段）
+    const pHand = handOf(state, B);
+    const cHand = handOf(state, C);
+    expect(state.pending?.kind).toBe('choice'); // 「是否明置武将牌？」
+    ok(act(state, C, { type: 'chooseOption', optionId: 'main' })); // 明置主将【张飞】
+    // 首次确定势力（蜀）→ 与潘濬（本局确定蜀）相同 → 双方各摸 2，且观察立刻消耗
+    expect(pick(state, C).congchaWatchedBy).toEqual([]);
+    expect(handOf(state, B)).toBe(pHand + 2);
+    // 丙：聪察的 2 张 + 他自己摸牌阶段的 2 张（这些是在同一次动作里跑完的）
+    expect(handOf(state, C)).toBe(cHand + 4);
+    expect(state.log.some((e) => e.message.includes('双方各摸两张牌'))).toBe(true);
+    // 第二张牌翻过来：势力早就定了 → 不是「首次确定」→ 不再结算
+    const pHand2 = handOf(state, B);
+    // 只为了让「主动明置」这个入口可用（它在准备阶段、且要求 pending 非空）
+    state.turn.phase = 'judgment';
+    state.pending = { kind: 'play', seatId: C };
+    ok(act(state, C, { type: 'revealHero', heroId: 'guanyu' }));
+    expect(handOf(state, B)).toBe(pHand2);
+  });
+
+  it('聪察①：势力不同 → 目标**失去 1 点体力**（不是伤害，不产生伤害事件）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+        { seatId: C, name: '丙', heroId: 'xuchu', faction: 'wei', revealed: false },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    ok(act(state, B, { type: 'endPhase' }));
+    const hp0 = pick(state, C).hp;
+    ok(act(state, C, { type: 'chooseOption', optionId: 'main' })); // 明置主将【许褚】（魏）
+    expect(pick(state, C).hp).toBe(hp0 - 1);
+    expect(state.damageLedgerThisTurn.some((e) => e.targetId === C)).toBe(false);
+    expect(state.log.some((e) => e.message.includes('失去 1 点体力'))).toBe(true);
+  });
+
+  it('聪察①：观察只到潘濬自己的下一个回合开始（到期后标记消失）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+        { seatId: C, name: '丙', heroId: 'zhangfei', faction: 'shu', revealed: false },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬（第 1 个回合）
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    expect(pick(state, C).congchaWatchedBy).toEqual([B]);
+    ok(act(state, B, { type: 'endPhase' })); // 潘濬结束 → 丙（不明置）
+    skipRevealAsk(state);
+    ok(act(state, C, { type: 'endPhase' })); // 丙结束 → 甲
+    ok(act(state, A, { type: 'endPhase' })); // 甲结束 → 潘濬第 2 个回合开始：观察到期
+    expect(state.log.some((e) => e.message.includes('观察已到期'))).toBe(true);
+    expect(pick(state, C).congchaWatchedBy).toEqual([]);
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('聪察')) {
+      ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    }
+  });
+
+  it('聪察①：两个潘濬观察同一个人 → 各自按**本局已确定的势力**结算，互不覆盖', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬甲', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+        { seatId: C, name: '潘濬乙', heroId: 'panjun', faction: 'shu', determinedFaction: 'wu' },
+        { seatId: D, name: '丁', heroId: 'zhangfei', faction: 'shu', revealed: false },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬甲
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: D }));
+    ok(act(state, B, { type: 'endPhase' })); // 轮到潘濬乙
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, C, { type: 'chooseOption', optionId: D }));
+    expect(pick(state, D).congchaWatchedBy.slice().sort()).toEqual([B, C].sort());
+    ok(act(state, C, { type: 'endPhase' })); // 轮到丁
+    const bHand = handOf(state, B);
+    const cHand = handOf(state, C);
+    const hp0 = pick(state, D).hp;
+    ok(act(state, D, { type: 'chooseOption', optionId: 'main' })); // 明置主将【张飞】（蜀）
+    // 潘濬甲本局确定的是蜀 → 与丁相同 → 双方各摸 2
+    expect(handOf(state, B)).toBe(bHand + 2);
+    // 潘濬乙本局确定的是吴（卡面同样是蜀/吴，但比的是**本局确定的势力**）→ 不同 → 丁失去 1 点体力
+    expect(handOf(state, C)).toBe(cHand);
+    expect(pick(state, D).hp).toBe(hp0 - 1);
+  });
+
+  it('聪察②：场上所有存活角色都已确定势力 → 摸牌阶段多摸 2 张', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬（没有可观察的人 → 不问）
+    expect(state.log.some((e) => e.message.includes('潘濬 摸了 4 张牌'))).toBe(true);
+  });
+
+  it('聪察②：还有存活角色没确定势力 → 不多摸', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        { seatId: B, name: '潘濬', heroId: 'panjun', faction: 'shu', determinedFaction: 'shu' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', revealed: false },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬：观察询问先弹出来（有两个候选？只有丙）
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('聪察')) {
+      ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+    }
+    expect(state.log.some((e) => e.message.includes('潘濬 摸了 2 张牌'))).toBe(true);
+  });
+
+  it('公清：攻击范围 < 3 → 伤害**调整为 1**（是「设为 1」不是「-1」：2 点也变 1 点）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [jiu('j1'), sha('a2')] },
+        {
+          seatId: B,
+          name: '潘濬',
+          heroId: 'panjun',
+          faction: 'shu',
+          determinedFaction: 'shu',
+          hp: 4,
+          maxHp: 4,
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] })); // 酒：伤害 +1
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    // 空手 = 攻击范围 1 < 3 → 2 点被**设为** 1 点
+    expect(pick(state, B).hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('公清'))).toBe(true);
+  });
+
+  it('公清：攻击范围 = 3（青龙偃月刀）→ 完全不修改', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [jiu('j1'), sha('a2')],
+          weapon: { equipName: 'qinglong', range: 3 },
+        },
+        {
+          seatId: B,
+          name: '潘濬',
+          heroId: 'panjun',
+          faction: 'shu',
+          determinedFaction: 'shu',
+          hp: 4,
+          maxHp: 4,
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, B, { type: 'pass' }));
+    // 3 点既不小于 3 也不大于 3 → 两支都不进：1 + 酒 1 = 2 点照常落地
+    expect(pick(state, B).hp).toBe(2);
+    expect(state.log.some((e) => e.message.includes('公清'))).toBe(false);
+  });
+
+  it('公清：攻击范围 > 3（方天画戟）→ 伤害 +1（1→2、加酒 2→3）', () => {
+    const mk2 = (withJiu: boolean) =>
+      gz(
+        [
+          {
+            seatId: A,
+            name: '甲',
+            heroId: 'vanilla',
+            faction: 'wei',
+            hand: withJiu ? [jiu('j1'), sha('a2')] : [sha('a2')],
+            weapon: { equipName: 'fangtian', range: 4 },
+          },
+          {
+            seatId: B,
+            name: '潘濬',
+            heroId: 'panjun',
+            faction: 'shu',
+            determinedFaction: 'shu',
+            hp: 4,
+            maxHp: 4,
+          },
+          { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+        ],
+        A,
+      );
+    const s1 = mk2(false);
+    ok(act(s1, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    if (s1.pending?.kind === 'respondSha') ok(act(s1, B, { type: 'pass' }));
+    expect(pick(s1, B).hp).toBe(2); // 1 + 1（公清）= 2
+    const s2 = mk2(true);
+    ok(act(s2, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(s2, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+    if (s2.pending?.kind === 'respondSha') ok(act(s2, B, { type: 'pass' }));
+    expect(pick(s2, B).hp).toBe(1); // 1 + 酒 1 + 公清 1 = 3
+  });
+
+  it('公清：读的是**攻击范围**不是距离（离得远但拿方天画戟 → 照样 +1）', () => {
+    // 甲→潘濬 距离 2（中间隔一个丙），攻击范围 4 → > 3 加伤
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [jiu('j1'), sha('a2')],
+          weapon: { equipName: 'fangtian', range: 4 },
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+        {
+          seatId: C,
+          name: '潘濬',
+          heroId: 'panjun',
+          faction: 'shu',
+          determinedFaction: 'shu',
+          hp: 4,
+          maxHp: 4,
+        },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    expect(distance(state, A, C)).toBe(2);
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [C] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, C, { type: 'pass' }));
+    // 距离只有 2（若误读距离就会「设为 1」），但攻击范围是 4 → 2 + 1 = 3
+    expect(pick(state, C).hp).toBe(1);
+  });
+
+  it('公清：-1马改的是距离，不会改变公清读到的攻击范围', () => {
+    // 甲→潘濬 距离 2，减 1 马后实际距离 1；青龙偃月刀攻击范围 3 → 两支都不进
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [jiu('j1'), sha('a2')],
+          weapon: { equipName: 'qinglong', range: 3 },
+          minusMount: true,
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+        {
+          seatId: C,
+          name: '潘濬',
+          heroId: 'panjun',
+          faction: 'shu',
+          determinedFaction: 'shu',
+          hp: 4,
+          maxHp: 4,
+        },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
+    expect(distance(state, A, C)).toBe(1); // -1马 生效：2 → 1
+    expect(attackRange(state, pick(state, A))).toBe(3); // 攻击范围不受坐骑影响
+    ok(act(state, A, { type: 'playCard', cardId: 'j1', targetIds: [] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [C] }));
+    if (state.pending?.kind === 'respondSha') ok(act(state, C, { type: 'pass' }));
+    expect(pick(state, C).hp).toBe(2); // 1 + 酒 1 = 2，公清不动
+  });
+
+  it('公清：没有伤害来源时不处理（闪电的 3 点伤害原样落地）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+        {
+          seatId: B,
+          name: '潘濬',
+          heroId: 'panjun',
+          faction: 'shu',
+          determinedFaction: 'shu',
+          hp: 4,
+          maxHp: 4,
+          judgment: [shandian('sd0')],
+        },
+      ],
+      A,
+    );
+    state.deck = [mk('jc', 'sha', 'spade', 5)]; // 黑桃 5 → 闪电的 3 点雷电伤害
+    ok(act(state, A, { type: 'endPhase' })); // 轮到潘濬 → 判定阶段挨闪电
+    // 无来源 → 公清两支都不进：4 - 3 = 1（若误判成「来源攻击范围 0」就会只剩 1 点伤害）
+    expect(pick(state, B).hp).toBe(1);
+    expect(state.log.some((e) => e.message.includes('公清'))).toBe(false);
   });
 });

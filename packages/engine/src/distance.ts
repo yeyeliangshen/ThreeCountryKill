@@ -64,10 +64,17 @@ export function distance(state: GameState, fromId: string, toId: string): number
   return Math.max(0, d);
 }
 
-/** 攻击范围 = 1 + 武器 range */
+/**
+ * 攻击范围：**空手 1，装备武器就等于武器牌上印的那个数**（方天画戟 4、青龙偃月刀 3、
+ * 诸葛连弩 1…）。与【距离】是两回事：−1马/马术改的是距离，不改攻击范围。
+ *
+ * ⚠️ 这里以前写的是「1 + 武器 range」，等于给每把武器凭空 +1（连弩变成 2、麒麟弓变成 6），
+ *    杀能多够到一个人、潘濬·【公清】的 <3 / =3 / >3 三档也会整体错位。牌堆里存的就是
+ *    官方攻击范围（见 deck.ts 的 方天画戟 range: 4），所以直接取它即可。
+ */
 export function attackRange(state: GameState, player: Player): number {
   const weapon = player.equipment.weapon;
-  let range = 1 + (weapon?.range ?? 0);
+  let range = weapon?.range ?? 1;
   // 吴六剑（锁定技）：与你**势力相同**的其他角色攻击范围 +1。
   // 「势力」用 effectiveFaction——暗置的角色没有势力，也就不享受这个加成。
   // 注意是攻击范围 +1，不是距离 -1（不影响顺手牵羊/兵粮寸断的距离判定）。

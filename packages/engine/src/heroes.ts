@@ -295,6 +295,14 @@ export interface Hero {
     ctx: { sourceId?: string; targetId: string },
   ) => number;
   /**
+   * **有条件**的「摸牌阶段额外摸 X 张」（潘濬·聪察②：场上所有存活角色都已确定势力时 +2）。
+   *
+   * 与 `extraDraw`（无条件的固定值）分开：这个每次摸牌阶段**现算**。走这里而不是在
+   * `drawPhase` 钩子里加 `flags.drawCountDelta`，是因为摸牌阶段被跳过时不该留下任何痕迹
+   * （官方：那是「摸牌阶段多摸两张」，阶段没了就无从多加）。
+   */
+  drawCountDelta?: (state: GameState, self: Player) => number;
+  /**
    * 只在列出的模式里出现。不填＝全模式可用。
    *
    * 国战专属武将（甘夫人、丁奉、马腾、孔融、纪灵、田丰、潘凤、邹氏）必须标
@@ -505,7 +513,9 @@ export type FieldSkill =
   /** 吴景·风扬：同队列角色的装备区里的牌不受异势力角色弃置/获得 */
   | 'fengyang'
   /** 严白虎·寄篱：成为红色基本牌/普通锦囊的唯一目标后，此牌结算两次 */
-  | 'jili';
+  | 'jili'
+  /** 潘濬·聪察②：场上所有存活角色都已确定势力时，摸牌阶段多摸两张 */
+  | 'drawCountDelta';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -541,6 +551,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'grantsFeiyingToQueue',
   'feiying',
   'distanceMinusPerTian',
+  'drawCountDelta',
 ];
 
 const GUANYU: Hero = {
@@ -13238,8 +13249,222 @@ const TANGZI: Hero = {
   ],
 };
 
+/**
+ * 潘濬 —— 聪察 / 公清（不臣篇·下，**蜀/吴双势力**，1.5 阴阳鱼 → **3**；无珠联璧合；
+ * 技能文本按移动版现行页面 + 用户给出的等价实现口径）。
+ *
+ * 【聪察】两段，**不共用任何状态**（用户点名：不要用一个 congchaActive 布尔值）：
+ * ① 准备阶段，可以「观察」一名**尚未确定势力**的其他角色；被观察者**首次确定势力**时立即结算：
+ *    最终势力与潘濬相同 → 双方各摸 2（潘濬先）；否则该角色**失去 1 点体力**（不是伤害）。
+ *    观察只持续到**潘濬自己的下一个回合开始**；多个潘濬各自一条、互不覆盖。
+ * ② 摸牌阶段，若场上**所有存活角色**都已确定势力 → 本次多摸 2 张。
+ *
+ * 读法要点（用户口径，逐条）：
+ * - 监听的是「**首次确定势力**」这件事（引擎新时机 `factionDetermined`），**不是**「亮将」：
+ *   单势力明置、双势力确定最终势力、野心家身份转化在底层都是「确定势力」，而**只有第一次**算；
+ *   之后势力再变（野心家 / 新势力）都不再触发这一次观察（结算即删除标记）。
+ * - 「尚未确定势力」＝**已确定势力为空**（`effectiveFaction(...) === null`，本仓库口径的暗置），
+ *   **不读**武将牌上的卡面势力，也不能因为服务器知道暗将组合就提前判。
+ * - 同不同势力比的是**结算当时双方已确定的实际势力**（潘濬卡面蜀/吴、本局确定吴 → 只和「吴」比），
+ *   不是卡面的势力集合（唐咨卡面魏/吴、本局确定魏 → 与潘濬不同 → 唐咨失去 1 点体力）。
+ * - 「失去 1 点体力」走 `loseHp`（不是 `dealDamage`）：没有来源、不是伤害事件、不触发
+ *   「受到伤害后」；体力到 0 正常进濒死。
+ * - ② 是「摸牌阶段多摸两张」，所以**摸牌阶段被跳过时不会凭空多摸**（做成 `drawCountDelta`
+ *   字段现算，而不是提前塞 `flags.drawCountDelta`）。
+ *
+ * 【公清】（锁定技）潘濬**受到伤害时**，按**伤害来源的攻击范围**（`attackRange`：武器牌上印的数，
+ * 空手 1；**不是距离、不算坐骑**）：
+ * - < 3 → 此伤害**调整为 1**（是「设为 1」不是「-1」：5 点也变 1 点）；
+ * - = 3 → 什么都不做；
+ * - > 3 → 此伤害 **+1**。
+ * 两支刻意放在**两个不同阶段**：「+1」走 `damageDelta`（较早的加伤层，与裸衣/从谏同层）、
+ * 「改为 1」走 `beforeDamageApply` 的**可写 payload**（伤害值确定的最后一步）——这样以后和
+ * 酒/锋势/凶虐/藤甲的交互不会取决于监听器注册顺序。没有伤害来源（闪电那类）时两支都不处理。
+ */
+/** 【聪察】①：还没确定势力的存活角色（不含潘濬自己） */
+function congchaCandidates(state: GameState, me: Player): Player[] {
+  return state.players.filter(
+    (p) => p.alive && p.seatId !== me.seatId && !effectiveFaction(state, p),
+  );
+}
+
+/** 【聪察】②：场上所有存活角色都已确定势力（阵亡的暗将不算「场上角色」） */
+function allAlivePlayersDetermined(state: GameState): boolean {
+  return state.players.filter((p) => p.alive).every((p) => !!effectiveFaction(state, p));
+}
+
+/** 【聪察】①的发动：准备阶段观察一名尚未确定势力的角色（顺带清掉上一轮的过期观察） */
+function askCongcha(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  // 观察只到「潘濬自己的下一个回合开始」：每次自己的准备阶段先把上一轮挂着的清掉
+  // （口径不是「当前回合结束」、也不是「被观察者的下个回合」）
+  for (const p of state.players) {
+    const i = p.congchaWatchedBy.indexOf(me.seatId);
+    if (i < 0) continue;
+    p.congchaWatchedBy.splice(i, 1);
+    pushLog(state, 'skill', `${me.name} 的【聪察】：对 ${p.name} 的观察已到期。`, {
+      seat: me.seatId,
+    });
+  }
+  if (congchaCandidates(state, me).length === 0) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【聪察】：是否观察一名尚未确定势力的角色？',
+    [
+      { id: 'yes', label: '观察一名角色' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') return;
+      const cands = congchaCandidates(st, p); // 重新算：前面的询问里场上可能已经变了
+      if (cands.length === 0) return;
+      ctx.api.askChoice(
+        st,
+        p.seatId,
+        '【聪察】：选择要观察的角色',
+        cands.map((t) => ({ id: t.seatId, label: t.name })),
+        (st2, p2, targetId) => {
+          const target = getPlayer(st2, targetId);
+          if (!target) return;
+          if (!target.congchaWatchedBy.includes(p2.seatId)) {
+            target.congchaWatchedBy.push(p2.seatId);
+          }
+          pushLog(
+            st2,
+            'skill',
+            `${p2.name} 发动【聪察】：观察 ${target.name}（其首次确定势力时结算）。`,
+            { seat: p2.seatId },
+          );
+        },
+      );
+    },
+  );
+}
+
+/** 【聪察】①的结算：被观察者**首次确定势力**（多个潘濬各自结算、互不覆盖） */
+function onFactionDetermined(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const ev = ctx.payload as
+    | { playerId?: string; faction?: string; isFirstDetermination?: boolean }
+    | undefined;
+  if (!ev?.playerId || !ev.faction || ev.isFirstDetermination !== true) return;
+  const target = getPlayer(state, ev.playerId);
+  if (!target) return;
+  const idx = target.congchaWatchedBy.indexOf(me.seatId);
+  if (idx < 0) return; // 这个潘濬没在观察他
+  // 首次确定即消耗（不是留到下个回合开始）
+  target.congchaWatchedBy.splice(idx, 1);
+  const mine = effectiveFaction(state, me);
+  const name = FACTION_NAME[ev.faction as Faction] ?? ev.faction;
+  if (mine && ev.faction === mine) {
+    // 同势力：双方各摸 2（潘濬先摸，目标后摸）
+    pushLog(
+      state,
+      'skill',
+      `${me.name} 的【聪察】：${target.name} 首次确定势力为${name}，与${me.name}相同——双方各摸两张牌。`,
+      { seat: me.seatId },
+    );
+    for (let i = 0; i < 2; i++) {
+      const c = drawOne(state);
+      if (!c) break;
+      me.hand.push(c);
+    }
+    if (target.alive) {
+      for (let i = 0; i < 2; i++) {
+        const c = drawOne(state);
+        if (!c) break;
+        target.hand.push(c);
+      }
+    }
+    return;
+  }
+  if (!target.alive) return;
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【聪察】：${target.name} 首次确定势力为${name}，与${me.name}不同——失去 1 点体力。`,
+    { seat: me.seatId },
+  );
+  ctx.api.loseHp(target, 1);
+}
+
+/** 【公清】伤害来源的攻击范围（没有来源就返回 null —— 闪电那类不处理） */
+function gongqingRange(state: GameState, sourceId: string | undefined): number | null {
+  if (!sourceId) return null;
+  const src = getPlayer(state, sourceId);
+  if (!src) return null;
+  return attackRange(state, src);
+}
+
+/** 【公清】>3：**较早**的加伤层（与裸衣/从谏同层，走 damageDelta 字段） */
+function gongqingDelta(
+  state: GameState,
+  self: Player,
+  ev: { sourceId?: string; targetId: string },
+): number {
+  if (ev.targetId !== self.seatId) return 0; // 只管「潘濬受到的伤害」
+  const range = gongqingRange(state, ev.sourceId);
+  if (range === null) return 0;
+  return range > 3 ? 1 : 0;
+}
+
+/** 【公清】<3：把伤害**调整为 1**（伤害值确定的最后一步，走 beforeDamageApply 的可写 payload） */
+function gongqingSetOne(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const payload = ctx.payload as
+    | { targetId?: string; damage?: number; attack?: AttackContext }
+    | undefined;
+  if (!payload || payload.targetId !== me.seatId) return;
+  const range = gongqingRange(state, payload.attack?.sourceId);
+  if (range === null) return;
+  // = 3 不动；> 3 已经在 damageDelta 那一层加过了（这里不再碰）
+  if (range >= 3) return;
+  if ((payload.damage ?? 0) === 1) return;
+  payload.damage = 1;
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【公清】：伤害来源攻击范围 ${range} 小于 3，此伤害调整为 1。`,
+    { seat: me.seatId },
+  );
+}
+
+const PANJUN: Hero = {
+  id: 'panjun',
+  name: '潘濬',
+  pack: 'buchen',
+  faction: 'shu',
+  secondFaction: 'wu',
+  maxHp: 3,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 公清是锁定技：伤害修正不能被「非锁定技失效」关掉
+  lockedFields: ['damageDelta'],
+  skillFields: { 聪察: ['drawCountDelta'], 公清: ['damageDelta'] },
+  drawCountDelta: (state) => (allAlivePlayersDetermined(state) ? 2 : 0),
+  damageDelta: gongqingDelta,
+  hooks: [
+    { timing: 'turnStart', skillId: '聪察', handler: askCongcha },
+    { timing: 'factionDetermined', skillId: '聪察', handler: onFactionDetermined },
+    { timing: 'beforeDamageApply', skillId: '公清', locked: true, handler: gongqingSetOne },
+  ],
+  skills: [
+    {
+      name: '聪察',
+      desc: '准备阶段，你可以观察一名尚未确定势力的其他角色：当其首次确定势力时，若其势力与你相同，你与其各摸两张牌；否则其失去1点体力（观察持续到你的下一个回合开始）。摸牌阶段，若场上所有存活角色均已确定势力，你多摸两张牌。',
+    },
+    {
+      name: '公清',
+      desc: '锁定技，当你受到伤害时，若伤害来源的攻击范围小于3，此伤害调整为1；若大于3，此伤害+1。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('panjun', '潘濬', 'shu', 'wu', 3),
   dualHero('sufei', '苏飞', 'wu', 'qun', 4),
   dualHero('xuyou', '许攸', 'wei', 'qun', 3),
 ];
@@ -14886,6 +15111,7 @@ export const HEROES: Hero[] = [
   PENGYANG,
   WENQIN,
   ZHULING,
+  PANJUN,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

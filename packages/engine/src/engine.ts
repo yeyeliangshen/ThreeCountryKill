@@ -799,7 +799,7 @@ function runHooks(state: GameState, timing: Timing, player: Player, payload?: un
 // 已转换（runHooksPausable）：turnStart / playPhase / discardPhase / discardPhaseEnd /
 //   turnEnd / othersTurnEnd / drawPhase / drawPhaseEnd / judgePhase / becomeTarget /
 //   damageDealt / afterDamage / afterDamageDealt / afterHeal / equipLost / handEmptied /
-//   nearDeath / kill
+//   nearDeath / kill / factionDetermined
 // 仍是同步（runHooks）：useCard / beforeResolve / afterResolve / death
 //   —— 预亮技能落在这些时机上时无法询问，只能「预亮即发动」（见 autoRevealHook）。
 
@@ -1339,7 +1339,7 @@ function startJudgmentPhase(state: GameState, player: Player): void {
 function afterJudgmentPhase(state: GameState, player: Player): void {
   if (player.hp <= 0 && state.pending === null) {
     enterNearDeath(state, {
-      sourceId: player.seatId,
+      sourceId: '', // 闪电无来源（同上）
       cardId: '',
       asType: 'shandian',
       targetId: player.seatId,
@@ -1366,8 +1366,13 @@ function doDrawPhase(state: GameState, player: Player): void {
   if (!player.flags.skipDraw) {
     const heroes = revealedHeroes(state.mode, player);
     const heroExtra = heroes.length ? Math.max(0, ...heroes.map((h) => h.extraDraw ?? 0)) : 0;
+    // 有条件的摸牌数修正（潘濬·聪察②）：与 extraDraw 一样按「取最大」参与叠加。
+    // 摸牌阶段被跳过时根本走不到这里，所以不需要额外判跳过。
+    const condExtra = heroes.length
+      ? Math.max(0, ...heroes.map((h) => h.drawCountDelta?.(state, player) ?? 0))
+      : 0;
     // 装备也能给（玉玺）——两者相加，不是取大
-    const extra = heroExtra + equipExtraDraw(state, player);
+    const extra = heroExtra + condExtra + equipExtraDraw(state, player);
     // 阶段钩子可以改张数（裸衣/突袭的「少摸一张」= drawCountDelta -1）
     const count = Math.max(0, 2 + extra + player.flags.drawCountDelta);
     for (let i = 0; i < count; i++) {
@@ -1746,7 +1751,11 @@ function resolveJudgment(
         // 闪电的伤害**无来源**（自伤），但照样走统一伤害层：天香、名士、
         // 白银狮子、护心镜、伤害后钩子都按同一条规则处理。
         const shandianAttack: AttackContext = {
-          sourceId: player.seatId,
+          // ⚠️ 官方的闪电伤害**没有来源**——这里以前填了被劈者自己的座位，于是
+          // 「伤害来源」被人为造了出来：刚烈/名士/从谏①、以及潘濬·【公清】都会把它
+          // 当成一次有来源的伤害去读「来源的攻击范围」（雷电伤害被错误地改成 1 点）。
+          // 空串＝无来源（引擎各处都按 `attack.sourceId ?` 判空）。
+          sourceId: '',
           cardId: trick.id,
           asType: 'shandian',
           targetId: player.seatId,
@@ -3230,18 +3239,18 @@ function damageStep(
     );
     // 宝物【盟军大纛】（君主专属）：**受到伤害时**弃两张牌防止此伤害。它是装备牌的效果，
     // 不走英雄钩子，所以和【飞龙夺凤】一样在这里显式派发；装备持有者自己决定要不要弃。
-    const afterPreDamage = (): void =>
+    const afterPreDamage = (dmgNow: number): void =>
     mengjunDajun(state, target, () =>
-      runHooksPausable(state, 'damageDealt', target, { damage: dmg, attack }, () => {
+      runHooksPausable(state, 'damageDealt', target, { damage: dmgNow, attack }, () => {
       const prevented = target.flags.damagePrevented;
       const reduced = target.flags.damageReduce;
       target.flags.damagePrevented = false;
       target.flags.damageReduce = 0;
       if (prevented) {
-        apply(dmg, true);
+        apply(dmgNow, true);
         return;
       }
-      const finalDmg = Math.max(0, dmg - reduced);
+      const finalDmg = Math.max(0, dmgNow - reduced);
       if (finalDmg <= 0) {
         // 减到 0：等于没造成伤害（官方：伤害值变为 0 则不造成伤害）
         if (reduced > 0) {
@@ -3257,9 +3266,20 @@ function damageStep(
       }),
     );
     if (needsPreDamage) {
-      runBeforeDamageApply(state, { targetId: target.seatId, damage: dmg, attack }, afterPreDamage);
+      // ⚠️ 这个 payload 是**可写**的：钩子可以在这一层改伤害值（潘濬·公清把「攻击范围 < 3」
+      //    的伤害**调整为 1**——是「设为 1」不是「-1」，5 点也变 1 点）。改完以它为准往下走。
+      //    这一层在伤害值确定的**最后**（减伤/名士/白银狮子都算完了），正好对应官方细则里
+      //    「<3 改为 1」比「>3 加伤」更晚的那一步；「>3 加伤」走的是更早的 `damageDelta`。
+      const pre = { targetId: target.seatId, damage: dmg, attack };
+      runBeforeDamageApply(state, pre, () => {
+        const adjusted = Math.max(0, pre.damage);
+        if (adjusted !== dmg) {
+          pushLog(state, 'damage', `${target.name} 受到的伤害被调整为 ${adjusted} 点。`);
+        }
+        afterPreDamage(adjusted);
+      });
     } else {
-      afterPreDamage();
+      afterPreDamage(dmg);
     }
   };
   // 先给**来源**一个机会（张任·穿心那种「防止自己造成的伤害」），再走目标那边
@@ -8064,6 +8084,9 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     }
     // 「当你明置此武将牌后」（糜夫人·闺秀）：把 payload 交给钩子，技能自己判断是不是自己那张
     runHooksPausable(state, 'heroRevealed', player, { heroId: hero.id }, () => {
+      // 「**首次确定势力**」（潘濬·聪察要的正是这件事，不是「亮了一张将」）：只有从「未确定」
+      // 真正进入某个确定势力的这一翻才算——第二张牌翻过来时势力早就定了，`wasDetermined` 挡住。
+      if (!wasDetermined) runFactionDetermined(state, player);
       // 【会盟】：他这一翻让某个势力**首次出现在场上**（0 → 1）时派发。
       // 只有「本来没有确定势力」的人翻牌才可能发生这件事——第二张牌翻过来时势力早就定了。
       if (wasDetermined) return;
@@ -8079,6 +8102,34 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     });
   }
   return changed;
+}
+
+/**
+ * 「**首次确定势力**」的派发点（潘濬·【聪察】）。
+ *
+ * 为什么单独立一个事件、而不是复用 `heroRevealed`：技能关心的不是「亮了一张将」，
+ * 而是「这个人**第一次**有了确定的势力」——单势力明置、双势力确定最终势力、野心家身份转化
+ * 在底层都可能发生这件事，而只有第一次才算（之后势力再变不再触发）。
+ *
+ * 本仓库口径下「确定势力」＝已明置（`effectiveFaction` 非空）：双势力的最终势力虽然在选将时
+ * 就算出来了，但要等明置才**对外确定**，所以派发点落在明置这一处、且每人只派一次。
+ *
+ * payload `{ playerId, faction, isFirstDetermination }`，派给**全场**（观察者是旁观者）。
+ * ⚠️ 与其它新派发点一样：场上真有人挂这个时机才走这一层（多一层可挂起嵌套会改变续接先后）。
+ */
+function runFactionDetermined(state: GameState, player: Player): void {
+  const needed = state.players.some(
+    (p) => p.alive && collectTimingHooks(state, p, 'factionDetermined', false).length > 0,
+  );
+  if (!needed) return;
+  const faction = effectiveFaction(state, player);
+  if (!faction) return;
+  runAllPlayersHooks(
+    state,
+    'factionDetermined',
+    { playerId: player.seatId, faction, isFirstDetermination: true },
+    () => {},
+  );
 }
 
 /**
@@ -9106,6 +9157,7 @@ export function createGame(
     han: [],
     yi: [],
     lu: [],
+    congchaWatchedBy: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],
