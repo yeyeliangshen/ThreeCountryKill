@@ -4579,16 +4579,14 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       if (!p || p.kind !== 'viewCards') return err('当前没有需要确认的信息');
       if (p.seatId !== seatId) return err('不是你在看这张牌');
       setPending(state, null);
-      // 技能发起的查看：接着跑技能的下一步
-      if (p.after) {
-        const after = p.after;
-        after();
-              // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
+      // 技能发起的查看：接着跑技能的下一步；否则把控制权还给发起方
+      if (p.after) p.after();
+      else if (p.returnTo) resumePlay(state, p.returnTo);
+      // 输入槽空了 → 唤醒被挡住的收尾待办，再排空续接队列。
+      // ⚠️ 这两句以前只写在 `if (p.after)` 分支里（我加唤醒语义时的疏漏）→ 走 returnTo 的那条
+      //    分支不会立刻唤醒，被挡住的续接要拖到下一次询问/意图结束才醒（不是死锁，但会延迟）。
       runPendingWaiters(state);
       drainResume(state);
-      return { ok: true };
-      }
-      if (p.returnTo) resumePlay(state, p.returnTo);
       return { ok: true };
     }
     default:
