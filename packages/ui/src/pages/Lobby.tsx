@@ -164,6 +164,23 @@ export function Lobby() {
               />
               君临天下（君主将）
             </label>
+            {(
+              [
+                ['zhen', '君临天下·阵（8 人）'],
+                ['shi', '君临天下·势（8 人）'],
+                ['bian', '君临天下·变（8 人）'],
+                ['quan', '君临天下·权（8 人）'],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className={key} title={`${label}：关闭时该包武将不进选将池`}>
+                <input
+                  type="checkbox"
+                  checked={lobby.config.extensions[key] === 'current'}
+                  onChange={(e) => setExtension(key, e.target.checked ? 'current' : 'off')}
+                />
+                {label}
+              </label>
+            ))}
             <div className="preset-hint" title="预设只是「一键生成配置」；手动改任何一项就会变成自定义">
               当前：
               {(() => {

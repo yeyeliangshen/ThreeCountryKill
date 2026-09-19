@@ -26,12 +26,20 @@ describe('国战扩展开关：配置 / 预设 / 校验', () => {
       shibei: 'off',
       buchen: 'off',
       junlintianxia: 'off',
+      zhen: 'off',
+      shi: 'off',
+      bian: 'off',
+      quan: 'off',
     });
     expect(DEV_DEFAULT_GUOZHAN_PRESET).toBe('full2026');
     expect(configFromPreset('full2026').extensions).toEqual({
       shibei: 'current',
       buchen: 'current',
       junlintianxia: '2026',
+      zhen: 'current',
+      shi: 'current',
+      bian: 'current',
+      quan: 'current',
     });
   });
 

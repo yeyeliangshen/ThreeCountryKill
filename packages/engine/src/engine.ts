@@ -8640,8 +8640,12 @@ export function createGame(
         shibei: opts?.config?.extensions.shibei ?? (opts?.shibei ? 'current' : opts?.shibei === false ? 'off' : 'current'),
         buchen: opts?.config?.extensions.buchen ?? 'current',
         junlintianxia: opts?.config?.extensions.junlintianxia ?? '2026',
+        zhen: opts?.config?.extensions.zhen ?? 'current',
+        shi: opts?.config?.extensions.shi ?? 'current',
+        bian: opts?.config?.extensions.bian ?? 'current',
+        quan: opts?.config?.extensions.quan ?? 'current',
       }
-    : { shibei: 'off', buchen: 'off', junlintianxia: 'off' };
+    : { shibei: 'off', buchen: 'off', junlintianxia: 'off', zhen: 'off', shi: 'off', bian: 'off', quan: 'off' };
   // 选将池：先按模式筛，再交给各扩展模块调整（君主将进不进池由君临天下扩展决定）
   // 见 extensions.ts——**不要在引擎里撒 `if (ext.xxx)`**（用户给定的架构）
   const poolHeroes = applyPoolExtensions(

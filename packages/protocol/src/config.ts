@@ -12,7 +12,7 @@
 /**
  * 配置 schema 版本。**加字段或改变量含义时必须 +1**，并在迁移里写明旧版本怎么读。
  */
-export const GUOZHAN_CONFIG_SCHEMA_VERSION = 1 as const;
+export const GUOZHAN_CONFIG_SCHEMA_VERSION = 2 as const;
 
 /** 势备篇：牌堆内容扩展（标准 108 + 势备 52） */
 export type ShibeiVersion = 'off' | 'current';
@@ -20,11 +20,24 @@ export type ShibeiVersion = 'off' | 'current';
 export type BuchenVersion = 'off' | 'current';
 /** 君临天下：君主规则覆盖（君主化、【君威】、场外专属装备）。'2026' = 现行移动版口径 */
 export type JunlintianxiaVersion = 'off' | '2026';
+/**
+ * 君临天下的四个扩展包（每个 8 名武将）。'off' 时这些武将不进选将池——
+ * 用户要求：「不开启就选不到，开启了才能选到」。
+ */
+export type PackVersion = 'off' | 'current';
 
 export interface GuozhanExtensions {
   shibei: ShibeiVersion;
   buchen: BuchenVersion;
   junlintianxia: JunlintianxiaVersion;
+  /** 君临天下·阵（8 名） */
+  zhen: PackVersion;
+  /** 君临天下·势（8 名） */
+  shi: PackVersion;
+  /** 君临天下·变（8 名） */
+  bian: PackVersion;
+  /** 君临天下·权（8 名） */
+  quan: PackVersion;
 }
 
 export interface GuozhanRoomConfig {
@@ -37,8 +50,16 @@ export const GUOZHAN_VERSION_OPTIONS: {
   shibei: readonly ShibeiVersion[];
   buchen: readonly BuchenVersion[];
   junlintianxia: readonly JunlintianxiaVersion[];
+  zhen: readonly PackVersion[];
+  shi: readonly PackVersion[];
+  bian: readonly PackVersion[];
+  quan: readonly PackVersion[];
 } = {
   shibei: ['off', 'current'],
   buchen: ['off', 'current'],
   junlintianxia: ['off', '2026'],
+  zhen: ['off', 'current'],
+  shi: ['off', 'current'],
+  bian: ['off', 'current'],
+  quan: ['off', 'current'],
 };

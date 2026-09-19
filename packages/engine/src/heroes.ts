@@ -2420,6 +2420,7 @@ const JIANGQIN: Hero = {
   id: 'jiangqin',
   name: '蒋钦',
   faction: 'wu',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -2565,6 +2566,7 @@ const CAOHONG: Hero = {
   id: 'caohong',
   name: '曹洪',
   faction: 'wei',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -2772,6 +2774,7 @@ const JIANGWAN_FEYI: Hero = {
   id: 'jiangwan_feyi',
   name: '蒋琬费祎',
   faction: 'shu',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -2860,6 +2863,7 @@ const CHENWU_DONGXI: Hero = {
   id: 'chenwu_dongxi',
   name: '陈武董袭',
   faction: 'wu',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -2952,6 +2956,7 @@ const XUSHENG: Hero = {
   id: 'xusheng',
   name: '徐盛',
   faction: 'wu',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -3278,6 +3283,7 @@ const DENGAI: Hero = {
   id: 'dengai',
   name: '邓艾',
   faction: 'wei',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4（走主将技时再减 1）
   maxHp: 4,
   gender: 'male',
@@ -3617,6 +3623,7 @@ const JUN_CAOCAO: Hero = lordHero(
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【六龙骖驾】）、【雄驰】、【征戎】，三条都已实现。',
   {
     // 与标准版【曹操】是同一个武将本体：两者不能同时当主将+副将（见 heroCanonicalId）
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
     canonicalId: 'caocao',
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
@@ -3752,6 +3759,7 @@ const JUN_LIUBEI: Hero = lordHero(
   'shu',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【飞龙夺凤】）、【章武】、【励众】都已实现。',
   {
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
     canonicalId: 'liubei', // 与【刘备】同一本体
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
@@ -3950,6 +3958,7 @@ const JUN_SUNQUAN: Hero = lordHero(
   'wu',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【定澜夜明珠】）、【督授】、【据江】已实现。',
   {
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
     canonicalId: 'sunquan', // 与【孙权】同一本体
     // 督授：给**同势力角色**一个出牌阶段技能（引擎按这个 id 找提供者，见 factionGrantedActiveSkills）
     factionSkillId: 'dushou',
@@ -4140,6 +4149,7 @@ const JUN_YUANSHAO: Hero = lordHero(
   'qun',
   '君主将：只能作主将、不当野心家、亮将时双将同亮、与同势力全员珠联璧合、阵亡令同势力各失去1点体力。【君威】（专属装备【盟军大纛】）、【会盟】、【授锋】已实现。',
   {
+    pack: 'jun', // jun 包（君主将；junlintianxia 关闭时不进池）
     canonicalId: 'yuanshao', // 与【袁绍】同一本体
     skills: [
       { name: '君主将', desc: '君主将的固定特性（见武将注释）。' },
@@ -4171,6 +4181,7 @@ const MASU: Hero = {
   id: 'masu',
   name: '马谡',
   faction: 'shu',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -4299,6 +4310,7 @@ const LINGTONG: Hero = {
   id: 'lingtong',
   name: '凌统',
   faction: 'wu',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -4424,6 +4436,7 @@ const MADAI: Hero = {
   id: 'madai',
   name: '马岱',
   faction: 'shu',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -4651,6 +4664,7 @@ const CUIYAN_MAOJIE: Hero = {
   id: 'cuiyan_maojie',
   name: '崔琰毛玠',
   faction: 'wei',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -4854,6 +4868,7 @@ const YUJIN: Hero = {
   id: 'yujin',
   name: '于禁',
   faction: 'wei',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -4978,6 +4993,7 @@ const FAZHENG: Hero = {
   id: 'fazheng',
   name: '法正',
   faction: 'shu',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -5254,6 +5270,7 @@ const WANGPING: Hero = {
   id: 'wangping',
   name: '王平',
   faction: 'shu',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -5321,6 +5338,7 @@ const LIJUE_GUOSI: Hero = {
   id: 'lijue_guosi',
   name: '李傕郭汜',
   faction: 'qun',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -5516,6 +5534,7 @@ const YUANSHU: Hero = {
   id: 'yuanshu',
   name: '袁术',
   faction: 'qun',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -6181,6 +6200,7 @@ const WUGUOTAI: Hero = {
   id: 'wuguotai',
   name: '吴国太',
   faction: 'wu',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'female',
@@ -6400,6 +6420,7 @@ const LUKANG: Hero = {
   id: 'lukang',
   name: '陆抗',
   faction: 'wu',
+  pack: 'quan', // quan 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -6611,6 +6632,7 @@ const BIANFUREN: Hero = {
   id: 'bianfuren',
   name: '卞夫人',
   faction: 'wei',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'female',
@@ -6695,6 +6717,7 @@ const ZUOCI: Hero = {
   id: 'zuoci',
   name: '左慈',
   faction: 'qun',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -6965,6 +6988,7 @@ const LVFAN: Hero = {
   id: 'lvfan',
   name: '吕范',
   faction: 'wu',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -7157,6 +7181,7 @@ const SUNCE: Hero = {
   id: 'sunce',
   name: '孙策',
   faction: 'wu',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4（副将位走魂殇时再减 1）
   maxHp: 4,
   gender: 'male',
@@ -7303,6 +7328,7 @@ const XUNYOU: Hero = {
   id: 'xunyou',
   name: '荀攸',
   faction: 'wei',
+  pack: 'bian', // bian 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -7567,6 +7593,7 @@ const YUJI: Hero = {
   id: 'yuji',
   name: '于吉',
   faction: 'qun',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -7815,6 +7842,7 @@ const ZHANGREN: Hero = {
   id: 'zhangren',
   name: '张任',
   faction: 'qun',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -7939,6 +7967,7 @@ const MIFUREN: Hero = {
   id: 'mifuren',
   name: '糜夫人',
   faction: 'shu',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'female',
@@ -8023,6 +8052,7 @@ const DONGZHUO: Hero = {
   id: 'dongzhuo',
   name: '董卓',
   faction: 'qun',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 2 阴阳鱼 → 4
   maxHp: 4,
   gender: 'male',
@@ -8196,6 +8226,7 @@ const LIDIAN: Hero = {
   id: 'lidian',
   name: '李典',
   faction: 'wei',
+  pack: 'shi', // shi 包：该包开关关闭时不进选将池
   // 国战牌面 1.5 阴阳鱼 → 3
   maxHp: 3,
   gender: 'male',
@@ -10077,6 +10108,7 @@ const JIANGWEI: Hero = {
   id: 'jiangwei',
   name: '姜维',
   faction: 'shu',
+  pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   maxHp: 4,
   gender: 'male',
   // 挑衅（已核国战文本）：出牌阶段限一次，你可以令一名**攻击范围内包含你**的角色对你

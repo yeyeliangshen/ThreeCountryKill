@@ -6,6 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import type { WebSocket } from 'ws';
 import { Room } from '../src/room';
+import { GUOZHAN_CONFIG_SCHEMA_VERSION } from '@sgs/engine';
+
 
 /** 一个够用的假连接：Room 只用到 readyState / OPEN / send */
 function fakeWs(sent: string[] = []): WebSocket {
@@ -347,11 +349,15 @@ describe('Room · 已开局的房间进不去', () => {
 
   describe('房间 · 国战扩展开关（第③步）', () => {
     const cfg = (ext: Partial<Record<'shibei' | 'buchen' | 'junlintianxia', string>>) => ({
-      schemaVersion: 1 as const,
+      schemaVersion: GUOZHAN_CONFIG_SCHEMA_VERSION,
       extensions: {
         shibei: (ext.shibei ?? 'off') as 'off' | 'current',
         buchen: (ext.buchen ?? 'off') as 'off' | 'current',
         junlintianxia: (ext.junlintianxia ?? 'off') as 'off' | '2026',
+        zhen: 'off' as const,
+        shi: 'off' as const,
+        bian: 'off' as const,
+        quan: 'off' as const,
       },
     });
 
@@ -361,6 +367,10 @@ describe('Room · 已开局的房间进不去', () => {
         shibei: 'off',
         buchen: 'off',
         junlintianxia: 'off',
+        zhen: 'off',
+        shi: 'off',
+        bian: 'off',
+        quan: 'off',
       });
     });
 
@@ -377,7 +387,7 @@ describe('Room · 已开局的房间进不去', () => {
       const room = new Room('8888');
       room.claimSeat('1', fakeWs(), '甲');
       const bad = room.setGuozhanConfig('1', {
-        schemaVersion: 1,
+        schemaVersion: GUOZHAN_CONFIG_SCHEMA_VERSION,
         extensions: { shibei: 'legacy', buchen: 'off', junlintianxia: 'off' },
       });
       expect(bad.ok).toBe(false);

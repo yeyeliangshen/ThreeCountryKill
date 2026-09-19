@@ -33,11 +33,27 @@ import {
 export const GUOZHAN_PRESETS = {
   standard: {
     schemaVersion: GUOZHAN_CONFIG_SCHEMA_VERSION,
-    extensions: { shibei: 'off', buchen: 'off', junlintianxia: 'off' },
+    extensions: {
+      shibei: 'off',
+      buchen: 'off',
+      junlintianxia: 'off',
+      zhen: 'off',
+      shi: 'off',
+      bian: 'off',
+      quan: 'off',
+    },
   },
   full2026: {
     schemaVersion: GUOZHAN_CONFIG_SCHEMA_VERSION,
-    extensions: { shibei: 'current', buchen: 'current', junlintianxia: '2026' },
+    extensions: {
+      shibei: 'current',
+      buchen: 'current',
+      junlintianxia: '2026',
+      zhen: 'current',
+      shi: 'current',
+      bian: 'current',
+      quan: 'current',
+    },
   },
 } as const satisfies Record<string, GuozhanRoomConfig>;
 
@@ -111,7 +127,7 @@ export function validateGuozhanConfig(cfg: unknown): ConfigValidation {
     errors.push('缺少 extensions');
     return { ok: false, errors };
   }
-  for (const key of ['shibei', 'buchen', 'junlintianxia'] as const) {
+  for (const key of ['shibei', 'buchen', 'junlintianxia', 'zhen', 'shi', 'bian', 'quan'] as const) {
     const allowed = GUOZHAN_VERSION_OPTIONS[key] as readonly string[];
     const v = ext[key];
     if (!allowed.includes(String(v))) {
