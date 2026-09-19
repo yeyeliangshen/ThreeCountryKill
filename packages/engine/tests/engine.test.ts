@@ -19395,7 +19395,8 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
         hand: [sha('a1')],
         hp: 4,
         maxHp: 4,
-        lu: [{ heroId: 'caocao', faction: 'wei' }],
+        // ⚠️ 双势力武将牌作「戮」时**同时对应两个牌面势力**（§5.121 的口径，左慈双势力魂的实测依据）
+        lu: [{ heroId: 'tangzi', factions: ['wei', 'wu'] }],
       },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [] },
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hp: 4, hand: [] },
@@ -19411,11 +19412,12 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: 'caocao' })); // 选那张魏戮（现在按武将牌 id 选）
+    if (state.pending?.kind === 'choice') expect(state.pending.options[0]!.label).toContain('魏/吴');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'tangzi' })); // 按武将牌 id 选
     ok(act(state, A, { type: 'chooseOption', optionId: 'dmg' })); // 加伤
     expect(a.lu.length).toBe(0);
     expect(state.heroPool.length).toBe(poolBefore + 1); // 返回未登场堆（不是销毁）
-    expect(state.xiongnue?.faction).toBe('wei');
+    expect(state.xiongnue?.factions).toEqual(['wei', 'wu']);
   });
 
   it('凶虐②：**出牌阶段结束时**消费 2 张戮换减伤；受到其他角色伤害 -1', () => {

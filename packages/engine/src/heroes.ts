@@ -14815,7 +14815,7 @@ function askShilu(ctx: HookContext): void {
       if (picked !== 'yes') return;
       const names: string[] = [];
       for (const id of collectable) {
-        p.lu.push({ heroId: id, faction });
+        p.lu.push({ heroId: id, factions: printedFactionsOf(id) });
         names.push(getHeroForMode(id, st.mode)?.name ?? id);
       }
       if (iKilled) {
@@ -14825,7 +14825,7 @@ function askShilu(ctx: HookContext): void {
           if (!id) break;
           const h = getHeroForMode(id, st.mode);
           // ⚠️ 双势力牌随机成戮时「对应哪个势力」没有查到移动版细则 → 记 null（待核对，见 §5.107）
-          p.lu.push({ heroId: id, faction: h?.secondFaction ? null : (h?.faction ?? null) });
+          p.lu.push({ heroId: id, factions: printedFactionsOf(id) });
           names.push(h?.name ?? id);
         }
       }
@@ -14834,6 +14834,26 @@ function askShilu(ctx: HookContext): void {
       });
     },
   );
+}
+
+/**
+ * **武将牌牌面**上的势力标签（可以有多个）。
+ *
+ * ⚠️ 与「角色的势力」（`effectiveFaction`／`determinedFaction`，**只能有一个**）是两回事：
+ * 一张双势力武将牌脱离角色、作为**武将牌资源**存在时（孙綝的「戮」、左慈的「魂」）
+ * 同时对应**牌面上的两个势力**——依据是移动版不臣篇对左慈【汲魂】+ 双势力魂的实测
+ * （用户 2026-09 给的证据链，见 docs §5.121）。所以「戮」不再存单个 `faction`。
+ */
+export function printedFactionsOf(heroId: string): Faction[] {
+  const h = getHero(heroId);
+  if (!h) return [];
+  return h.secondFaction ? [h.faction, h.secondFaction] : [h.faction];
+}
+
+/** 这个「戮」是否对某角色生效（角色**已确定**的势力落在这张牌面的势力集合里） */
+function luMatchesPlayer(state: GameState, entry: { factions: Faction[] }, p: Player): boolean {
+  const f = effectiveFaction(state, p);
+  return !!f && entry.factions.includes(f);
 }
 
 /** 嗜戮②（准备阶段）+ 凶虐效果到期：换牌 & 清掉上一回合的凶虐状态 */
@@ -14887,7 +14907,8 @@ function askXiongnueOffense(ctx: HookContext): void {
   //    **不允许在这条路上选**（凶虐①必须读势力）——但**不消耗、不惩罚**它：
   //    【嗜戮】换牌与【凶虐②】消耗两戮（势力不限）照常能用它。
   //    所以这里先把可选的挑出来；一张都没有就整个不出询问。
-  const usable = me.lu.filter((e) => !!e.faction);
+  // 每张「戮」都带**牌面势力集合**（双势力牌同时对应两个）→ 不再有「不可选」的戮
+  const usable = me.lu.filter((e) => e.factions.length > 0);
   if (usable.length === 0) return;
   ctx.api.askChoice(
     state,
@@ -14906,7 +14927,7 @@ function askXiongnueOffense(ctx: HookContext): void {
         // 只列出**已确定势力**的那些（`faction === null` 的标为 unresolved，不在这里给）
         usable.map((e) => ({
           id: e.heroId,
-          label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${FACTION_NAME[e.faction!] ?? e.faction}）`,
+          label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${e.factions.map((f) => FACTION_NAME[f] ?? f).join('/')}）`,
         })),
         (st2, p2, heroId) => {
           const idx = p2.lu.findIndex((e) => e.heroId === heroId);
@@ -14918,7 +14939,7 @@ function askXiongnueOffense(ctx: HookContext): void {
           pushLog(
             st2,
             'skill',
-            `${p2.name} 的【凶虐】：移去「戮」【${getHeroForMode(entry.heroId, st2.mode)?.name ?? entry.heroId}】（${entry.faction ? FACTION_NAME[entry.faction] ?? entry.faction : '势力待核对'}），其返回未登场武将牌堆。`,
+            `${p2.name} 的【凶虐】：移去「戮」【${getHeroForMode(entry.heroId, st2.mode)?.name ?? entry.heroId}】（${entry.factions.map((f) => FACTION_NAME[f] ?? f).join('/')}），其返回未登场武将牌堆。`,
             { seat: p2.seatId },
           );
           const modes: { id: 'dmg' | 'obtain' | 'limit'; label: string }[] = [
@@ -14927,20 +14948,13 @@ function askXiongnueOffense(ctx: HookContext): void {
             { id: 'limit', label: '本回合对其势力角色使用牌无次数限制' },
           ];
           ctx.api.askChoice(st2, p2.seatId, '【凶虐】：选择本回合的攻击效果', modes, (st3, p3, mode) => {
-            if (!entry.faction) {
-              pushLog(
-                st3,
-                'skill',
-                `${p3.name} 的【凶虐】：这张「戮」的势力待核对（双势力牌随机所得），本次不产生效果。`,
-                { seat: p3.seatId },
-              );
-              return;
-            }
-            st3.xiongnue = { faction: entry.faction, mode: mode as 'dmg' | 'obtain' | 'limit' };
+            if (entry.factions.length === 0) return; // 理论上不会
+            // ⚠️ 双势力「戮」= **两个牌面势力都算**（§5.121 的口径）
+            st3.xiongnue = { factions: entry.factions.slice(), mode: mode as 'dmg' | 'obtain' | 'limit' };
             pushLog(
               st3,
               'skill',
-              `${p3.name} 的【凶虐】：本回合对【${FACTION_NAME[entry.faction] ?? entry.faction}】势力生效（${modes.find((m) => m.id === mode)?.label ?? mode}）。`,
+              `${p3.name} 的【凶虐】：本回合对【${entry.factions.map((f) => FACTION_NAME[f] ?? f).join('、')}】势力生效（${modes.find((m) => m.id === mode)?.label ?? mode}）。`,
               { seat: p3.seatId },
             );
           });
@@ -15016,7 +15030,7 @@ function xiongnueDamageDelta(
   const target = atk.targetId ? getPlayer(state, atk.targetId) : undefined;
   // ① 来源侧：本回合选定的势力 → 对其角色伤害 +1
   if (atk.sourceId === me.seatId && state.xiongnue && target) {
-    if (effectiveFaction(state, target) === state.xiongnue.faction && state.xiongnue.mode === 'dmg') {
+    if (state.xiongnue.mode === 'dmg' && luMatchesPlayer(state, state.xiongnue, target)) {
       return 1;
     }
   }
@@ -15037,7 +15051,7 @@ function xiongnueObtain(ctx: HookContext): void {
   if (!attack || attack.sourceId !== me.seatId || attack.targetId === me.seatId) return;
   const target = getPlayer(state, attack.targetId);
   if (!target || !target.alive) return;
-  if (effectiveFaction(state, target) !== eff.faction) return;
+  if (!luMatchesPlayer(state, eff, target)) return;
   if (handAndEquipOf(target).length === 0) return; // 无牌可获得
   ctx.api.askChoice(
     state,
@@ -15077,7 +15091,7 @@ const SUNCHEN: Hero = {
     if (targetIds.length === 0) return false;
     return targetIds.every((id) => {
       const t = state.players.find((p) => p.seatId === id);
-      return !!t && effectiveFaction(state, t) === eff.faction;
+      return !!t && luMatchesPlayer(state, eff, t);
     });
   },
   hooks: [

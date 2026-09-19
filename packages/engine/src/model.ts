@@ -425,7 +425,7 @@ export interface Player {
    * 势力**（死者所确定的势力；从未登场武将堆随机得到的见 §5.107 的待核对项）。
    * 与左慈的「魂」(`hun: string[]`) 同一套资源语义：它们都从 `state.heroPool` 里来。
    */
-  lu: { heroId: string; faction: Faction | null }[];
+  lu: { heroId: string; factions: Faction[] }[];
   /**
    * 界钟会·【权计】的「权」：**真实的实体牌**（从手牌或装备区移来），公开放在武将牌旁。
    * 它不是手牌、不算装备区，排异时被移去（进弃牌堆）；每有 1 张，手牌上限 +1（动态读，不缓存）。
@@ -878,7 +878,7 @@ export interface GameState {
    * 孙綝·【凶虐】①：本回合选定的攻击效果（消费 1 张戮换来）。
    * `faction` 是那张戮**冻结时**的势力；`mode` 是三分支之一。随他的下个回合开始清空。
    */
-  xiongnue: { faction: Faction; mode: 'dmg' | 'obtain' | 'limit' } | null;
+  xiongnue: { factions: Faction[]; mode: 'dmg' | 'obtain' | 'limit' } | null;
   /**
    * 孙綝·【凶虐】②：本回合的出牌阶段结束时消费 2 张戮换来的「受到**其他角色**伤害 -1」，
    * 持续到**他自己的下个回合开始**（跨过别人的回合）。
