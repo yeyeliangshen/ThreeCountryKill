@@ -12983,34 +12983,6 @@ function fenji(ctx: HookContext, who: Player): void {
 }
 
 
-/**
- * 不臣篇的**双势力武将**（用户给定的 2023 口径下的势力配对）。
- *
- * ⚠️ 只登记了「两个势力」这一项已知信息：这些武将的**技能文本还没核到**，所以 `skills` 为空、
- *    `maxHp` 是按国战常见值暂填 4（待核对），请在 roster 里按「部分实现」看待它们。
- *    它们只在 `buchen: 'current'` 时进选将池（见 extensions.ts 的 BuchenExtension）。
- */
-function dualHero(
-  id: string,
-  name: string,
-  f1: Faction,
-  f2: Faction,
-  hp: number,
-): Hero {
-  return {
-    id,
-    name,
-    pack: 'buchen', // 不臣篇
-    faction: f1,
-    secondFaction: f2,
-    // 用户给出的国战牌面阴阳鱼数 ×2（本仓库体力是整数的口径）：2 阴阳鱼 → 4，1.5 → 3
-    maxHp: hp,
-    gender: 'male',
-    modes: ['guozhan'],
-    skills: [], // ⚠️ 技能文本尚未核到（技能**名**见 docs/guozhan-roster.md §5.83）
-  };
-}
-
 /** 势力显示名（未确定势力＝两张武将牌都暗着）——【问计】的选项与日志用它 */
 function factionNameOf(state: GameState, p: Player): string {
   const f = effectiveFaction(state, p);
@@ -14101,9 +14073,6 @@ const HUANGZU: Hero = {
   ],
 };
 
-const BUCHEN_DUAL: Hero[] = [
-];
-
 /**
  * 不臣篇的**野心家武将**（势力本身就是「野」）——与「因人数超限被转成野心家」完全是两回事
  * （用户反复强调过：前者才关联「暴露野心 → 建立新势力」）。它们只能作主将（`pickHero` 已拦副将），
@@ -14124,7 +14093,7 @@ const BUCHEN_DUAL: Hero[] = [
  *   ① 自己使用的【杀】/【决斗】对其他角色实际造成伤害时，此伤害 +1（走 `Hero.damageDelta`，
  *      进统一的伤害修正链；被闪/被防止不消耗次数，2 点伤害也只 +1 一次）；
  *   ② 使用锦囊牌无距离限制，且每使用一张锦囊摸 1 张（第 3 次本身完整生效后才失效）；
- *   ③ ⏳ 其他角色因**弃置**进弃牌堆时获得其中 1 张（**本轮未实现**，见文档 §5.101 的待办）。
+ *   ③ 其他角色因**弃置**进弃牌堆时，获得其中 1 张（挂 `anyCardDiscarded`，同一批只拿 1 张）。
  *   回合结束时若本回合触发**不足 3 次**，获得临时【反馈】，持续到**自己的下个回合开始**。
  */
 function suzhiAvailable(state: GameState, me: Player): boolean {
@@ -15739,19 +15708,6 @@ const ZHULING: Hero = {
   ],
 };
 
-function ambitionistHero(id: string, name: string, hp: number): Hero {
-  return {
-    id,
-    name,
-    pack: 'buchen', // 不臣篇
-    faction: 'ambitionist',
-    maxHp: hp,
-    gender: 'male',
-    modes: ['guozhan'],
-    skills: [],
-  };
-}
-
 /**
  * 界钟会 —— 权计 / 排异（不臣篇·下，**武将牌本身就是「野」**，2 阴阳鱼 → **4**，
  * 珠联璧合【姜维】；技能按**移动版当前国战版**，用户核对后给出等价实现口径）。
@@ -15950,7 +15906,6 @@ const BUCHEN_AMBITIONIST: Hero[] = [
 ];
 
 export const HEROES: Hero[] = [
-  ...BUCHEN_DUAL,
   LIUQI,
   TANGZI,
   SHIXIE,

@@ -5492,11 +5492,13 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
   // 「这张牌整个结算结束」的出口（锦囊侧）。两张牌都用这个出口：
   // ①【授锋】的 cardResolved（只看账本里那张首张伤害牌）；②【调虎离山】的 afterUse。
   // ⚠️ 这里必须是 resumePlay：本函数自己就是它的替代品，调自己会无限递归
-  // ⚠️ 已知缺口（两种修法都试过、都回退，见 docs §5.118）：这里会把收口里旁观技能刚发起的询问
-  //    冲掉（夙智③）。① 在 resumePlay 里加 null 保护 → 冒烟大面积卡死；② 只把 guard 收在本处
-  //    → 冒烟里 yuanshu/dongzhuo/dengai 等对局直接判不出胜负。说明这些收尾**确实需要**抢回
-  //    pending（不是可有可无），正确修法必须能**区分**「本次收尾自己刚产生的询问」与「更早的
-  //    陈旧 pending」（版本号 / 对象身份），并且**优先在发问方**（弃置收口）解决。
+  // ✅ 这里曾经是「已知缺口」（docs §5.118 ①）：收口会把旁观技能刚发起的询问冲掉（夙智③）。
+  //    现在不会了——问询是在**钩子链**里发起的（弃置收口派 `anyCardDiscarded`），而钩子链遇到
+  //    未回答的询问会**挂起**（runHooksFrom 认 choice/pickCards/viewCards/respondDeath），
+  //    所以「跑收尾」这一步（含本函数的 resumePlay）要等那条链答完才轮得到。
+  //    当年那两种修法（给 resumePlay 加 null 保护 / 只在本处加 guard）都被冒烟否掉，
+  //    因为它们会把**真正需要**抢回 pending 的收尾一起挡掉。
+  //    仍欠的账只剩「请求式收尾」（requestResumePlay 未接线，§5.128.4）——那是形态问题，不是本处 bug。
   const finish = (): void => {
     // 「这张牌整个结算结束」也派给**全场**（许攸·成略：旁观的同势力角色要听）；
     // 与【杀】那条一样用 cardUseEnded + 本次使用的编号
