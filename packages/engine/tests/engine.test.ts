@@ -38,7 +38,7 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
 
   type GameState,
   type SeatSetup,
-  determineDualFaction,} from '../src';
+  determineDualFaction,  turnDiscardCountBy,} from '../src';
 import { FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type { Card, CardType, Faction, GameMode, MarkerId, Suit } from '@sgs/protocol';
 
@@ -20368,6 +20368,8 @@ describe('国战 · 袁术·伪帝（从牌堆摸牌的归因）', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     // 有牌堆可控：无中生有给乙……不，是甲自己摸。改成让乙摸：用【遗计】太重，直接用引擎账本？
     // 这里走真实路径：甲对乙用【借刀杀人】太重 —— 改用「甲用【无中生有】，然后看甲自己不是目标」
+    // ⚠️ 牌堆钉死：这张用例的断言与**摸到的是什么牌**有关，靠随机洗牌时会偶发失败
+    state.deck = [mk('d1', 'sha', 'club', 7), mk('d2', 'sha', 'club', 8)];
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
     passWuxie(state);
     // 甲自己摸的不算（伪帝只点「其他角色」），所以此时没有合法目标
@@ -23415,5 +23417,266 @@ describe('国战 · 界钟会（权计 / 排异）', () => {
     // 技能直伤没有实体牌 → 不是「使用仅指定一个目标的牌造成伤害」→ 不弹权计
     expect(state.log.some((e) => e.message.includes('权计'))).toBe(false);
     expect(pick(state, B).quan.length).toBe(0);
+  });
+});
+
+/**
+ * 苏飞（不臣篇·下，**吴/群双势力**，2 阴阳鱼；文档 §5.114）。
+ * 锁：① 联翩统计**本回合**（不是弃牌阶段）**执行者**弃置的**任意角色**的牌；② 「置入弃牌堆」不算；
+ * ③ 门槛＝苏飞**实时体力 + 1**；④ 自己的结束阶段完全替换成「同势力补至体力上限」；
+ * ⑤ 别人的结束阶段由**他**决定（弃苏飞一张 / 让苏飞回 1 血），而这次弃置也算进他的本回合弃置数。
+ */
+describe('国战 · 苏飞（联翩）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      hp?: number;
+      maxHp?: number;
+      equipment?: Card[];
+    }[],
+    actor?: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.deputyHeroId = 'vanilla';
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      for (const c of s.equipment ?? []) {
+        const slot = EQUIP_SLOTS.find((sl) => sl === (c.type as (typeof EQUIP_SLOTS)[number]));
+        if (slot) p.equipment[slot] = c;
+      }
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+  const taos = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+  const gz3 = (suHand: Card[], suHp: number) =>
+    gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: taos('a', 2) },
+        {
+          seatId: B,
+          name: '苏飞',
+          heroId: 'sufei',
+          faction: 'wu',
+          hand: suHand,
+          hp: suHp,
+          maxHp: 4,
+        },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu', hand: [] },
+      ],
+      A,
+    );
+
+  it('联翩①：统计**本回合**执行者弃置的牌——弃自己的、弃别人的都算；「置入弃牌堆」不算', () => {
+    const state = gz3([tao('b1')], 2); // 苏飞体力 2 → 门槛 3
+    // 甲的出牌阶段：过河拆桥弃乙（苏飞）一张（执行者是甲）→ 甲本回合弃置 1 张
+    const a = pick(state, A);
+    a.hand = [mk('gh1', 'guohe', 'spade'), sha('s1')];
+    ok(act(state, A, { type: 'playCard', cardId: 'gh1', targetIds: [B] }));
+    passWuxie(state);
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+    }
+    expect(turnDiscardCountBy(state, A)).toBe(1);
+    expect(turnDiscardCountBy(state, B)).toBe(0); // 牌主是苏飞，但执行者是甲
+    // 甲再弃自己两张（体力压到 2 → 上限 2；把手上补到 4 张 → 弃 2）
+    a.hp = 2;
+    a.hand = taos('a', 4);
+    ok(act(state, A, { type: 'endPhase' }));
+    if (state.pending?.kind === 'discard') {
+      ok(act(state, A, { type: 'discard', cardIds: pick(state, A).hand.slice(0, 2).map((c) => c.id) }));
+    }
+    // ⚠️ 账本是**回合口径**：回合一交接就清空了，所以这里用【联翩】询问的标题来观察
+    //    （标题里带了「你本回合已弃置 N 张牌」）——过河拆桥 1 张 + 弃牌阶段 2 张 = 3
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期联翩询问，实际是 ${ask?.kind}`);
+    expect(ask.title).toContain('已弃置 3 张');
+  });
+
+  it('联翩②：「令其弃置」时执行者是那位本人；「置入弃牌堆」（决绝）完全不计', () => {
+    const state = gz3([tao('b1'), tao('b2')], 4);
+    // 甲本回合弃置 0 张 → 苏飞的门槛（体力 4 + 1 = 5）不成立 → 结束阶段不该弹询问
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('联翩')).toBe(false);
+    // 朱灵·决绝那种「置入弃牌堆」不进账本
+    const a = pick(state, A);
+    state.turnDiscards.push({ actorId: A, ownerId: A, cardIds: [] }); // 空记录也不加数
+    expect(turnDiscardCountBy(state, A)).toBe(0);
+    void a;
+  });
+
+  it('联翩③：门槛＝苏飞**实时**体力 + 1（体力降了，门槛也降）', () => {
+    // 苏飞体力 1 → 门槛 2：甲本回合弃 2 张就成立
+    const state = gz3([tao('b1'), tao('b2')], 1);
+    const a = pick(state, A);
+    a.hand = [mk('gh1', 'guohe', 'spade'), mk('gh2', 'guohe', 'club')];
+    ok(act(state, A, { type: 'playCard', cardId: 'gh1', targetIds: [B] }));
+    passWuxie(state);
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+    }
+    ok(act(state, A, { type: 'playCard', cardId: 'gh2', targetIds: [B] }));
+    passWuxie(state);
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+    }
+    expect(turnDiscardCountBy(state, A)).toBe(2);
+    ok(act(state, A, { type: 'endPhase' }));
+    // 2 >= 1 + 1 → 苏飞的门槛成立 → **由甲**决定（不是苏飞）
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期联翩询问，实际是 ${ask?.kind}`);
+    expect(ask.seatId).toBe(A);
+    expect(ask.title).toContain('联翩');
+  });
+
+  it('联翩④：别人结束阶段 → **由他**选「弃苏飞一张」或「让苏飞回 1 血」；弃置的执行者是他', () => {
+    const state = gz3([tao('b1'), tao('b2')], 4);
+    const a = pick(state, A);
+    a.hand = [mk('gh1', 'guohe', 'spade')];
+    // 先凑够门槛：甲体力 4、苏飞体力 4 → 需要 5 张，改苏飞体力为 2 → 门槛 3
+    pick(state, B).hp = 2;
+    // 甲弃 3 张：过河拆桥 1 张 + 结束阶段弃 2 张
+    ok(act(state, A, { type: 'playCard', cardId: 'gh1', targetIds: [B] }));
+    passWuxie(state);
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+    }
+    a.hand = taos('a', 4);
+    a.hp = 2; // 手牌上限 2 → 弃 2 张
+    ok(act(state, A, { type: 'endPhase' }));
+    if (state.pending?.kind === 'discard') {
+      const ids = pick(state, A).hand.slice(0, 2).map((c) => c.id);
+      ok(act(state, A, { type: 'discard', cardIds: ids }));
+    }
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期联翩询问，实际是 ${ask?.kind}`);
+    expect(ask.seatId).toBe(A);
+    // 苏飞已受伤（2/4）→ 两个分支都合法
+    expect(ask.options.map((o) => o.id).sort()).toEqual(['discard', 'heal', 'no'].sort());
+    ok(act(state, A, { type: 'chooseOption', optionId: 'discard' }));
+    // 选苏飞哪张牌的也是甲
+    if (state.pending?.kind === 'pickCards') {
+      expect(state.pending.seatId).toBe(A);
+      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+    }
+    // 日志告诉我们：**执行弃置的是甲**（牌主是苏飞）
+    expect(state.log.some((e) => e.message.includes('甲 因【联翩】弃置了 苏飞 的'))).toBe(true);
+  });
+
+  it('联翩⑦：这次弃置也算进执行者本回合的弃置数 → 后一个苏飞**实时**重算门槛（不能快照）', () => {
+    // 甲本回合先弃 3 张（三张过河拆桥都拆苏飞甲的牌）
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'vanilla',
+          faction: 'wei',
+          hand: [
+            mk('gh1', 'guohe', 'spade'),
+            mk('gh2', 'guohe', 'club'),
+            mk('gh3', 'guohe', 'heart'),
+          ],
+        },
+        { seatId: B, name: '苏飞甲', heroId: 'sufei', faction: 'wu', hp: 2, maxHp: 4, hand: taos('b', 5) },
+        { seatId: C, name: '苏飞乙', heroId: 'sufei', faction: 'wu', hp: 3, maxHp: 4, hand: [] },
+      ],
+      A,
+    );
+    for (const id of ['gh1', 'gh2', 'gh3']) {
+      ok(act(state, A, { type: 'playCard', cardId: id, targetIds: [B] }));
+      passWuxie(state);
+      if (state.pending?.kind === 'pickCards') {
+        ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+      }
+    }
+    expect(turnDiscardCountBy(state, A)).toBe(3);
+    ok(act(state, A, { type: 'endPhase' })); // 甲的结束阶段
+    // 苏飞甲（体力 2 → 门槛 3）先结算：甲弃他一张 → 甲的弃置数变成 4
+    const ask1 = state.pending;
+    if (ask1?.kind !== 'choice') throw new Error(`预期苏飞甲的联翩，实际是 ${ask1?.kind}`);
+    expect(ask1.title).toContain('苏飞甲');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'discard' }));
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+    }
+    // 苏飞乙（体力 3 → 门槛 4）**实时**重算：4 >= 4 → 也满足（快照在结算前就看不到了）
+    const ask2 = state.pending;
+    if (ask2?.kind !== 'choice') throw new Error(`预期苏飞乙的联翩，实际是 ${ask2?.kind}`);
+    expect(ask2.title).toContain('苏飞乙');
+    expect(ask2.title).toContain('已弃置 4 张');
+  });
+
+  it('联翩⑤：回复分支＝正常回复 1 点体力（不产生【桃】的使用）', () => {
+    const state = gz3([tao('b1')], 2);
+    const a = pick(state, A);
+    a.hp = 1; // 上限 1 → 5 张手牌要弃 4 张 hmm：下面按 5 张给
+    a.hand = [sha('s1'), sha('s2'), sha('s3'), sha('s4'), sha('s5')];
+    ok(act(state, A, { type: 'endPhase' }));
+    if (state.pending?.kind === 'discard') {
+      const ids = pick(state, A).hand.slice(0, 4).map((c) => c.id);
+      ok(act(state, A, { type: 'discard', cardIds: ids }));
+    }
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期联翩询问，实际是 ${ask?.kind}`);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'heal' }));
+    expect(pick(state, B).hp).toBe(3); // 2 → 3
+    expect(state.log.some((e) => e.message.includes('因【联翩】回复 1 点体力'))).toBe(true);
+  });
+
+  it('联翩⑥：**苏飞的**结束阶段完全替换成「同势力补至体力上限」（含他自己，摸到 MaxHP）', () => {
+    const state = gz3([taos('b', 1)], 4);
+    // 苏飞的回合：他自己弃 5 张（体力 4 → 门槛 5）
+    const b = pick(state, B);
+    b.hand = taos('b', 8);
+    // 走真实的回合开始（甲结束 → 苏飞的回合），这样账本是「本回合」口径
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'endPhase' }));
+    b.hand = taos('b', 9); // 摸牌阶段之后重新给（免得算进摸牌）；上限 4 → 弃 5 张
+    ok(act(state, B, { type: 'endPhase' }));
+    if (state.pending?.kind === 'discard') {
+      const ids = pick(state, B).hand.slice(0, 5).map((c) => c.id);
+      ok(act(state, B, { type: 'discard', cardIds: ids }));
+    }
+    let ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期联翩询问，实际是 ${ask?.kind}`);
+    if (ask?.kind !== 'choice') throw new Error(`预期联翩询问，实际是 ${ask?.kind}`);
+    expect(ask.seatId).toBe(B); // 苏飞自己决定
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    const pickAsk = state.pending;
+    if (pickAsk?.kind !== 'choice') throw new Error(`预期选角色，实际是 ${pickAsk?.kind}`);
+    // 候选取「与他势力相同」的（丙是吴）——他自己也在（苏飞本局确定吴）
+    expect(pickAsk.options.map((o) => o.id)).toContain(C);
+    expect(pickAsk.options.map((o) => o.id)).toContain(B);
+    // 选丙：丙 0 手牌、体力上限 4 → 摸 4 张
+    ok(act(state, B, { type: 'chooseOption', optionId: C }));
+    // 补至体力上限 4 张；丙紧接着就是下一个回合，还会自己摸 2 张 → 6
+    expect(pick(state, C).hand.length).toBe(6);
+    ask = state.pending;
+    expect(ask === null || ask?.kind !== 'choice' || !ask.title.includes('联翩')).toBe(true);
   });
 });

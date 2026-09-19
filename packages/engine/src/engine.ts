@@ -1084,6 +1084,9 @@ function startTurn(state: GameState, seatIndex: number): void {
   state.extraResolvedCards = [];
   // 伤害事件账本（诛害的强化条件）也是「本回合」口径
   state.damageLedgerThisTurn = [];
+  // 「本回合弃置账本」（苏飞·联翩）：**回合**口径——在回合开始时清，
+  // 这样结束阶段读到的就是这一整个回合的弃置（含判定/摸牌/出牌/弃牌各阶段）
+  state.turnDiscards = [];
   state.liangfanHanIds = [];
   state.midaoUsedSeats = [];
   // 「本回合进入弃牌堆的牌」同样只在**本回合**内有效（孟获·再起）
@@ -3002,8 +3005,9 @@ function discardOwnCard(
   card: Card,
   after: () => void,
   batchEventId?: number,
+  actorSeatId?: string,
 ): void {
-  const finish = (): void => fireCardDiscarded(state, p, [card], after);
+  const finish = (): void => fireCardDiscarded(state, p, [card], after, actorSeatId);
   const eq = p.equipment;
   for (const slot of EQUIP_SLOTS) {
     if (eq[slot]?.id === card.id) {
@@ -3034,11 +3038,20 @@ function fireCardDiscarded(
   owner: Player,
   cards: Card[],
   after: () => void,
+  /** **执行弃置动作**的人（不填＝牌主自己）。「A 弃 B 的牌」要传 A——见 turnDiscards 的说明 */
+  actorSeatId?: string,
 ): void {
   if (cards.length === 0 || !owner.alive) {
     after();
     return;
   }
+  // 本回合的「谁弃了谁的牌」账本（苏飞·【联翩】按**执行者**统计；朱灵·决绝那种
+  // 「置入弃牌堆」不走这里，所以天然不计入）
+  state.turnDiscards.push({
+    actorId: actorSeatId ?? owner.seatId,
+    ownerId: owner.seatId,
+    cardIds: cards.map((c) => c.id),
+  });
   // 宝物【定澜夜明珠】（君主专属）：「你每回合首次弃置牌后摸一张牌」。
   // 装备牌的效果不走英雄钩子，所以和【飞龙夺凤】【盟军大纛】一样在这里显式派发；
   // 排在英雄钩子（礼让）前面——同时机固定顺序，见 roster 的说明。
@@ -3060,7 +3073,13 @@ function fireCardDiscarded(
  * 「一次弃多张」（贯石斧、悲歌梅花那类）是**一个动作**：里面如果有装备牌，它们属于同一次
  * 「失去装备」事件——所以这里先记一个 eventId，交给 discardOwnCard 一路带下去。
  */
-function discardOwnCards(state: GameState, p: Player, cards: Card[], after: () => void): void {
+function discardOwnCards(
+  state: GameState,
+  p: Player,
+  cards: Card[],
+  after: () => void,
+  actorSeatId?: string,
+): void {
   const eventId = cards.length > 1 ? ++state.equipLossSeq : undefined;
   const step = (i: number): void => {
     const card = cards[i];
@@ -3068,7 +3087,7 @@ function discardOwnCards(state: GameState, p: Player, cards: Card[], after: () =
       after();
       return;
     }
-    discardOwnCard(state, p, card, () => step(i + 1), eventId);
+    discardOwnCard(state, p, card, () => step(i + 1), eventId, actorSeatId);
   };
   step(0);
 }
@@ -5227,9 +5246,12 @@ function resolveGuohe(state: GameState, ctx: TrickContext): void {
       fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
       return;
     }
-  } else {
-    pushLog(state, 'trick', `${target.name} 没有牌可拆。`);
+    // ⚠️ 「因弃置」那套要派发（孔的礼让），而且**执行弃置动作的是使用者**——
+    //    两个维度分开记（见 state.turnDiscards）：牌主是 target，执行者是 ctx.sourceId。
+    fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId);
+    return;
   }
+  pushLog(state, 'trick', `${target.name} 没有牌可拆。`);
   endTrickResolution(state, ctx);
 }
 
@@ -8515,7 +8537,7 @@ function makeSkillApi(
             seat: target.seatId,
             action: 'discard',
           });
-          fireCardDiscarded(state, target, [c], done);
+          fireCardDiscarded(state, target, [c], done, opts?.actor ?? targetSeatId);
           return;
         }
       }
@@ -8534,18 +8556,18 @@ function makeSkillApi(
         fireEquipLost(state, target, got.card, done);
         return;
       }
-      fireCardDiscarded(state, target, [got.card], done);
+      fireCardDiscarded(state, target, [got.card], done, opts?.actor ?? targetSeatId);
     },
-    discardCard: (ownerSeatId, card, after) => {
+    discardCard: (ownerSeatId, card, after, actorSeatId) => {
       const owner = getPlayer(state, ownerSeatId);
       const done = after ?? (() => {});
       if (!owner) {
         done();
         return;
       }
-      discardOwnCard(state, owner, card, done);
+      discardOwnCard(state, owner, card, done, undefined, actorSeatId);
     },
-    discardCards: (ownerSeatId, cards, after) => {
+    discardCards: (ownerSeatId, cards, after, actorSeatId) => {
       const owner = getPlayer(state, ownerSeatId);
       const done = after ?? (() => {});
       if (!owner) {
@@ -8553,7 +8575,7 @@ function makeSkillApi(
         return;
       }
       // 「一次弃多张」＝一个动作（里面的装备牌算同一次失去事件）
-      discardOwnCards(state, owner, cards, done);
+      discardOwnCards(state, owner, cards, done, actorSeatId);
     },
     swapEquipAreas: (seatA, seatB, after) => {
       const a = getPlayer(state, seatA);
@@ -9286,6 +9308,7 @@ export function createGame(
     xiongnue: null,
     xiongnueDefense: false,
     discardPhaseCountsThisTurn: {},
+    turnDiscards: [],
     handDiscardedInDiscardPhase: [],
     juejueArmed: false,
     ongoingSkillChain: [],

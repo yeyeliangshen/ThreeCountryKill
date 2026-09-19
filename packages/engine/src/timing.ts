@@ -389,12 +389,24 @@ export interface SkillApi {
    * 让某人弃置自己的一张牌（手牌或装备区）。失去装备会触发那类技能。
    * after 在结算完成后调用。
    */
-  discardCard: (ownerSeatId: string, card: Card, after?: () => void) => void;
+  discardCard: (
+    ownerSeatId: string,
+    card: Card,
+    after?: () => void,
+    /** **执行弃置动作**的人（不填＝牌主自己）。「A 弃 B 的牌」时传 A（苏飞·联翩要用） */
+    actorSeatId?: string,
+  ) => void;
   /**
    * 让某人**一次**弃置多张牌（悲歌梅花那类）。与连续调 discardCard 的区别：
    * 这是**一个动作**，里面的装备牌算同一次「失去装备」事件（旋略只触发一次）。
    */
-  discardCards: (ownerSeatId: string, cards: Card[], after?: () => void) => void;
+  discardCards: (
+    ownerSeatId: string,
+    cards: Card[],
+    after?: () => void,
+    /** **执行弃置动作**的人（不填＝牌主自己）；见 discardCard 的说明 */
+    actorSeatId?: string,
+  ) => void;
   /**
    * 把一张**手牌**放进别人的装备区（张昭张纮·直谏）。
    *

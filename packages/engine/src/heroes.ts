@@ -13470,8 +13470,175 @@ const PANJUN: Hero = {
   ],
 };
 
+/**
+ * 苏飞 —— 联翩（不臣篇·下，**吴/群双势力**，2 阴阳鱼 → **4**，珠联璧合【甘宁】；
+ * 技能按移动版当前国战版，用户核对后给出等价实现口径）。
+ *
+ * 【联翩】（结束阶段开始时，可发动）：统计**结束阶段这位角色本回合弃置的牌数 D**
+ * （是「**本回合**」不是「弃牌阶段」；是「弃置**任意角色**的牌」，所以只认**执行弃置动作的人**，
+ * 不是牌主）→ 门槛 `D >= 苏飞当前体力值 + 1`（**实时**读体力，不缓存阈值）：
+ * - 若结束阶段的就是苏飞本人：**完全替换**成「令一名与你势力相同的角色将手牌补至**体力上限**」
+ *   （含苏飞自己 ✓；目标按**已确定势力**筛，摸到的是 `maxHp` 不是当前体力）；
+ * - 若结束阶段的是别人：**由那个人**决定发动与否，再二选一——
+ *   ① 弃置苏飞的一张牌（选牌与弃置动作的**执行者都是他**；这次弃置本身也算进他本回合的弃置数，
+ *   所以**多个苏飞必须逐个实时重算**）；② 令苏飞回复 1 点体力（正常回复，不产生【桃】的使用）。
+ *
+ * 值得一提的两处复用：
+ * - 弃置账本走引擎的 `state.turnDiscards`（**执行者** actorId 与**牌主** ownerId 分开记），
+ *   而「置入弃牌堆」（朱灵·决绝那类）根本不进这本账——这正是用户要区分的那条线。
+ * - 结束阶段**开始**就结算：`turnEnd` / `othersTurnEnd` 上给一个**高优先级**，排在其他结束阶段
+ *   技能前面（引擎没有独立的「结束阶段开始时」时机，同队列里按优先级先后）。
+ */
+/** 某人**本回合弃置**的牌数（按执行弃置动作的人统计，见 state.turnDiscards） */
+export function turnDiscardCountBy(state: GameState, actorSeatId: string): number {
+  return state.turnDiscards
+    .filter((r) => r.actorId === actorSeatId)
+    .reduce((sum, r) => sum + r.cardIds.length, 0);
+}
+
+function askLianpian(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player; // 苏飞
+  // 自己的结束阶段走 turnEnd（payload 无 turnSeatId），别人的走 othersTurnEnd
+  const payload = ctx.payload as { turnSeatId?: string } | undefined;
+  const endingSeatId = payload?.turnSeatId ?? me.seatId;
+  const ending = getPlayer(state, endingSeatId);
+  if (!ending || !ending.alive) return;
+  if (!me.alive) return;
+  // 门槛：结束阶段这位**本回合弃置**的张数 ≥ 苏飞**当前体力 + 1**（实时读，别缓存）
+  const count = turnDiscardCountBy(state, endingSeatId);
+  if (count < me.hp + 1) return;
+
+  if (endingSeatId === me.seatId) {
+    // —— 自己的结束阶段：完全替换成「同势力角色手牌补至体力上限」 ——
+    const mine = effectiveFaction(state, me);
+    if (!mine) return;
+    const cands = state.players.filter(
+      (p) => p.alive && effectiveFaction(state, p) === mine,
+    );
+    if (cands.length === 0) return;
+    ctx.api.askChoice(
+      state,
+      me.seatId,
+      `【联翩】（本回合已弃置 ${count} 张）：是否令一名与你势力相同的角色将手牌补至体力上限？`,
+      [
+        { id: 'yes', label: '发动' },
+        { id: 'no', label: '不发动' },
+      ],
+      (st, p, picked) => {
+        if (picked !== 'yes') return;
+        const list = st.players.filter((x) => x.alive && effectiveFaction(st, x) === mine);
+        if (list.length === 0) return;
+        ctx.api.askChoice(
+          st,
+          p.seatId,
+          '【联翩】：选择将手牌补至体力上限的角色',
+          list.map((t) => ({ id: t.seatId, label: t.name })),
+          (st2, p2, targetId) => {
+            const target = getPlayer(st2, targetId);
+            if (!target) return;
+            // 补至**体力上限**（不是当前体力）；手牌已经够多就摸 0 张
+            const need = Math.max(0, target.maxHp - target.hand.length);
+            let got = 0;
+            for (let i = 0; i < need; i++) {
+              const c = drawOne(st2);
+              if (!c) break;
+              target.hand.push(c);
+              got++;
+            }
+            pushLog(
+              st2,
+              'skill',
+              `${p2.name} 的【联翩】：${target.name} 将手牌补至体力上限（摸 ${got} 张）。`,
+              { seat: p2.seatId },
+            );
+          },
+        );
+      },
+    );
+    return;
+  }
+
+  // —— 别人的结束阶段：**由他**决定 ——
+  const opts: { id: string; label: string }[] = [];
+  if (handAndEquipOf(me).length > 0) opts.push({ id: 'discard', label: `弃置 ${me.name} 的一张牌` });
+  if (me.hp < me.maxHp) opts.push({ id: 'heal', label: `令 ${me.name} 回复 1 点体力` });
+  if (opts.length === 0) return;
+  ctx.api.askChoice(
+    state,
+    ending.seatId,
+    `【联翩】${me.name}（你本回合已弃置 ${count} 张牌），是否发动？`,
+    [...opts, { id: 'no', label: '不发动' }],
+    (st, _p, picked) => {
+      if (picked === 'no') return;
+      if (picked === 'heal') {
+        ctx.api.heal(me, 1);
+        pushLog(
+          st,
+          'skill',
+          `${me.name} 因【联翩】回复 1 点体力。`,
+          { seat: ending.seatId },
+        );
+        return;
+      }
+      // ① 弃置苏飞的一张牌：选牌与**执行弃置的都是结束阶段那位**
+      const pool = handAndEquipOf(me);
+      if (pool.length === 0) return;
+      const pick = (st2: GameState, chosen: typeof pool): void => {
+        const card = chosen[0];
+        if (!card) return;
+        // ⚠️ 第四个参数是**执行弃置动作的人**——账本因此记在结束阶段这位名下
+        //    （这也会让他本回合的弃置数 +1，所以多个苏飞要逐个实时重算门槛）
+        ctx.api.discardCard(me.seatId, card, () => {
+          pushLog(
+            st2,
+            'skill',
+            `${ending.name} 因【联翩】弃置了 ${me.name} 的【${cardLabel(card)}】。`,
+            { seat: ending.seatId },
+          );
+        }, ending.seatId);
+      };
+      if (pool.length === 1) {
+        pick(st, pool);
+        return;
+      }
+      ctx.api.askPickCards(
+        st,
+        ending.seatId,
+        `【联翩】：选择要弃置的 ${me.name} 的一张牌`,
+        pool,
+        1,
+        1,
+        (st2, _p2, chosen) => pick(st2, chosen),
+      );
+    },
+  );
+}
+
+const SUFEI: Hero = {
+  id: 'sufei',
+  name: '苏飞',
+  pack: 'buchen',
+  faction: 'wu',
+  secondFaction: 'qun',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  combos: ['ganning'], // 珠联璧合【甘宁】
+  hooks: [
+    // 结束阶段**开始**：同队列里给高优先级，排在其他结束阶段技能前面
+    { timing: 'turnEnd', skillId: '联翩', priority: 10, handler: askLianpian },
+    { timing: 'othersTurnEnd', skillId: '联翩', priority: 10, handler: askLianpian },
+  ],
+  skills: [
+    {
+      name: '联翩',
+      desc: '一名角色的结束阶段开始时，若其本回合弃置的牌数不小于你的体力值+1，你可以：若该角色为你，令一名与你势力相同的角色将手牌补至其体力上限；否则令其选择一项：弃置你的一张牌，或令你回复1点体力。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
-  dualHero('sufei', '苏飞', 'wu', 'qun', 4),
   dualHero('xuyou', '许攸', 'wei', 'qun', 3),
 ];
 
@@ -15309,6 +15476,7 @@ export const HEROES: Hero[] = [
   WENQIN,
   ZHULING,
   PANJUN,
+  SUFEI,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,
