@@ -9301,6 +9301,12 @@ function makeSkillApi(
         seat: target.seatId,
       });
     },
+    revealHeroCard: (seatId, heroId) => {
+      const owner = getPlayer(state, seatId);
+      const hero = owner ? getHeroForMode(heroId, state.mode) : undefined;
+      if (!owner || !hero) return false;
+      return revealHeroCard(state, owner, hero);
+    },
     grantSkill: (heroId, skillName, toSeatId) => {
       // 默认给技能使用者（姜维·志继给自己）；传了 toSeatId 就给那个人（糜夫人·存嗣给目标）
       const actor = toSeatId

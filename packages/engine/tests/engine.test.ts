@@ -14618,6 +14618,106 @@ describe('国战 · 阵法技（队列 / 围攻关系）', () => {
     return state;
   }
 
+  // ——————————————————————————————————————————
+  // 阵法召唤（移动版口径，见 docs §5.132）
+  // ——————————————————————————————————————————
+  /** 把某人变回**全暗**（未确定势力）——阵法召唤只问这种人 */
+  function makeDark(state: GameState, seatId: string): void {
+    const p = state.players.find((x) => x.seatId === seatId)!;
+    p.heroRevealed = false;
+    p.deputyRevealed = false;
+  }
+
+  it('阵法召唤（队列型）：只问「亮将后能接进队列」的人；有人响应后**重新算**下一个够格的人', () => {
+    // 甲(曹洪·鹤翼，魏) 乙(暗魏) 丙(暗魏) 丁(吴) 戊(蜀) 己(群)
+    // ⚠️ 用 **6 人局**：4 人局里第 3 个魏会按「超过全场一半」**明置转化**成野心家（引擎的正当行为），
+    //    那样丙就不再是魏、队列也接不上——不是本用例要验的东西。
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
+      { seatId: E, name: '戊', heroId: 'vanilla', faction: 'shu' },
+      { seatId: 's5', name: '己', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    makeDark(state, B);
+    makeDark(state, C);
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    // 乙先被问：他是当时**唯一**亮将后能与甲同队列的暗将
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(at(B).heroRevealed).toBe(true);
+    // ⚠️ 关键：乙亮将之后**丙才够格**（队列往后接）→ 丙这时才被问，而不是一开始就问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    expect(at(C).heroRevealed).toBe(true);
+    expect(formationQueue(state, at(A)).map((p) => p.seatId)).toEqual([A, B, C]);
+  });
+
+  it('阵法召唤：「是队友」不够——中间隔着别的势力就不给问（也不该把技能摆出来）', () => {
+    // 甲(魏) — 乙(吴，已亮) — 丙(暗魏)：丙亮将也接不进甲的队列
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    makeDark(state, C);
+    // 一个可问的人都没有 → 技能不出现在可选项里，硬发也发不动
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('zhenfa_summon');
+    fail(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+  });
+
+  it('阵法召唤（围攻型）：亮将后成为**同一围攻关系**的围攻角色才算够格', () => {
+    // 甲(蒋钦·鸟翔，魏) 乙(吴) 丙(暗魏) 丁(蜀)：丙亮魏 → 甲、丙同为乙的围攻者
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'jiangqin', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    makeDark(state, C);
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    expect(
+      siegeRelations(state).some(
+        (r) => r.besiegedSeatId === B && r.besiegers.includes(A) && r.besiegers.includes(C),
+      ),
+    ).toBe(true);
+  });
+
+  it('阵法召唤：可以**拒绝**；且出牌阶段限一次、存活不足 4 人时不可用', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    makeDark(state, B);
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 不响应
+    expect(at(B).heroRevealed).toBe(false); // 没亮
+    expect(state.pending?.kind).toBe('play'); // 流程正常回到出牌阶段
+    // 限一次：本阶段再来一次会被拒
+    fail(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    // 前提：阵法技需要存活 ≥4
+    const small = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    makeDark(small, B);
+    expect(toSnapshot(small, A).prompt?.legalSkillIds ?? []).not.toContain('zhenfa_summon');
+  });
+
   it('围攻关系：左右都是敌人的角色处于被围攻', () => {
     // 甲(魏) 乙(蜀) 丙(蜀) 丁(魏)：乙的左边是甲(魏)、右边是丙(蜀) → 不被围攻；
     // 丙的左边乙(蜀)、右边丁(魏) → 也不被围攻。改一下势力让乙被围攻：
@@ -19559,8 +19659,20 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
     passWuxie(state);
     let guard = 0;
-    while (state.pending?.kind === 'respondTrick' && guard++ < 8) {
-      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    // ⚠️ 群体锦囊的【无懈可击】窗口是**每个目标生效前各一次**（见 Pending.wuxieQueue 的说明），
+    //    所以这里要把「逐目标的无懈窗口」和「目标响应」两种询问都跳完——只跳第一轮会偶发失败
+    //    （牌堆洗到谁手里有无懈，谁就多出一个窗口）。
+    while (guard++ < 20) {
+      const wp = state.pending;
+      if (wp?.kind === 'wuxieQueue') {
+        ok(act(state, wp.askQueue[wp.askIndex]!, { type: 'pass' }));
+        continue;
+      }
+      if (wp?.kind === 'respondTrick') {
+        ok(act(state, wp.responderId, { type: 'pass' }));
+        continue;
+      }
+      break;
     }
     const at = (id: string) => state.players.find((p) => p.seatId === id)!;
     expect(at(C).hp).toBe(2); // 魏：南蛮 1 + 凶虐① 1
@@ -23991,9 +24103,19 @@ describe('国战 · 许攸（成略 / 恃才）', () => {
     );
     ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
     // 乙、丙依次响应（都弃权）→ 南蛮整张结算结束 → 才问【成略】
+    // ⚠️ 同前：逐目标的无懈窗口也要跳（否则有无懈的那一局会停在 wuxieQueue 上）
     let guard = 0;
-    while (state.pending?.kind === 'respondTrick' && guard++ < 5) {
-      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    while (guard++ < 20) {
+      const wp = state.pending;
+      if (wp?.kind === 'wuxieQueue') {
+        ok(act(state, wp.askQueue[wp.askIndex]!, { type: 'pass' }));
+        continue;
+      }
+      if (wp?.kind === 'respondTrick') {
+        ok(act(state, wp.responderId, { type: 'pass' }));
+        continue;
+      }
+      break;
     }
     const ask = state.pending;
     if (ask?.kind !== 'choice') throw new Error(`预期【成略】询问，实际是 ${ask?.kind}`);

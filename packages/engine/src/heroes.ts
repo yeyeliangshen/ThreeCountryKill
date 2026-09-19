@@ -423,6 +423,15 @@ export interface Hero {
    */
   fangyuan?: boolean;
   /**
+   * **阵法技**的类型（可多个）：`'queue'` 队列型、`'siege'` 围攻型。
+   *
+   * 只用来回答一个问题——**阵法召唤**（`FORMATION_SUMMON`）时，「这个人亮将之后能形成
+   * 哪种关系」：队列型要看亮将后是否与召唤者同一**队列**，围攻型看是否进同一**围攻关系**。
+   * 每个技能的生效判定仍各在各处（`formationQueue` / `siegeRelations` / `hasFeiying`…），
+   * 这里只是给「召唤」一个可读的来源。见 docs/guozhan-roster.md §5.132。
+   */
+  formation?: ('queue' | 'siege')[];
+  /**
    * 朱灵·【决绝】第三句：「你杀死与你势力相同的角色时，**不执行奖惩**」。
    * 国战的基础奖惩见 engine 的 applyKillPenalty（同势力击杀 → 弃置所有牌）。
    */
@@ -2381,7 +2390,189 @@ export function siegeRelations(
   return out;
 }
 
-/** 某人是不是「围攻角色」（即处于某个围攻关系的那一侧），返回他围攻的是谁 */
+// ——————————————————————————————————————————
+// 阵法召唤（移动版口径，见 docs/guozhan-roster.md §5.132）
+// ——————————————————————————————————————————
+
+/** 某人**当前生效**的阵法技类型（队列型 / 围攻型）。暗将没有势力 → 阵法技整体不成立 → 空。 */
+export function formationKindsOf(state: GameState, player: Player): ('queue' | 'siege')[] {
+  if (!effectiveFaction(state, player)) return [];
+  const kinds = new Set<'queue' | 'siege'>();
+  for (const h of effectiveHeroes(state, player)) for (const k of h.formation ?? []) kinds.add(k);
+  return [...kinds];
+}
+
+/**
+ * 假想「这个人亮出这张武将牌」之后，能不能和召唤者形成 `kind` 那种关系。
+ *
+ * 实现是**改标志位 → 量 → 复原**：不派发任何时机、不写日志，纯粹算一次关系。
+ * 这样关系判定永远与正式规则同一套代码（`effectiveFaction` / `formationQueue` / `siegeRelations`），
+ * 不会出现「召唤时算一套、真亮将后算另一套」。
+ *
+ * ⚠️ 君主将（主副将必须同亮）这里只翻一张——两张牌的势力相同，对关系判定没有影响。
+ */
+function revealWouldJoin(
+  state: GameState,
+  candidate: Player,
+  slot: 'main' | 'deputy',
+  summoner: Player,
+  kind: 'queue' | 'siege',
+): boolean {
+  const savedHero = candidate.heroRevealed;
+  const savedDeputy = candidate.deputyRevealed;
+  if (slot === 'main') candidate.heroRevealed = true;
+  else candidate.deputyRevealed = true;
+  try {
+    const mine = effectiveFaction(state, candidate);
+    const theirs = effectiveFaction(state, summoner);
+    if (!mine || !theirs || mine !== theirs) return false; // 不同势力 → 免谈
+    if (kind === 'queue') {
+      return formationQueue(state, summoner).some((p) => p.seatId === candidate.seatId);
+    }
+    // 围攻型：「与你处于同一围攻关系」——两种都在内：同为围攻角色，或者他围攻的正是你
+    return siegeRelations(state).some(
+      (r) =>
+        (r.besiegers.includes(summoner.seatId) && r.besiegers.includes(candidate.seatId)) ||
+        (r.besiegedSeatId === summoner.seatId && r.besiegers.includes(candidate.seatId)),
+    );
+  } finally {
+    candidate.heroRevealed = savedHero;
+    candidate.deputyRevealed = savedDeputy;
+  }
+}
+
+/** 武将牌**均暗置**（未确定势力）的存活角色 */
+function isFullyDark(p: Player): boolean {
+  return p.alive && !p.heroRevealed && !p.deputyRevealed;
+}
+
+/** 这个候选亮哪几张牌能满足召唤（0～2 张：双势力/单势力组合里可能只有一张满足） */
+function qualifyingSlots(
+  state: GameState,
+  candidate: Player,
+  summoner: Player,
+  kinds: ('queue' | 'siege')[],
+): ('main' | 'deputy')[] {
+  const slots: ('main' | 'deputy')[] = [];
+  for (const slot of ['main', 'deputy'] as const) {
+    const heroId = slot === 'main' ? candidate.heroId : candidate.deputyHeroId;
+    if (!heroId) continue;
+    if (kinds.some((k) => revealWouldJoin(state, candidate, slot, summoner, k))) slots.push(slot);
+  }
+  return slots;
+}
+
+/** 响应顺序：从召唤者的**下一家**起、按行动顺序（国战里就是官方说的「逆时针依次」） */
+function summonOrder(state: GameState, summonerSeatId: string): Player[] {
+  const n = state.seatOrder.length;
+  const start = state.seatOrder.indexOf(summonerSeatId);
+  const out: Player[] = [];
+  for (let k = 1; k < n; k++) {
+    const p = getPlayer(state, state.seatOrder[(start + k) % n]!);
+    if (p && p.alive && !p.flags.removedFromSeating) out.push(p);
+  }
+  return out;
+}
+
+/** 现在这一次阵法召唤有没有人可问（没人可问就不该把技能摆出来） */
+function formationSummonOffer(state: GameState, player: Player): boolean {
+  const kinds = formationKindsOf(state, player);
+  if (kinds.length === 0) return false;
+  if (state.players.filter((p) => p.alive).length < 4) return false;
+  return summonOrder(state, player.seatId).some(
+    (p) => isFullyDark(p) && qualifyingSlots(state, p, player, kinds).length > 0,
+  );
+}
+
+/**
+ * **阵法召唤**（阵法技持有者的通用机制，移动版：出牌阶段限一次）。
+ *
+ * 官方口径（用户 2026-09 提供的移动版资料，见 §5.132）：
+ * 「拥有阵法技的角色发起。**能够在明置武将牌后形成该阵法技所需要的队列或围攻关系、
+ *   且武将牌均暗置的同势力角色**，可以响应召唤并明置一张武将牌。」可响应、也**可以不响应**；
+ * 符合条件的角色按**逆时针方向依次**决定。
+ *
+ * 三个容易写错的点，这里都照着官方来：
+ * 1. **先判「如果亮将能不能形成关系」，再允许响应**——不是先随便亮、亮完再看；
+ * 2. **每次有人响应之后要重新算候选人**：一个人亮将可能让后面的人**才**够格（队列往后接）；
+ * 3. 「是队友」不够——中间隔着别的势力就不算（队列/围攻都要真的形成）。
+ */
+function formationSummonImpl(state: GameState, player: Player, api: SkillApi): string | undefined {
+  const kinds = formationKindsOf(state, player);
+  if (kinds.length === 0) return '你没有阵法技';
+  if (state.players.filter((p) => p.alive).length < 4)
+    return '阵法技需要场上至少 4 名存活角色';
+  const order = summonOrder(state, player.seatId);
+  pushLog(state, 'skill', `${player.name} 发起【阵法召唤】。`, { seat: player.seatId });
+  const step = (i: number): void => {
+    const candidate = order[i];
+    if (!candidate) return;
+    // 拒过/亮过的都不再问；每次重新算「他现在够不够格」（前面的人亮将可能把他补上）
+    if (!isFullyDark(candidate)) {
+      step(i + 1);
+      return;
+    }
+    const slots = qualifyingSlots(state, candidate, player, kinds);
+    if (slots.length === 0) {
+      step(i + 1);
+      return;
+    }
+    api.askChoice(
+      state,
+      candidate.seatId,
+      `【阵法召唤】：${player.name} 令你选择是否明置一张武将牌（响应后即可形成阵法）？`,
+      [
+        { id: 'yes', label: '响应（明置一张武将牌）' },
+        { id: 'no', label: '不响应' },
+      ],
+      (st, cp, picked) => {
+        if (picked !== 'yes') {
+          step(i + 1);
+          return;
+        }
+        const reveal = (slot: 'main' | 'deputy'): void => {
+          const heroId = slot === 'main' ? cp.heroId : cp.deputyHeroId;
+          if (heroId) api.revealHeroCard(cp.seatId, heroId);
+          pushLog(st, 'skill', `${cp.name} 响应了【阵法召唤】。`, { seat: cp.seatId });
+          step(i + 1);
+        };
+        if (slots.length === 1) {
+          reveal(slots[0]!);
+          return;
+        }
+        // 两张牌都能满足（双势力组合）：**由他选**明置哪一张
+        api.askChoice(
+          st,
+          cp.seatId,
+          '【阵法召唤】：明置哪一张武将牌？',
+          slots.map((slot) => ({
+            id: slot,
+            label:
+              getHeroForMode(slot === 'main' ? cp.heroId : cp.deputyHeroId, st.mode)?.name ?? slot,
+          })),
+          (st2, cp2, slot) => reveal(slot as 'main' | 'deputy'),
+        );
+      },
+    );
+  };
+  step(0);
+  return undefined;
+}
+
+/** 阵法召唤这个「技能」本身（给拥有阵法技的武将用的通用主动技） */
+export const FORMATION_SUMMON: ActiveSkill = {
+  id: 'zhenfa_summon',
+  name: '阵法召唤',
+  // 不是武将牌上印的技能，所以自带说明（与「借来的技能」同一处理）
+  desc: '出牌阶段限一次，令能够通过明置武将牌与你形成队列/围攻关系的未确定势力角色依次选择是否明置一张武将牌。',
+  perPhaseLimit: 1,
+  minTargets: 0,
+  maxTargets: 0,
+  canUse: (state, player) => formationSummonOffer(state, player),
+  execute: (state, player, _intent, api) => formationSummonImpl(state, player, api),
+};
+
+
 export function besiegingTarget(state: GameState, player: Player): string | null {
   for (const r of siegeRelations(state)) {
     if (r.besiegers.includes(player.seatId)) return r.besiegedSeatId;
@@ -2492,6 +2683,8 @@ const JIANGQIN: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 鸟翔（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   hooks: [
     {
       // 【鸟翔】（阵法技，与徐盛同款）
@@ -2514,6 +2707,7 @@ const JIANGQIN: Hero = {
     },
   ],
   activeSkills: [
+    FORMATION_SUMMON,
     {
       id: 'shangyi',
       name: '尚义',
@@ -2640,6 +2834,7 @@ const CAOHONG: Hero = {
   modes: ['guozhan'],
   // 鹤翼（阵法技）：与你同一队列的其他角色视为拥有【飞影】——由 distance() 读
   grantsFeiyingToQueue: true,
+  formation: ['queue'], // 阵法召唤：亮将后与召唤者进同一**队列**
   lockedFields: ['grantsFeiyingToQueue'],
   hooks: [
     {
@@ -2731,6 +2926,9 @@ const CAOHONG: Hero = {
       desc: '阵法技，与你处于同一队列的其他角色视为拥有【飞影】。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 const HETAIHOU: Hero = {
@@ -3028,6 +3226,8 @@ const XUSHENG: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 鸟翔（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   hooks: [
     {
       // 【鸟翔】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 需两张【闪】
@@ -3104,6 +3304,9 @@ const XUSHENG: Hero = {
       desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色需依次使用两张【闪】才能抵消。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 const XIAOQIAO: Hero = {
@@ -7100,8 +7303,11 @@ const WUJING: Hero = {
   modes: ['guozhan'],
   lockedFields: ['fengyang'],
   skillFields: { 风扬: ['fengyang'] },
+  // 风扬（阵法技，队列型）：阵法召唤按「亮将后与召唤者同队列」判
+  formation: ['queue'],
   fengyang: true,
   activeSkills: [
+    FORMATION_SUMMON,
     {
       id: 'diaogui',
       name: '调归',
@@ -8872,6 +9078,8 @@ const ZHANGREN: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 锋矢（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   hooks: [
     {
       // 【锋矢】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 令其弃装备区一张
@@ -8986,6 +9194,9 @@ const ZHANGREN: Hero = {
       desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色弃置装备区里的一张牌。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 const MIFUREN: Hero = {
@@ -15693,6 +15904,8 @@ const ZHULING: Hero = {
   gender: 'male',
   modes: ['guozhan'],
   // 方圆是锁定技（阵法技），要在 handLimit 与回合钩子上都生效
+  // 方圆（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   lockedFields: ['fangyuan'],
   exemptFromKillPenalty: true,
   skillFields: { 方圆: ['fangyuan'] },
@@ -15712,6 +15925,9 @@ const ZHULING: Hero = {
       desc: '阵法技，锁定技，与你处于同一围攻关系的围攻角色手牌上限+1、被围攻角色手牌上限-1；若你处于被围攻状态，你的结束阶段可以视为对一名围攻角色使用一张普通【杀】。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 /**

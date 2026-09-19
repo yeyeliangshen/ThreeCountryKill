@@ -17,6 +17,8 @@ export const rng = seededRng;
 
 /** 轮换用的「高风险武将」：多牌操作 / 摆牌堆 / 借技能那一类 */
 export const RISKY = [
+  'caohong', // 鹤翼 + 阵法召唤（召唤要「先判亮将后能不能形成关系」，且响应后要重算候选人）
+  'jiangqin', // 鸟翔 + 阵法召唤（围攻型那条）
   'zhugeliang', // 观星：把牌堆顶的牌重排（曾经在这里出过「同一张牌放两堆」的 bug）
   'huangyueying', // 集智
   'lvmeng', // 克己/谋断（用牌账本）

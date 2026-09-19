@@ -525,6 +525,14 @@ export interface SkillApi {
   /** 授予技能：默认给技能使用者，传 toSeatId 就给那个人（糜夫人·存嗣把勇决给队友） */
   grantSkill: (heroId: string, skillName: string, toSeatId?: string) => void;
   /**
+   * **令某人明置一张武将牌**（阵法召唤用：召唤是**召唤者发起、响应者亮将**，
+   * 与「自己发起明置」那条 `revealHero` 意图不是一回事）。
+   *
+   * 与「发动技能顺带明置」走同一个入口（`engine.revealHeroCard`），所以势力确定、
+   * 珠联璧合/会盟那类明置时机照常派发；被【祸水】【建安】挡着时返回 false。
+   */
+  revealHeroCard: (seatId: string, heroId: string) => boolean;
+  /**
    * 授予技能，**只到本回合结束**（孙策·魂殇「本回合拥有英姿和英魂」、
    * 法正·眩惑「获得武圣等之一直到回合结束」）。回合结束时自动清掉。
    */
