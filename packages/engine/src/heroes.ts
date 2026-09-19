@@ -409,6 +409,13 @@ export interface Hero {
    */
   biluan?: boolean;
   /**
+   * 朱灵·方圆（阵法技，锁定技）：① 与方圆拥有者处于**同一围攻关系**的**围攻角色**手牌上限 +1、
+   * **被围攻角色** -1（同一个技能实例对同一角色最多 ±1 一次，按「有没有这样的关系」判，不按关系数累加）；
+   * ② 方圆拥有者**被围攻**时，自己的结束阶段可以选一名围攻者，视为对其使用一张纯虚拟普通【杀】。
+   * 判定收在 `heroes.fangyuanHandLimitDelta`，由引擎在 `handLimit()` 里统一加。
+   */
+  fangyuan?: boolean;
+  /**
    * **目标级**的「本回合【杀】次数豁免」：整张牌**提议的全部目标**都满足条件时才允许突破次数上限。
    * 夏侯霸·【豹烈】②是第一个用例（目标当前体力 ≥ 自己当前体力）。
    * ⚠️ 语义是「这张杀的这批目标能不能豁免」，**不是**「有技能就无限出杀」——
@@ -457,6 +464,7 @@ export type FieldSkill =
   | 'distanceFrom'
   | 'biluan'
   | 'shaBypassLimit'
+  | 'fangyuan'
   | 'ignoreShaDistanceTo'
   | 'extraDraw'
   | 'handLimit'
@@ -505,6 +513,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'distanceFrom',
   'biluan',
   'shaBypassLimit',
+  'fangyuan',
   'ignoreShaDistanceTo',
   'extraDraw',
   'handLimit',
@@ -2311,13 +2320,20 @@ export function formationQueue(state: GameState, player: Player): Player[] {
 }
 
 /**
- * **围攻关系**：一名角色左右两边都是**敌人**时，他处于「被围攻」，左右两人是他的
- * 「围攻角色」。返回 { besiegedSeatId, besiegers } 的列表（存活 ≥4 人才成立——阵法技
- * 的共同前提）。
+ * **围攻关系**：官方定义（三国杀移动版·国战 阵法技说明）——
+ * 「一名角色的上家和下家为另外两名**势力相同**的角色（且与该角色势力不同）时，该角色被
+ * **围攻**，其上家和下家称为**围攻角色**」。
+ *
+ * ⚠️ 两个邻居**彼此**势力相同是定义的一部分（光「两个都是敌人」不算：四人局四家不同时，
+ * 若只看「左右都不是我」会让**所有人**都被判成被围攻）。
+ *
+ * 返回 { besiegedSeatId, besiegers } 的列表（存活 ≥4 人才成立——阵法技的共同前提；
+ * 被【调虎离山】移出座次的人不计座次）。
  */
 export function siegeRelations(
   state: GameState,
 ): { besiegedSeatId: string; besiegers: string[] }[] {
+
   const alive = state.seatOrder
     .map((id) => getPlayer(state, id))
     // 被【调虎离山】移出座次的人**不计入座次**（与 baseDistance / formationQueue 同一口径）
@@ -2328,13 +2344,17 @@ export function siegeRelations(
   for (let i = 0; i < n; i++) {
     const me = alive[i]!;
     const my = effectiveFaction(state, me);
+    // 官方阵法口径：**野心家不能成为围攻角色**（只能被围攻）——围攻者里出现野心家时整个关系不成立
+    const neighbors = [alive[(i - 1 + n) % n]!, alive[(i + 1) % n]!];
+    if (neighbors.some((p) => effectiveFaction(state, p) === 'ambitionist')) continue;
     if (!my) continue;
     const left = alive[(i + n - 1) % n]!;
     const right = alive[(i + 1) % n]!;
     const lf = effectiveFaction(state, left);
     const rf = effectiveFaction(state, right);
-    if (!lf || !rf) continue;
-    if (lf !== my && rf !== my) {
+    if (!lf || !rf) continue; // 未确定势力 = 无势力 → 构不成关系
+    // 上家与下家**同势力**、且都与中间这位不同 → 才是围攻关系
+    if (lf === rf && lf !== my) {
       out.push({ besiegedSeatId: me.seatId, besiegers: [left.seatId, right.seatId] });
     }
   }
@@ -14626,6 +14646,208 @@ const WENQIN: Hero = {
   ],
 };
 
+/**
+ * 朱灵 —— 决绝 / 方圆（不臣篇·下，魏，2 阴阳鱼 → 4；移动版现行口径，见 §5.110）。
+ *
+ * 【决绝】（出牌阶段外的两个时点）：
+ *   ① **弃牌阶段开始**：朱灵可以**失去 1 点体力**（不是伤害：没有来源、不触发「受到伤害后」；
+ *      1 点体力发动则照常进濒死）——发动后记为「本回合已发动」。
+ *   ② **本回合弃牌阶段结束时**（落地在 `turnEnd`＝结束阶段开始，紧接弃牌阶段）：若已发动、
+ *      且朱灵**本阶段弃置过手牌**，则令所有其他角色依次（按座次）二选一：
+ *      A. **将 X 张手牌置入弃牌堆**（X＝朱灵本阶段**弃置的全部**牌数——⚠️ 与「弃过手牌」这个
+ *         **门槛**是两个口径；且 A 要求其手牌数 ≥ X，否则这个选项**不合法**）；
+ *      B. 受到朱灵造成的 **1 点普通伤害**（技能直伤：没有实体牌、不能闪/无懈，但「受到伤害后」
+ *         「造成伤害后」「濒死」等全部照常）。
+ *      ⚠️ **A 是「置入弃牌堆」不是「弃置」**（官方描述原则明确区分）：实现上直接 `toDiscard`，
+ *      **不走**引擎里「因弃置」的收口，所以【夙智】③、【统度】、【礼让】、【定澜夜明珠】那类
+ *      「因弃置进弃牌堆」的监听都**不会**被它触发。
+ *   ③ 朱灵杀死与自己**同势力**的角色时，不执行国战的同势力击杀奖惩。⚠️ 本引擎**尚未实现**
+ *      那套奖惩，所以这一条目前没有实际作用——将来实现时按技能名跳过（已记文档待办）。
+ * 【方圆】（**阵法技**，锁定；仅**存活 ≥4** 且围攻关系成立时生效）——**建立在公共围攻关系
+ *   `siegeRelations` 上**，不自己看左右座位：
+ *   ① 与朱灵处于**同一围攻关系**的**围攻角色**手牌上限 **+1**、**被围攻角色** **-1**
+ *      （同一技能实例对同一角色最多 ±1 一次；关系消失即实时消失）；
+ *   ② 朱灵**被围攻**时，其**结束阶段**可以选该关系中的一名围攻角色，**视为对其使用一张纯虚拟
+ *      普通【杀】**（`subcards=[]`、无实体；技能定死了使用者与目标，所以创建时不查距离/不占次数，
+ *      之后的【闪】、防具、伤害等全部照常）。
+ */
+/** 方圆①：这个角色的手牌上限要额外加/减多少（按**围攻关系**判，实时） */
+export function fangyuanHandLimitDelta(state: GameState, target: Player): number {
+  const rels = siegeRelations(state); // 自带「存活 ≥4」与「调虎离山不计座次」的前提
+  if (rels.length === 0) return 0;
+  let delta = 0;
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    if (!effectiveHeroes(state, p).some((h) => h.fangyuan === true)) continue;
+    if (p.seatId === target.seatId) {
+      // 朱灵自己也在关系里：他是围攻者就 +1、是被围攻者就 -1
+    }
+    const asAttacker = rels.some(
+      (r) => r.besiegers.includes(p.seatId) && r.besiegers.includes(target.seatId),
+    );
+    if (asAttacker) {
+      delta += 1;
+      continue;
+    }
+    const asBesieged = rels.some(
+      (r) => r.besiegers.includes(p.seatId) && r.besiegedSeatId === target.seatId,
+    );
+    if (asBesieged) delta -= 1;
+  }
+  return delta;
+}
+
+/** 决绝①：弃牌阶段开始，可以失去 1 点体力（不是伤害） */
+function askJuejueArm(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【决绝】：是否失去 1 点体力？（本回合弃牌阶段结束时若你弃置过手牌，将令所有其他角色二选一）',
+    [
+      { id: 'yes', label: '发动（失去 1 点体力）' },
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      // ⚠️ 每次询问都要**重新赋值**（包括选「不发动」）：否则上一回合选的「发动」会一直挂着，
+      //    这一回合明明选了不发动、只要弃过手牌就会被误结算（这个状态是**回合内**的）
+      st.juejueArmed = picked === 'yes';
+      if (picked !== 'yes') return;
+      ctx.api.loseHp(p, 1, () => {
+        pushLog(st, 'skill', `${p.name} 发动【决绝】：失去 1 点体力。`, { seat: p.seatId });
+      });
+    },
+  );
+}
+
+/** 决绝②：本回合弃牌阶段结束时（落地在 turnEnd）逐个结算 */
+function askJuejueSettle(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (!state.juejueArmed) return;
+  if (!me.alive) return;
+  if (!state.handDiscardedInDiscardPhase.includes(me.seatId)) return; // 门槛：本阶段弃过**手牌**
+  const x = state.discardPhaseCountsThisTurn[me.seatId] ?? 0; // X＝本阶段弃置的**全部**牌数
+  if (x <= 0) return;
+  const others = state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+  if (others.length === 0) return;
+  const step = (i: number): void => {
+    if (i >= others.length) return;
+    if (!me.alive) return;
+    const victim = getPlayer(state, others[i]!.seatId);
+    if (!victim || !victim.alive) {
+      step(i + 1);
+      return;
+    }
+    const opts = [
+      ...(victim.hand.length >= x
+        ? [{ id: 'put', label: `将 ${x} 张手牌置入弃牌堆` }]
+        : []),
+      { id: 'dmg', label: `受到 ${me.name} 造成的 1 点普通伤害` },
+    ];
+    const settle = (st: GameState, v: Player, pick: string): void => {
+      if (pick === 'put') {
+        ctx.api.askPickCards(
+          st,
+          v.seatId,
+          `【决绝】：选择 ${x} 张手牌置入弃牌堆`,
+          v.hand.slice(),
+          x,
+          x,
+          (st2, v2, chosen) => {
+            // ⚠️ 「置入弃牌堆」不是「弃置」：直接 toDiscard，不派发「因弃置」的收口
+            for (const c of chosen) {
+              removeCard(v2.hand, c.id);
+              toDiscard(st2, c);
+            }
+            pushLog(
+              st2,
+              'skill',
+              `${v2.name} 因【决绝】将 ${chosen.length} 张手牌置入弃牌堆。`,
+              { seat: v2.seatId },
+            );
+            step(i + 1);
+          },
+        );
+        return;
+      }
+      pushLog(st, 'skill', `${v.name} 因【决绝】受到 1 点普通伤害。`, { seat: v.seatId });
+      ctx.api.dealDamage(v, 1, me.seatId, undefined, () => step(i + 1));
+    };
+    if (opts.length === 1) {
+      settle(state, victim, 'dmg'); // 手牌不够 X → 只能吃伤害，不给「执行不了的选项」
+      return;
+    }
+    ctx.api.askChoice(
+      state,
+      victim.seatId,
+      `【决绝】（${me.name}）：选择一项`,
+      opts,
+      (st, v, pick) => settle(st, v, pick),
+    );
+  };
+  step(0);
+}
+
+/** 方圆②：自己**被围攻**时，结束阶段选一名围攻者，视为使用纯虚拟普通【杀】 */
+function askFangyuanSlash(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  const rel = siegeRelations(state).find((r) => r.besiegedSeatId === me.seatId);
+  if (!rel) return;
+  const cands = rel.besiegers
+    .map((id) => getPlayer(state, id))
+    .filter((p): p is Player => !!p && p.alive);
+  if (cands.length === 0) return;
+  ctx.api.askChoice(
+    state,
+    me.seatId,
+    '【方圆】：你被围攻，是否视为对一名围攻角色使用一张普通【杀】？',
+    [
+      ...cands.map((p) => ({ id: p.seatId, label: `对 ${p.name} 使用【杀】` })),
+      { id: 'no', label: '不发动' },
+    ],
+    (st, p, picked) => {
+      if (picked === 'no') return;
+      // 纯虚拟普通【杀】：无实体、不继承花色点数；使用者与目标由技能定死 → 不查距离/不占次数
+      pushLog(st, 'skill', `${p.name} 发动【方圆】，视为对 ${getPlayer(st, picked)?.name ?? '?'} 使用一张普通【杀】。`, {
+        seat: p.seatId,
+      });
+      ctx.api.castVirtualSha(p.seatId, picked, { logKind: 'skill' });
+    },
+  );
+}
+
+const ZHULING: Hero = {
+  id: 'zhuling',
+  name: '朱灵',
+  pack: 'buchen',
+  faction: 'wei',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 方圆是锁定技（阵法技），要在 handLimit 与回合钩子上都生效
+  lockedFields: ['fangyuan'],
+  skillFields: { 方圆: ['fangyuan'] },
+  fangyuan: true,
+  hooks: [
+    { timing: 'discardPhase', skillId: '决绝', handler: askJuejueArm },
+    { timing: 'turnEnd', skillId: '决绝', handler: askJuejueSettle },
+    { timing: 'turnEnd', skillId: '方圆', locked: true, handler: askFangyuanSlash },
+  ],
+  skills: [
+    {
+      name: '决绝',
+      desc: '弃牌阶段开始时，你可以失去1点体力；本回合弃牌阶段结束时，若你于此阶段内弃置过手牌，你令所有其他角色依次选择一项：将X张手牌置入弃牌堆（X为你于此阶段内弃置的牌数）；或受到你造成的1点普通伤害。你杀死与你势力相同的角色时，不执行奖惩。',
+    },
+    {
+      name: '方圆',
+      desc: '阵法技，锁定技，与你处于同一围攻关系的围攻角色手牌上限+1、被围攻角色手牌上限-1；若你处于被围攻状态，你的结束阶段可以视为对一名围攻角色使用一张普通【杀】。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -14658,6 +14880,7 @@ export const HEROES: Hero[] = [
   SUNCHEN,
   PENGYANG,
   WENQIN,
+  ZHULING,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

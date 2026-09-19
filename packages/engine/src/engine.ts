@@ -82,6 +82,7 @@ import {
   heroBlocksBeingTarget,
   heroCanUseAs,
   heroDuelShaRequired,
+  fangyuanHandLimitDelta,
   heroIgnoresTrickDistance,
   heroShaLimit,
   EQUIP_SLOTS,
@@ -202,7 +203,8 @@ function handLimit(state: GameState, player: Player): number {
     heroes.length === 0
       ? Math.max(0, player.hp)
       : Math.max(0, ...heroes.map((h) => (h.handLimit ? h.handLimit(state, player) : player.hp)));
-  return base + player.flags.handLimitBonus;
+  // 阵法技（朱灵·方圆）：与方圆拥有者同一围攻关系的围攻者 +1、被围攻者 -1
+  return base + player.flags.handLimitBonus + fangyuanHandLimitDelta(state, player);
 }
 
 function removeCard(hand: import('@sgs/protocol').Card[], id: string) {
@@ -1374,8 +1376,10 @@ function enterPlayPhase(state: GameState, player: Player): void {
     state.turn.phase = 'play';
     // 新的一轮出牌阶段：清空「本阶段受过伤的人」（董昭·劝进的候选池）
     state.damagedThisPhase = [];
-  state.suzhiTriggers = 0;
-  state.discardPhaseCountsThisTurn = {};
+    state.suzhiTriggers = 0;
+    state.discardPhaseCountsThisTurn = {};
+    state.handDiscardedInDiscardPhase = [];
+    state.juejueArmed = false;
     runHooksPausable(state, 'playPhase', player, undefined, () => {
       // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
       if (player.flags.skipPlay) {
@@ -7765,6 +7769,10 @@ function onDiscard(
       thrown.push(c);
     }
   }
+  // 朱灵·决绝的门槛：本阶段**弃置过手牌**（这条强制弃牌路径本来就是从手牌里弃）
+  if (thrown.length > 0 && !state.handDiscardedInDiscardPhase.includes(player.seatId)) {
+    state.handDiscardedInDiscardPhase.push(player.seatId);
+  }
   // 挟天子以令诸侯要看「弃牌阶段是否真弃过牌」
   if (intent.cardIds.length > 0) player.flags.discardedInDiscardPhase = true;
   pushLog(state, 'discard', `${player.name} 弃了 ${intent.cardIds.length} 张牌。`);
@@ -9155,6 +9163,8 @@ export function createGame(
     xiongnue: null,
     xiongnueDefense: false,
     discardPhaseCountsThisTurn: {},
+    handDiscardedInDiscardPhase: [],
+    juejueArmed: false,
     equipLossSeq: 0,
     rng: opts?.rng ?? Math.random,
     heroPool: [],

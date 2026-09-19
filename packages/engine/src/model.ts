@@ -857,6 +857,16 @@ export interface GameState {
    */
   discardPhaseCountsThisTurn: Record<string, number>;
   /**
+   * 朱灵·【决绝】的触发门槛：本回合**自己的弃牌阶段**里**弃置过手牌**的座位。
+   * ⚠️ 与上面的「弃置总张数」是两个口径：门槛只看「有没有弃过**手牌**」，
+   *    而 X＝本阶段弃置的**全部**牌数（含装备等其他牌）。
+   */
+  handDiscardedInDiscardPhase: string[];
+  /**
+   * 朱灵·【决绝】已在本回合的弃牌阶段失去过 1 点体力（记在本回合内，随回合清空）。
+   */
+  juejueArmed: boolean;
+  /**
    * **当前阶段**实际受到过伤害的角色（伤被防止不算）。
    * 董昭·【劝进】要求目标是「在当前**出牌阶段**已经受到过伤害」的角色——注意是**阶段**不是回合，
    * 所以不能复用 `damagedThisTurn`。进入出牌阶段时清空（与 `lostCardsThisPhase` 同一生命周期口径）。

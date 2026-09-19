@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import {  woundedFactionCount,
+import {  fangyuanHandLimitDelta,  woundedFactionCount,
   currentFactionCount,
   applyIntent,
   attackRange,
@@ -38,7 +38,7 @@ import {  woundedFactionCount,
 
   type GameState,
   type SeatSetup,
-} from '../src';
+  determineDualFaction,} from '../src';
 import { FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type { Card, CardType, Faction, GameMode, MarkerId, Suit } from '@sgs/protocol';
 
@@ -824,7 +824,10 @@ describe('国战模式', () => {
   }
 
   /** 从发到的武将中找 2 个同阵营的（君主只能作主将，所以要摆到 main 位） */
-  function findSameFactionPair(deals: string[]): { main: string; deputy: string } | null {
+  function findSameFactionPair(
+    deals: string[],
+    mode: GameMode = 'guozhan',
+  ): { main: string; deputy: string } | null {
     const factionOf = (id: string) => getHero(id)?.faction;
     const isLord = (id: string) => getHero(id)?.isLord === true;
     for (let i = 0; i < deals.length; i++) {
@@ -832,6 +835,11 @@ describe('国战模式', () => {
         // 野心家武将（野势力）只能作主将、也不能和另一个野武将配成一副将 → 这一档跳过
         if (factionOf(deals[i]!) === 'ambitionist') continue;
         if (factionOf(deals[i]!) !== factionOf(deals[j]!)) continue;
+        // 两张都是双势力、且有两个共同势力时，引擎会要求玩家**自己选势力**（选势力界面还没做，
+        // pickHero 直接拒绝）。发将是随机的，随到这种组合测试就会莫名失败——这里按引擎的同一
+        // 判定（determineDualFaction）跳过，保证拿到的组合一定能选上。
+        const dual = determineDualFaction(getHero(deals[i]!), getHero(deals[j]!), mode);
+        if (dual?.kind === 'choice') continue;
         const li = isLord(deals[i]!);
         const lj = isLord(deals[j]!);
         if (li && lj) continue; // 两名君主不能组成一副将
@@ -19651,6 +19659,237 @@ describe('国战 · 文钦（矜伐）', () => {
   });
 });
 
+
+/**
+ * 朱灵（不臣篇·下，魏）——【决绝】/【方圆】（文档 §5.110）。
+ * 锁：「弃过手牌」是**门槛**、X 是「本阶段弃置的**全部**牌数」（两个口径）；
+ * A 分支是「**置入**弃牌堆」而不是「弃置」；方圆建立在**围攻关系**上（不是临时看左右座位）。
+ */
+describe('国战 · 朱灵（决绝 / 方圆）', () => {
+  function gz(
+    seats: { seatId: string; name: string; heroId: string; faction: Faction; hand?: Card[] }[],
+    actor?: string,
+  ): GameState {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = Math.max(1, Math.floor(hero.maxHp));
+      p.hp = p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+  const taos = (prefix: string, n: number): Card[] =>
+    Array.from({ length: n }, (_, i) => mk(`${prefix}${i}`, 'tao', 'heart'));
+  const pick = (state: GameState, id: string) => state.players.find((p) => p.seatId === id)!;
+
+  it('决绝①：弃牌阶段开始可失去 1 点体力——是「失去」不是「伤害」，上限跟着降', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 4) },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('决绝');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(pick(state, A).hp).toBe(3);
+    // 「失去体力」不是伤害：不产生伤害事件
+    expect(state.damageLedgerThisTurn.some((e) => e.targetId === A)).toBe(false);
+    // 失去 1 点体力后手牌上限从 4 降到 3 → 4 张手牌要弃 1 张
+    expect(state.pending?.kind).toBe('discard');
+    if (state.pending?.kind === 'discard') expect(state.pending.count).toBe(1);
+  });
+
+  it('决绝②：X＝本阶段弃置的**全部**牌数；「将X张手牌置入弃牌堆」是**置入**不是「弃置」；手牌不够只能吃伤害', () => {
+    const state = gz([
+      // 5 张手牌、体力 4 → 发动后体力 3 → 上限 3 → 弃 2 张（X=2）
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 5) },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: taos('b', 3) },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: taos('c', 2) },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun', hand: taos('d', 1) },
+    ], A);
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(pick(state, A).hp).toBe(3);
+    expect(state.pending?.kind).toBe('discard');
+    if (state.pending?.kind === 'discard') expect(state.pending.count).toBe(2);
+    ok(act(state, A, { type: 'discard', cardIds: ['a0', 'a1'] }));
+    expect(pick(state, A).hand.length).toBe(3);
+    // 逐个问其他角色：乙（3 张 ≥ 2）两个选项都给出，标签里的张数就是 X
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.title).toContain('决绝');
+      expect(state.pending.options.map((o) => o.label).join('|')).toContain('2 张');
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'put' }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b0', 'b1'] }));
+    // 「置入弃牌堆」：牌进了弃牌堆，但不走「弃置」那条收口（日志是「置入弃牌堆」，不是「弃了」）
+    expect(pick(state, B).hand.length).toBe(1);
+    expect(state.discard.filter((c) => c.id === 'b0' || c.id === 'b1').length).toBe(2);
+    expect(state.log.some((e) => e.message.includes('置入弃牌堆'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('乙 弃了'))).toBe(false);
+    expect(state.handDiscardedInDiscardPhase.includes(B)).toBe(false);
+    // 丙（2 张）两个选项都在
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'dmg' }));
+    expect(pick(state, C).hp).toBe(3);
+    // 丁只有 1 张 < X=2 → 不给「执行不了的选项」，直接吃 1 点伤害
+    expect(pick(state, D).hp).toBe(3);
+  });
+
+  it('决绝②：门槛是「本阶段**弃过手牌**」——没弃过手牌 / 没发动，后半段都不发生', () => {
+    // (i) 发动了，但手牌 2 ≤ 上限 3 → 本阶段没弃过手牌 → 不结算
+    const s1 = gz([
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 2) },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: taos('b', 2) },
+    ], A);
+    ok(act(s1, A, { type: 'endPhase' }));
+    ok(act(s1, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(s1.pending?.kind).toBe('play');
+    expect(s1.pending?.kind === 'choice' && s1.pending.title.includes('决绝')).toBe(false);
+    // (ii) 会弃牌，但选择不发动 → 也不结算
+    const s2 = gz([
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 5) },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: taos('b', 2) },
+    ], A);
+    ok(act(s2, A, { type: 'endPhase' }));
+    ok(act(s2, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(s2.pending?.kind).toBe('discard'); // 上限 4、手牌 5 → 弃 1
+    ok(act(s2, A, { type: 'discard', cardIds: ['a0'] }));
+    expect(s2.pending?.kind === 'choice' && s2.pending.title.includes('决绝')).toBe(false);
+  });
+
+  it('决绝②：状态是**回合内**的——上一回合发动过，这一回合改选不发动就不会误结算', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 3) },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], A);
+    // 第 1 回合：发动【决绝】，但手牌 3 ≤ 上限 3 → 没弃过手牌 → 不结算
+    ok(act(state, A, { type: 'endPhase' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(pick(state, A).hp).toBe(3);
+    expect(state.pending?.kind).toBe('play'); // 直接轮到乙
+    // 乙的回合：过
+    ok(act(state, B, { type: 'endPhase' }));
+    // 第 2 回合（甲）：这次**不发动**，但会弃 2 张手牌（3+摸2-上限3）
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('决绝');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    expect(state.pending?.kind).toBe('discard');
+    if (state.pending?.kind === 'discard') expect(state.pending.count).toBe(2);
+    ok(act(state, A, { type: 'discard', cardIds: ['a0', 'a1'] }));
+    // 没发动 → 即使弃过手牌也不该结算（残留状态会让乙被误问）
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('决绝')).toBe(false);
+  });
+
+  it('方圆①：与朱灵同一围攻关系的围攻者上限 +1、被围攻者 -1；无关者 0；同一角色不按关系数重复 +1', () => {
+    // 6 人环：魏(朱灵)-吴-魏-吴-魏-吴 → 乙/丁/己各被两侧夹住，其中只有乙、己的关系含朱灵
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
+      { seatId: E, name: '戊', heroId: 'vanilla', faction: 'wei' },
+      { seatId: 's5', name: '己', heroId: 'vanilla', faction: 'wu' },
+    ], A);
+    expect(fangyuanHandLimitDelta(state, pick(state, A))).toBe(1); // 朱灵是围攻者（两条关系也只 +1）
+    expect(fangyuanHandLimitDelta(state, pick(state, B))).toBe(-1); // 被围攻
+    expect(fangyuanHandLimitDelta(state, pick(state, C))).toBe(1); // 与朱灵同围乙
+    expect(fangyuanHandLimitDelta(state, pick(state, D))).toBe(0); // 丁被丙、戊围攻，与朱灵无关
+    expect(fangyuanHandLimitDelta(state, pick(state, E))).toBe(1); // 与朱灵同围己
+    expect(fangyuanHandLimitDelta(state, pick(state, 's5'))).toBe(-1);
+  });
+
+  it('围攻关系：上家下家**同势力**才算（四家各不同 = 谁都没被围攻）；野心家不能当围攻角色、但可以当被围攻角色', () => {
+    // (i) 四家势力各不相同 → 一名角色的两个邻居彼此势力不同 → 一条关系都没有
+    const s1 = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+    ], A);
+    expect(siegeRelations(s1)).toEqual([]);
+    // (ii) 两名野心家夹住一名吴将：上家下家「同势力」成立，但野心家不能当围攻角色 → 关系仍不成立
+    const s2 = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'ambitionist' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'ambitionist' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei' },
+    ], A);
+    expect(siegeRelations(s2)).toEqual([]);
+    // (iii) 反过来：两名吴将夹住一名野心家 → 野心家可以当**被围攻角色**，关系成立
+    const s3 = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wu' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'ambitionist' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wei' },
+    ], A);
+    expect(
+      siegeRelations(s3)
+        .map((r) => r.besiegedSeatId)
+        .sort(),
+    ).toEqual([B, D].sort());
+    // 朱灵在这几种局面里都不构成「围攻者」→ 方圆①一律不生效
+    for (const id of [A, B, C, D]) {
+      expect(fangyuanHandLimitDelta(s2, pick(s2, id))).toBe(0);
+      expect(fangyuanHandLimitDelta(s3, pick(s3, id))).toBe(0);
+    }
+  });
+
+  it('方圆②：朱灵被围攻时，结束阶段可视为对一名围攻者使用纯虚拟普通【杀】（不占次数、闪照常响应）', () => {
+    // 4 人环：群-吴-魏(朱灵)-吴 → 朱灵被乙、丁围攻
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [shan('b1')] },
+        { seatId: C, name: '丙', heroId: 'zhuling', faction: 'wei', hand: [] },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+      ],
+      C,
+    );
+    ok(act(state, C, { type: 'endPhase' }));
+    // 弃牌阶段开始先问决绝（不发动）
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('决绝')) {
+      ok(act(state, C, { type: 'chooseOption', optionId: 'no' }));
+    }
+    // 结束阶段：方圆
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.title).toContain('方圆');
+      expect(state.pending.options.map((o) => o.id)).toContain(B);
+      expect(state.pending.options.map((o) => o.id)).toContain(D);
+    }
+    const shaBefore = state.turn.shaCountThisTurn;
+    ok(act(state, C, { type: 'chooseOption', optionId: B }));
+    expect(state.log.some((e) => e.message.includes('方圆'))).toBe(true);
+    // 走的是完整【杀】流程：乙被问出闪
+    expect(state.pending?.kind).toBe('respondSha');
+    if (state.pending?.kind === 'respondSha') expect(state.pending.responderId).toBe(B);
+    expect(state.turn.shaCountThisTurn).toBe(shaBefore); // 技能视为使用，不计入出杀次数
+    // 乙出闪 → 挡下，不掉体力
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(pick(state, B).hp).toBe(4);
+    expect(state.damageLedgerThisTurn.some((e) => e.targetId === B)).toBe(false);
+  });
+});
 /** 技能判定也走「判定牌生效前」：鬼才/鬼道能改判、天妒能收牌 */
 describe('国战 · 技能判定接入改判时机', () => {
   function gz(
