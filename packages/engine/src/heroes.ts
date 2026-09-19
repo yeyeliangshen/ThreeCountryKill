@@ -11985,11 +11985,16 @@ export function poolForMode(mode: GameMode): Hero[] {
 /**
  * 「场上一个**已确定势力**的存活角色数」——君袁绍·会盟用的计数。
  *
- * 口径与 `effectiveFaction` 一致（暗置角色没有确定势力、不属于任何势力），
- * 野心家/中立不算「一个势力」（与 bigFactions、isAoyu 的排除一致）。
- *
- * ⚠️ 待核对：官方技能只写「场上一个势力的角色数」，没写按明置算还是按武将牌本身的势力算。
- *    本实现取**明置**口径，理由与备选口径见 docs/guozhan-roster.md §5.60。
+ * 口径（用户核对后的官方规则）：
+ * - 只数**当前已经确定势力**的存活角色；**未确定势力的角色不计入任何势力**——
+ *   哪怕程序后台知道他那两张武将牌是什么势力（官方有「未确定势力角色」这个明确状态，
+ *   野心家规则也写作「当一名**明置武将确定势力**时」才按该势力当前人数判断）。
+ * - 这里**不读** `player.faction` 这个后台真实势力：判定统一走 `effectiveFaction`。
+ * - 野心家/中立不算「一个势力」（与 bigFactions、isAoyu 的排除一致）。
+ * - ⚠️ 实现说明（用户提醒）：`effectiveFaction` 现在的写法是「明置过至少一张武将牌」，
+ *   在**双势力 / 新势力**那些规则下，「明置」与「确定势力」并不完全等价。真正该有的是一个
+ *   显式的 `determinedFaction` 状态。本仓库目前只在**这一个函数**里做判定，所以将来要换口径
+ *   只需改这里（各处没有自己写 `heroRevealed` 判断），见 docs/guozhan-roster.md §5.71。
  */
 export function knownFactionCount(state: GameState, faction: Faction | null): number {
   if (!faction || faction === 'ambitionist' || faction === 'neutral') return 0;
@@ -11998,6 +12003,9 @@ export function knownFactionCount(state: GameState, faction: Faction | null): nu
 
 export function effectiveFaction(state: GameState, player: Player): Faction | null {
   if (state.mode !== 'guozhan') return player.faction;
+  // 「已确定势力」的唯一判定点。⚠️ 现在用「明置过至少一张武将牌」来近似它——
+  // 双势力（要先确认势力）与新势力规则下这两者不等价，届时把这里换成显式状态即可
+  // （调用方一律走这个函数，没有别处自己写 heroRevealed，见 docs §5.71）。
   return player.heroRevealed || player.deputyRevealed ? player.faction : null;
 }
 

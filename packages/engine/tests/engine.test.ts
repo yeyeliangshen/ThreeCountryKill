@@ -29,6 +29,8 @@ import {
   isSmallFaction,
   factionHelpers,
   isMalePlayer,
+  knownFactionCount,
+
   type GameState,
   type SeatSetup,
 } from '../src';
@@ -165,6 +167,24 @@ function passDeathSaves(state: GameState) {
     const asked = state.pending.askQueue[state.pending.askIndex]!;
     ok(act(state, asked, { type: 'pass' }));
   }
+}
+
+/**
+ * 把回合摆到某人的**准备阶段**并挂一个询问——国战只有这个时机能主动明置武将牌。
+ * 主动明置的合法条件是「自己的回合 + 准备阶段 + 有 pending」，测试里这样最省事。
+ */
+function atJudgment(state: GameState, id: string): void {
+  state.turn = { seatIndex: state.seatOrder.indexOf(id), phase: 'judgment' };
+  state.pending = {
+    kind: 'choice',
+    seatId: id,
+    title: '准备阶段：是否明置武将牌？',
+    options: [
+      { id: 'all', label: '全部明置' },
+      { id: 'none', label: '暂不明置' },
+    ],
+    resolve: () => {},
+  };
 }
 
 // ——————————————————————————————————————————
@@ -2004,19 +2024,6 @@ describe('国战进阶（Step 7）', () => {
 
   // 2. 野心家分配
     /** 把回合摆到某人的**准备阶段**并挂一个询问——国战只有这个时机能主动明置武将牌 */
-    const atJudgment = (st: GameState, id: string) => {
-      st.turn = { seatIndex: st.seatOrder.indexOf(id), phase: 'judgment' };
-      st.pending = {
-        kind: 'choice',
-        seatId: id,
-        title: '准备阶段：是否明置武将牌？',
-        options: [
-          { id: 'all', label: '全部明置' },
-          { id: 'none', label: '暂不明置' },
-        ],
-        resolve: () => {},
-      };
-    };
   it('野心家身份：明置时判——4 人局第 3 个蜀（超半数）转野心家，早亮的两个留蜀', () => {
     // 官方口径：明置武将、确定势力的**那一刻**，如果加入该势力会让它「超过全场人数的一半」，
     // 就不加入、改为野心家。所以是**明置先后**决定谁留下（不是开局按座次预先指定）。
@@ -4036,21 +4043,6 @@ describe('新增武将（按最新国战标准）', () => {
     // markers 里没这个键就是「没拿到」（引擎只在真触发时才 addMarker）
     expect(a.markers.zhulian ?? 0).toBe(0);
   });
-
-  function atJudgment(state: GameState, id: string): void {
-    // 把回合摆到某人的**准备阶段**并挂一个询问——国战只有这个时机能主动明置武将牌
-    state.turn = { seatIndex: state.seatOrder.indexOf(id), phase: 'judgment' };
-    state.pending = {
-      kind: 'choice',
-      seatId: id,
-      title: '准备阶段：是否明置武将牌？',
-      options: [
-        { id: 'all', label: '全部明置' },
-        { id: 'none', label: '暂不明置' },
-      ],
-      resolve: () => {},
-    };
-  }
 
   it('（休眠规则）君主将只能作主将 / 亮将双亮并获【珠联璧合】/ 不成野心家', () => {
     const lord = getHero('caocao')!;
@@ -19840,6 +19832,66 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.markerUsesThisTurn).toEqual([
       { seatId: 'A', markerId: 'yinyangyu', usage: 'draw' },
     ]);
+  });
+
+  it('会盟只数「已确定势力」的角色：后台藏着的同势力将不算（用户给的例子）', () => {
+    // 三家后台都是群将，但都没确定势力 → 会盟看来「群人数 = 0」。
+    // 之后：第 1 个确定为群 → 0→1 触发；第 2 个 → 1→2 不触发；只剩一人后他阵亡 → 1→0 再触发。
+    // 六家（半数 = 3）：三个群都在允许范围内 → 谁都不会被转成野心家，专心验会盟的计数
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'lvbu' },
+        { seatId: 'B', name: '乙', heroId: 'diaochan' },
+        { seatId: 'C', name: '丙', heroId: 'zhangjiao' },
+        { seatId: 'D', name: '丁', heroId: 'guanyu' },
+        { seatId: 'E', name: '戊', heroId: 'xuchu' },
+        { seatId: 'F', name: '己', heroId: 'zhangfei' },
+      ],
+      'TEST',
+      { mode: 'guozhan', freePick: true },
+    );
+    ok(act(state, 'A', { type: 'pickHero', heroId: 'lvbu', deputyHeroId: 'diaochan' }));
+    ok(act(state, 'B', { type: 'pickHero', heroId: 'zhangjiao', deputyHeroId: 'lvbu' }));
+    ok(act(state, 'C', { type: 'pickHero', heroId: 'jiaxu', deputyHeroId: 'diaochan' }));
+    ok(act(state, 'D', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
+    ok(act(state, 'E', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+    ok(act(state, 'F', { type: 'pickHero', heroId: 'zhangfei', deputyHeroId: 'guanyu' }));
+    const a = state.players.find((x) => x.seatId === 'A')!;
+    state.log = [];
+    const huimeng = () => state.log.filter((l) => l.message.includes('会盟')).length;
+
+    // 三家后台都是群，但一个都没确定势力 → 群人数 0，会盟不发作
+    expect(knownFactionCount(state, 'qun')).toBe(0);
+
+    // 甲先确定为群（0 → 1）→ 触发一次（甲自己是君主，所以他能听到）
+    atJudgment(state, 'A');
+    ok(act(state, 'A', { type: 'revealHero', heroId: 'lvbu' }));
+    expect(knownFactionCount(state, 'qun')).toBe(1);
+    expect(a.markers.zhulian ?? null).toBeNull();
+    expect(huimeng()).toBe(0); // 甲是唯一明置的群，自己此时还没拿到会盟（见下）
+    // 让甲也明置第二张 → 甲此时才是「已确定势力」的君袁绍（会盟生效）
+    ok(act(state, 'A', { type: 'revealHero', heroId: 'diaochan' }));
+    expect(a.markers.zhulian).toBe(1); // 亮齐双将
+    expect(huimeng()).toBe(0); // 甲的明置发生在自己拿到技能之前，不补发作
+
+    // 乙确定为群（1 → 2）→ 不触发
+    atJudgment(state, 'B');
+    ok(act(state, 'B', { type: 'revealHero', heroId: 'zhangjiao' }));
+    expect(knownFactionCount(state, 'qun')).toBe(2);
+    expect(huimeng()).toBe(0);
+
+    // 丙也确定为群（2 → 3）→ 仍不触发
+    atJudgment(state, 'C');
+    ok(act(state, 'C', { type: 'revealHero', heroId: 'jiaxu' }));
+    expect(knownFactionCount(state, 'qun')).toBe(3);
+    expect(huimeng()).toBe(0);
+
+    // 只剩甲一个群了（2 → 1）→ 不触发
+    state.players.find((x) => x.seatId === 'B')!.alive = false;
+    expect(knownFactionCount(state, 'qun')).toBe(2);
+    state.players.find((x) => x.seatId === 'C')!.alive = false;
+    expect(knownFactionCount(state, 'qun')).toBe(1);
+    expect(huimeng()).toBe(0);
   });
 
   it('励众：一轮结束时，同势力里本轮造成伤害最多的角色各获得【先驱】', () => {
