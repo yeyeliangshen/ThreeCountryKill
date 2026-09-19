@@ -4218,6 +4218,22 @@ function applyKillPenalty(state: GameState, dying: Player, killerId: string | un
   if (!killerId || killerId === dying.seatId) return;
   const killer = getPlayer(state, killerId);
   if (!killer || !killer.alive) return;
+  // 奖惩的另一半：**杀死野心家 → 摸三张牌**（野心家之间也算；判在「同势力」之前，
+  // 因为野心家不是一个「势力」）
+  const dyingFaction = dying.determinedFaction ?? dying.faction;
+  if (dyingFaction === 'ambitionist') {
+    let got = 0;
+    for (let i = 0; i < 3; i++) {
+      const c = drawOne(state);
+      if (!c) break;
+      killer.hand.push(c);
+      got++;
+    }
+    pushLog(state, 'death', `${killer.name} 杀死了野心家，奖惩：摸 ${got} 张牌。`, {
+      seat: killer.seatId,
+    });
+    return;
+  }
   if (!sameKnownFaction(state, killer, dying)) return;
   if (activeHeroes(state, killer).some((h) => h.exemptFromKillPenalty === true)) {
     pushLog(
