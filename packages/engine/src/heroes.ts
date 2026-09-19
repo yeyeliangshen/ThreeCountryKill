@@ -3914,6 +3914,130 @@ export function wenjiMarked(player: Player, cardId: string): boolean {
 }
 
 /**
+ * 场上「**有受伤角色**的势力」的数量（唐咨·兴棹的四档门槛）——国战公共规则函数。
+ *
+ * 口径（用户给出，2026-09）：
+ * - 「受伤角色」＝ `hp < maxHp` 的**存活**角色；
+ * - 只数**已确定势力**（`effectiveFaction`）：暗置/未确定势力的受伤角色**不计入**任何势力
+ *   （与【会盟】、刘琦【问计】同一口径，不读后台印面势力）；
+ * - **不是人数**：两个魏国角色都受伤也只算 1 个势力；
+ * - 势力 id 直接进 Set——将来「新建立的势力 / 野心家」由统一的势力系统决定是不是不同 id，
+ *   这里不另定一套。
+ */
+export function woundedFactionCount(state: GameState): number {
+  const seen = new Set<string>();
+  for (const p of state.players) {
+    if (!p.alive || p.hp >= p.maxHp) continue;
+    const f = effectiveFaction(state, p);
+    if (f) seen.add(f);
+  }
+  return seen.size;
+}
+
+/**
+ * 【兴棹】第 2 档：唐咨受到伤害**之后**（重新数一次受伤势力，条件可能刚因这次伤害满足），
+ * 比较唐咨与来源的**当前**手牌数——**唯一较少**的一方摸 1 张；一样多则都不摸。
+ */
+function askXingzhaoHands(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (woundedFactionCount(state) < 2) return;
+  const attack = (ctx.payload as { attack?: AttackContext } | undefined)?.attack;
+  const srcId = attack?.sourceId;
+  if (!srcId || srcId === me.seatId) return; // 自己对自己造成的伤害：没有「另一方」可比
+  const src = getPlayer(state, srcId);
+  if (!src || !src.alive) return;
+  const mine = me.hand.length;
+  const theirs = src.hand.length;
+  if (mine === theirs) return; // 一样多 → 没人摸
+  const lucky = mine < theirs ? me : src;
+  const c = drawOne(state);
+  if (c) lucky.hand.push(c);
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【兴棹】：${lucky.name} 手牌较少，摸了 1 张牌（${mine} : ${theirs}）。`,
+    { seat: lucky.seatId },
+  );
+}
+
+/**
+ * 【兴棹】第 4 档：唐咨**失去装备区里的牌**后摸 1 张。
+ *
+ * 「失去」比「弃置」宽：被拆、被拿走、被换下、作为代价弃掉都算——统一挂引擎的 `equipLost`
+ * 事件（它一次失去一个批次一个 eventId）。**同一批失去多张只摸 1 张**，靠 eventId 去重。
+ */
+function askXingzhaoEquip(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (woundedFactionCount(state) < 4) return;
+  const eventId = (ctx.payload as { eventId?: number } | undefined)?.eventId ?? -1;
+  if (me.flags.xingzhaoEquipEventId === eventId) return; // 同一批已经摸过了
+  me.flags.xingzhaoEquipEventId = eventId;
+  const c = drawOne(state);
+  if (c) me.hand.push(c);
+  pushLog(state, 'skill', `${me.name} 的【兴棹】：失去装备区里的牌后摸了 1 张牌。`, {
+    seat: me.seatId,
+  });
+}
+
+/**
+ * 【恂恂】（唐咨·兴棹第 1 档**动态提供**的衍生技能）：
+ * 摸牌阶段开始时，可以看牌堆顶 4 张，把其中 2 张按任意顺序放回牌堆顶、另外 2 张按任意顺序放底。
+ *
+ * 与观星同一套「先选放顶、再从剩下的里选放底」的两步询问（点击顺序就是顺序）。
+ * 牌堆方向：`drawOne` 从数组**尾**取牌，所以「牌堆顶」＝数组尾。
+ */
+function askXunxun(ctx: HookContext): void {
+  const state = ctx.state;
+  const me = ctx.player;
+  if (woundedFactionCount(state) < 1) return; // 兴棹第 1 档不满足 → 没有恂恂
+  const n = Math.min(4, state.deck.length);
+  if (n === 0) return;
+  const top = state.deck.slice(state.deck.length - n).reverse(); // 从牌堆顶往下数
+  const put = (topPile: Card[], bottomPile: Card[]): void => {
+    state.deck.splice(state.deck.length - n, n); // 先摘掉看过的那几张
+    // 放顶：topPile[0] 要**最先**被摸到 → 数组尾放它 → 倒着压回去
+    for (const c of [...topPile].reverse()) state.deck.push(c);
+    // 放底：bottomPile[0] 是「沉底后先抽到」的那张 → 它更靠近顶部 → 最后一个 unshift
+    state.deck.unshift(...[...bottomPile].reverse());
+    pushLog(
+      state,
+      'skill',
+      `${me.name} 发动【恂恂】：${topPile.length} 张置于牌堆顶、${bottomPile.length} 张置于牌堆底。`,
+      { seat: me.seatId },
+    );
+  };
+  ctx.api.askPickCards(
+    state,
+    me.seatId,
+    `【恂恂】：选择要置于牌堆**顶**的牌（按点击顺序＝从最上面往下数）`,
+    top,
+    Math.min(2, n),
+    Math.min(2, n),
+    (st, p, chosen) => {
+      const rest = top.filter((c) => !chosen.some((x) => x.id === c.id));
+      if (rest.length <= 1) {
+        put(chosen, rest);
+        return;
+      }
+      ctx.api.askPickCards(
+        st,
+        p.seatId,
+        `【恂恂】：剩下的 ${rest.length} 张里，选择置于牌堆**底**的牌（按点击顺序＝沉底后先抽到的先点）`,
+        rest,
+        rest.length,
+        rest.length,
+        (_st2, _p2, bottom) => {
+          const keep = rest.filter((c) => !bottom.some((x) => x.id === c.id));
+          put([...chosen, ...keep], bottom);
+        },
+      );
+    },
+  );
+}
+
+/**
  * 全场**已确定势力**的数量（刘琦·屯江的 X）——国战公共规则函数，不写死在技能里。
  *
  * 口径（用户要求做成公共函数）：
@@ -12299,9 +12423,54 @@ const LIUQI: Hero = {
   ],
 };
 
+/**
+ * 唐咨（不臣篇·上；**双势力 魏/吴**，2 阴阳鱼 → 体力上限 4）。
+ *
+ * 【兴棹】（锁定技）按**场上「有受伤角色的势力」数**（`woundedFactionCount`）**累计**开启四档：
+ *   ≥1 → 拥有【恂恂】；≥2 → 唐咨受到伤害后，唐咨与来源中**手牌数唯一较少**的一方摸 1 张；
+ *   ≥3 → 手牌上限 +4；≥4 → 唐咨失去装备区里的牌后摸 1 张（**同一批失去只摸 1 张**）。
+ *
+ * 四档全部**实时**判定（不缓存档位）：条件会因回血/阵亡/明置/势力确定而随时增减——
+ * 第 2 档也必须在**伤害之后再数一次**（这次伤害本身就可能让受伤势力数从 1 变 2）。
+ * 「势力数」不是人数：两名魏将都受伤也只算 1 个势力；暗置（未确定势力）的受伤角色不计入
+ * （与【会盟】同一口径）。口径来源：用户给出的等价规则实现文本（见 docs/guozhan-roster.md §5.91）。
+ *
+ * 双势力：主将/副将都能放，最终势力由 `determineDualFaction` 决定；确定之后【兴棹】与
+ * 【恂恂】的判定都读 `effectiveFaction`。
+ */
+const TANGZI: Hero = {
+  id: 'tangzi',
+  name: '唐咨',
+  pack: 'buchen',
+  faction: 'wei',
+  secondFaction: 'wu',
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  // 手牌上限 +4 是【兴棹】第 3 档（锁定技的一部分），别被「非锁定技失效」关掉
+  lockedFields: ['handLimit'],
+  // 第 3 档：**动态**手牌上限（每次查询现算，不落成 buff）
+  handLimit: (state, player) => player.hp + (woundedFactionCount(state) >= 3 ? 4 : 0),
+  hooks: [
+    { timing: 'afterDamage', skillId: '兴棹', locked: true, handler: askXingzhaoHands },
+    { timing: 'equipLost', skillId: '兴棹', locked: true, handler: askXingzhaoEquip },
+    // 【恂恂】是兴棹第 1 档**动态提供**的衍生技能：钩子常挂，档位条件在handler 里现算
+    { timing: 'drawPhase', skillId: '恂恂', handler: askXunxun },
+  ],
+  skills: [
+    {
+      name: '兴棹',
+      desc: '锁定技，当场上有受伤角色的势力数不小于 1/2/3/4 时，你依次拥有以下效果：获得【恂恂】；你受到伤害后，你与伤害来源中手牌数唯一较少的一方摸一张牌；你的手牌上限+4；你失去装备区里的牌后摸一张牌。',
+    },
+    {
+      name: '恂恂',
+      desc: '摸牌阶段开始时，你可以观看牌堆顶四张牌，将其中两张以任意顺序置于牌堆顶，其余两张以任意顺序置于牌堆底。',
+    },
+  ],
+};
+
 const BUCHEN_DUAL: Hero[] = [
   dualHero('mengda', '孟达', 'wei', 'shu', 4),
-  dualHero('tangzi', '唐咨', 'wei', 'wu', 4),
   dualHero('mifangfushiren', '糜芳傅士仁', 'shu', 'wu', 4),
   dualHero('zhanglu', '张鲁', 'wei', 'qun', 3),
   dualHero('shixie', '士燮', 'wu', 'qun', 3),
@@ -12344,6 +12513,7 @@ const BUCHEN_AMBITIONIST: Hero[] = [
 export const HEROES: Hero[] = [
   ...BUCHEN_DUAL,
   LIUQI,
+  TANGZI,
   ...BUCHEN_AMBITIONIST,
   JUN_CAOCAO,
   JUN_LIUBEI,

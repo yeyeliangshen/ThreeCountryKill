@@ -185,6 +185,11 @@ export interface PlayerFlags {
   /** 本回合使用【杀】无距离限制（太史慈·天义拼点赢） */
   ignoreShaDistanceThisTurn: boolean;
   /**
+   * 唐咨·兴棹第 4 档：已经结算过的「失去装备区里的牌」批次编号（equipLost 的 eventId）。
+   * 同一批失去（一次弃多张/一次被拿走多张）只摸 1 张，靠它去重。随回合清零。
+   */
+  xingzhaoEquipEventId: number;
+  /**
    * 非锁定技失效（新国战·铁骑那类）：本回合内该角色的非锁定技全部不起作用。
    * 由 afterTurnEnd 统一清掉（「直到回合结束」）。
    */
@@ -288,6 +293,7 @@ export function emptyFlags(): PlayerFlags {
     damageBonusThisTurn: 0,
     ignoreShaDistanceThisTurn: false,
     nonLockedSkillsDisabled: false,
+    xingzhaoEquipEventId: -1,
     cannotPlayCardsThisTurn: false,
     cannotPlayColor: null,
     cannotHealThisTurn: false,
