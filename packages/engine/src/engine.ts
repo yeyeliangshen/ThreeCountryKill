@@ -8782,6 +8782,14 @@ function makeSkillApi(
       const p = getPlayer(state, seatId);
       return p ? handLimit(state, p) : 0;
     },
+    kill: (seatId, reason) => {
+      const victim = getPlayer(state, seatId);
+      if (!victim || !victim.alive) return;
+      pushLog(state, 'skill', `${victim.name} 因【${reason ?? '技能'}】死亡。`, {
+        seat: seatId,
+      });
+      doDeath(state, seatId);
+    },
     loseEquip: (seatId, card, after) => {
       const owner = getPlayer(state, seatId);
       const done = after ?? (() => {});
@@ -8998,6 +9006,7 @@ export function createGame(
     qianhuan: [],
     hun: [],
     han: [],
+    yi: [],
     nullifiedHeroId: null,
     wounds: [],
     grantedSkills: [],

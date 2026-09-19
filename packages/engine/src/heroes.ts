@@ -13436,6 +13436,178 @@ const SP_SIMAZHAO: Hero = {
   ],
 };
 
+/**
+ * 公孙渊 —— 怀异 / 恣睢（不臣篇·下，**野心家武将本体**，2 阴阳鱼 → 4；移动版 2021 口径，见 §5.103）。
+ *
+ * ⚠️ 版本边界（用户 2026-09 明确）：**移动版 2021 没有**「必须红黑双色」前提，也**没有**
+ *    「异可如手牌使用/打出」——那两条是线下 2022/2025 典藏版；本仓库取移动版。
+ *
+ * 【怀异】（出牌阶段限一次）：展示全部手牌 → 选择其中**存在的一种颜色**（红/黑）→ 弃掉该颜色的
+ *   **全部**手牌 → X＝实际弃掉的手牌数 → 至多选择 X 名**不同**的其他角色，各获得其一张牌；
+ *   本次获得的牌里**凡是装备牌**的，置于武将牌旁成为「异」（看牌的类型，不看它原来在哪个区域）。
+ * 【恣睢】（锁定技）：① 摸牌阶段额外摸 X 张（X＝当前「异」数，走摸牌数修正 `drawCountDelta`，
+ *   **不是**另开一次摸牌）② 结束阶段开始时若 X **大于**体力上限 → **直接死亡**（不是失去体力、
+ *   不是伤害、不进濒死救援）。「异」数每次现算，不设计数器。
+ */
+function askHuaiyi(state: GameState, player: Player, api: SkillApi): string | undefined {
+  if (player.hand.length === 0) return '【怀异】需要至少一张手牌';
+  // 展示全部手牌（公开信息）
+  pushLog(
+    state,
+    'skill',
+    `${player.name} 发动【怀异】，展示全部手牌：${player.hand.map((c) => `【${cardLabel(c)}】`).join('、')}。`,
+    { seat: player.seatId },
+  );
+  const colorOf = (c: Card): 'red' | 'black' => (cardColor(c) === 'red' ? 'red' : 'black');
+  const colors = [...new Set(player.hand.map(colorOf))];
+  const finish = (st: GameState, me: Player, obtained: Card[]): void => {
+    // 本次获得的牌里**装备牌**成为「异」（看牌的类型，不看来源区域）
+    const equips = obtained.filter((c) => isEquipCard(c));
+    if (equips.length === 0) return;
+    const still: Card[] = [];
+    for (const c of equips) {
+      const i = me.hand.findIndex((x) => x.id === c.id);
+      if (i < 0) continue; // 跨步：已经不在了就不强搬
+      const [card] = me.hand.splice(i, 1);
+      if (!card) continue;
+      me.yi.push(card);
+      still.push(card);
+    }
+    if (still.length > 0) {
+      pushLog(
+        st,
+        'skill',
+        `${me.name} 的【怀异】：${still.map((c) => `【${cardLabel(c)}】`).join('、')} 置于武将牌旁成为「异」（共 ${me.yi.length} 张）。`,
+        { seat: me.seatId },
+      );
+    }
+  };
+  const pickTargets = (st0: GameState, me: Player, left: number, picked: string[], obtained: Card[]): void => {
+    if (left <= 0) {
+      finish(st0, me, obtained);
+      return;
+    }
+    const cands = st0.players.filter(
+      (q) => q.alive && q.seatId !== me.seatId && !picked.includes(q.seatId) && handAndEquipOf(q).length > 0,
+    );
+    if (cands.length === 0) {
+      finish(st0, me, obtained);
+      return;
+    }
+    api.askChoice(
+      st0,
+      me.seatId,
+      `【怀异】：选择第 ${picked.length + 1} 名角色获得其一张牌（至多 ${left + picked.length} 名，可提前结束）`,
+      [
+        ...cands.map((q) => ({ id: q.seatId, label: `${q.name}（${q.hand.length} 张手牌）` })),
+        { id: 'stop', label: '结束选择' },
+      ],
+      (st, p, pickedId) => {
+        if (pickedId === 'stop') {
+          finish(st, p, obtained);
+          return;
+        }
+        const t = getPlayer(st, pickedId);
+        if (!t) {
+          pickTargets(st, p, left - 1, picked, obtained);
+          return;
+        }
+        // takeOneOfTargetCards 的回调不带参数：用「拿牌前后手牌差集」认出拿到的那张
+        const beforeIds = new Set(p.hand.map((c) => c.id));
+        takeOneOfTargetCards(st, p, t, api, '怀异', () => {
+          const got = p.hand.find((c) => !beforeIds.has(c.id));
+          pushLog(st, 'skill', `${p.name} 的【怀异】：获得了 ${t.name} 的一张牌。`, {
+            seat: p.seatId,
+          });
+          pickTargets(st, p, left - 1, [...picked, pickedId], got ? [...obtained, got] : obtained);
+        });
+      },
+    );
+  };
+  api.askChoice(
+    state,
+    player.seatId,
+    `【怀异】：选择要**全部弃置**的颜色（本次弃几张，就能选几名角色）`,
+    colors.map((c) => ({
+      id: c,
+      label: `${c === 'red' ? '红色' : '黑色'}（${player.hand.filter((x) => colorOf(x) === c).length} 张）`,
+    })),
+    (st, p, picked) => {
+      const cards = p.hand.filter((c) => colorOf(c) === picked);
+      if (cards.length === 0) return;
+      api.discardCards(p.seatId, cards, () => {
+        pushLog(
+          st,
+          'skill',
+          `${p.name} 的【怀异】：弃置${picked === 'red' ? '红' : '黑'}色手牌 ${cards.length} 张。`,
+          { seat: p.seatId },
+        );
+        pickTargets(st, p, cards.length, [], []);
+      });
+    },
+    player.seatId,
+  );
+  return undefined;
+}
+
+/** 【恣睢】①：摸牌阶段额外摸「异」张（走摸牌数修正，不是另开一次摸牌） */
+function zisuiDraw(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (me.yi.length === 0) return;
+  me.flags.drawCountDelta += me.yi.length;
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【恣睢】：摸牌阶段额外摸 ${me.yi.length} 张（「异」数）。`,
+    { seat: me.seatId },
+  );
+}
+
+/** 【恣睢】②：结束阶段开始时，若「异」数**大于**体力上限 → **直接死亡**（不进濒死救援） */
+function zisuiDeath(ctx: HookContext): void {
+  const me = ctx.player;
+  const state = ctx.state;
+  if (me.yi.length <= me.maxHp) return; // 等于也不死（严格大于）
+  ctx.api.kill(me.seatId, '恣睢');
+}
+
+const GONGSUNYUAN: Hero = {
+  id: 'gongsunyuan',
+  name: '公孙渊',
+  pack: 'buchen',
+  faction: 'ambitionist', // 野心家武将本体（野势力）
+  maxHp: 4,
+  gender: 'male',
+  modes: ['guozhan'],
+  activeSkills: [
+    {
+      id: 'huaiyi',
+      name: '怀异',
+      oncePerTurn: true,
+      minTargets: 0,
+      maxTargets: 0,
+      needsCards: false,
+      canUse: (_state, player) => player.hand.length > 0,
+      execute: (state, player, _intent, api) => askHuaiyi(state, player, api),
+    },
+  ],
+  hooks: [
+    { timing: 'drawPhase', skillId: '恣睢', locked: true, handler: zisuiDraw },
+    { timing: 'turnEnd', skillId: '恣睢', locked: true, handler: zisuiDeath },
+  ],
+  skills: [
+    {
+      name: '怀异',
+      desc: '出牌阶段限一次，你可以展示所有手牌，然后弃置其中一种颜色的所有手牌（X 为你以此法弃置的手牌数），令至多 X 名其他角色各交给你一张牌。若你以此法获得了装备牌，将这些装备牌置于你的武将牌旁，称为「异」。',
+    },
+    {
+      name: '恣睢',
+      desc: '锁定技，摸牌阶段，你额外摸 X 张牌（X 为「异」的数量）；结束阶段开始时，若你的「异」的数量大于你的体力上限，你死亡。',
+    },
+  ],
+};
+
 function ambitionistHero(id: string, name: string, hp: number): Hero {
   return {
     id,
@@ -13450,10 +13622,10 @@ function ambitionistHero(id: string, name: string, hp: number): Hero {
 }
 
 const BUCHEN_AMBITIONIST: Hero[] = [
-  ambitionistHero('gongsunyuan', '公孙渊', 4),
   ambitionistHero('sunchen', '孙綝', 4),
   ambitionistHero('jie_zhonghui', '界钟会', 4),
   SP_SIMAZHAO,
+  GONGSUNYUAN,
 ];
 
 export const HEROES: Hero[] = [

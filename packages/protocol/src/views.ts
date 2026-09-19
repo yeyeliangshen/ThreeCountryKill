@@ -72,6 +72,8 @@ export interface PlayerView {
   wounds?: Card[];
   /** 孟达·【求安】的「函」（公开信息） */
   han?: Card[];
+  /** 公孙渊·【怀异】的「异」（公开信息） */
+  yi?: Card[];
   /** 颜良文丑·双雄：本回合判定牌的颜色（本回合可把异色手牌当【决斗】用） */
   shuangxiongColor?: 'red' | 'black' | null;
   // 副将是否已亮将（国战公开信息）

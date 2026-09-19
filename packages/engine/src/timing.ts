@@ -278,6 +278,11 @@ export interface SkillApi {
    */
   loseEquip: (seatId: string, card: Card, after?: () => void) => void;
   /**
+   * **直接死亡**（不进濒死救援：不是失去体力、也不是受到伤害）。
+   * 目前只有公孙渊·【恣睢】用：「若你的『异』数大于体力上限，你死亡」。
+   */
+  kill: (seatId: string, reason?: string) => void;
+  /**
    * 回复体力（上限夹取，并触发「回复体力后」的技能）。
    * 返回**实际**回复量；再经过 `afterHeal` 时对方拿到的也是这个数。
    */
