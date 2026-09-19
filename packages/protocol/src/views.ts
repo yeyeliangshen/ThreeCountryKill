@@ -121,6 +121,14 @@ export interface PromptView {
   mustSelectTargetCount: number;
   // 选将阶段：发给我的武将 id 列表（仅 pickHero 有）
   legalHeroIds?: string[];
+  /**
+   * 选将阶段：**白捡的另一版**武将（仅 pickHero 有，国战「君主↔标准版」）。
+   *
+   * 发将是不重叠发牌（一张武将牌只在一个人的选项里），所以「发到曹操就等于也拿到君曹操」
+   * 只在**君曹操没发到别人手里**时成立；这一栏就是那些确实没人拿、可以随便换的版本。
+   * 界面用它决定要不要显示「换成君主将 / 换成标准版」按钮。
+   */
+  draftVariants?: string[];
   // 出牌阶段：可用的主动技能 id 列表（仅 play 有）
   /** 出牌阶段：可以「连横」交给哪些角色（势备篇，非空即说明手上有带标记的牌） */
   lianhengTargets?: string[];

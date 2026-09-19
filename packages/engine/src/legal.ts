@@ -23,7 +23,12 @@ import {
 } from './heroes';
 import { MARKER_DESC, MARKER_SKILL_PREFIX, markerActiveSkills } from './markers';
 import { equipActiveSkills } from './equip';
-import { factionGrantedActiveSkills, huangtianFor, xuanhuoFor } from './heroes';
+import {
+  draftOptionsFor,
+  factionGrantedActiveSkills,
+  huangtianFor,
+  xuanhuoFor,
+} from './heroes';
 import type { Card } from '@sgs/protocol';
 import {
   activeHeroes,
@@ -53,7 +58,12 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         legalCardIds: [],
         legalTargetIds: [],
         mustSelectTargetCount: 1,
+        // 发到的那几张（界面照它渲染武将牌）
         legalHeroIds: state.draft.deals[seatId] ?? [],
+        // 外加「君主/标准版互换」里**没人拿走**的那一版——界面据此显示「换成君主将」按钮
+        draftVariants: draftOptionsFor(state, seatId).filter(
+          (id) => !(state.draft!.deals[seatId] ?? []).includes(id),
+        ),
       };
     }
     return null;

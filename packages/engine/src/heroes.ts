@@ -12098,13 +12098,38 @@ export function lordVariantOf(heroId: string | null | undefined): string | undef
 }
 
 /**
- * 选将时这个 id 能不能被选：发到的将本身，或者它与发到的将**互为君主/标准版**。
- * 引擎的 pickHero 校验与界面上的「换成君主将 / 换成标准版」按钮都用它。
+ * 某个座位选将时**实际可选**的武将 id 列表。
+ *
+ * ＝ 发到的那几张，外加「君主/标准版互换」里**没有发到别人手上**的另一版。
+ *
+ * ⚠️ 为什么必须看别人手里有没有：发将本来是「武将池洗牌后按座次不重叠发牌」（一张武将牌
+ * 只在一个人的选项里），而「君主↔标准版」这条放宽等于把两张牌绑在一起——若不检查，
+ * A 发到【曹操】就能换成【君曹操】，而【君曹操】可能正发在 B 手里，于是同一张武将牌
+ * 落到两个人身上（珠联璧合、变更副将、UI 的「谁是谁」全都依赖武将牌唯一）。
+ * 规则口径按「那张牌在谁手里就是谁的」：只有**没人拿到**的那一版才是白捡的。
+ *
+ * 引擎的 pickHero 校验与界面提示（`legalHeroIds`）都用它。
  */
-export function draftAllowsHero(options: readonly string[], heroId: string): boolean {
-  if (options.includes(heroId)) return true;
-  const variant = lordVariantOf(heroId);
-  return !!variant && options.includes(variant);
+export function draftOptionsFor(state: GameState, seatId: string): string[] {
+  const draft = state.draft;
+  if (!draft) return [];
+  const mine = draft.deals[seatId] ?? [];
+  const others = new Set<string>();
+  for (const [seat, list] of Object.entries(draft.deals)) {
+    if (seat === seatId) continue;
+    for (const id of list) others.add(id);
+  }
+  const out = [...mine];
+  for (const id of mine) {
+    const variant = lordVariantOf(id);
+    if (variant && !others.has(variant) && !out.includes(variant)) out.push(variant);
+  }
+  return out;
+}
+
+/** 这个座位此刻能不能选这个武将（发到的将，或没人拿走的互换版本） */
+export function draftAllowsHero(state: GameState, seatId: string, heroId: string): boolean {
+  return draftOptionsFor(state, seatId).includes(heroId);
 }
 
 export function getHeroForMode(id: string | null | undefined, mode: GameMode): Hero | undefined {

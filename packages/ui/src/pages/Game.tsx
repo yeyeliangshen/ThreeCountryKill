@@ -714,6 +714,9 @@ export function Game() {
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
   if (snapshot.turn.phase === 'draft') {
     const options = prompt?.kind === 'pickHero' ? (prompt.legalHeroIds ?? []) : [];
+    // 「君主↔标准版」里白捡的那些（没人拿走才在列表里，见 protocol 的 draftVariants）
+    const variants = prompt?.kind === 'pickHero' ? (prompt.draftVariants ?? []) : [];
+    const canSwapTo = (targetId: string) => options.includes(targetId) || variants.includes(targetId);
     const guozhanCanConfirm = !!mainPick && !!deputyPick && mainPick !== deputyPick;
 
     if (isGuozhan) {
@@ -730,7 +733,7 @@ export function Game() {
                   const isMain = mainPick === id;
                   const isDeputy = deputyPick === id;
                   const variantId = lordVariantOf(id);
-                  const variant = variantId ? getHero(variantId) : undefined;
+                  const variant = variantId && canSwapTo(variantId) ? getHero(variantId) : undefined;
                   // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
                   // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
                   const swapBlocked = isDeputy && !!variant?.isLord;

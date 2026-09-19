@@ -8620,16 +8620,20 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
   const draft = state.draft;
   if (!draft) return err('当前不在选将阶段');
   if (!draft.pendingSeats.includes(seatId)) return err('你已经选过将了');
-  const options = draft.deals[seatId];
-  // 「发到了曹操就等于也拿到了君曹操，反之亦然」——见 heroes.ts 的 LORD_VARIANTS
-  if (!options || !draftAllowsHero(options, intent.heroId)) return err('该武将不在你发到的将中');
+  // 「发到了曹操就等于也拿到了君曹操，反之亦然」——但只在**那张牌没发到别人手里**时成立，
+  // 否则同一张武将牌会落到两个人身上（见 heroes.ts 的 draftOptionsFor）
+  if (!draft.deals[seatId]) return err('当前不在选将阶段');
+  if (!draftAllowsHero(state, seatId, intent.heroId)) return err('该武将不在你发到的将中');
   const player = getPlayerOrThrow(state, seatId);
 
   if (state.mode === 'guozhan') {
     const deputyId = intent.deputyHeroId;
     if (!deputyId) return err('国战需选 2 位武将（主将 + 副将）');
-    if (!draftAllowsHero(options, deputyId)) return err('副将不在你发到的将中');
+    if (!draftAllowsHero(state, seatId, deputyId)) return err('副将不在你发到的将中');
     if (deputyId === intent.heroId) return err('主将与副将不能相同');
+    // ⚠️ 待核对：君主版与它的标准版能不能同时当主副将（【君曹操】+【曹操】）——官方没写明，
+    //    本仓库**不猜**，因此不拦（原先我按「君主替换同名标准武将」推了一条禁令，发现既没有
+    //    出处又挡掉了几条既有用例，已撤）。只守住有依据的那条：一张武将牌不能落到两个人手里。
     const mainHero = getHero(intent.heroId);
     const deputyHero = getHero(deputyId);
     if (!mainHero || !deputyHero) return err('武将不存在');

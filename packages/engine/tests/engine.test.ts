@@ -18710,6 +18710,29 @@ describe('国战 · 君主将（特性）', () => {
     expect(bad2.ok).toBe(false);
   });
 
+  it('选将：一张武将牌只能落到一个人手里（君主/标准版的互换也守这条）', () => {
+    // 乙手里有【君曹操】→ 甲（发到的是标准版【曹操】）就不能换成君曹操
+    const s1 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['juncaocao', 'xuchu'] });
+    const bad = act(s1, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'xiahoudun' });
+    expect(bad.ok).toBe(false);
+    // 提示里也不该出现它（界面据此决定要不要显示「换成君主将」按钮）
+    const promptA = toSnapshot(s1, 'A').prompt;
+    expect(promptA?.legalHeroIds).toEqual(['caocao', 'xiahoudun']);
+    expect(promptA?.draftVariants).toEqual([]);
+    // 反过来也一样：甲拿到的是【君曹操】时，标准版【曹操】在乙手里就用不了
+    const s2 = gzDeal({ A: ['juncaocao', 'xiahoudun'], B: ['caocao', 'xuchu'] });
+    expect(act(s2, 'A', { type: 'pickHero', heroId: 'caocao', deputyHeroId: 'xiahoudun' }).ok).toBe(
+      false,
+    );
+    // 没人拿走的那一版才是白捡的（乙手里没有君曹操）
+    const s3 = gzDeal({ A: ['caocao', 'xiahoudun'], B: ['xuchu', 'dianwei'] });
+    expect(toSnapshot(s3, 'A').prompt?.draftVariants).toEqual(['juncaocao']);
+    ok(act(s3, 'A', { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'xiahoudun' }));
+
+    // 君主 + 别的魏将没问题（s3 里君曹操是白捡的、夏侯惇是发到的）
+    ok(act(s3, 'B', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'dianwei' }));
+  });
+
   it('君主将与同势力**所有**武将珠联璧合（不限于官方组合表）', () => {
     // 君曹操 + 曹操：官方组合表里没有这一对，但君主与同势力全员珠联璧合
     // （标记在选将结束时统一发放，所以两家都要选完）
