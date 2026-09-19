@@ -24454,6 +24454,24 @@ describe('国战 · 诸葛恪（傲才）', () => {
     if (!r.ok) expect(r.error).toContain('回合外');
   });
 
+  it('【决斗】要求出【杀】时也能用【傲才】（走 respondTrick 那条路）', () => {
+    const state = gz(B);
+    const b = state.players.find((x) => x.seatId === B)!;
+    b.hand = [mk('j1', 'juedou', 'spade')];
+    top2(state, mk('d1', 'sha', 'spade'), mk('d2', 'tao', 'heart'));
+    ok(act(state, B, { type: 'playCard', cardId: 'j1', targetIds: [A] }));
+    expect(state.pending?.kind).toBe('respondTrick');
+    // 诸葛恪用牌堆顶的实体【杀】响应决斗 → 乙没有第二张杀 → 乙吃 1 点伤害
+    const r = act(state, A, { type: 'aocai' });
+    expect(r.ok, r.ok ? '' : r.error).toBe(true);
+    if (state.pending?.kind === 'respondTrick') {
+      ok(act(state, B, { type: 'pass' })); // 乙出不了杀，弃权
+    }
+    expect(state.players.find((x) => x.seatId === B)!.hp).toBe(3);
+    expect(state.players.find((x) => x.seatId === A)!.hp).toBe(3); // 诸葛恪没掉血
+    expect(state.discard.some((c) => c.id === 'd1')).toBe(true);
+  });
+
   it('牌堆顶没有匹配的基本牌 → 什么都不发生（顶两张原样不动）', () => {
     const state = gz(B);
     top2(state, mk('d1', 'tao', 'heart'), mk('d2', 'jiu', 'spade'));
