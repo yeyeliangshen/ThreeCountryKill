@@ -2150,11 +2150,11 @@ function resumePlay(
     return;
   }
   state.turn.phase = 'play';
-  // ⚠️ 围栏的**判断**已经就绪（`since` + canTakeOverPending），但**暂时不启用**：
-  //    实测「挡住 + pushResume 排队」会让冒烟 6 条挂（固定种子对局判不出胜负、牌张守恒不变式）——
-  //    因为 pushResume 只在槽为 null/弃牌阶段时排空，流程回到「出牌阶段」占位时那条续接
-  //    永远醒不过来。⇒ **必须先做唤醒语义**（在 pending 被 resolve/cancel 的地方主动排空队列），
-  //    否则「不冲掉询问」会变成「整局卡死」。见 docs §5.124.1。
+  // ⚠️ 围栏判断依旧**暂不启用**（第四次的结论）：唤醒语义（回答处主动 drainResume）已经落地并单独
+  //    验证全绿，但「被挡住 → pushResume 排队」这条路**仍然**会让冒烟 6 条挂 —— 因为队列还依赖
+  //    intent 结束时的 drain（用 isIdlePending 判，**故意**排除「出牌阶段」占位，防回合交界重入）。
+  //    ⇒ 缺口是「回退重试也要有机会跑」：在**不重入回合交界**的前提下，让队列在槽变成 play 占位时
+  //    也能跑（或把 resumePlay 的排队做成「等这条 pending 被 resolve 时唤醒」的订阅式，而不是轮询队列）。
   void since;
   setPending(state, { kind: 'play', seatId: sourceId });
 }
@@ -4455,6 +4455,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       if (state.pending === null && pending.returnTo) {
         resumePlay(state, pending.returnTo);
       }
+            // 输入槽空了 → **主动唤醒**被挡住的续接（不再靠 isIdlePending 猜，见 docs §5.124 待办 3）
+      drainResume(state);
       return { ok: true };
     }
 
@@ -4489,7 +4491,9 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       if (p.after) {
         const after = p.after;
         after();
-        return { ok: true };
+              // 输入槽空了 → **主动唤醒**被挡住的续接（不再靠 isIdlePending 猜，见 docs §5.124 待办 3）
+      drainResume(state);
+      return { ok: true };
       }
       if (p.returnTo) resumePlay(state, p.returnTo);
       return { ok: true };
@@ -4531,7 +4535,9 @@ function onPickCards(
   if (state.pending === null && pending.returnTo) {
     resumePlay(state, pending.returnTo);
   }
-  return { ok: true };
+        // 输入槽空了 → **主动唤醒**被挡住的续接（不再靠 isIdlePending 猜，见 docs §5.124 待办 3）
+      drainResume(state);
+      return { ok: true };
 }
 
 function onPlayCard(
