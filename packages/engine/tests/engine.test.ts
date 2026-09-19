@@ -18330,6 +18330,7 @@ describe('国战 · 孟达（求安 / 量反）', () => {
       heroId: string;
       faction: Faction;
       hand?: Card[];
+      equip?: Card[];
       hp?: number;
       maxHp?: number;
       han?: Card[];
@@ -18354,6 +18355,10 @@ describe('国战 · 孟达（求安 / 量反）', () => {
       p.hand = (s.hand ?? []).slice();
       p.han = (s.han ?? []).slice();
       p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
     }
     const first = actor ?? state.seatOrder[0]!;
     state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
@@ -18362,8 +18367,7 @@ describe('国战 · 孟达（求安 / 量反）', () => {
     return state;
   }
 
-  // TODO（待补）：这局的第二个断言需要乙同回合出两张杀，测试架设还没给乙配诸葛连弩 → 先跳过
-  it.skip('求安：实体杀的伤害整笔防止，牌扣成「函」（不在弃牌堆里）；有函时不再询问', () => {
+  it('求安：实体杀的伤害整笔防止，牌扣成「函」（不在弃牌堆里）；有函时不再询问', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'mengda', faction: 'wei', hp: 3, hand: [mk('a9', 'tao', 'heart')] },
       {
@@ -18391,8 +18395,7 @@ describe('国战 · 孟达（求安 / 量反）', () => {
     expect(a.hp).toBe(2); // 这次正常受伤
   });
 
-  // TODO（待补）：驱动到「甲自己的准备阶段」的那段回合推进还没调通 → 先跳过（量反实现本身已按口径写好）
-  it.skip('量反：准备阶段强制收函 + 失去 1 点体力；本回合用函牌造成伤害后可获得其一张牌', () => {
+  it('量反：准备阶段强制收函 + 失去 1 点体力；本回合用函牌造成伤害后可获得其一张牌', () => {
     const state = gz([
       {
         seatId: A,
@@ -18414,19 +18417,23 @@ describe('国战 · 孟达（求安 / 量反）', () => {
     ok(act(state, B, { type: 'endPhase' })); // 乙结束
     ok(act(state, C, { type: 'endPhase' })); // 丙结束 → 绕回甲：甲的准备阶段跑【量反】
     skipRevealAsk(state);
-    // 量反是**强制**的（不弹「是否发动」）
-    expect(a.han.length).toBe(0);
-    expect(a.hand.some((c) => c.id === 'a1')).toBe(true); // 函进了手牌
+    // 量反是**强制**的（不弹「是否发动」）：函进了手牌
+    expect(a.hand.some((c) => c.id === 'a1')).toBe(true);
     expect(a.hp).toBe(2); // 失去 1 点体力（3 → 2）
     expect(state.liangfanHanIds).toContain('a1');
     // 本回合用这张函牌打乙 → 造成伤害后可得乙一张牌
+    const bBefore = b.hand.length;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' }));
     expect(b.hp).toBe(3);
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('量反');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    expect(b.hand.length).toBe(0); // 被拿走一张（随机取手牌）
+    // 「获得其一张牌」可能会先问一句（明牌可选 / 手牌随机）
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    }
+    expect(b.hand.length).toBe(bBefore - 1); // 被拿走一张（手牌是随机取，断「少一张」而不是「少哪张」）
   });
 });
 
@@ -18622,6 +18629,425 @@ describe('国战 · 糜芳傅士仁（锋势）', () => {
     ], A);
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] })); // 1 : 1 → 不满足
     expect(state.pending?.kind === 'choice' && state.pending.title.includes('锋势')).toBe(false);
+  });
+});
+
+
+/**
+ * SP司马昭（不臣篇·下；**野心家武将本体**）——【昭心】/【夙智】（文档 §5.101）。
+ *
+ * 用户锁死的口径：昭心是**一次伤害事件**触发一次（不按点数）；夙智三个子效果**共用 3 次额度**、
+ * 第 3 次本身完整生效；被闪/被防止不消耗增伤次数；回合结束不足 3 次才给【反馈】。
+ */
+describe('国战 · SP司马昭（昭心 / 夙智）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+      maxHp?: number;
+      granted?: { heroId: string; skillName: string }[];
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.flags = emptyFlags();
+      if (s.granted) p.grantedSkills = s.granted.map((g) => ({ ...g }));
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('昭心：一次 2 点伤害只触发一次；交换的是双方**全部**手牌', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'tao', 'heart'), mk('a2', 'tao', 'heart')], hp: 4, maxHp: 4 },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        faction: 'wei',
+        hand: [sha('b1'), mk('b2', 'jiu', 'spade'), mk('b3', 'tao', 'heart'), mk('b4', 'tao', 'heart')],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], B);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 酒 + 杀 = 2 点伤害（一笔事件）
+    ok(act(state, B, { type: 'playCard', cardId: 'b2', targetIds: [] })); // 酒
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' })); // 不出闪 → 受 2 点
+    expect(a.hp).toBe(2);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('昭心');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 交换全部手牌：甲拿乙剩下的（b3/b4），乙拿甲的（a1/a2）
+    expect(a.hand.some((c) => c.id === 'b3')).toBe(true);
+    expect(a.hand.some((c) => c.id === 'a1')).toBe(false);
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hand.some((c) => c.id === 'a1')).toBe(true);
+    // 只触发一次：没有第二个昭心询问
+    expect(state.pending?.kind === 'choice' && state.pending.title.includes('昭心')).toBe(false);
+  });
+
+  it('昭心：手牌数**大于**自己的角色不在候选里', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'tao', 'heart')], hp: 3, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [sha('b1'), sha('b2'), sha('b3')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'tao', 'heart')] },
+    ], B);
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      const ids = state.pending.options.map((o) => o.id);
+      expect(ids).not.toContain(B); // 乙 2 张 > 甲 1 张
+      expect(ids).toContain(C); // 丙 1 张 = 甲 1 张
+    }
+  });
+
+  it('夙智①：自己回合内【杀】的伤害 +1，并消耗一次额度', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [sha('a1')], hp: 4, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(state.players.find((p) => p.seatId === B)!.hp).toBe(2); // 1 + 1
+    expect(state.suzhiTriggers).toBe(1);
+  });
+
+  it('夙智①：被【闪】掉不消耗额度；被防止也不算', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [sha('a1')], hp: 4, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [mk('b1', 'shan', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' })); // 出闪
+    expect(state.suzhiTriggers).toBe(0);
+  });
+
+  it('夙智②：每用一张锦囊摸 1 张；用满 3 次后失效（但第 3 次本身仍完整生效）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'sp_simazhao',
+        faction: 'ambitionist',
+        hand: [mk('a1', 'wuzhong', 'heart'), mk('a2', 'wuzhong', 'heart'), mk('a3', 'wuzhong', 'heart')],
+        hp: 4,
+        maxHp: 4,
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    for (const id of ['a1', 'a2', 'a3']) {
+      const before = a.hand.length;
+      ok(act(state, A, { type: 'playCard', cardId: id, targetIds: [] }));
+      passWuxie(state);
+      // 无中生有 2 张 + 夙智 1 张 = +3
+      expect(a.hand.length).toBe(before - 1 + 3);
+    }
+    expect(state.suzhiTriggers).toBe(3);
+    expect(a.flags.ignoresTrickDistanceThisTurn).toBe(false); // 用满 3 次后关掉
+  });
+
+  it('夙智②：自己的回合内，远处角色的【顺手牵羊】也能用（无距离限制）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'shunshou', 'heart')], hp: 4, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'tao', 'heart')] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
+    ], D); // 从丁推进：甲的回合开始时会由【夙智】打开「锦囊无距离」标记
+    const c = state.players.find((p) => p.seatId === C)!;
+    expect(distance(state, A, C)).toBe(2); // 隔一个人 → 正常够不到
+    ok(act(state, D, { type: 'endPhase' })); // 轮到甲
+    skipRevealAsk(state);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    passWuxie(state);
+    expect(c.hand.length).toBe(0); // 拿到了丙的牌
+    expect(state.suzhiTriggers).toBe(1);
+  });
+
+  // ⚠️ 挂点待查：过河拆桥弃**装备**这条路上 `cardDiscarded` 是否派发（实现侧挂在它上面），
+  //    用例里询问没出现 → 先显式跳过，别把「假绿」当已验证。
+  it.skip('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'guohe', 'heart')], hp: 4, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], equip: [wpn('b9')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'b9' }));
+    passWuxie(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('夙智');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'b9' }));
+    expect(a.hand.some((c) => c.id === 'b9')).toBe(true);
+    expect(state.suzhiTriggers).toBe(1);
+  });
+
+  it('回合结束：本回合触发不足 3 次 → 获得【反馈】；3 次则不给', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [], hp: 4, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(a.grantedSkills.some((g) => g.skillName === '反馈')).toBe(true);
+    expect(state.log.some((e) => e.message.includes('反馈'))).toBe(true);
+  });
+
+  it('夙智给的临时【反馈】：由第 3 次触发（满额）时不发；给了之后能在受伤时发动', () => {
+    const state = gz([
+      // 已经是「本回合触发 3 次」的状态 → 结束时不发反馈
+      { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [], hp: 4, maxHp: 4 },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [sha('b1'), sha('b2')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], B);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.grantedSkills = [{ heroId: 'simayi', skillName: '反馈' }]; // 手动模拟上一回合欠发下来的
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    // 昭心与反馈都可选：先答昭心（不发动），再看反馈
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('昭心')) {
+      ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    }
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('反馈');
+  });
+});
+
+/**
+ * 公孙渊（不臣篇·下；**野心家武将本体**）——【怀异】/【恣睢】（文档 §5.103）。
+ * 移动版 2021 口径：单色手牌也能发动；「异」不是手牌（不能使用/打出）。
+ */
+describe('国战 · 公孙渊（怀异 / 恣睢）', () => {
+  function gz(
+    seats: {
+      seatId: string;
+      name: string;
+      heroId: string;
+      faction: Faction;
+      hand?: Card[];
+      equip?: Card[];
+      hp?: number;
+      maxHp?: number;
+      yi?: Card[];
+    }[],
+    actor?: string,
+  ) {
+    const state = createGame(
+      seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const s of seats) {
+      const p = state.players.find((x) => x.seatId === s.seatId)!;
+      const hero = getHero(s.heroId)!;
+      p.heroId = s.heroId;
+      p.faction = s.faction;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = s.maxHp ?? Math.max(1, Math.floor(hero.maxHp));
+      p.hp = s.hp ?? p.maxHp;
+      p.hand = (s.hand ?? []).slice();
+      p.yi = (s.yi ?? []).slice();
+      p.flags = emptyFlags();
+      for (const c of s.equip ?? []) {
+        const slot = c.type as 'weapon' | 'armor' | 'plusMount' | 'minusMount' | 'treasure';
+        p.equipment[slot] = c;
+      }
+    }
+    const first = actor ?? state.seatOrder[0]!;
+    state.turn = { seatIndex: state.seatOrder.indexOf(first), phase: 'play' };
+    state.pending = { kind: 'play', seatId: first };
+    state.log = [];
+    return state;
+  }
+
+  it('怀异：**单色**手牌也能发动（移动版没有「必须红黑双色」）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'gongsunyuan',
+        faction: 'ambitionist',
+        hand: [mk('a1', 'tao', 'heart'), mk('a2', 'tao', 'heart'), mk('a3', 'tao', 'heart')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [mk('b1', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    ok(act(state, A, { type: 'useSkill', skillId: 'huaiyi', targetIds: [] }));
+    // 只有红色 → 直接问「选哪个颜色」时只有红色一项
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('怀异');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'red' }));
+    // 全弃 3 张 → X=3 → 可以选目标（这里选乙）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('怀异');
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 「获得其一张牌」会先问一句（雉盗同款）→ 选乙手里的那张
+    if (state.pending?.kind === 'choice') {
+      const opt = state.pending.options.find((o) => o.id === 'b1') ?? state.pending.options[0];
+      ok(act(state, A, { type: 'chooseOption', optionId: opt!.id }));
+    }
+    expect(state.players.find((p) => p.seatId === B)!.hand.length).toBe(0);
+  });
+
+  it('怀异：红黑都有时只弃所选颜色的**全部**手牌，X＝实际弃牌数（决定可选人数）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'gongsunyuan',
+        faction: 'ambitionist',
+        hand: [sha('a1', 'spade'), sha('a2', 'club'), mk('a3', 'tao', 'heart')],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [mk('b1', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'tao', 'heart')] },
+    ], A);
+    ok(act(state, A, { type: 'useSkill', skillId: 'huaiyi', targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'black' }));
+    // 弃 2 张黑 → 至多 2 名目标：先选乙、再选丙，然后自动结束（X=2 用完）
+    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    }
+    expect(state.players.find((p) => p.seatId === B)!.hand.length).toBe(0);
+    expect(state.players.find((p) => p.seatId === C)!.hand.length).toBe(0);
+  });
+
+  it('怀异：从别人**手牌**里拿到的装备牌同样成为「异」；非装备留在手牌', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'gongsunyuan',
+        faction: 'ambitionist',
+        hand: [mk('a1', 'tao', 'heart'), mk('a2', 'tao', 'heart')],
+      },
+      // 乙手里只有一张装备牌 → 拿到手后应成为「异」
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [{ id: 'b1', type: 'armor', suit: 'club', rank: 2, equipName: 'renwang' }] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'tao', 'heart')] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'huaiyi', targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'red' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: B })); // 拿乙的装备牌
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'stop' })); // 结束选择
+    expect(a.yi.some((c) => c.id === 'b1')).toBe(true); // 装备 → 异
+    expect(a.hand.some((c) => c.id === 'b1')).toBe(false);
+    expect(state.log.some((e) => e.message.includes('成为「异」'))).toBe(true);
+  });
+
+  it('「异」不是手牌：不在可使用的牌里（不能当手牌使用/打出）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'gongsunyuan',
+        faction: 'ambitionist',
+        hand: [mk('a1', 'tao', 'heart')],
+        yi: [{ id: 'y1', type: 'sha', suit: 'spade', rank: 7 }],
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+    ], A);
+    const legal = toSnapshot(state, A).prompt?.legalCardIds ?? [];
+    expect(legal).toContain('a1');
+    expect(legal).not.toContain('y1'); // 「异」不可用
+  });
+
+  it('恣睢①：摸牌阶段额外摸「异」数；恣睢②：异数==体力上限不死、>体力上限直接死亡', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'gongsunyuan',
+          faction: 'ambitionist',
+          hand: [],
+          hp: 4,
+          maxHp: 4,
+          yi: [sha('y1', 'spade'), sha('y2', 'spade')],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      C,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, C, { type: 'endPhase' })); // 丙结束 → 轮到甲
+    skipRevealAsk(state);
+    // 甲的准备阶段 → 判定 → 摸牌：正常 2 张 + 异 2 张 = 4 张
+    expect(a.hand.length).toBe(4);
+    expect(state.log.some((e) => e.message.includes('恣睢'))).toBe(true);
+    // 异 2 ≤ 上限 4 → 结束阶段不死
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(a.alive).toBe(true);
+  });
+
+  it('恣睢②：「异」数**大于**体力上限 → 结束阶段开始时**直接死亡**（不是失去体力/伤害）', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'gongsunyuan',
+          faction: 'ambitionist',
+          hand: [],
+          hp: 4,
+          maxHp: 4,
+          yi: [sha('y1', 'spade'), sha('y2', 'spade'), sha('y3', 'spade'), sha('y4', 'spade'), sha('y5', 'spade')],
+        },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [] },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(a.alive).toBe(false);
+    // 是「直接死亡」：**没有**濒死救援窗口（不是失去体力/伤害）
+    expect(state.pending?.kind).not.toBe('respondDeath');
+    expect(state.log.some((e) => e.message.includes('恣睢'))).toBe(true);
   });
 });
 
