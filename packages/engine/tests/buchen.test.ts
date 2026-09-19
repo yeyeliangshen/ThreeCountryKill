@@ -46,7 +46,7 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     expect(effectiveFaction(state, a)).toBe('shu');
   });
 
-  it('两个共同势力的组合现在会被拒（选势力界面未实现，不猜也不默认）', () => {
+  it('两个共同势力的组合：由玩家自己选势力（2023 规则）', () => {
     const state = createGame(
       [
         { seatId: 'A', name: '甲', heroId: 'vanilla' },
@@ -56,8 +56,16 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
     );
     const res = act(state, 'A', { type: 'pickHero', heroId: 'mengda', deputyHeroId: 'xiahouba' });
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toContain('两个可选势力');
+    expect(res.ok, res.ok ? '' : res.error).toBe(true);
+    const ask = state.pending;
+    if (ask?.kind !== 'choice') throw new Error(`预期选势力询问，实际是 ${ask?.kind}`);
+    expect(ask.title).toContain('选势力');
+    expect(ask.options.map((o) => o.id).sort()).toEqual(['shu', 'wei']);
+    const res2 = act(state, 'A', { type: 'chooseOption', optionId: 'shu' });
+    expect(res2.ok, res2.ok ? '' : res2.error).toBe(true);
+    const pa = state.players.find((p) => p.seatId === 'A')!;
+    expect(pa.determinedFaction).toBe('shu');
+    expect(state.log.some((x) => x.message.includes('选择了势力'))).toBe(true);
   });
 
   it('buchen 开关整包管住：off 时**所有**不臣篇武将（含单势力那 4 位）都不进选将池', () => {

@@ -4518,7 +4518,9 @@ function checkHandEmptied(state: GameState, handBefore: number[]): void {
 function applyIntentInner(state: GameState, seatId: string, intent: Intent): ApplyResult {
   if (state.gameOver) return err('游戏已结束');
   // 选将阶段优先处理（并发：所有未选将的座位同时可行动）
-  if (state.draft) return onPickHero(state, seatId, intent);
+  // ⚠️ 选将期间只有**选将本身**的意图归 onPickHero；否则选将阶段里挂起的询问
+  //    （例如双势力的「选势力」）永远答不了——任何意图都会被塞进 onPickHero 然后被它拒绝。
+  if (state.draft && intent.type === 'pickHero') return onPickHero(state, seatId, intent);
   const pending = state.pending;
   if (!pending) return err('当前无需行动');
 
@@ -9737,12 +9739,31 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
         { seat: player.seatId },
       );
     } else if (dual?.kind === 'choice') {
-      // 「两个共同势力」或「与野心家武将组合」要玩家自己选势力，选势力界面还没做。
-      // 用户口径：不要拿旧规则补空白 —— 所以直接**拒绝这组搭配**并说明原因。
-      return err(
-        `【${mainHero.name}】与【${deputyHero.name}】有两个可选势力、需要玩家自己确定，` +
-          '选势力界面尚未实现；请换一组搭配',
+      // 「两个共同势力」或「与野心家武将组合」：按 2023 规则**由玩家自己选**势力。
+      // 先挂询问 → 选完落 determinedFaction → **再**跑选将收尾（先收尾会把询问冲掉）。
+      const options = dual.options;
+      const finishPick = (): void => {
+        draft.pendingSeats = draft.pendingSeats.filter((s) => s !== seatId);
+        pushLog(state, 'pickHero', `${player.name} 已选定武将。`);
+        if (draft.pendingSeats.length === 0) finishDraft(state);
+      };
+      askChoice(
+        state,
+        seatId,
+        `【选势力】：请为【${mainHero.name}】与【${deputyHero.name}】选择势力`,
+        options.map((f) => ({ id: f, label: FACTION_NAME[f] ?? f })),
+        (st, pl, picked) => {
+          pl.determinedFaction = picked as Faction;
+          pushLog(
+            st,
+            'faction',
+            `${pl.name} 选择了势力：${FACTION_NAME[picked as Faction] ?? picked}。`,
+            { seat: pl.seatId },
+          );
+          finishPick();
+        },
       );
+      return { ok: true };
     }
   } else {
     player.heroId = intent.heroId;
