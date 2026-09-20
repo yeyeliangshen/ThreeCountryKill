@@ -855,6 +855,12 @@ export interface GameState {
    * 「一个建国者可以接纳多人」，没放开「中途改投」。与 `ambitionAsked` 同时清空。
    */
   ambitionJoined: string[];
+  /**
+   * 「一手意图的收尾钩子」里**因为槽被占而排队**的那些（`handEmptied` / `cardsLost`，见
+   * `fireEndOfIntentHooks`）。存的是闭包，和 `Pending.resolve` 同一性质——引擎本来就把闭包
+   * 放在状态里，不额外破坏什么。
+   */
+  deferredEndOfIntentHooks: (() => void)[];
   pendingFactionTricks: Card[];
   /**
    * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：

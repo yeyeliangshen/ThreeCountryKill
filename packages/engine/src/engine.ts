@@ -4974,6 +4974,8 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
       }
     }
     // 手牌清空检测放最后：续接都跑完了才是这一手意图的真正终态
+    // 先把上一手「被问住、排队等着」的收尾钩子放出去（槽这会儿多半已经空出来了）
+    flushEndOfIntentHooks(state);
     checkHandEmptied(state, handBefore);
     checkCardsLost(state, ownedBefore);
   }
@@ -5017,6 +5019,42 @@ function attributeDeckGains(state: GameState, ownedBefore: string[][]): void {
  * 少掉的牌就是这一手失去的。只派人**自己的回合之外**的那一条（官方条件），
  * 交给技能自己判断要不要发动。
  */
+/**
+ * 「这一手意图的收尾钩子」的统一入口：**槽里已经在等回答时先排队**，等那串流程跑完再派。
+ *
+ * ⚠️ 这是模糊测试抓到的真 bug（seed=650，2026-09）：
+ *    陆逊用**最后一张手牌**打出【五谷丰登】——五谷刚把「从亮出的牌里选一张」摆上槽，
+ *    同一手意图的收尾检测就发现「他手牌清空了」，于是【连营】发问、**把那一问顶掉**；
+ *    五谷亮出的 5 张牌再也没人处置（缺席守望器报「连续 5 个稳定步不在任何区域」）。
+ *    收尾钩子不能往「正在等回答」的槽里插队——与 `drainResume` 那条纪律同一个道理。
+ *
+ * 触发**判定**仍在原地做（例如「谁的手牌清空了」要按当时的快照算），这里只管**派发时机**。
+ */
+function fireEndOfIntentHooks(state: GameState, fire: () => void): void {
+  // 「没人正在等回答」＝ null 或出牌/弃牌的**占位空位**（这两种格子谁摆都一样，不是询问）。
+  // ⚠️ 别用 `isIdlePending`：它**故意**不认出牌阶段（那是回合交接的窗口），拿它做判据的话，
+  //    排队的东西会一直躺在 `resumeQueue` 里出不来（实测：连营的询问整局没弹出来）。
+  if (state.pending === null || isPlaceholderPending(state.pending)) {
+    fire();
+    return;
+  }
+  state.deferredEndOfIntentHooks.push(fire);
+}
+
+/**
+ * 每次意图收尾把攒下的收尾钩子放出去：槽一被占就停，剩下的等下一次（见 fireEndOfIntentHooks）。
+ *
+ * 放在 `applyIntent` 的收尾里跑，是因为**只有那里能保证「这一手流程已经走完」**——
+ * 例如五谷的选牌链：最后一名选取者答完 → 五谷结算收尾 → 控制权还给出牌阶段（槽变成占位空位）
+ * → 同一手意图的收尾就把攒下的【连营】放出来，不必等玩家再动一次手。
+ */
+function flushEndOfIntentHooks(state: GameState): void {
+  while (state.deferredEndOfIntentHooks.length > 0) {
+    if (!(state.pending === null || isPlaceholderPending(state.pending))) return;
+    state.deferredEndOfIntentHooks.shift()!();
+  }
+}
+
 function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
   const turnSeat = state.seatOrder[state.turn.seatIndex];
   state.players.forEach((p, i) => {
@@ -5029,7 +5067,11 @@ function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
     // 「你于此阶段失去了几张牌」（吕范·典财）：不管是不是自己的回合都累加
     p.flags.lostCardsThisPhase += lost.length;
     if (p.seatId === turnSeat) return; // 屯田那种「回合外失去牌」才派发
-    runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
+    // 失去牌的名单是**此刻**算出来的快照，派发时机交给统一入口（槽被占就先排队）
+    fireEndOfIntentHooks(state, () => {
+      if (!p.alive) return;
+      runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
+    });
   });
 }
 
@@ -5044,8 +5086,14 @@ function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
  *    要精确覆盖得把触发点下沉到每一处移牌，代价是改二十多个调用点。
  */
 function checkHandEmptied(state: GameState, handBefore: number[]): void {
-  state.players.forEach((p, i) => {
-    if ((handBefore[i] ?? 0) > 0 && p.hand.length === 0 && p.alive) {
+  // ⚠️ 「谁清空了」必须按**此刻**的快照定下来：排队期间他可能又摸到牌（五谷选牌正是如此），
+  //    那时再比就漏触发了——触发已经发生，只是派发要等槽空出来（见 fireEndOfIntentHooks）。
+  const emptied = state.players.filter(
+    (p, i) => (handBefore[i] ?? 0) > 0 && p.hand.length === 0 && p.alive,
+  );
+  for (const p of emptied) {
+    fireEndOfIntentHooks(state, () => {
+      if (!p.alive) return; // 排队期间可能已阵亡
       runHooksPausable(state, 'handEmptied', p, undefined, () => {
         // 「**其他角色**失去所有手牌后」（蒋琬费祎·守成）：连营那种只发给本人的
         // 时机观察不到别人的手牌清空，所以这里再派一轮给旁人
@@ -5057,8 +5105,8 @@ function checkHandEmptied(state: GameState, handBefore: number[]): void {
           p.seatId,
         );
       });
-    }
-  });
+    });
+  }
 }
 
 function applyIntentInner(state: GameState, seatId: string, intent: Intent): ApplyResult {
@@ -10945,6 +10993,7 @@ export function createGame(
     forceSeq: 0,
     ambitionAsked: [],
     ambitionJoined: [],
+    deferredEndOfIntentHooks: [],
     exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },

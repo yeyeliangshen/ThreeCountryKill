@@ -4687,14 +4687,16 @@ describe('阶段 2.4 原语与验证技能', () => {
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    // 杀的结算停在「等乙出闪」，同时甲已经空手 → 连营插进来问
+    // ⚠️ 2026-09-18 改了行为：【连营】的询问**排队**，不再插队顶掉「等乙出闪」那一问
+    //    （插队是模糊测试抓到的 bug 的另一面：收尾钩子不该往「正在等回答」的槽里写）。
+    //    先把杀的结算走完（乙不出闪），槽空出来之后才轮到连营。
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(a.hand).toHaveLength(1);
     expect(state.log.some((e) => e.message.includes('连营'))).toBe(true);
-    // 关键：连营的询问插在杀的结算中间，问完要把「等乙出闪」还回去
-    expect(state.pending?.kind).toBe('respondSha');
   });
 
   it('连营：不发动则一牌不摸', () => {
@@ -4705,9 +4707,10 @@ describe('阶段 2.4 原语与验证技能', () => {
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 先把杀的结算走完（连营排队在后面，见上一条）
     ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
     expect(a.hand).toHaveLength(0);
-    expect(state.pending?.kind).toBe('respondSha');
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
   it('连营：手牌被过河拆桥拿走最后一张也触发', () => {
@@ -11613,6 +11616,11 @@ describe('国战标准版 · 张昭张纮 / 田丰 / 邹氏', () => {
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    // ⚠️ 2026-09-18 改了行为：【死谏】的询问**排队**，不再插队顶掉「等乙出闪」那一问
+    //    （收尾钩子不该往「正在等回答」的槽里写——五谷那局丢牌就是同一个毛病）。
+    //    先把杀的结算走完（乙不出闪），槽空出来之后才轮到死谏。
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
     // 甲的手牌空了 → 死谏询问
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
@@ -11623,7 +11631,7 @@ describe('国战标准版 · 张昭张纮 / 田丰 / 邹氏', () => {
 
   it('田丰·随势：体力上限相同的其他角色进濒死时摸一张（不同则不摸）', () => {
     // 甄姬 3 上限，与田丰同为 3 → 摸
-    // 给田丰留一张别的牌：否则他打出最后一张手牌会先触发【死谏】，跑到别的询问上
+    // 给田丰留一张别的牌：否则他打出最后一张手牌会触发【死谏】（排在杀结算之后），跑到别的询问上
     const same = gz([
       { seatId: A, name: '甲', heroId: 'tianfeng', faction: 'qun', hand: [sha('a1'), tao('a9')] },
       { seatId: B, name: '乙', heroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
