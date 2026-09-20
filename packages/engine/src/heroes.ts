@@ -211,11 +211,10 @@ export interface Hero {
    */
   blocksExternalSaves?: boolean;
   /**
-   * 国战君主将。已实现的官方君主特性：只能作主将、不会成为野心家、
-   * 亮将时主副将同时亮出、与同势力所有其他武将构成珠联璧合。
-   *
-   * 未实现：君主势力技（护驾/激将/黄天）、「君威」与专属装备、
-   * 阵亡时令同势力角色各失去 1 点体力。见 docs/guozhan-reference.md §3.1。
+   * 国战君主将。官方君主特性**全部已实现**：只能作主将、不会成为野心家、亮将时主副将同时亮出、
+   * 与同势力所有其他武将构成珠联璧合、**阵亡时令同势力角色各失去 1 点体力**（`engine.lordDeathLoss`）；
+   * 势力的**势力技**（护驾 / 激将 / 黄天）、君主技【君威】与四件专属装备也都在。
+   * 官方口径见 docs/guozhan-reference.md §3.1。
    */
   isLord?: boolean;
   /**
@@ -247,7 +246,8 @@ export interface Hero {
    *   落在 `Player.determinedFaction` 上，见 `determineDualFaction()`；
    * - 判定规则（2023）：与普通单势力武将组合 → **自动跟随那个势力**；两张双势力只有一个
    *   共同势力 → **自动取共同势力**；有两个共同势力 / 与野心家武将组合 → **玩家自己选**
-   *   （后两种的选势力界面还没做，本仓库先**拒绝这种组合**并报错，不猜也不默认）。
+   *   （后两种要玩家自己选势力：引擎会挂一条 `choice` 询问，**不再拒绝**——见 §5.126 的 ✅ 后续；
+   *     客户端那条询问能不能弹出来还没实测）。
    */
   secondFaction?: Faction;
   /**
@@ -422,6 +422,15 @@ export interface Hero {
    * 判定收在 `heroes.fangyuanHandLimitDelta`，由引擎在 `handLimit()` 里统一加。
    */
   fangyuan?: boolean;
+  /**
+   * **阵法技**的类型（可多个）：`'queue'` 队列型、`'siege'` 围攻型。
+   *
+   * 只用来回答一个问题——**阵法召唤**（`FORMATION_SUMMON`）时，「这个人亮将之后能形成
+   * 哪种关系」：队列型要看亮将后是否与召唤者同一**队列**，围攻型看是否进同一**围攻关系**。
+   * 每个技能的生效判定仍各在各处（`formationQueue` / `siegeRelations` / `hasFeiying`…），
+   * 这里只是给「召唤」一个可读的来源。见 docs/guozhan-roster.md §5.132。
+   */
+  formation?: ('queue' | 'siege')[];
   /**
    * 朱灵·【决绝】第三句：「你杀死与你势力相同的角色时，**不执行奖惩**」。
    * 国战的基础奖惩见 engine 的 applyKillPenalty（同势力击杀 → 弃置所有牌）。
@@ -1006,6 +1015,11 @@ const SIMAYI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '反馈',
+      applies: (ctx) => {
+        const srcId = damageEvent(ctx).attack?.sourceId;
+        const src = srcId ? getPlayer(ctx.state, srcId) : undefined;
+        return damagedByOther(ctx) && !!src && handAndEquipOf(src).length > 0;
+      },
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; /* ⚠️ 直写槽：heroes 不能 import engine（循环依赖），这一处暂不过版本号，见 docs §5.124 待办 */ damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
@@ -1069,6 +1083,7 @@ const XIAHOUDUN: Hero = {
     {
       timing: 'afterDamage',
       skillId: '刚烈',
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
@@ -1631,6 +1646,10 @@ const CAOCAO: Hero = {
     {
       timing: 'afterDamage',
       skillId: '奸雄',
+      applies: (ctx) => {
+        const id = damageEvent(ctx).attack?.cardId;
+        return !!id && ctx.state.discard.some((c) => c.id === id);
+      },
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const cardId = payload?.attack?.cardId;
@@ -2307,8 +2326,8 @@ function tianxiangClassic(ctx: HookContext): void {
  * 「与你势力相同」按引擎既有的**互相认同**口径：双方都得已明置（暗置＝没势力），
  * 徐盛自己当然满足。见 docs/guozhan-roster.md 里 effectiveFaction 的说明。
  *
- * ⚠️ 鸟翔（阵法技：「在同一个围攻关系中…需依次使用两张【闪】」）**尚未实现**——
- *    围攻关系/队列那套阵法系统还没建，先把话说在技能描述里。
+ * 【鸟翔】（阵法技）**已实现**：同一个围攻关系里，围攻角色出【杀】指定被围攻者时，
+ *    那名角色需**依次使用两张【闪】**才能抵消（`requiredShan = 2`，与蒋钦同款钩子）。
  */
 /**
  * **队列**：存活座次里「连续相邻、势力相同」的一段。返回某人所在的那一段（含他自己）。
@@ -2381,7 +2400,189 @@ export function siegeRelations(
   return out;
 }
 
-/** 某人是不是「围攻角色」（即处于某个围攻关系的那一侧），返回他围攻的是谁 */
+// ——————————————————————————————————————————
+// 阵法召唤（移动版口径，见 docs/guozhan-roster.md §5.132）
+// ——————————————————————————————————————————
+
+/** 某人**当前生效**的阵法技类型（队列型 / 围攻型）。暗将没有势力 → 阵法技整体不成立 → 空。 */
+export function formationKindsOf(state: GameState, player: Player): ('queue' | 'siege')[] {
+  if (!effectiveFaction(state, player)) return [];
+  const kinds = new Set<'queue' | 'siege'>();
+  for (const h of effectiveHeroes(state, player)) for (const k of h.formation ?? []) kinds.add(k);
+  return [...kinds];
+}
+
+/**
+ * 假想「这个人亮出这张武将牌」之后，能不能和召唤者形成 `kind` 那种关系。
+ *
+ * 实现是**改标志位 → 量 → 复原**：不派发任何时机、不写日志，纯粹算一次关系。
+ * 这样关系判定永远与正式规则同一套代码（`effectiveFaction` / `formationQueue` / `siegeRelations`），
+ * 不会出现「召唤时算一套、真亮将后算另一套」。
+ *
+ * ⚠️ 君主将（主副将必须同亮）这里只翻一张——两张牌的势力相同，对关系判定没有影响。
+ */
+function revealWouldJoin(
+  state: GameState,
+  candidate: Player,
+  slot: 'main' | 'deputy',
+  summoner: Player,
+  kind: 'queue' | 'siege',
+): boolean {
+  const savedHero = candidate.heroRevealed;
+  const savedDeputy = candidate.deputyRevealed;
+  if (slot === 'main') candidate.heroRevealed = true;
+  else candidate.deputyRevealed = true;
+  try {
+    const mine = effectiveFaction(state, candidate);
+    const theirs = effectiveFaction(state, summoner);
+    if (!mine || !theirs || mine !== theirs) return false; // 不同势力 → 免谈
+    if (kind === 'queue') {
+      return formationQueue(state, summoner).some((p) => p.seatId === candidate.seatId);
+    }
+    // 围攻型：「与你处于同一围攻关系」——两种都在内：同为围攻角色，或者他围攻的正是你
+    return siegeRelations(state).some(
+      (r) =>
+        (r.besiegers.includes(summoner.seatId) && r.besiegers.includes(candidate.seatId)) ||
+        (r.besiegedSeatId === summoner.seatId && r.besiegers.includes(candidate.seatId)),
+    );
+  } finally {
+    candidate.heroRevealed = savedHero;
+    candidate.deputyRevealed = savedDeputy;
+  }
+}
+
+/** 武将牌**均暗置**（未确定势力）的存活角色 */
+function isFullyDark(p: Player): boolean {
+  return p.alive && !p.heroRevealed && !p.deputyRevealed;
+}
+
+/** 这个候选亮哪几张牌能满足召唤（0～2 张：双势力/单势力组合里可能只有一张满足） */
+function qualifyingSlots(
+  state: GameState,
+  candidate: Player,
+  summoner: Player,
+  kinds: ('queue' | 'siege')[],
+): ('main' | 'deputy')[] {
+  const slots: ('main' | 'deputy')[] = [];
+  for (const slot of ['main', 'deputy'] as const) {
+    const heroId = slot === 'main' ? candidate.heroId : candidate.deputyHeroId;
+    if (!heroId) continue;
+    if (kinds.some((k) => revealWouldJoin(state, candidate, slot, summoner, k))) slots.push(slot);
+  }
+  return slots;
+}
+
+/** 响应顺序：从召唤者的**下一家**起、按行动顺序（国战里就是官方说的「逆时针依次」） */
+function summonOrder(state: GameState, summonerSeatId: string): Player[] {
+  const n = state.seatOrder.length;
+  const start = state.seatOrder.indexOf(summonerSeatId);
+  const out: Player[] = [];
+  for (let k = 1; k < n; k++) {
+    const p = getPlayer(state, state.seatOrder[(start + k) % n]!);
+    if (p && p.alive && !p.flags.removedFromSeating) out.push(p);
+  }
+  return out;
+}
+
+/** 现在这一次阵法召唤有没有人可问（没人可问就不该把技能摆出来） */
+function formationSummonOffer(state: GameState, player: Player): boolean {
+  const kinds = formationKindsOf(state, player);
+  if (kinds.length === 0) return false;
+  if (state.players.filter((p) => p.alive).length < 4) return false;
+  return summonOrder(state, player.seatId).some(
+    (p) => isFullyDark(p) && qualifyingSlots(state, p, player, kinds).length > 0,
+  );
+}
+
+/**
+ * **阵法召唤**（阵法技持有者的通用机制，移动版：出牌阶段限一次）。
+ *
+ * 官方口径（用户 2026-09 提供的移动版资料，见 §5.132）：
+ * 「拥有阵法技的角色发起。**能够在明置武将牌后形成该阵法技所需要的队列或围攻关系、
+ *   且武将牌均暗置的同势力角色**，可以响应召唤并明置一张武将牌。」可响应、也**可以不响应**；
+ * 符合条件的角色按**逆时针方向依次**决定。
+ *
+ * 三个容易写错的点，这里都照着官方来：
+ * 1. **先判「如果亮将能不能形成关系」，再允许响应**——不是先随便亮、亮完再看；
+ * 2. **每次有人响应之后要重新算候选人**：一个人亮将可能让后面的人**才**够格（队列往后接）；
+ * 3. 「是队友」不够——中间隔着别的势力就不算（队列/围攻都要真的形成）。
+ */
+function formationSummonImpl(state: GameState, player: Player, api: SkillApi): string | undefined {
+  const kinds = formationKindsOf(state, player);
+  if (kinds.length === 0) return '你没有阵法技';
+  if (state.players.filter((p) => p.alive).length < 4)
+    return '阵法技需要场上至少 4 名存活角色';
+  const order = summonOrder(state, player.seatId);
+  pushLog(state, 'skill', `${player.name} 发起【阵法召唤】。`, { seat: player.seatId });
+  const step = (i: number): void => {
+    const candidate = order[i];
+    if (!candidate) return;
+    // 拒过/亮过的都不再问；每次重新算「他现在够不够格」（前面的人亮将可能把他补上）
+    if (!isFullyDark(candidate)) {
+      step(i + 1);
+      return;
+    }
+    const slots = qualifyingSlots(state, candidate, player, kinds);
+    if (slots.length === 0) {
+      step(i + 1);
+      return;
+    }
+    api.askChoice(
+      state,
+      candidate.seatId,
+      `【阵法召唤】：${player.name} 令你选择是否明置一张武将牌（响应后即可形成阵法）？`,
+      [
+        { id: 'yes', label: '响应（明置一张武将牌）' },
+        { id: 'no', label: '不响应' },
+      ],
+      (st, cp, picked) => {
+        if (picked !== 'yes') {
+          step(i + 1);
+          return;
+        }
+        const reveal = (slot: 'main' | 'deputy'): void => {
+          const heroId = slot === 'main' ? cp.heroId : cp.deputyHeroId;
+          if (heroId) api.revealHeroCard(cp.seatId, heroId);
+          pushLog(st, 'skill', `${cp.name} 响应了【阵法召唤】。`, { seat: cp.seatId });
+          step(i + 1);
+        };
+        if (slots.length === 1) {
+          reveal(slots[0]!);
+          return;
+        }
+        // 两张牌都能满足（双势力组合）：**由他选**明置哪一张
+        api.askChoice(
+          st,
+          cp.seatId,
+          '【阵法召唤】：明置哪一张武将牌？',
+          slots.map((slot) => ({
+            id: slot,
+            label:
+              getHeroForMode(slot === 'main' ? cp.heroId : cp.deputyHeroId, st.mode)?.name ?? slot,
+          })),
+          (st2, cp2, slot) => reveal(slot as 'main' | 'deputy'),
+        );
+      },
+    );
+  };
+  step(0);
+  return undefined;
+}
+
+/** 阵法召唤这个「技能」本身（给拥有阵法技的武将用的通用主动技） */
+export const FORMATION_SUMMON: ActiveSkill = {
+  id: 'zhenfa_summon',
+  name: '阵法召唤',
+  // 不是武将牌上印的技能，所以自带说明（与「借来的技能」同一处理）
+  desc: '出牌阶段限一次，令能够通过明置武将牌与你形成队列/围攻关系的未确定势力角色依次选择是否明置一张武将牌。',
+  perPhaseLimit: 1,
+  minTargets: 0,
+  maxTargets: 0,
+  canUse: (state, player) => formationSummonOffer(state, player),
+  execute: (state, player, _intent, api) => formationSummonImpl(state, player, api),
+};
+
+
 export function besiegingTarget(state: GameState, player: Player): string | null {
   for (const r of siegeRelations(state)) {
     if (r.besiegers.includes(player.seatId)) return r.besiegedSeatId;
@@ -2423,8 +2624,30 @@ function besiegedBySha(state: GameState, sourceId: string, targetId: string): Pl
 
 /** 双方是否**已明置**且势力相同（国战里暗置＝没有势力，判断同势力一律走这里） */
 export function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
-  const fa = effectiveFaction(state, a);
-  return !!fa && fa === effectiveFaction(state, b);
+  const ka = factionGroupKey(state, a);
+  return !!ka && ka === factionGroupKey(state, b);
+}
+
+/**
+ * 「势力归属」的比较键——**一切「是不是同势力」的判断都该用它，不要直接比 `effectiveFaction`**。
+ *
+ * 用户 2026-09 给的官方口径：**每一个野心家各自是一种势力，野心家之间也不同势力**
+ * （出处见 docs §5.137）。所以两个野心家**不能**算同势力——而 `effectiveFaction` 对他们
+ * 都返回 `'ambitionist'`，直接相比会判成同势力（= 同势力奖惩、同势力技能全都会误触发）。
+ *
+ * 键：未确定势力 → `null`；有 `Player.forceId` → 直接用它（**同一次「建立新势力」的人共享**，
+ * 不同野心家各建的不合并）；其余 → 势力本身。见 §5.137。
+ */
+export function factionGroupKey(state: GameState, p: Player): string | null {
+  const f = effectiveFaction(state, p);
+  if (!f) return null;
+  // 归属势力的 id：每一次「建立新势力」一个（加入者共享）、野心家各自一个（用户 2026-09 口径）
+  if (p.forceId) return p.forceId;
+  if (f === 'ambitionist') {
+    // 兜底：还没发 id 的野心家（正常路径在「明置确定势力」时就发了）——按座号算，**不与他人合并**
+    return `ambitionist:${p.seatId}`;
+  }
+  return f;
 }
 
 /**
@@ -2464,9 +2687,9 @@ export function sameKnownFaction(state: GameState, a: Player, b: Player): boolea
  * 结束阶段，你可以将一张装备牌置入一名角色的装备区，然后你可以弃置其距离为 1 的
  * 一名角色的一张牌。
  *
- * ⚠️ 鹤翼（阵法技：「与你处于同一队列的其他角色视为拥有『飞影』」）**尚未实现**——
- *    队列/阵法那套系统还没建（同批的蒋钦·鸟翔、邓艾的围攻关系都等它）。
- *    技能描述里如实标注。
+ * 【鹤翼】（阵法技）**已实现**：「与你处于同一队列的其他角色视为拥有【飞影】」——
+ *    队列走 `formationQueue`（存活座次里与你势力相同、连续相邻的一段），
+ *    授予的【飞影】在 `distance.ts` 里按「与拥有者的距离 +1」生效。
  *
  * 实现要点：装备牌从**曹洪手里**挑（手上的装备牌；置入时若目标该栏已有装备，
  * 旧的那张进弃牌堆并触发失去装备的时机——这段在 api.giveEquipTo 里）。
@@ -2480,8 +2703,8 @@ export function sameKnownFaction(state: GameState, a: Player, b: Player): boolea
  * 实现要点：三步都是「私密内容 + 确认」，用新原语 api.privateView
  * （走的是引擎里既有的 viewCards 提示：内容按座位裁剪，日志里不出现牌名/武将名）。
  *
- * ⚠️ 鸟翔（阵法技：「在同一个围攻关系中，若你是围攻角色…该角色需依次使用两张【闪】」）
- *    **尚未实现**——围攻关系/队列那套阵法系统还没建，技能描述里已注明。
+ * 【鸟翔】（阵法技）**已实现**：同一个围攻关系里，围攻角色出【杀】指定被围攻者时，
+ *    那名角色需**依次使用两张【闪】**才能抵消（钩子见下面的 `requiredShan`）。
  */
 const JIANGQIN: Hero = {
   id: 'jiangqin',
@@ -2492,6 +2715,8 @@ const JIANGQIN: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 鸟翔（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   hooks: [
     {
       // 【鸟翔】（阵法技，与徐盛同款）
@@ -2514,6 +2739,7 @@ const JIANGQIN: Hero = {
     },
   ],
   activeSkills: [
+    FORMATION_SUMMON,
     {
       id: 'shangyi',
       name: '尚义',
@@ -2640,6 +2866,7 @@ const CAOHONG: Hero = {
   modes: ['guozhan'],
   // 鹤翼（阵法技）：与你同一队列的其他角色视为拥有【飞影】——由 distance() 读
   grantsFeiyingToQueue: true,
+  formation: ['queue'], // 阵法召唤：亮将后与召唤者进同一**队列**
   lockedFields: ['grantsFeiyingToQueue'],
   hooks: [
     {
@@ -2731,6 +2958,9 @@ const CAOHONG: Hero = {
       desc: '阵法技，与你处于同一队列的其他角色视为拥有【飞影】。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 const HETAIHOU: Hero = {
@@ -3028,6 +3258,8 @@ const XUSHENG: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 鸟翔（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   hooks: [
     {
       // 【鸟翔】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 需两张【闪】
@@ -3104,6 +3336,9 @@ const XUSHENG: Hero = {
       desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色需依次使用两张【闪】才能抵消。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 const XIAOQIAO: Hero = {
@@ -3296,8 +3531,11 @@ function hengzhengStep(
  * - 暴凌（**主将技**，锁定技）：出牌阶段结束时，移除你的副将，然后加 3 点体力上限并
  *   回复 3 点体力，失去【暴凌】并获得【崩坏】。
  *
- * ⚠️ 暴凌（以及它给的【崩坏】）**尚未实现**：它要「移除副将的武将牌」这套制度
- *    （副将移除后势力/体力/技能怎么算），等主将技/副将技那批一起做。技能描述里已注明。
+ * 暴凌（主将技，锁定技）+ 它给的【崩坏】**已实现**（见下面的 `playPhaseEnd` 钩子）：
+ *   出牌阶段结束时 → `api.removeHeroCard` 移除副将 → `api.changeMaxHp(+3)` + `api.heal(3)`
+ *   → `api.grantSkill('bengshuai', '崩坏')`。「失去【暴凌】」用 `usedOncePerGame.baling`
+ *   记账（挂上就打勾，钩子下次直接 return）——本仓库的「借来的技能」是永久形态
+ *   （`api.grantSkill`），不需要额外的技能增删制度。用例见 tests 的「董卓·暴凌」那条。
  */
 /**
  * 马岱 —— 潜袭 / 马术（君临天下·势，2013 印刷版，已核）。
@@ -3331,9 +3569,10 @@ function hengzhengStep(
  * - 制蛮：当你对其他角色造成伤害时，你可以防止此伤害，然后获得其装备区或判定区里的一张牌；
  *   然后若其与你势力相同，其可以**变更副将**。
  *
- * ⚠️ 制蛮**尚未实现**：它的后半句依赖「变更副将」那套机制（变包引入：从未加入游戏的
- *    武将牌堆里连续亮将直到与主将势力相同，替换现有副将）。散谣已完成，所以这名武将
- *    在 roster 里是 partial。
+ * **实现状态：三条都做了**——①「防止此伤害、获得其装备区/判定区一张牌」（`damageCaused` 钩子）；
+ *    ②「若其与你势力相同，其可以**变更副将**」（交接完成后问一句 → `api.changeDeputyHero`，
+ *    与黄祖·袭射换暗副将同一套）；散谣也已完成。用例见「制蛮：防止伤害、获得其装备区一张牌，
+ *    同势力时其可变更副将」。
  */
 /**
  * 邓艾 —— 屯田 / 急袭（主将技）/ 资粮（副将技）（君临天下·阵，已核国战文本）。
@@ -3474,10 +3713,10 @@ const DENGAI: Hero = {
  *   ④ 与**同势力所有**武将珠联璧合（不限于官方组合表）。
  * ⑤ 阵亡时**与你势力相同的角色各失去 1 点体力**（`doDeath` 里实现）。
  *
- * **本轮未实现**（如实记在名录里，标注为「部分实现」）：
- *   - 君主技「君威」与四件**专属装备**（飞龙夺凤 / 六龙骖驾 / 定澜夜明珠 / 盟军大纛）；
- *   - 各君主自己的常规技能（君刘备的「章武」「励众」等）——WIKI 上能查到文本，
- *     但它们要么依赖「国战标记」的使用机制、要么依赖轮次概念，本轮不做。
+ * 当初标「部分实现」的两块**后来都补齐了**（这里曾是「本轮未实现」清单）：
+ *   - 君主技【君威】与四件**专属装备**（飞龙夺凤 / 六龙骖驾 / 定澜夜明珠 / 盟军大纛）——见 `JUNWEI`；
+ *   - 各君主自己的常规技能：君刘备的`章武`/`励众`、君曹操的`建安`（→ 五子良将纛，见 engine 的
+ *     `askLordBanner`）；四位君主共用同一套【君威】句式。
  * 牌面数值：四张都是 **2 阴阳鱼**（本引擎的口径是 `maxHp = 2 × 阴阳鱼`，与邓艾一致）。
  */
 function lordHero(
@@ -3676,10 +3915,10 @@ function askZhengrong(ctx: HookContext): void {
  * 技能集合按**用户核对后的口径**定为【君威】+【雄驰】+【征戎】，三条都已实现。
  * 【君威】的专属装备是【六龙骖驾】（♥K 宝物：你计算与其他角色的距离 -3）。
  *
- * ⚠️ 来源说明（免得以后有人对着 git 历史发懵）：本仓库最早是按用户**前一版**提供的资料做的
- *    【建安】（五子良将纛）+【挥鞭】+【总御】；用户随后给出上表这三条并说明君曹操就是这三条，
- *    所以【建安】【挥鞭】已从本定义摘掉（实现留在 git 历史，见 docs §5.57），
- *    【总御】**从未实现**（它只出现在那份被更正的资料里，没有别的出处）。
+ * ⚠️ 来源说明（免得以后有人对着 git 历史发懵）：本仓库最早是按一份**早期资料**做的
+ *    【建安】（五子良将纛）+【挥鞭】；用户随后给出上表这三条并说明君曹操就是这三条，
+ *    所以那两条已从本定义摘掉（实现留在 git 历史，见 docs §5.57）。
+ *    同一份早期资料里的其它词条（用户已确认作废）没有进过本仓库。
  *    引擎侧的「君主旗」机制（`Hero.lordBanner` / `askLordBanner` / 五子良将纛）保留着，
  *    目前**没有任何武将挂载**——它就是段待用的机制，不是君曹操的技能。
  */
@@ -3714,7 +3953,16 @@ const JUN_CAOCAO: Hero = lordHero(
     ],
     hooks: [
       { timing: 'afterDamageDealt', skillId: '雄驰', handler: (ctx) => askXiongchi(ctx) },
-      { timing: 'afterDamage', skillId: '征戎', handler: (ctx) => askZhengrong(ctx) },
+      {
+      timing: 'afterDamage',
+      skillId: '征戎',
+      applies: (ctx) =>
+        damagedPositive(ctx) &&
+        ctx.state.deck.some((c) => c.type === 'sha') &&
+        Math.min(Math.max(1, ctx.player.maxHp - ctx.player.hp), ctx.state.deck.filter((c) => c.type === 'sha').length) > 0 &&
+        ctx.state.players.some((p) => p.alive && p.hand.length > 0),
+      handler: (ctx) => askZhengrong(ctx),
+    },
     ],
   },
 );
@@ -3734,8 +3982,10 @@ const JUN_CAOCAO: Hero = lordHero(
  *   种类——阴阳鱼出牌阶段用是「摸一张」、弃牌阶段用是「手牌上限 +2」，复现时照原样执行
  *   （哪怕结束阶段再给「上限 +2」通常已经没有实际作用）。
  * - 【先驱】本来就要「选择一名其他角色」（观看其暗置武将牌），视为使用时同样先问这个目标。
- * - ⚠️ 待核对：【阴阳鱼】在**弃牌阶段**的那条用法（弃置 → 本回合手牌上限 +2）本仓库还没做，
- *   所以账本里也只会出现出牌阶段那一版。
+ * - 【阴阳鱼】在**弃牌阶段**的那条用法（弃置 → 本回合手牌上限 +2）**已实现**：位置在
+ *   `markers.ts` 的 `useYinyangyu`（走 `handLimitBonus += 2`）+ 弃牌阶段开始时的主动询问
+ *   （见 §5.66；`afterDiscardPhaseHooks` 里当「本阶段确实要弃牌」才问）。账本两个阶段都会记——
+ *   本条注释曾长期误写成「本仓库还没做」，§5.66 订正过文档、这里一并订正代码。
  */
 function askZhangwu(ctx: HookContext): void {
   const state = ctx.state;
@@ -4371,7 +4621,14 @@ const ZHANGLU: Hero = {
   gender: 'male',
   modes: ['guozhan'],
   hooks: [
-    { timing: 'afterDamage', skillId: '布施', handler: askBushiSelf },
+    {
+      timing: 'afterDamage',
+      skillId: '布施',
+      applies: (ctx) =>
+        damagedPositive(ctx) &&
+        factionMatesOf(ctx.state, effectiveFaction(ctx.state, ctx.player)).length > 0,
+      handler: askBushiSelf,
+    },
     { timing: 'afterDamageDealt', skillId: '布施', handler: askBushiDealt },
     // ⚠️ 米道要看到**别人**的使用：`useCard` 只派给使用者本人（实测：只挂它的话，队友用牌时
     //    张鲁根本收不到询问）。改挂 `othersUseCard`——「其他角色使用牌时」派给全场、**可挂起**
@@ -5057,8 +5314,10 @@ function shoufengGain(state: GameState, me: Player, card: Card, cardIds?: string
  * 【君威】（专属装备【盟军大纛】）、【会盟】（锁定技，势力角色数 0↔非0 时摸一张）、
  * 【授锋】（首张伤害牌结算结束后给一张、再把这张伤害牌收回）。
  *
- * ⚠️ 待核对：专属装备【盟军大纛】的**花色/点数/类型**没核到（WIKI 没有这张牌的页面、
- *    移动版公告只写了效果），本实现按同族的「宝物」记录、花色点数用占位值（见 deck.ts）。
+ * 专属装备【盟军大纛】的牌面**已按用户给出的记录**：**装备牌·防具，红桃 3**，占防具槽
+ *    （见 `deck.ts` 的 `lordEquipMengjun`）。技能文本也已核对。
+ *    ⚠️ 本条注释曾长期写着「花色/点数/类型没核到、用占位值」——那是**错的**（连类型都写反了，
+ *    写成「宝物」），用户 2026-09 指出后订正。
  */
 const JUN_YUANSHAO: Hero = lordHero(
   'junyuanshao',
@@ -5464,9 +5723,10 @@ const MADAI: Hero = {
  * - 魂殇：副将技，此武将牌减少半个阴阳鱼；准备阶段，若你的体力值不大于 1，
  *   你本回合拥有「英姿」和「英魂」。
  *
- * ⚠️ 本批只做了【激昂】：鹰扬要动引擎的拼点流程（亮牌之后、比大小之前插一次询问），
- *    魂殇要「本回合临时拥有别的技能」那套（现在只有永久 grantSkill）。两者都还没做，
- *    roster 里标 partial 并写明。
+ * **三条都做了**（这条注释曾停在「本批只做了【激昂】」）：
+ *   鹰扬——拼点亮牌之后、比大小之前插了一次询问（`askPindianRevealed`，见 engine 的拼点流程）；
+ *   魂殇——走 `api.grantTempSkill`（「只到本回合结束」那套，见 timing.ts），turnStart 里体力 ≤1
+ *   就授予【英姿】【英魂】。
  */
 /**
  * 吕范 —— 调度 / 典财（君临天下·变，**2017 印刷版**文本，已核）。
@@ -5939,6 +6199,7 @@ const FAZHENG: Hero = {
       timing: 'afterDamage',
       skillId: '恩怨',
       locked: true,
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const sourceId = payload?.attack?.sourceId;
@@ -6954,6 +7215,10 @@ const YANBAIHU: Hero = {
       timing: 'afterDamageDealt',
       skillId: '雉盗',
       locked: true,
+      applies: (ctx) =>
+        !!ctx.player.flags.cardTargetOnlySeat &&
+        !ctx.player.flags.zhidaoHitDone &&
+        ctx.state.turn.phase === 'play',
       handler: (ctx) => {
         const me = ctx.player;
         const locked = me.flags.cardTargetOnlySeat;
@@ -7017,6 +7282,7 @@ const YANBAIHU: Hero = {
       timing: 'damageDealt',
       skillId: '寄篱',
       locked: true,
+      applies: (ctx) => damagedPositive(ctx) && ctx.player.flags.damageCount === 1,
       handler: (ctx) => {
         const me = ctx.player;
         const payload = ctx.payload as { damage?: number } | undefined;
@@ -7093,8 +7359,11 @@ const WUJING: Hero = {
   modes: ['guozhan'],
   lockedFields: ['fengyang'],
   skillFields: { 风扬: ['fengyang'] },
+  // 风扬（阵法技，队列型）：阵法召唤按「亮将后与召唤者同队列」判
+  formation: ['queue'],
   fengyang: true,
   activeSkills: [
+    FORMATION_SUMMON,
     {
       id: 'diaogui',
       name: '调归',
@@ -7131,6 +7400,8 @@ const WUJING: Hero = {
             type: 'tiaohu',
             suit: material.suit,
             rank: material.rank,
+            // 带上实体子牌：虚拟牌自己找不到，靠这份清单让「获得此牌」那类效果有据可依
+            materials: [material],
           },
           targets,
         );
@@ -7343,6 +7614,7 @@ const ZHANGXIU: Hero = {
     {
       timing: 'afterDamage',
       skillId: '附敌',
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const sourceId = payload?.attack?.sourceId;
@@ -7763,6 +8035,10 @@ const ZUOCI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '汲魂',
+      applies: (ctx) =>
+        damagedPositive(ctx) &&
+        !ctx.player.usedOncePerGame.jihunDamage &&
+        ctx.state.heroPool.length > 0,
       handler: (ctx) => {
         const me = ctx.player;
         if (me.usedOncePerGame.jihunDamage) return; // 「受伤害后」每回合一次（flag 随回合清）
@@ -8405,6 +8681,7 @@ const XUNYOU: Hero = {
     {
       timing: 'afterDamage',
       skillId: '智愚',
+      applies: damagedPositive,
       handler: (ctx) => {
         const me = ctx.player;
         const sourceId = (ctx.payload as { attack?: AttackContext } | undefined)?.attack?.sourceId;
@@ -8848,7 +9125,8 @@ const YONGJUE: Hero = {
  * - 穿心：当你于出牌阶段内使用【杀】或【决斗】对目标角色造成伤害时，若其与你势力不同
  *   且有副将，你可以防止此伤害。若如此做，该角色选择一项：①弃置装备区里的所有牌，
  *   若如此做，其失去 1 点体力；②移除副将。
- * - 锋矢：阵法技（围攻关系）→ **尚未实现**（等阵法技系统）。
+ * - 锋矢：阵法技（围攻关系）→ **已实现**：同一个围攻关系里，围攻角色出【杀】指定被围攻者后，
+ *   可以令其弃置装备区里的一张牌（见下面的 `锋矢` 钩子）。
  *
  * 实现：穿心挂在 `damageDealt`（伤害结算前的可挂起时机，也是引擎里唯一能「取消这次伤害」
  * 的通道——把 flags.damagePrevented 设上就行）。
@@ -8862,6 +9140,8 @@ const ZHANGREN: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
+  // 锋矢（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   hooks: [
     {
       // 【锋矢】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 令其弃装备区一张
@@ -8976,6 +9256,9 @@ const ZHANGREN: Hero = {
       desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色弃置装备区里的一张牌。',
     },
   ],
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
+
 };
 
 const MIFUREN: Hero = {
@@ -9173,6 +9456,8 @@ const ZANGBA: Hero = {
     {
       timing: 'afterDamage',
       skillId: '横江',
+      applies: (ctx) =>
+        damagedPositive(ctx) && !!getPlayer(ctx.state, ctx.state.seatOrder[ctx.state.turn.seatIndex]!),
       handler: (ctx) => hengjiangAsk(ctx),
     },
     {
@@ -9301,6 +9586,10 @@ const LIDIAN: Hero = {
     {
       timing: 'afterDamageDealt',
       skillId: '忘隙',
+      applies: (ctx) => {
+        const a = damageEvent(ctx).attack;
+        return !!a && (damageEvent(ctx).damage ?? 0) > 0 && a.targetId !== ctx.player.seatId;
+      },
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const attack = payload?.attack;
@@ -9311,6 +9600,7 @@ const LIDIAN: Hero = {
     {
       timing: 'afterDamage',
       skillId: '忘隙',
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const attack = payload?.attack;
@@ -10220,6 +10510,7 @@ const XUNYU: Hero = {
     {
       timing: 'afterDamage',
       skillId: '节命',
+      applies: damagedPositive,
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         // 【节命】官方触发词是「当你受到**1点**伤害后」：一次受到 2 点要**依次触发两次**
@@ -10347,6 +10638,7 @@ const CAOPI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '放逐',
+      applies: (ctx) => damagedPositive(ctx) && ctx.player.maxHp - ctx.player.hp > 0,
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         if (!payload?.damage) return;
@@ -10828,7 +11120,7 @@ const ZHURONG: Hero = {
   skills: [
     {
       name: '巨象',
-      desc: '锁定技，【南蛮入侵】对你无效。（「其他角色使用的南蛮结算后你获得之」尚未实现）',
+      desc: '锁定技，【南蛮入侵】对你无效；其他角色使用的【南蛮入侵】结算结束后，你获得之。',
     },
     {
       name: '烈刃',
@@ -10864,6 +11156,7 @@ const GUOJIA: Hero = {
     {
       timing: 'afterDamage',
       skillId: '遗计',
+      applies: damagedPositive,
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         if (!payload?.damage) return;
@@ -10937,8 +11230,10 @@ const GUOJIA: Hero = {
 
 /**
  * 董昭·【劝进】**能否选择自己**作为目标？
- * ⚠️ 待实测项：技能文字没有「其他角色」，但动作是「交给一名角色一张手牌」，
- *    移动版没有可靠 FAQ 说明自己能不能被劝进 → 单独留成配置点（用户要求别埋进公共交出逻辑）。
+ * **定版：不能**——用户 2026-09 给的官方裁定（官方为此修过曹昂：「交给」不能把自己拥有的牌交给自己，
+ * 见 docs §5.137.2）。⚠️ 别外推：「**其他角色**」不含使用者，但「**其余角色**」是相对**目标**说的、
+ * **含使用者本人**（魏【号令天下】就是这种，见 docs §5.136.3）。
+ * 仍留成具名配置点（不埋进公共交出逻辑），但它现在是口径，不再是待实测项。
  */
 const QUANJIN_CAN_TARGET_SELF = false;
 
@@ -12979,34 +13274,6 @@ function fenji(ctx: HookContext, who: Player): void {
 }
 
 
-/**
- * 不臣篇的**双势力武将**（用户给定的 2023 口径下的势力配对）。
- *
- * ⚠️ 只登记了「两个势力」这一项已知信息：这些武将的**技能文本还没核到**，所以 `skills` 为空、
- *    `maxHp` 是按国战常见值暂填 4（待核对），请在 roster 里按「部分实现」看待它们。
- *    它们只在 `buchen: 'current'` 时进选将池（见 extensions.ts 的 BuchenExtension）。
- */
-function dualHero(
-  id: string,
-  name: string,
-  f1: Faction,
-  f2: Faction,
-  hp: number,
-): Hero {
-  return {
-    id,
-    name,
-    pack: 'buchen', // 不臣篇
-    faction: f1,
-    secondFaction: f2,
-    // 用户给出的国战牌面阴阳鱼数 ×2（本仓库体力是整数的口径）：2 阴阳鱼 → 4，1.5 → 3
-    maxHp: hp,
-    gender: 'male',
-    modes: ['guozhan'],
-    skills: [], // ⚠️ 技能文本尚未核到（技能**名**见 docs/guozhan-roster.md §5.83）
-  };
-}
-
 /** 势力显示名（未确定势力＝两张武将牌都暗着）——【问计】的选项与日志用它 */
 function factionNameOf(state: GameState, p: Player): string {
   const f = effectiveFaction(state, p);
@@ -13242,7 +13509,14 @@ const TANGZI: Hero = {
   // 第 3 档：**动态**手牌上限（每次查询现算，不落成 buff）
   handLimit: (state, player) => player.hp + (woundedFactionCount(state) >= 3 ? 4 : 0),
   hooks: [
-    { timing: 'afterDamage', skillId: '兴棹', locked: true, handler: askXingzhaoHands },
+    {
+      timing: 'afterDamage',
+      skillId: '兴棹',
+      locked: true,
+      applies: (ctx) =>
+        damagedByOther(ctx) && woundedFactionCount(ctx.state) >= 2,
+      handler: askXingzhaoHands,
+    },
     { timing: 'equipLost', skillId: '兴棹', locked: true, handler: askXingzhaoEquip },
     // 【恂恂】是兴棹第 1 档**动态提供**的衍生技能：钩子常挂，档位条件在handler 里现算
     { timing: 'drawPhase', skillId: '恂恂', handler: askXunxun },
@@ -13807,7 +14081,13 @@ const XUYOU: Hero = {
   hooks: [
     // 「使用牌结算结束」：目前引擎只在**杀**打完（attackSettled）时派发一次
     { timing: 'cardUseEnded', skillId: '成略', handler: askChenglue },
-    { timing: 'afterDamage', skillId: '恃才', locked: true, handler: askShicai },
+    {
+      timing: 'afterDamage',
+      skillId: '恃才',
+      locked: true,
+      applies: damagedPositive,
+      handler: askShicai,
+    },
   ],
   skills: [
     {
@@ -13838,10 +14118,11 @@ const XUYOU: Hero = {
  * - 濒死的两个出口（被技能救回 / 被【桃】救回）都记在 `state.duwuRescued`，
  *   所以「执行军令时被打进濒死」与「拒绝后被黩武伤害打进濒死」都算。
  *
- * 【傲才】**本轮未实现**（如实记录，见 docs §5.116 的欠账）：它需要在「被要求使用/打出基本牌」
- * 的请求上开一个 **CardProvider** 口子（看牌堆顶两张 → 选一张**真实实体牌**直接满足请求，
- * 不经过手牌、不是虚拟牌、没匹配就原样留在牌堆），这个接口本轮来不及做，
- * 本仓库目前也还没有别的「从特殊区域提供响应牌」的技能——等做它时一起加。
+ * 【傲才】**已实现**（`engine.onAocai` + 响应询问里的「【傲才】看牌堆顶两张」按钮）：
+ * 回合外被要求使用/打出一张基本牌（【闪】【桃】【杀】）时，看**牌堆顶两张**、可直接**使用**其中一张
+ * 满足要求——用的是**真实实体牌**（不经过手牌、不是虚拟牌、两张都不匹配就原样留在牌堆）。
+ * ⚠️ 它是**定点实现**，没有落成 docs §5.116 设想的通用 `CardProvider` 抽象；将来再出现
+ * 「从特殊区域提供响应牌」的技能时，把这个口子抽出来（欠账仍留在 §5.116）。
  */
 function duwuTargets(state: GameState, me: Player): Player[] {
   const mine = effectiveFaction(state, me);
@@ -13932,7 +14213,7 @@ const ZHUGEKE: Hero = {
   skills: [
     {
       name: '傲才',
-      desc: '你的回合外，当你被要求使用或打出一张基本牌时，你可以观看牌堆顶的两张牌，然后使用其中一张满足要求的基本牌（**本轮未实现**）。',
+      desc: '你的回合外，当你被要求使用或打出一张基本牌时，你可以观看牌堆顶的两张牌，然后使用其中一张满足要求的基本牌。',
     },
     {
       name: '黩武',
@@ -14096,9 +14377,6 @@ const HUANGZU: Hero = {
   ],
 };
 
-const BUCHEN_DUAL: Hero[] = [
-];
-
 /**
  * 不臣篇的**野心家武将**（势力本身就是「野」）——与「因人数超限被转成野心家」完全是两回事
  * （用户反复强调过：前者才关联「暴露野心 → 建立新势力」）。它们只能作主将（`pickHero` 已拦副将），
@@ -14119,7 +14397,7 @@ const BUCHEN_DUAL: Hero[] = [
  *   ① 自己使用的【杀】/【决斗】对其他角色实际造成伤害时，此伤害 +1（走 `Hero.damageDelta`，
  *      进统一的伤害修正链；被闪/被防止不消耗次数，2 点伤害也只 +1 一次）；
  *   ② 使用锦囊牌无距离限制，且每使用一张锦囊摸 1 张（第 3 次本身完整生效后才失效）；
- *   ③ ⏳ 其他角色因**弃置**进弃牌堆时获得其中 1 张（**本轮未实现**，见文档 §5.101 的待办）。
+ *   ③ 其他角色因**弃置**进弃牌堆时，获得其中 1 张（挂 `anyCardDiscarded`，同一批只拿 1 张）。
  *   回合结束时若本回合触发**不足 3 次**，获得临时【反馈】，持续到**自己的下个回合开始**。
  */
 function suzhiAvailable(state: GameState, me: Player): boolean {
@@ -14309,7 +14587,7 @@ const SP_SIMAZHAO: Hero = {
   skillFields: { 夙智: ['damageDelta'] },
   damageDelta: (state, me, atk) => suzhiDamageDelta(state, me, atk),
   hooks: [
-    { timing: 'afterDamage', skillId: '昭心', handler: askZhaoxin },
+    { timing: 'afterDamage', skillId: '昭心', applies: damagedPositive, handler: askZhaoxin },
     { timing: 'afterDamageDealt', skillId: '夙智', locked: true, handler: suzhiOnDealt },
     { timing: 'useCard', skillId: '夙智', locked: true, handler: suzhiOnTrick },
     { timing: 'anyCardDiscarded', skillId: '夙智', locked: true, handler: suzhiOnDiscarded },
@@ -14791,7 +15069,8 @@ const XIAHOUBA: Hero = {
  * 孙綝 —— 嗜戮 / 凶虐（不臣篇·下，**野心家武将本体**，2 阴阳鱼 → 4；移动版 2021 线上口径，见 §5.107）。
  *
  * 【嗜戮】：① 角色**死亡时**，孙綝可以收走该角色**仍然存在**的武将牌（已移除的收不到、用士兵牌
- *   顶替的也不算）作为「戮」——**是真实的武将牌**（记 id + **取得时冻结的势力**），不是计数标记；
+ *   顶替的也不算）作为「戮」——**是真实的武将牌**（记 id + **这张牌牌面上的势力集合**：双势力牌两个都算，§5.131），
+ *   不是计数标记；
  *   若此人是**孙綝杀死**的，再从未登场武将牌堆额外取至多 2 张（不足就取多少算多少，不凭空造牌）。
  *   ② **准备阶段**：有戮则（至多戮数）弃牌 + 摸**实际弃牌数**张（与【制衡】那类「弃几摸几」同形）。
  * 【凶虐】：① **出牌阶段开始时**消费 1 张戮（**自己选**哪一张，因为不同戮的势力不同）→ 三选一，
@@ -14841,7 +15120,8 @@ function askShilu(ctx: HookContext): void {
           const id = st.heroPool.shift();
           if (!id) break;
           const h = getHeroForMode(id, st.mode);
-          // ⚠️ 双势力牌随机成戮时「对应哪个势力」没有查到移动版细则 → 记 null（待核对，见 §5.107）
+          // 从**未登场武将牌堆**随机取来的那张：同样按**牌面势力**记（双势力牌 → 两个都算）。
+          // 用户 2026-09 口径：不是二选一，也不是沿用该武将死亡前所属角色的单一势力（§5.131）。
           p.lu.push({ heroId: id, factions: printedFactionsOf(id) });
           names.push(h?.name ?? id);
         }
@@ -14920,11 +15200,9 @@ function askXiongnueOffense(ctx: HookContext): void {
   const me = ctx.player;
   if (me.lu.length === 0) return;
   if (state.xiongnue) return; // 一个出牌阶段只处理一次
-  // ⚠️ 用户 2026-09 口径：拿不到势力的「戮」（从未登场武将牌堆随机抽到的**双势力**牌）
-  //    **不允许在这条路上选**（凶虐①必须读势力）——但**不消耗、不惩罚**它：
-  //    【嗜戮】换牌与【凶虐②】消耗两戮（势力不限）照常能用它。
-  //    所以这里先把可选的挑出来；一张都没有就整个不出询问。
-  // 每张「戮」都带**牌面势力集合**（双势力牌同时对应两个）→ 不再有「不可选」的戮
+  // 每张「戮」都带**牌面势力集合**（双势力牌**同时**对应两个牌面势力，用户 2026-09 口径，
+  // 见 §5.131）：所以这里没有「拿不到势力、不可选」的戮了——`factions.length > 0` 只是兜底
+  // （理论上不会有空集合；真遇到空集合就整个不出询问，不做「凭空惩罚」那套）。
   const usable = me.lu.filter((e) => e.factions.length > 0);
   if (usable.length === 0) return;
   ctx.api.askChoice(
@@ -14941,7 +15219,7 @@ function askXiongnueOffense(ctx: HookContext): void {
         st,
         p.seatId,
         '【凶虐】：选择要移去的「戮」（不同戮对应不同势力）',
-        // 只列出**已确定势力**的那些（`faction === null` 的标为 unresolved，不在这里给）
+        // 双势力牌那张标签写「魏/吴」这样两个势力（**不是**二选一：移去之后就按这两个都生效）
         usable.map((e) => ({
           id: e.heroId,
           label: `${getHeroForMode(e.heroId, st.mode)?.name ?? e.heroId}（${e.factions.map((f) => FACTION_NAME[f] ?? f).join('/')}）`,
@@ -15541,8 +15819,8 @@ const WENQIN: Hero = {
  *      ⚠️ **A 是「置入弃牌堆」不是「弃置」**（官方描述原则明确区分）：实现上直接 `toDiscard`，
  *      **不走**引擎里「因弃置」的收口，所以【夙智】③、【统度】、【礼让】、【定澜夜明珠】那类
  *      「因弃置进弃牌堆」的监听都**不会**被它触发。
- *   ③ 朱灵杀死与自己**同势力**的角色时，不执行国战的同势力击杀奖惩。⚠️ 本引擎**尚未实现**
- *      那套奖惩，所以这一条目前没有实际作用——将来实现时按技能名跳过（已记文档待办）。
+ *   ③ 朱灵杀死与自己**同势力**的角色时，不执行国战的同势力击杀奖惩——引擎**已实现**那套奖惩
+ *      （`engine.applyKillPenalty`，见 §5.125），朱灵靠 `exemptFromKillPenalty: true` 跳过。
  * 【方圆】（**阵法技**，锁定；仅**存活 ≥4** 且围攻关系成立时生效）——**建立在公共围攻关系
  *   `siegeRelations` 上**，不自己看左右座位：
  *   ① 与朱灵处于**同一围攻关系**的**围攻角色**手牌上限 **+1**、**被围攻角色** **-1**
@@ -15713,6 +15991,8 @@ const ZHULING: Hero = {
   gender: 'male',
   modes: ['guozhan'],
   // 方圆是锁定技（阵法技），要在 handLimit 与回合钩子上都生效
+  // 方圆（阵法技，围攻型）：阵法召唤按「亮将后进同一围攻关系」判
+  formation: ['siege'],
   lockedFields: ['fangyuan'],
   exemptFromKillPenalty: true,
   skillFields: { 方圆: ['fangyuan'] },
@@ -15732,20 +16012,10 @@ const ZHULING: Hero = {
       desc: '阵法技，锁定技，与你处于同一围攻关系的围攻角色手牌上限+1、被围攻角色手牌上限-1；若你处于被围攻状态，你的结束阶段可以视为对一名围攻角色使用一张普通【杀】。',
     },
   ],
-};
+  // 阵法召唤（通用机制，见 §5.132）：拥有阵法技的角色都多出这一条出牌阶段限一次的操作
+  activeSkills: [FORMATION_SUMMON],
 
-function ambitionistHero(id: string, name: string, hp: number): Hero {
-  return {
-    id,
-    name,
-    pack: 'buchen', // 不臣篇
-    faction: 'ambitionist',
-    maxHp: hp,
-    gender: 'male',
-    modes: ['guozhan'],
-    skills: [],
-  };
-}
+};
 
 /**
  * 界钟会 —— 权计 / 排异（不臣篇·下，**武将牌本身就是「野」**，2 阴阳鱼 → **4**，
@@ -15922,7 +16192,12 @@ const JIE_ZHONGHUI: Hero = {
   hooks: [
     // ①「受到伤害后」（按伤害事件，不按点数）与 ②「使用仅指定一个目标的牌造成伤害后」
     // 两个时机分别派发，但都汇进同一个判据 + 同一个询问
-    { timing: 'afterDamage', skillId: '权计', handler: askQuanji },
+    {
+      timing: 'afterDamage',
+      skillId: '权计',
+      applies: (ctx) => quanjiTrigger((damageEvent(ctx).attack ?? undefined), ctx.player),
+      handler: askQuanji,
+    },
     { timing: 'afterDamageDealt', skillId: '权计', handler: askQuanji },
   ],
   activeSkills: [PAIYI_SKILL],
@@ -15945,7 +16220,6 @@ const BUCHEN_AMBITIONIST: Hero[] = [
 ];
 
 export const HEROES: Hero[] = [
-  ...BUCHEN_DUAL,
   LIUQI,
   TANGZI,
   SHIXIE,
@@ -16282,12 +16556,19 @@ export function determineDualFaction(
   const isWild = (h: Hero): boolean => h.faction === 'ambitionist';
   const mainDual = !!main.secondFaction;
   const deputyDual = !!deputy.secondFaction;
-  if (!mainDual && !deputyDual) return null; // 两张都是单势力 → 不归它管
-  // 与野心家武将组合 → 玩家自己选那张双势力牌的势力
-  if (isWild(main) || isWild(deputy)) {
-    const dual = mainDual ? main : deputy;
-    return { kind: 'choice', options: factionsOf(dual) };
+  // ⚠️ 野心家的分支必须在「两张都是单势力 → 不归它管」**之前**：
+  //    「野心家武将 + 单势力副将」是最常见的组合（用户 2026-09-18 口径：主将暗置期间
+  //    **暂时按照副将确定势力**），以前被那条早退挡掉 → 孙綝配关羽直接报「需选 2 位同阵营武将」，
+  //    等于野心家武将根本选不出来。
+  if (isWild(main)) {
+    // 主将野心家：势力按**副将**定（副将单势力 → 自动；副将双势力 → 玩家自己选一面）
+    return deputyDual
+      ? { kind: 'choice', options: factionsOf(deputy) }
+      : { kind: 'auto', faction: deputy.faction };
   }
+  // 副将野心家不合法（只能在主将位），由 pickHero 拦，这里不表态
+  if (isWild(deputy)) return null;
+  if (!mainDual && !deputyDual) return null; // 两张都是单势力 → 不归它管
   const shared = factionsOf(main).filter((f) => factionsOf(deputy).includes(f));
   if (shared.length === 1) return { kind: 'auto', faction: shared[0]! };
   if (shared.length >= 2) return { kind: 'choice', options: shared };
@@ -16580,6 +16861,30 @@ function removeCard(hand: Card[], id: string): Card | null {
 function handAndEquipOf(p: Player): Card[] {
   const eq = p.equipment;
   return [...p.hand, ...EQUIP_SLOTS.map((s) => eq[s]).filter((c): c is Card => c !== null)];
+}
+
+/**
+ * 「这次伤害事件」的 payload 形状（`afterDamage` / `afterDamageDealt` 两个时机共用）。
+ *
+ * 给 `HookRegistration.applies` 用——`applies` 只是 handler 开头那几行守卫的**声明版**，
+ * 两边必须判同一件事（见 timing.ts 里 applies 的说明与 docs §5.143）。
+ */
+function damageEvent(ctx: HookContext): { attack?: AttackContext; damage?: number } {
+  return (ctx.payload ?? {}) as { attack?: AttackContext; damage?: number };
+}
+
+/** 声明式：这次伤害点数为正（「受到伤害后」类技能的共同前提） */
+function damagedPositive(ctx: HookContext): boolean {
+  return (damageEvent(ctx).damage ?? 0) > 0;
+}
+
+/** 声明式：有来源、且不是自己打自己（反馈/刚烈/恩怨/忘隙那一族的共同前提） */
+function damagedByOther(ctx: HookContext): boolean {
+  const p = damageEvent(ctx);
+  const srcId = p.attack?.sourceId;
+  if (!p.damage || !srcId || srcId === ctx.player.seatId) return false;
+  const src = getPlayer(ctx.state, srcId);
+  return !!src && src.alive;
 }
 
 /**

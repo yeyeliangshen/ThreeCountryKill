@@ -495,7 +495,17 @@ export interface SkillApi {
    */
   castVirtualTrick: (
     sourceSeatId: string,
-    spec: { type: TrickType; suit: Suit; rank?: number },
+    spec: {
+      type: TrickType;
+      suit: Suit;
+      rank?: number;
+      /**
+       * 这张虚拟牌是用哪些**实体牌**凑出来的（吴景·调归：把一张装备牌当【调虎离山】）。
+       * 引擎把它挂到虚拟牌的 `materials` 上——「获得此牌」那类效果按它找实体牌
+       * （见 engine 里 `damageCardIds` 的注释：虚拟牌本身在任何区域都找不到）。
+       */
+      materials?: Card[];
+    },
     targetIds?: string[],
   ) => void;
   /**
@@ -514,6 +524,14 @@ export interface SkillApi {
    */
   /** 授予技能：默认给技能使用者，传 toSeatId 就给那个人（糜夫人·存嗣把勇决给队友） */
   grantSkill: (heroId: string, skillName: string, toSeatId?: string) => void;
+  /**
+   * **令某人明置一张武将牌**（阵法召唤用：召唤是**召唤者发起、响应者亮将**，
+   * 与「自己发起明置」那条 `revealHero` 意图不是一回事）。
+   *
+   * 与「发动技能顺带明置」走同一个入口（`engine.revealHeroCard`），所以势力确定、
+   * 珠联璧合/会盟那类明置时机照常派发；被【祸水】【建安】挡着时返回 false。
+   */
+  revealHeroCard: (seatId: string, heroId: string) => boolean;
   /**
    * 授予技能，**只到本回合结束**（孙策·魂殇「本回合拥有英姿和英魂」、
    * 法正·眩惑「获得武圣等之一直到回合结束」）。回合结束时自动清掉。
@@ -566,6 +584,22 @@ export interface SkillApi {
       generatedBy?: string;
       /** 目标级「不能响应」判定（黄祖·袭射：目标体力值 < 黄祖时不能出闪） */
       unrespondableTo?: (st: GameState, target: Player) => boolean;
+      /**
+       * 这张【杀】**整个结算完**（含求闪、伤害、濒死/阵亡）之后要做的事。
+       * 有它才能把「一个人一个人接着问」的链推下去（【号令天下】的①）。
+       */
+      after?: () => void;
+      /**
+       * 是否**计入出杀次数**（默认不计，与神速那类「视为使用」一致）。
+       * 【号令天下】的口径是「受次数限制且计入次数」——它自己先查 `canUseAnotherSha`，
+       * 再叫这里带上 `countTowardLimit: true`。
+       */
+      countTowardLimit?: boolean;
+      /**
+       * 这张【杀】的**基础伤害**（默认 1）。蜀【克复中原】的「蜀势力角色的【杀】基础伤害 +1」
+       * 用它（不改实体牌，只改这一次使用的基础值）。
+       */
+      damage?: number;
     },
   ) => void;
   /**
@@ -692,4 +726,22 @@ export interface HookRegistration {
    * 只影响「非锁定技失效」的判断（见 heroes.effectiveHeroes）——缺省＝非锁定技。
    */
   locked?: boolean;
+  /**
+   * **声明式触发条件**：「这个时机 + 这个 payload 下，我这次要不要发动？」
+   *
+   * 存在的唯一目的：让引擎在**派发之前**就知道「本次会发动的技能清单」，
+   * 从而支持官方那条口径——「同一时机、同一层内由该角色**自己决定次序**」（见 docs §5.137.3）。
+   * 没有它，引擎只知道「这个时机注册了几个钩子」，而钩子模型是「注册即触发、要不要发动由
+   * handler 自己决定」——按注册数去问，等于在**每一处有两个钩子注册的时机**都插一问
+   * （上一版就是这么失败的：19 条用例变红 + 冒烟 40 局卡在 5000 步，见 §5.137.4）。
+   *
+   * ⚠️ 写法要求：
+   * - **纯条件判断**：不写状态、不发起询问、不改牌——它只是 handler 开头那几行守卫的「声明版」；
+   * - 返回 true 的含义是「handler 这次会去问 / 会结算」，**不是**「玩家一定会同意」；
+   * - 与 handler 里的守卫**必须同步**：两边判断不一致时，次序询问会把不发的技能列进去
+   *   （或者漏掉真会发的），这正是这个字段唯一的坑。
+   * - **锁定技也要填**：`locked` 只表示「玩家不能选择不发动」，触发条件照样要判；
+   * - 不填 = 引擎对该钩子**无法预判** → 该时机的次序退回按 `priority` 固定排（不会出错，只是非自选）。
+   */
+  applies?: (ctx: HookContext) => boolean;
 }

@@ -16,7 +16,7 @@ export const GUOZHAN_CONFIG_SCHEMA_VERSION = 2 as const;
 
 /** 势备篇：牌堆内容扩展（标准 108 + 势备 52） */
 export type ShibeiVersion = 'off' | 'current';
-/** 不臣篇：武将 + 特殊规则 + 特殊牌区域（野心家武将、暴露野心/建国、势力锦囊、府库） */
+/** 不臣篇：武将 + 特殊规则（野心家武将、暴露野心/建国、双势力、势力锦囊：第一次洗牌洗入、进弃牌堆时销毁） */
 export type BuchenVersion = 'off' | 'current';
 /** 君临天下：君主规则覆盖（君主化、【君威】、场外专属装备）。'2026' = 现行移动版口径 */
 export type JunlintianxiaVersion = 'off' | '2026';

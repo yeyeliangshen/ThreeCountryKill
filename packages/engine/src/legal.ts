@@ -35,6 +35,7 @@ import {
   activeHeroes,
   canUseAsCard,
   chilingTargets,
+  haolingTargets,
   duelShaRequired,
   factionHelpers,
   lianhengTargets,
@@ -48,7 +49,15 @@ import { distance } from './distance';
 // 其它玩家的 prompt 为 null（他们只是在等待）。
 export function buildPrompt(state: GameState, seatId: string): PromptView | null {
   // 选将阶段：未选将的座位收到 pickHero 提示，已选者等待
-  if (state.draft) {
+  //
+  // ⚠️ 例外：**选将期间也会挂询问**——双势力组合要在此时由玩家**选势力**（引擎给一条 `choice`）。
+  //    这里以前无条件回 pickHero，那条询问就被 prompt 盖住了：客户端既看不到也答不了，
+  //    玩家确认完武将后界面一直停在选将页（实测卡死，见 docs §5.133）。
+  //    判定用「这一格是不是在问这个座位」，是的话交给下面的通用分支去构建（choice/pickCards/…）。
+  const cur = state.pending;
+  const askingThisSeat =
+    !!cur && typeof cur === 'object' && 'seatId' in cur && cur.seatId === seatId && cur.kind !== 'play';
+  if (state.draft && !askingThisSeat) {
     if (state.draft.pendingSeats.includes(seatId)) {
       return {
         kind: 'pickHero',
@@ -285,6 +294,18 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       } else if (trickType === 'lutong') {
         // 要有大势力才谈得上「所有大势力/小势力角色」
         legal = bigFactions(state).length > 0;
+      } else if (trickType === 'guoanjianbang') {
+        // 【固国安邦】：**只对自己使用**，所以只要活着就打得出（不需要目标、也不看有没有别人）
+        legal = true;
+      } else if (trickType === 'haolingtianxia') {
+        // 【号令天下】：要有「体力值不是最少」的角色可指（目标可以包括自己）
+        legal = haolingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));
+      } else if (trickType === 'kefuzhongyuan') {
+        // 【克复中原】：至少一名角色（可以指自己），只要场上有人就能用
+        legal = state.players.some((p) => p.alive && !heroBlocksBeingTarget(state, p, card, player));
+      } else if (trickType === 'wenheluanwu') {
+        // 【文和乱武】：对所有角色（含自己）——场上有人就能用
+        legal = state.players.some((p) => p.alive);
       } else if (trickType === 'chiling') {
         // 【敕令】：对所有**没有势力**的角色使用（可能包括你自己）
         legal = chilingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));

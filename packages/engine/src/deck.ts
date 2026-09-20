@@ -1,5 +1,6 @@
 import type { Card, CardType, GameMode, Suit } from '@sgs/protocol';
 import type { GameState } from './model';
+import { pushLog } from './model';
 
 /**
  * 构建牌堆。**国战与其它模式的牌堆不一样**。
@@ -7,8 +8,8 @@ import type { GameState } from './model';
  * 国战牌堆官方 108 张 = **54 基本 + 34 锦囊 + 20 装备**（用户核对后提供的构成）。
  * 锦囊里含三张无懈：♠J【无懈可击】＋ ♦Q / ♣K【无懈可击·国】。
  * 国战独有的【铁索连环】【知己知彼】【以逸待劳】【远交近攻】【五谷丰登】都实现了。
- * 国战独有的装备（麒麟弓/吴六剑/三尖两刃刀/白银狮子/寒冰剑）也都在堆里，
- * 但**特效未做**，悬停提示里会如实标注（同军争那几件）。
+ * 国战独有的装备（麒麟弓/吴六剑/三尖两刃刀/白银狮子/寒冰剑）也都在堆里，**特效都已实现**
+ * （`protocol` 的 `EQUIP_NOT_IMPLEMENTED` 现在是空表——这里曾写着「特效未做」，早就不成立了）。
  *
  * ⚠️ 两张堆的**花色点数都是近似值**：只保证「每种牌各几张」与官方一致，
  *    具体哪张牌落在哪个花色点数上可能与实体牌不同，个别位置还会与别的牌重复
@@ -374,6 +375,30 @@ export function seededRng(seed: number): () => number {
   };
 }
 
+/**
+ * 【势力锦囊】四张（不臣篇）——开局**不进摸牌堆**，放在 `GameState.pendingFactionTricks` 里，
+ * **第一次重洗**时随新摸牌堆一起洗入；使用/弃置后**移出游戏**（不进弃牌堆循环）。
+ *
+ * 牌面（用户给定）：魏 ♠Q【号令天下】、蜀 ♦A【克复中原】、吴 ♥A【固国安邦】、群 ♣Q【文和乱武】。
+ * 效果口径见 docs/guozhan-roster.md §5.136。
+ *
+ * ⚠️ 没实装的那几张**不要放进来**：它们没有 effect handler，玩家抽到就是一张**无法结算的死牌**
+ * （用户 2026-09-18 的说法）。**每张写完结算逻辑、过了测试，才加进这个列表。**
+ * 四张现已全部实装（2026-09-18）。
+ */
+export function factionTrickCards(): Card[] {
+  return [
+    // ✅ 已实装：【固国安邦】（吴 ♥A）——摸八张 + 至少选六张（非吴弃置；吴可至多 6 张转交同势力）
+    { id: 'faction-guoanjianbang', type: 'guoanjianbang', suit: 'heart', rank: 1 },
+    // ✅ 已实装：【号令天下】（魏 ♠Q）——除目标外的所有角色（**含使用者本人**）依次二选一
+    { id: 'faction-haolingtianxia', type: 'haolingtianxia', suit: 'spade', rank: 12 },
+    // ✅ 已实装：【克复中原】（蜀 ♦A）——至少一名目标，各自「视为使用普通【杀】」或摸牌（蜀摸 2 / 伤害 +1）
+    { id: 'faction-kefuzhongyuan', type: 'kefuzhongyuan', suit: 'diamond', rank: 1 },
+    // ✅ 已实装：【文和乱武】（群 ♣Q）——所有角色依次展示手牌，使用者挑牌弃置；群势力空手补至体力值
+    { id: 'faction-wenheluanwu', type: 'wenheluanwu', suit: 'club', rank: 12 },
+  ];
+}
+
 /** 从牌堆顶抽一张；牌堆空时把弃牌堆洗回 */
 export function drawOne(state: GameState): Card | null {
   if (state.deck.length === 0) {
@@ -382,6 +407,12 @@ export function drawOne(state: GameState): Card | null {
     //    （这种「同一个种子每次局面都不同」的坑踩过两轮，一处都不能漏）
     state.deck = shuffle(state.discard, state.rng);
     state.discard = [];
+    // 【势力锦囊】四张：**第一次重洗**时随新摸牌堆一起洗进来（开局那 160 张里没有它们）
+    if (state.pendingFactionTricks.length > 0) {
+      state.deck = shuffle([...state.deck, ...state.pendingFactionTricks], state.rng);
+      pushLog(state, 'system', '【势力锦囊】四张随第一次洗牌进入摸牌堆。');
+      state.pendingFactionTricks = [];
+    }
   }
   const card = state.deck.pop() ?? null;
   // 「本回合从牌堆获得过牌」的账本（袁术·伪帝）。重洗之后摸到的牌也该算——它们此刻确实
@@ -397,8 +428,14 @@ export function drawOne(state: GameState): Card | null {
  *   「当你每回合首次使用【杀】对目标角色造成伤害后，你可以获得其一枚阴阳鱼标记或者一张手牌。
  *     当此牌离开装备区后，销毁之。」
  *
- * ⚠️ 另外三件（【六龙骖驾】【定澜夜明珠】【盟军大纛】）的 WIKI 没有页面、搜索配额也用尽了，
- *    效果文本**待核对**——在查清之前不实现（本仓库不猜规则文本）。
+ * ✅ 另外三件**后来都补齐了**（这里曾写着「WIKI 没页面、待核对 → 不实现」）：
+ *   - 【六龙骖驾】（♥K 宝物）：你计算与其他角色的距离 -3 → `distance.ts`；
+ *   - 【定澜夜明珠】（宝物）：本回合首次弃牌后摸一张 → `equip.ts`；
+ *   - 【盟军大纛】（**装备牌·防具，红桃 3**）：受到伤害时弃两张牌防止此伤害 → `equip.ts`。
+ *
+ * 四件的牌面都已按用户给出的记录落库：飞龙夺凤（宝物 ♠2）、六龙骖驾（宝物 ♥K）、
+ * 定澜夜明珠（宝物 ♦K）、盟军大纛（防具 ♥3）。本条曾写着「盟军大纛没核到、heart 3 是占位值」
+ * ——**错的**，用户 2026-09 指出后订正。
  */
 export function lordEquipFeilong(seq: number): Card {
   return {

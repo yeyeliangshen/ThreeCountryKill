@@ -4,7 +4,7 @@
 // dev 模式下通过控制台的 __sgsAudio.last 查看：
 //   __sgsAudio.last
 //   → { action: 'sha-fire', seat: 's1', gender: 'male',
-//       sfx: 'sha-fire-1', voice: 'sha-fire-m' }
+//       sfx: 'sha-fire-1', voice: 'sha-fire-m', heroVoice: 'zhouyu/反间' }
 // 生产构建不挂到 window，这个对象也不会被读。
 export const lastPlayed: {
   /** 触发这次声音的动作（日志里的 action） */
@@ -17,4 +17,6 @@ export const lastPlayed: {
   sfx: string | null;
   /** 实际播的语音文件名；null 表示没有对应语音 */
   voice: string | null;
-} = { action: null, seat: null, gender: null, sfx: null, voice: null };
+  /** 实际播的**武将语音**（`<武将id>/<技能名>`）；null 表示这次没有 */
+  heroVoice: string | null;
+} = { action: null, seat: null, gender: null, sfx: null, voice: null, heroVoice: null };

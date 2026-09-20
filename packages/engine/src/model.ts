@@ -1,4 +1,4 @@
-import { CARD_TYPE_NAME, EQUIP_NAME } from '@sgs/protocol';
+import { CARD_TYPE_NAME, EQUIP_NAME, FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type {
   Card,
   CardType,
@@ -421,8 +421,11 @@ export interface Player {
    */
   yi: Card[];
   /**
-   * 孙綝·【嗜戮】的「戮」：**真实的武将牌**（不是计数标记）——每张记下武将牌 id 与**取得时冻结的
-   * 势力**（死者所确定的势力；从未登场武将堆随机得到的见 §5.107 的待核对项）。
+   * 孙綝·【嗜戮】的「戮」：**真实的武将牌**（不是计数标记）——每张记下武将牌 id 与
+   * **这张牌牌面上的势力集合**（`printedFactionsOf`；双势力牌**两个都算**，§5.131）。
+   *
+   * ⚠️ 不是「死者生前所属角色的势力」（角色势力只能有一个，与牌面势力是两回事），
+   *    也不是二选一——用户 2026-09 的口径。
    * 与左慈的「魂」(`hun: string[]`) 同一套资源语义：它们都从 `state.heroPool` 里来。
    */
   lu: { heroId: string; factions: Faction[] }[];
@@ -488,6 +491,17 @@ export interface Player {
 
   determinedFaction?: Faction | null;
 
+  /**
+   * **归属势力的 id**（用户 2026-09 给的 2023 口径：**每一次「建立新势力」生成一个独立的
+   * `forceId`，加入该势力的人共享它**；不同野心家各建的势力**不会**因为原势力同为魏/蜀/吴/群
+   * 而合并）。
+   *
+   * 本仓库当前只用到「野心家各自一种势力」这一半：因人数超编**转成野心家**、以及**野心家武将
+   * 本体**，在明置确定势力那一刻各拿一个独立 `forceId`（`force:<序号>`）。
+   * 「暴露野心 → 建立新势力」实装后，加入者应当**沿用发起者那个 `forceId`**（见 §5.137）。
+   * 一切「是不是同势力」的判断都走 `heroes.factionGroupKey`（它优先读这个字段）。
+   */
+  forceId?: string;
   lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
 }
 
@@ -820,6 +834,34 @@ export interface GameState {
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];
+  /**
+   * 【势力锦囊】四张（不臣篇）：开局**不在**摸牌堆里，放这儿等着**第一次重洗**时洗入；
+   * 使用/弃置后**移出游戏**（不进弃牌堆循环）。见 `deck.factionTrickCards` 与 §5.136。
+   */
+  /** 归属势力 id 的自增号（`Player.forceId` 用它生成，见那里的说明） */
+  forceSeq: number;
+  /**
+   * 本轮胜利判定里**已经问过要不要暴露野心**的座位（§5.141）。
+   *
+   * 存在的意义是防止死循环：某人选「不暴露」后，胜利判定还会再来一次，
+   * 不记住就会把同一句话反复问。一旦这轮不再存在胜利条件就清空（下次重新给机会）。
+   */
+  ambitionAsked: string[];
+  /**
+   * **本次「暴露野心 → 建国」总流程里已经加入过新势力**的座位（§5.141 第 7 点）。
+   *
+   * 用途：一名角色在**同一次**建国总流程里最多加入一个新势力——旧移动版实测是排他的
+   * （「接受一名野心家的拉拢后不能再响应其他野心家的拉拢」），2023 公告只放开了
+   * 「一个建国者可以接纳多人」，没放开「中途改投」。与 `ambitionAsked` 同时清空。
+   */
+  ambitionJoined: string[];
+  pendingFactionTricks: Card[];
+  /**
+   * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：
+   * 势力锦囊用/弃后进这里；君主专属装备「离开装备区即销毁」也进这里。
+   * 单独记一份是为了让「牌不会凭空消失」这类守恒检查能如实核对（模糊测试网要看得到它们）。
+   */
+  exiled: Card[];
   discard: Card[];
   turn: { seatIndex: number; phase: Phase };
   pending: Pending | null;
@@ -1176,6 +1218,12 @@ export function alivePlayers(state: GameState): Player[] {
  */
 export function toDiscard(state: GameState, ...cards: Card[]): void {
   for (const c of cards) {
+    // 势力锦囊（不臣篇）：**要进弃牌堆时改为销毁**（＝移出游戏）——移动版口径，不建「府库」区
+    if (FACTION_TRICK_TYPES.has(c.type)) {
+      state.exiled.push(c);
+      pushLog(state, 'discard', `【${CARD_TYPE_NAME[c.type]}】移出游戏（势力锦囊不进弃牌循环）。`);
+      continue;
+    }
     // 「离开装备区后销毁之」的牌（君主专属装备）：**移出游戏**，不进弃牌堆。
     // 官方文本就写在牌面上（例：【飞龙夺凤】「当此牌离开装备区后，销毁之」）。
     if (c.destroyOnLeave) {

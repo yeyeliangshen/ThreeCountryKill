@@ -1,5 +1,21 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+
+/**
+ * ⚠️ **把随机源钉死**：引擎默认用 `Math.random` 洗牌，于是「谁发到什么牌」每次跑都不一样——
+ * 只要某个用例的断言或驱动步骤沾了具体牌面（实测一例：「界钟会·权计」里
+ * `find(c => c.equipName === 'qinggang')` 命中了**手牌里**另一把同名武器，于是「装备区那把被
+ * 收走」的断言偶发失败），它就会偶发红。这里统一换成可种子化的随机源：**种子固定 → 结果确定**
+ * （与 `smoke.test.ts` 的纪律一致），偶发失败从此可复现。自己显式传了 rng 的用例不受影响。
+ */
+beforeEach(() => {
+  const rnd = seededRng(20260920);
+  vi.spyOn(Math, 'random').mockImplementation(() => rnd());
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 import {  fangyuanHandLimitDelta,  woundedFactionCount,
   currentFactionCount,
   applyIntent,
@@ -39,7 +55,9 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
 
   type GameState,
   type SeatSetup,
-  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,} from '../src';
+  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,  seededRng,
+  sameKnownFaction,
+} from '../src';
 import {
   capturePendingCheckpoint,
   notePendingSlotWrite,
@@ -1805,6 +1823,40 @@ describe('武将技能（Step 6）', () => {
     expect(state.gameOver).toBe(false);
   });
 
+  /**
+   * 跨 ②（濒死 continuation 化）+ ③（伤害管线重排）的回归：
+   *
+   * 定版口径是「扣体力 → 濒死/死亡 → **被救回之后**才跑造成伤害后/受到伤害后」。
+   * 于是出现一条以前不会遇到的路径：濒死求桃**先**走、受伤后技能的询问**后**挂起。
+   * 这条路径上最容易犯的错，是伤害结算的收尾（`resumePlay` / 续接）在那条询问之后
+   * 又把「出牌阶段」写回输入槽——玩家的二选一就被顶掉了（傲才那次踩的是同一个坑：
+   * 「请求还挂着」才跑得通，被顶掉就再也答不上）。
+   */
+  it('跨②③回归：濒死被救回后，受伤后技能挂起的询问不得被收尾覆盖成「出牌阶段」', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1'), tao('a2'), shan('a3')], hp: 4 },
+      { seatId: B, name: '乙', heroId: 'xiahoudun', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+    ]);
+    state.deck.push(mk('jc', 'sha', 'spade', 5)); // 刚烈判定：黑桃 → 非红桃
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 乙 0 血 → **先**走濒死
+    expect(state.pending?.kind).toBe('respondDeath');
+    ok(act(state, B, { type: 'pass' })); // 乙自己放弃
+    ok(act(state, C, { type: 'pass' })); // 丙也放弃（求桃从濒死者起轮询：乙 → 丙 → 甲）
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲出【桃】救回乙
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(1);
+    // 救回之后才轮到「受到伤害后」：刚烈判定 → 问甲二选一。
+    // 关键断言：这一格是那张询问，**不是** { kind:'play' }（收尾不许把它顶掉）
+    expect(state.pending).toMatchObject({ kind: 'choice', seatId: A });
+    ok(act(state, A, { type: 'chooseOption', optionId: 'damage' })); // 选「受到 1 点伤害」
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.hp).toBe(3);
+    // 整条链走完，控制权回到甲的出牌阶段
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
   // 7. 司马懿·鬼才：替换不利判定牌
   it('司马懿·鬼才：手动打出一张手牌替换判定牌', () => {
     const state = makeGame([
@@ -2082,6 +2134,11 @@ describe('国战进阶（Step 7）', () => {
     ok(act(state, 'C', { type: 'revealHero', heroId: 'huangzhong' }));
     expect(p('C').faction).toBe('ambitionist');
     expect(p('D').faction).toBe('wei'); // 魏不受影响
+    // 转成野心家的那一刻拿到**独立的归属势力 id**（用户 2026-09 口径：每一次「建立新势力」
+    // 一个 forceId、加入者共享；野心家各自一种势力）——将来「暴露野心 → 建立新势力」的加入者
+    // 会沿用发起者那个 id，见 §5.137
+    expect(p('C').forceId).toBeTruthy();
+    expect(p('A').forceId, '留在原势力的人没有 forceId').toBeUndefined();
   });
 
   // 3. 鏖战桃当杀
@@ -14583,6 +14640,106 @@ describe('国战 · 阵法技（队列 / 围攻关系）', () => {
     return state;
   }
 
+  // ——————————————————————————————————————————
+  // 阵法召唤（移动版口径，见 docs §5.132）
+  // ——————————————————————————————————————————
+  /** 把某人变回**全暗**（未确定势力）——阵法召唤只问这种人 */
+  function makeDark(state: GameState, seatId: string): void {
+    const p = state.players.find((x) => x.seatId === seatId)!;
+    p.heroRevealed = false;
+    p.deputyRevealed = false;
+  }
+
+  it('阵法召唤（队列型）：只问「亮将后能接进队列」的人；有人响应后**重新算**下一个够格的人', () => {
+    // 甲(曹洪·鹤翼，魏) 乙(暗魏) 丙(暗魏) 丁(吴) 戊(蜀) 己(群)
+    // ⚠️ 用 **6 人局**：4 人局里第 3 个魏会按「超过全场一半」**明置转化**成野心家（引擎的正当行为），
+    //    那样丙就不再是魏、队列也接不上——不是本用例要验的东西。
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
+      { seatId: E, name: '戊', heroId: 'vanilla', faction: 'shu' },
+      { seatId: 's5', name: '己', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    makeDark(state, B);
+    makeDark(state, C);
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    // 乙先被问：他是当时**唯一**亮将后能与甲同队列的暗将
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(at(B).heroRevealed).toBe(true);
+    // ⚠️ 关键：乙亮将之后**丙才够格**（队列往后接）→ 丙这时才被问，而不是一开始就问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    expect(at(C).heroRevealed).toBe(true);
+    expect(formationQueue(state, at(A)).map((p) => p.seatId)).toEqual([A, B, C]);
+  });
+
+  it('阵法召唤：「是队友」不够——中间隔着别的势力就不给问（也不该把技能摆出来）', () => {
+    // 甲(魏) — 乙(吴，已亮) — 丙(暗魏)：丙亮将也接不进甲的队列
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    makeDark(state, C);
+    // 一个可问的人都没有 → 技能不出现在可选项里，硬发也发不动
+    expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('zhenfa_summon');
+    fail(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+  });
+
+  it('阵法召唤（围攻型）：亮将后成为**同一围攻关系**的围攻角色才算够格', () => {
+    // 甲(蒋钦·鸟翔，魏) 乙(吴) 丙(暗魏) 丁(蜀)：丙亮魏 → 甲、丙同为乙的围攻者
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'jiangqin', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    makeDark(state, C);
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    expect(
+      siegeRelations(state).some(
+        (r) => r.besiegedSeatId === B && r.besiegers.includes(A) && r.besiegers.includes(C),
+      ),
+    ).toBe(true);
+  });
+
+  it('阵法召唤：可以**拒绝**；且出牌阶段限一次、存活不足 4 人时不可用', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    makeDark(state, B);
+    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 不响应
+    expect(at(B).heroRevealed).toBe(false); // 没亮
+    expect(state.pending?.kind).toBe('play'); // 流程正常回到出牌阶段
+    // 限一次：本阶段再来一次会被拒
+    fail(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
+    // 前提：阵法技需要存活 ≥4
+    const small = gz([
+      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
+    ]);
+    makeDark(small, B);
+    expect(toSnapshot(small, A).prompt?.legalSkillIds ?? []).not.toContain('zhenfa_summon');
+  });
+
   it('围攻关系：左右都是敌人的角色处于被围攻', () => {
     // 甲(魏) 乙(蜀) 丙(蜀) 丁(魏)：乙的左边是甲(魏)、右边是丙(蜀) → 不被围攻；
     // 丙的左边乙(蜀)、右边丁(魏) → 也不被围攻。改一下势力让乙被围攻：
@@ -16160,18 +16317,20 @@ describe('国战 · 法正（恩怨 / 眩惑）', () => {
     const a = state.players.find((p) => p.seatId === A)!;
     const b = state.players.find((p) => p.seatId === B)!;
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力降到 0 → 濒死
-    // 恩怨②先问甲（受伤后）——这里选失去 1 点体力走掉
-    ok(act(state, A, { type: 'chooseOption', optionId: 'lose' }));
-    expect(a.hp).toBe(3);
-    // 濒死求桃轮询：从乙起 → [B, A]
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 体力降到 0
+    // 定版口径（docs §5.120）：扣体力 → **先走濒死/死亡** → 被救回之后才跑「受到伤害后」。
+    // 所以恩怨②现在排在这条求桃之后（以前是先问恩怨②、再进濒死，与官方相反）。
     expect(state.pending?.kind).toBe('respondDeath');
-    ok(act(state, B, { type: 'pass' }));
-    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
-    // 乙回到 1 点体力；甲用完桃后手牌为空，因【恩怨】摸 1 张
+    ok(act(state, B, { type: 'pass' })); // 乙自己放弃救援
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' })); // 甲出【桃】救人
+    // 乙回到 1 点体力；甲用完桃后手牌为空，因【恩怨】①摸 1 张
     expect(b.hp).toBe(1);
     expect(a.hand.length).toBe(1);
     expect(state.log.some((e) => e.message.includes('因【恩怨】摸了 1 张牌'))).toBe(true);
+    // 救回之后才轮到「受到伤害后」：恩怨②问甲（伤害来源）二选一
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'lose' }));
+    expect(a.hp).toBe(3);
   });
 
   it('恩怨①：法正自己吃桃回血不触发（只认「其他角色对你使用【桃】」）', () => {
@@ -18647,13 +18806,15 @@ describe('国战 · 张鲁（布施 / 米道）', () => {
     }
   });
 
-  // ⚠️ 根因已定位（文档 §5.104）：米道的钩子挂在**张鲁**身上、事件 `othersUseCard` 也确实派给了
-  //    其他玩家（两条出杀路径、且在 useCard 链之外），但**旁观者钩子发问在这层没有被「可挂起」
-  //    机制接住**——询问设好之后又被后面的流程（等出闪/结算）覆盖掉，用例里最终看到的是 play。
-  //    下一步：查 runHooksPausable/runHooksFrom 的暂停条件，补一个钩子层的定向用例。先跳过。
-  it.skip('米道：同势力角色用实体黑杀 → 交一张手牌、由张鲁改花色为红 → 仁王盾挡不住', () => {
+  // ✅ 已打开（原「暂缓」的理由不成立）：当时以为是「旁观者钩子发问没被可挂起机制接住」，
+  //    实测发现的真因是**用例搭错**——甲手上只有一张牌，打出去之后手牌为空，而引擎按 §5.94 的
+  //    口径「交不出手牌就根本不问米道」（`askMidao`：`if (user.hand.length === 0) return`）。
+  //    给甲第二张牌之后，询问、交牌、张鲁声明花色/属性一条链都正常跑通（钩子的挂起机制没问题）。
+  it('米道：同势力角色用实体黑杀 → 交一张手牌、由张鲁改花色为红 → 仁王盾挡不住', () => {
     const state = gz([
-      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade')] },
+      // 甲手上必须有**两张**：一张打出去的【杀】，一张留着交给张鲁
+      // （引擎口径见 §5.94：【米道】要交的是**手牌**，打出杀之后手牌为空就根本不问）
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [sha('a1', 'spade'), shan('a2')] },
       { seatId: B, name: '乙', heroId: 'zhanglu', faction: 'wei', hand: [] },
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'shan', 'heart')], equip: [armor('c9', 'renwang')] },
     ], A);
@@ -18664,7 +18825,7 @@ describe('国战 · 张鲁（布施 / 米道）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('米道');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(state.pending?.kind).toBe('pickCards');
-    ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['a2'] })); // 把留下的那张交出去
     // 声明花色与属性（张鲁决定）：红桃 + 普通
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B); // 张鲁选
@@ -18917,7 +19078,9 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     expect(state.suzhiTriggers).toBe(1);
   });
 
-  // ⚠️ 根因已定位（文档 §5.104）：`cardDiscarded` 是**派给牌主**的（"你因弃置…" 那类技能用），
+  // ✅ 已打开（原「暂缓」的账目没算对）：见用例里的说明——② 与 ③ 共用 3 次额度，
+  //    「用锦囊 + 别人被拆牌」本来就是 **2 次**，旧断言写的 1 是漏了 ②。
+  //    背景（文档 §5.104）：`cardDiscarded` 是**派给牌主**的（"你因弃置…" 那类技能用），
   //    而夙智③是**旁观者**技能（"其他角色因弃置…"）——钩子挂在 SP司马昭身上，牌主是别人时
   //    根本收不到这个事件。修法：在 fireCardDiscarded 里补一圈「派给全场」的时机
   //    （与 othersUseCard / anyShanUsed 同一套写法）。先跳过，别把「假绿」当已验证。
@@ -18926,7 +19089,7 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
   //    ② 只把 guard 收在锦囊收尾（endTrickResolution 的 finish）→ 冒烟里 yuanshu/dongzhuo/dengai
   //       等固定种子对局直接判不出胜负。→ 收尾**确实需要**抢回 pending，修法要能区分
   //       「本次收尾自己刚产生的询问」与「更早的陈旧 pending」，且优先在**发问方**（弃置收口）解决。
-  it.skip('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
+  it('夙智③：其他角色因**弃置**进弃牌堆 → 获得其中一张（计 1 次）', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'sp_simazhao', faction: 'ambitionist', hand: [mk('a1', 'guohe', 'heart')], hp: 4, maxHp: 4 },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [], equip: [wpn('b9')] },
@@ -18939,7 +19102,12 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('夙智');
     ok(act(state, A, { type: 'chooseOption', optionId: 'b9' }));
     expect(a.hand.some((c) => c.id === 'b9')).toBe(true);
-    expect(state.suzhiTriggers).toBe(1);
+    // ⚠️ 这里是**两次**额度：②「自己回合内使用锦囊」摸 1（过河拆桥本身）＋
+    //    ③「其他角色因弃置进弃牌堆」获得其中一张（被拆掉的武器）——三个子效果共用 3 次额度。
+    //    （旧版本用例写的是 1，是没把 ② 算进去。）
+    expect(state.suzhiTriggers).toBe(2);
+    expect(state.log.some((e) => e.message.includes('使用锦囊摸了一张牌'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('获得 乙 弃置的'))).toBe(true);
   });
 
   it('回合结束：本回合触发不足 3 次 → 获得【反馈】；3 次则不给', () => {
@@ -18965,7 +19133,12 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     a.grantedSkills = [{ heroId: 'simayi', skillName: '反馈' }]; // 手动模拟上一回合欠发下来的
     ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
     ok(act(state, A, { type: 'pass' }));
-    // 昭心与反馈都可选：先答昭心（不发动），再看反馈
+    // ⚠️ 甲的【昭心】与（夙智欠发下来的）临时【反馈】同时想发动 → 引擎先问「先结算哪一个」（§5.143）。
+    //    这里选【昭心】先、并且不发动，再看【反馈】。
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('先结算哪一个')) {
+      const zhaoxin = state.pending.options.find((o) => o.label.includes('昭心'));
+      ok(act(state, A, { type: 'chooseOption', optionId: zhaoxin!.id }));
+    }
     if (state.pending?.kind === 'choice' && state.pending.title.includes('昭心')) {
       ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
     }
@@ -19448,6 +19621,92 @@ describe('国战 · 孙綝（嗜戮 / 凶虐）', () => {
     expect(state.heroPool.length).toBeLessThan(poolBefore2);
   });
 
+  /**
+   * 用户 2026-09 的口径（§5.131）：**双势力武将牌作「戮」时，同时对应牌面上的两个势力**——
+   * 不是二选一，也不是沿用该武将死亡前所属角色的单一势力。
+   *
+   * 这条用**端到端**的方式守住：乙（角色**已确定势力是吴**）的副将是【唐咨】（魏/吴双势力牌），
+   * 他死后被收成「戮」；甲用【凶虐】①选加伤，再打一张【南蛮入侵】同时糊三个人——
+   * 魏与吴两个目标都该 +1，蜀不该。
+   * （若实现「沿用死者生前的势力」→ 只有吴会 +1；若实现「二选一」→ 魏那侧也拿不到 +1。）
+   */
+  it('嗜戮①+凶虐①：双势力武将牌作「戮」时**两个牌面势力同时算**（不是二选一、也不是死者生前的势力）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'sunchen',
+        faction: 'ambitionist',
+        hand: [sha('a1'), mk('n1', 'nanman', 'spade')],
+        hp: 4,
+        maxHp: 4,
+      },
+      // 乙：副将【唐咨】是**双势力**（魏/吴）牌，而角色的已确定势力只有「吴」
+      { seatId: B, name: '乙', heroId: 'vanilla', deputyHeroId: 'tangzi', faction: 'wu', hp: 1, hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hp: 4, hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu', hp: 4, hand: [] },
+      { seatId: E, name: '戊', heroId: 'vanilla', faction: 'wu', hp: 4, hand: [] },
+    ], A);
+    const a = state.players.find((p) => p.seatId === A)!;
+    state.heroPool = ['zhangfei']; // 供嗜戮②的换牌（这一轮弃 0 张）
+    // ① 甲杀乙 → 乙阵亡 → 嗜戮收走他的武将牌
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' })); // 不出闪
+    passDeathSaves(state);
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('嗜戮');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 收来的「戮」里，【唐咨】那张同时记着两个牌面势力（不是乙生前的「吴」一个）
+    expect(a.lu.find((e) => e.heroId === 'tangzi')?.factions).toEqual(['wei', 'wu']);
+    // ② 走一轮回到甲的出牌阶段
+    ok(act(state, A, { type: 'endPhase' }));
+    // 出牌阶段结束时【凶虐】②会问「消费 2 张戮换减伤」——这里选**不发动**，
+    // 把【唐咨】那张戮留到下个回合给凶虐①用
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
+    for (const s of [C, D, E]) {
+      skipRevealAsk(state);
+      ok(act(state, s, { type: 'endPhase' }));
+    }
+    skipRevealAsk(state);
+    if (state.pending?.kind === 'pickCards') ok(act(state, A, { type: 'pickCards', cardIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('凶虐');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    // 选戮：唐咨那张的标签写「魏/吴」，**不是**二选一
+    if (state.pending?.kind === 'choice') {
+      const opt = state.pending.options.find((o) => o.id === 'tangzi');
+      expect(opt?.label).toContain('魏/吴');
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: 'tangzi' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'dmg' }));
+    expect(state.xiongnue?.factions).toEqual(['wei', 'wu']);
+    // ③ 一张【南蛮入侵】同时糊三个势力：魏、吴都 +1，蜀不加
+    ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
+    passWuxie(state);
+    let guard = 0;
+    // ⚠️ 群体锦囊的【无懈可击】窗口是**每个目标生效前各一次**（见 Pending.wuxieQueue 的说明），
+    //    所以这里要把「逐目标的无懈窗口」和「目标响应」两种询问都跳完——只跳第一轮会偶发失败
+    //    （牌堆洗到谁手里有无懈，谁就多出一个窗口）。
+    while (guard++ < 20) {
+      const wp = state.pending;
+      if (wp?.kind === 'wuxieQueue') {
+        ok(act(state, wp.askQueue[wp.askIndex]!, { type: 'pass' }));
+        continue;
+      }
+      if (wp?.kind === 'respondTrick') {
+        ok(act(state, wp.responderId, { type: 'pass' }));
+        continue;
+      }
+      break;
+    }
+    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
+    expect(at(C).hp).toBe(2); // 魏：南蛮 1 + 凶虐① 1
+    expect(at(E).hp).toBe(2); // 吴：同上（两个牌面势力**同时**生效）
+    expect(at(D).hp).toBe(3); // 蜀：不在牌面势力里 → 只有南蛮那 1 点
+  });
+
   it('凶虐①：出牌阶段开始消费 1 张戮（自己选）、武将牌**返回**未登场堆；加伤模式只对该势力生效', () => {
     const state = gz([
       {
@@ -19897,11 +20156,10 @@ describe('国战 · 朱灵（决绝 / 方圆）', () => {
     expect(s2.pending?.kind === 'choice' && s2.pending.title.includes('决绝')).toBe(false);
   });
 
-  // ⚠️ 暂缓：这条跑不过，根因**不在朱灵**——决绝②落在 `turnEnd` 钩子上，而引擎的钩子链
-  //    只把 choice/pickCards/viewCards 当作「被问住了」，钩子里**间接打出来的濒死**
-  //    （respondDeath 求桃队列）不算：链条会继续往下跑（回合交接），把求桃询问顶掉，
-  //    被打死的人停在 0 体力却永远不死。修它要动钩子链 ↔ 濒死的收口次序（见 docs §5.111）。
-  it.skip('决绝②：这段伤害把前一个角色**打死**时，濒死/阵亡走完之后接着问下一个人（不顶掉求桃）', () => {
+  // ✅ 已打开：钩子链现在把「**本链自己**打出来的濒死求桃」也当作「被问住了」
+  //    （runHooksFrom 的暂停条件 + runHooksPausable 传进去的 `startedWith`），
+  //    求桃/阵亡整串走完之后由 drainResume 接着跑这条链 —— docs §5.111 的已知缺口至此关闭。
+  it('决绝②：这段伤害把前一个角色**打死**时，濒死/阵亡走完之后接着问下一个人（不顶掉求桃）', () => {
     const state = gz([
       // 朱灵 5 手牌 → 发动后体力 3、上限 3 → 弃 2 张（X=2）
       { seatId: A, name: '甲', heroId: 'zhuling', faction: 'wei', hand: taos('a', 5), hp: 4 },
@@ -20117,6 +20375,90 @@ describe('国战 · 技能判定接入改判时机', () => {
     expect(state.log.some((e) => e.message.includes('替换判定牌'))).toBe(true);
   });
 
+  /**
+   * 「同一时机、同一层内由该角色自己决定次序」（官方口径，docs §5.137.3；实现见 §5.143）。
+   *
+   * 三条覆盖：①两个技能**都会发动** → 问一句「先结算哪一个」，选中的先结算；
+   * ②只有一个会发动 → **不问**（这是上一版失败的原因：按「注册数 ≥2」去问，满场都是询问）；
+   * ③同层里有钩子**没填 `applies`**（引擎预判不了）→ 退回按 priority 固定排，也不问。
+   */
+  describe('同层内自选次序（§5.143）', () => {
+    /** 甲杀乙、乙不出闪 → 乙受伤（乙是双将，受伤后可能有两个技能同时想发动） */
+    const hit = (state: ReturnType<typeof gz>, a = A, b = B) => {
+      ok(act(state, a, { type: 'playCard', cardId: 'a1', targetIds: [b] }));
+      ok(act(state, b, { type: 'pass' }));
+    };
+
+    it('两个技能都会发动 → 先问顺序，选中者先结算', () => {
+      const state = gz(
+        [
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+          // 乙＝夏侯惇（刚烈）+ 郭嘉（遗计）：受伤后两个都想发动
+          { seatId: B, name: '乙', heroId: 'xiahoudun', deputyHeroId: 'guojia', faction: 'wei', hand: [] },
+        ],
+        A,
+      );
+      state.deck = [mk('j1', 'shan', 'spade', 8)];
+      hit(state);
+      const q = state.pending;
+      if (q?.kind !== 'choice') throw new Error(`预期顺序询问，实际是 ${q?.kind}`);
+      expect(q.title).toContain('先结算哪一个');
+      expect(q.options.map((o) => o.label).sort()).toEqual(['刚烈', '遗计']);
+      // 选【遗计】先 → 先问遗计（不发动）→ 才轮到刚烈的判定
+      const yiji = q.options.find((o) => o.label === '遗计')!;
+      ok(act(state, B, { type: 'chooseOption', optionId: yiji.id }));
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期遗计的询问，实际是 ${q2?.kind}`);
+      expect(q2.title).toContain('遗计');
+      ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+      // 刚烈这才开始判定 → 判定牌被天妒收走
+      expect(state.log.some((e) => e.message.includes('天妒'))).toBe(true);
+      const b = state.players.find((p) => p.seatId === B)!;
+      expect(b.hand.some((c) => c.id === 'j1')).toBe(true);
+    });
+
+    it('只有一个技能会发动 → **不问**（回归：按注册数去问会让满场都是询问）', () => {
+      const state = gz(
+        [
+          // 甲把唯一的牌打出去 → 空手、无装备 → 反馈没牌可拿（条件不成立）
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+          { seatId: B, name: '乙', heroId: 'simayi', deputyHeroId: 'guojia', faction: 'wei', hand: [] },
+        ],
+        A,
+      );
+      hit(state);
+      const q = state.pending;
+      if (q?.kind !== 'choice') throw new Error(`预期遗计的询问，实际是 ${q?.kind}`);
+      expect(q.title, '只有一个会发动 → 不该问顺序').not.toContain('先结算哪一个');
+      expect(q.title).toContain('遗计');
+    });
+
+    it('同层里有钩子没填 applies（预判不了）→ 退回固定排序，也不问', () => {
+      // 乙＝李典（忘隙，已声明）+ SP司马昭（夙智，**没填 applies**）：乙造成伤害后两条钩子都在
+      // afterDamageDealt 上，其中一条预判不了 → 不做自选次序（退回按 priority 固定排）
+      const state = gz(
+        [
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+          {
+            seatId: B,
+            name: '乙',
+            heroId: 'lidian',
+            deputyHeroId: 'sp_simazhao',
+            faction: 'wei',
+            hand: [sha('b1')],
+          },
+        ],
+        B,
+      );
+      ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+      ok(act(state, A, { type: 'pass' })); // 甲不出闪 → 乙造成了伤害 → afterDamageDealt 那两条
+      expect(
+        !!state.pending && state.pending.kind === 'choice' && state.pending.title.includes('先结算哪一个'),
+        '有预判不了的钩子 → 不做自选次序',
+      ).toBe(false);
+    });
+  });
+
   it('天妒能收走**技能判定**的判定牌（夏侯惇+郭嘉的双将）', () => {
     const state = gz(
       [
@@ -20136,7 +20478,14 @@ describe('国战 · 技能判定接入改判时机', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     state.deck = [mk('j1', 'shan', 'spade', 8)];
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤 → 刚烈判定（黑桃）→ 天妒收走
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤
+    // ⚠️ 乙是**双将**（夏侯惇+郭嘉），受伤后【刚烈】【遗计】同时想发动
+    //    → 引擎先问「你先结算哪一个」（同层自选次序，docs §5.143）。这里选【刚烈】先。
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('先结算哪一个')) {
+      const ganglie = state.pending.options.find((o) => o.label.includes('刚烈'));
+      ok(act(state, B, { type: 'chooseOption', optionId: ganglie!.id }));
+    }
+    // 刚烈判定（黑桃）→ 天妒收走
     // 判定牌进了乙手里（天妒）；刚烈对黑桃也生效 → 甲被问选一项
     expect(b.hand.some((c) => c.id === 'j1')).toBe(true);
     expect(state.log.some((e) => e.message.includes('天妒'))).toBe(true);
@@ -21467,6 +21816,76 @@ describe('国战 · 君主将（特性）', () => {
     if (state.pending?.kind === 'choice' && state.pending.title.includes('授锋'))
       ok(act(state, seatId, { type: 'chooseOption', optionId: 'no' }));
   }
+
+  /**
+   * 用户 2026-09 给的官方 FAQ 口径（§5.137）：**同一角色、同一时机，武将技能优先于装备技能**
+   * （宝物也算装备）。这条以前是反的——引擎「固定让宝物先问」，【盟军大纛】被摆在武将技能前面。
+   */
+  it('时机顺序：同一角色同一时机，武将技能先于装备/宝物技能（天香 先问、盟军大纛 后问）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'xiaoqiao' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    // 甲＝小乔（天香是**武将技能**）+ 装备【盟军大纛】（**防具槽**的装备/宝物）
+    seatSet(state, 'A', 'xiaoqiao', 'wu', [mk('h1', 'tao', 'heart'), shan('h2'), shan('h3')]);
+    seatSet(state, 'B', 'guanyu', 'shu', [sha('b1')]);
+    state.players.find((x) => x.seatId === 'A')!.equipment.armor = {
+      id: 'm1',
+      type: 'armor',
+      suit: 'heart',
+      rank: 3,
+      equipName: 'mengjun',
+    } as never;
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b1', targetIds: ['A'] }));
+    ok(act(state, 'A', { type: 'pass' })); // 甲不出闪 → 甲受伤（此时两个「受到伤害时」都在）
+    // ⚠️ 先问的必须是【天香】（武将技能），不是【盟军大纛】（装备/宝物）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('天香');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'no' })); // 天香不发动
+    // 武将技能没发动 → 才轮到装备层：【盟军大纛】这时才被问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('盟军大纛');
+  });
+
+  it('野心家各自是一种势力：两个野心家**不算**同势力（官方口径，§5.137）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'vanilla' },
+        { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        { seatId: 'C', name: '丙', heroId: 'vanilla' },
+        { seatId: 'D', name: '丁', heroId: 'vanilla' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const at = (id: string) => state.players.find((x) => x.seatId === id)!;
+    for (const [id, f] of [
+      ['A', 'ambitionist'],
+      ['B', 'ambitionist'],
+      ['C', 'wei'],
+      ['D', 'wei'],
+    ] as const) {
+      const p = at(id);
+      p.faction = f as never;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    expect(sameKnownFaction(state, at('C'), at('D')), '两个魏 → 同势力').toBe(true);
+    expect(sameKnownFaction(state, at('A'), at('B')), '两个野心家 → **不同**势力').toBe(false);
+    expect(sameKnownFaction(state, at('A'), at('C')), '野心家 vs 魏 → 不同势力').toBe(false);
+  });
 
   it('君威·盟军大纛：受伤时弃两张牌防止此伤害，防具本身也能当其中一张（然后销毁）', () => {
     const state = createGame(
@@ -23167,7 +23586,11 @@ describe('国战 · 界钟会（权计 / 排异）', () => {
     const state = createGame(
       seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
       'TEST',
-      { mode: 'guozhan' },
+      // ⚠️ 必须**钉死随机源**：不传 rng 时牌堆每次随机洗，一旦「乙」恰好摸到另一把同名武器，
+      //    find(c => c.equipName === 'qinggang') 就可能命中**手牌里那把**——于是「权」收的是
+      //    手牌版、装备区那把还在，最后一条断言偶发失败（实测遇到过一次）。
+      //    与 smoke.test.ts 同一条纪律：种子固定 → 结果确定。
+      { mode: 'guozhan', rng: seededRng(20260920) },
     );
     state.draft = null;
     for (const s of seats) {
@@ -23858,12 +24281,10 @@ describe('国战 · 许攸（成略 / 恃才）', () => {
     expect(pick(state, A).hand.length).toBe(before);
   });
 
-  // ⚠️ 仍 skip：锦囊侧的派发已经接上（`endTrickResolution` 的收尾派 `cardUseEnded`、
-  //    锦囊伤害也带 `ctx.cardUseId`），但这张用例还等不到询问——和 §5.118 ① 同一层
-  //    （**收尾覆盖 pending**），等那条修好它应该一起通。【杀】侧是好的（上面两条用例通过）。
-  // ⚠️ 仍 skip：围栏判断有效（一度通过），订阅式唤醒也接好了，但启用后冒烟仍挂 6 条 →
-  //    下一刀要先「测量」哪些收尾被挡、流程走向哪（docs §5.124.3），别再盲改。
-  it.skip('成略：**群体锦囊**（南蛮入侵）也算「目标数大于 1」——整张牌结算结束后才问', () => {
+  // ✅ 已打开：锦囊侧的派发（`endTrickResolution` 收尾派 `cardUseEnded`、锦囊伤害带
+  //    `ctx.cardUseId`）本来就接上了，卡住的只是「收尾覆盖 pending」那一层——
+  //    提交 C（伤害管线定死顺序 + 求桃交槽 + 钩子链不还原已作答的询问）之后它自己就通了。
+  it('成略：**群体锦囊**（南蛮入侵）也算「目标数大于 1」——整张牌结算结束后才问', () => {
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wei', hand: [mk('n1', 'nanman', 'spade')] },
@@ -23874,9 +24295,19 @@ describe('国战 · 许攸（成略 / 恃才）', () => {
     );
     ok(act(state, A, { type: 'playCard', cardId: 'n1', targetIds: [] }));
     // 乙、丙依次响应（都弃权）→ 南蛮整张结算结束 → 才问【成略】
+    // ⚠️ 同前：逐目标的无懈窗口也要跳（否则有无懈的那一局会停在 wuxieQueue 上）
     let guard = 0;
-    while (state.pending?.kind === 'respondTrick' && guard++ < 5) {
-      ok(act(state, state.pending.responderId, { type: 'pass' }));
+    while (guard++ < 20) {
+      const wp = state.pending;
+      if (wp?.kind === 'wuxieQueue') {
+        ok(act(state, wp.askQueue[wp.askIndex]!, { type: 'pass' }));
+        continue;
+      }
+      if (wp?.kind === 'respondTrick') {
+        ok(act(state, wp.responderId, { type: 'pass' }));
+        continue;
+      }
+      break;
     }
     const ask = state.pending;
     if (ask?.kind !== 'choice') throw new Error(`预期【成略】询问，实际是 ${ask?.kind}`);
@@ -24217,12 +24648,21 @@ describe('架构约束：濒死 / 死亡链不碰控制权', () => {
   });
 
   it('每个 enterNearDeath 调用点都显式传了续接（第三个参数）', () => {
+    // 先把注释剥掉：注释里举例写的 `enterNearDeath(...)` 不该被当成调用点
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     const sites: string[] = [];
-    for (let i = src.indexOf('enterNearDeath('); i >= 0; i = src.indexOf('enterNearDeath(', i + 1)) {
-      sites.push(argsAt(src, i + 'enterNearDeath'.length));
+    for (let i = code.indexOf('enterNearDeath('); i >= 0; i = code.indexOf('enterNearDeath(', i + 1)) {
+      sites.push(argsAt(code, i + 'enterNearDeath'.length));
     }
-    expect(sites.length).toBeGreaterThanOrEqual(17); // 16 个调用点 + 1 处函数声明
+    // 提交 C 把 12 个伤害点收口进了 afterDamageSettled，所以调用点比提交 B 时少
+    // （剩：收口函数本身 + 判定阶段闪电 + 铁索 + 君主连坐 + 敕令 + 失去体力 + 上限变化）
+    expect(sites.length).toBeGreaterThanOrEqual(7);
     for (const args of sites) expect(args).toContain('=>');
+  });
+
+  it('伤害点统一从 afterDamageSettled 收口（不在各处自己判濒死）', () => {
+    // 12 个伤害点 + 函数定义本身
+    expect(src.split('afterDamageSettled(').length - 1).toBeGreaterThanOrEqual(10);
   });
 });
 

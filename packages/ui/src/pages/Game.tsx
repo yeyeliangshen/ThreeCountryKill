@@ -37,6 +37,7 @@ import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { useHoverTip } from '../components/HoverTip';
+import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -399,6 +400,18 @@ export function Game() {
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
+  /**
+   * 「生效前的确认」（用户 2026-09-18 要求）：**主动发起的效果**——【杀】【酒】、装装备、武将技能——
+   * 真正发出去之前先摆一句「它到底干什么」，确认了才发。
+   *
+   * 为什么要它：这几类点一下就生效，而牌面说明平时只有**悬停**才看得到（触屏上根本没有悬停）；
+   * 装装备尤其疼（点错就把装备丢进装备区、还顶掉原来那件）。
+   */
+  const [confirmUse, setConfirmUse] = useState<{
+    title: string;
+    desc: string;
+    ok: () => void;
+  } | null>(null);
   // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
   // 武将技能用的是同一套，见 components/HoverTip.tsx
   const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
@@ -485,13 +498,22 @@ export function Game() {
   function beginPlay(card: Card, as?: CardType, asAttribute?: DamageAttribute) {
     const range = targetRange(card, as, shaMaxTargetsFor(card));
     if (range.max === 0) {
-      sendIntent({
-        type: 'playCard',
-        cardId: card.id,
-        ...(as ? { as } : {}),
-        ...(asAttribute ? { asAttribute } : {}),
-        targetIds: [],
-      });
+      const fire = (): void => {
+        sendIntent({
+          type: 'playCard',
+          cardId: card.id,
+          ...(as ? { as } : {}),
+          ...(asAttribute ? { asAttribute } : {}),
+          targetIds: [],
+        });
+      };
+      // 【酒】/装装备这类「不需要目标」的牌原先点一下就发——现在先生效前确认（§5.144）
+      if (needsEffectConfirm(card, as)) {
+        const info = effectConfirmFor(card, as, snapshot?.mode);
+        setConfirmUse({ title: info.title, desc: info.desc, ok: () => { setConfirmUse(null); fire(); } });
+        return;
+      }
+      fire();
       return;
     }
     setSelected({
@@ -606,6 +628,17 @@ export function Game() {
       .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
       .join('、');
     return `确认：对 ${who} 使用【${name}】`;
+  }
+
+  /**
+   * 「选完目标、点确认之前」把效果写出来（用户 2026-09-18 要求）。
+   * 只有【杀】【酒】、装装备这几类显示——其余牌维持在目标上就够清楚了，不打扰。
+   */
+  function selectedEffectDesc(): string {
+    if (!selected) return '';
+    const card = myUsableCards.find((c) => c.id === selected.cardId);
+    if (!card || !needsEffectConfirm(card, selected.as)) return '';
+    return effectConfirmFor(card, selected.as, snapshot?.mode).desc;
   }
 
   /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去 */
@@ -765,6 +798,27 @@ export function Game() {
 
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
   if (snapshot.turn.phase === 'draft') {
+    /**
+     * ⚠️ 选将阶段**也会挂询问**：双势力组合要在此时**由玩家选势力**（引擎给一条 `choice`）。
+     * 这里以前不管 prompt 直接渲染选将面板 —— 那条询问就永远点不到，玩家确认完武将后
+     * 界面一直停在选将页（实测卡死）。所以先把「非选将的询问」摆在最上面，答完再回选将列表。
+     */
+    if (prompt && prompt.kind !== 'pickHero') {
+      return (
+        <div className="draft">
+          <div className="draft-title">选将阶段 · 询问</div>
+          <div className={`prompt prompt-${prompt.kind}`}>
+            <div className="prompt-msg">{prompt.message}</div>
+            {prompt.kind === 'choice' &&
+              prompt.choiceOptions?.map((o) => (
+                <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
+                  {o.label}
+                </button>
+              ))}
+          </div>
+        </div>
+      );
+    }
     const options = prompt?.kind === 'pickHero' ? (prompt.legalHeroIds ?? []) : [];
     // 「君主↔标准版」里白捡的那些（没人拿走才在列表里，见 protocol 的 draftVariants）
     const variants = prompt?.kind === 'pickHero' ? (prompt.draftVariants ?? []) : [];
@@ -789,6 +843,7 @@ export function Game() {
                   // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
                   // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
                   const swapBlocked = isDeputy && !!variant?.isLord;
+                  const art = heroArt(id);
                   return (
                     <div key={dealtId} className="hero-cell">
                       <button
@@ -796,19 +851,23 @@ export function Game() {
                         title={heroTooltip(h)}
                         onClick={() => pickGuozhanHero(id)}
                       >
-                        <div className="hero-name">{h.name}</div>
-                        <div className="hero-meta">
-                          <span className={`hero-faction faction-${h.faction}`}>
-                            {factionLabel(h)}
-                          </span>
-                          <span className="hero-hp">体力 {h.maxHp}</span>
-                        </div>
-                        <div className="hero-skills">
-                          {h.skills.map((sk) => (
-                            <div key={sk.name}>
-                              <b>{sk.name}</b>
-                            </div>
-                          ))}
+                        {/* 原画（没有对应文件的武将自动不显示这一格，见 heroArt.ts） */}
+                        {art && <img className="hero-card-art" src={art} alt="" />}
+                        <div className="hero-card-body">
+                          <div className="hero-name">{h.name}</div>
+                          <div className="hero-meta">
+                            <span className={`hero-faction faction-${h.faction}`}>
+                              {factionLabel(h)}
+                            </span>
+                            <span className="hero-hp">体力 {h.maxHp}</span>
+                          </div>
+                          <div className="hero-skills">
+                            {h.skills.map((sk) => (
+                              <div key={sk.name}>
+                                <b>{sk.name}</b>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                         {isMain && <div className="hero-slot-tag">主将</div>}
                         {isDeputy && <div className="hero-slot-tag">副将</div>}
@@ -861,6 +920,7 @@ export function Game() {
                 const h = getHero(id);
                 if (!h) return null;
                 const isPicked = pickedHero === id;
+                const art = heroArt(id);
                 return (
                   <button
                     key={id}
@@ -868,22 +928,25 @@ export function Game() {
                     title={heroTooltip(h)}
                     onClick={() => setPickedHero(id)}
                   >
-                    <div className="hero-name">
-                      {h.name}
-                      {h.id === 'vanilla' && <small>（白板）</small>}
-                    </div>
-                    <div className="hero-meta">
-                      <span className={`hero-faction faction-${h.faction}`}>
-                        {factionLabel(h)}
-                      </span>
-                      <span className="hero-hp">体力 {h.maxHp}</span>
-                    </div>
-                    <div className="hero-skills">
-                      {h.skills.map((sk) => (
-                        <div key={sk.name}>
-                          <b>{sk.name}</b>
-                        </div>
-                      ))}
+                    {art && <img className="hero-card-art" src={art} alt="" />}
+                    <div className="hero-card-body">
+                      <div className="hero-name">
+                        {h.name}
+                        {h.id === 'vanilla' && <small>（白板）</small>}
+                      </div>
+                      <div className="hero-meta">
+                        <span className={`hero-faction faction-${h.faction}`}>
+                          {factionLabel(h)}
+                        </span>
+                        <span className="hero-hp">体力 {h.maxHp}</span>
+                      </div>
+                      <div className="hero-skills">
+                        {h.skills.map((sk) => (
+                          <div key={sk.name}>
+                            <b>{sk.name}</b>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </button>
                 );
@@ -1371,7 +1434,7 @@ export function Game() {
               )}
 
               {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
-              {prompt.kind === 'play' && !skillMode && !selected && (
+              {prompt.kind === 'play' && !skillMode && !selected && !confirmUse && (
                 <>
                   <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
                     结束出牌
@@ -1400,6 +1463,9 @@ export function Game() {
                       skillMode.targetIds.length < skillMode.skill.minTargets &&
                       ' · 请点角色'}
                   </span>
+                  {skillMode.skill.desc && (
+                    <span className="use-effect-desc">{skillMode.skill.desc}</span>
+                  )}
                   <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
                     确认技能
                   </button>
@@ -1471,10 +1537,29 @@ export function Game() {
                 </>
               )}
 
+              {/* 生效前的确认：主动发起的效果先说明再发（【杀】【酒】/装装备，见 effectConfirm.ts） */}
+              {confirmUse && prompt.kind === 'play' && (
+                <div className="use-confirm">
+                  <div className="use-confirm-title">{confirmUse.title}</div>
+                  <div className="use-confirm-desc">{confirmUse.desc}</div>
+                  <div className="use-confirm-actions">
+                    <button className="primary" onClick={confirmUse.ok}>
+                      确认使用
+                    </button>
+                    <button className="ghost" onClick={() => setConfirmUse(null)}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* 选目标提示 */}
               {selected && prompt.kind === 'play' && (
                 <>
                   <span className="hint">{selectedHint()}</span>
+                  {selectedEffectDesc() && (
+                    <span className="use-effect-desc">{selectedEffectDesc()}</span>
+                  )}
                   <button
                     className="primary"
                     disabled={!selectedCanConfirm()}
