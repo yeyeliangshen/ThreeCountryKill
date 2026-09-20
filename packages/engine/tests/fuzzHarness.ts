@@ -84,6 +84,8 @@ export function allCardIds(state: GameState): string[] {
     for (const c of p.han) push(c);
     for (const c of p.yi) push(c);
     for (const c of p.quan) push(c);
+    // 国战【空城】第二段的暂存牌（0 手牌诸葛回合外被「交给」的牌，扣在武将牌上）
+    for (const c of p.kongcheng) push(c);
   }
   // 判定阶段「在飞」的那叠牌（判定牌还没归位，只在这个状态里）
   if (state.judgmentInFlight) for (const c of state.judgmentInFlight.cards) push(c);
@@ -123,6 +125,7 @@ export function cardLocations(state: GameState, id: string): string[] {
     p.judgment.forEach((c, i) => chk(c, `${p.seatId}.judg[${i}]`));
     p.tian.forEach((c, i) => chk(c, `${p.seatId}.tian[${i}]`));
     p.qianhuan.forEach((c, i) => chk(c, `${p.seatId}.qh[${i}]`));
+    p.kongcheng.forEach((c, i) => chk(c, `${p.seatId}.kongcheng[${i}]`));
   }
   return out;
 }

@@ -4658,7 +4658,11 @@ describe('选牌原语与观星（阶段 2.2）', () => {
       // 关键：候选牌不在手牌里（是牌堆顶），所以提示必须下发完整牌面
       expect(state.pending.cards.map((c) => c.id)).toEqual(['d4', 'd3']);
     }
-    // 第一步就一张不选＝都不动（旧行为保留），不会再问第二步
+    // 第一步一张不选＝没人放回牌堆顶；第二步也一张不选＝其余的按原序留在牌堆顶（＝都不动）。
+    // ⚠️ 两步都要问：第一步「一张不选」**不再**直接收工——那正是「全部放底」的表达方式
+    //    （第二步全选即可，见 tests/zhugeliang.test.ts）。
+    ok(act(state, B, { type: 'pickCards', cardIds: [] }));
+    expect(state.pending?.kind).toBe('pickCards');
     ok(act(state, B, { type: 'pickCards', cardIds: [] }));
     const b = state.players.find((p) => p.seatId === B)!;
     // 牌堆没动，摸牌阶段拿走原来的顶两张

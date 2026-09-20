@@ -122,7 +122,7 @@ import {
   type Hero,
   type SkillApi,
 } from './heroes';
-import type { HookContext, HookRegistration, Timing } from './timing';
+import type { CardMoveReason, HookContext, HookRegistration, Timing } from './timing';
 
 // —— 对外 API ——
 export interface SeatSetup {
@@ -3389,6 +3389,20 @@ function tryQinglongBlade(
         (st2, p2, chosen) => {
           const card = chosen[0];
           if (!card) {
+            onDecline();
+            return;
+          }
+          // ⚠️ 再使用的这张【杀】是**新的一次使用**，目标要**重新判合法性**——老目标是
+          //    「上一张【杀】指定过」的，这次不继承。典型就是空城：诸葛亮用最后一张【闪】
+          //    挡掉上一张【杀】之后手牌归零，青龙偃月刀**不能**再对他出杀（用户 2026-09-21
+          //    给的规格里专门拿这个当例子）。`startAttack` 自己不校验目标（常规路径由
+          //    playSha 先校验过），所以这里补一次。
+          if (heroBlocksBeingTarget(st2, target, card, p2)) {
+            pushLog(
+              st2,
+              'equip',
+              `${target.name} 不能成为【杀】的目标（【空城】那类锁定技），【青龙偃月刀】不能再出杀。`,
+            );
             onDecline();
             return;
           }
@@ -6982,7 +6996,8 @@ function resolveGuoAnJianBang(state: GameState, ctx: TrickContext): void {
             }
             received[to.seatId] = (received[to.seatId] ?? 0) + 1;
             const api2 = makeSkillApi(st2, { actor: p2.seatId });
-            api2.transferCard(p2.seatId, card, to.seatId, () => {
+            // 固国安邦的文本就是「交给」（吴势力锦囊）
+            api2.giveCard(p2.seatId, card, to.seatId, () => {
               pushLog(st2, 'trick', `${p2.name} 因【固国安邦】将一张手牌交给 ${to.name}。`, {
                 seat: to.seatId,
               });
@@ -10116,6 +10131,123 @@ export function prelitableSkills(
 }
 
 /**
+ * 「把某人的一张牌搬给另一个人」的**唯一落点**（`api.transferCard` / `api.giveCard` 共用）。
+ *
+ * 搬运机制两种语义完全一样，区别只在 `reason`：
+ * - `gain`：获得（反馈/突袭/顺手牵羊/五谷…）——牌进手牌；
+ * - `give`：**交给**（仁德/遗计/反间/恩怨/好施…）——0 手牌的国战空城诸葛在自己回合外
+ *   被交给牌时，牌**改为置于其武将牌上**（`Player.kongcheng`），所以空城照旧成立。
+ *
+ * ⚠️ 这是 `docs/guozhan-roster.md` §5.153 里 #9（统一的牌移动语义）的第一块落地：
+ *    目前只有「交给 / 获得」这一对语义进了公共搬运，`steal` / `draw` / `distribute`
+ *    还没有各自的落点差异，技能文本里写「交给」的一律用 `giveCard`。
+ */
+function moveCardBetweenPlayers(
+  state: GameState,
+  fromSeatId: string,
+  card: Card,
+  toSeatId: string,
+  after: (() => void) | undefined,
+  reason: CardMoveReason,
+  actorId?: string,
+): void {
+  const from = getPlayer(state, fromSeatId);
+  const to = getPlayer(state, toSeatId);
+  const done = after ?? (() => {});
+  if (!from || !to) {
+    done();
+    return;
+  }
+  /** 落点：交给 0 手牌空城诸葛的牌改置于其武将牌上，其余照常进手牌 */
+  const land = (): void => {
+    if (shouldStashGivenCard(state, to, reason)) {
+      to.kongcheng.push(card);
+      pushLog(
+        state,
+        'skill',
+        `【空城】：${to.name} 没有手牌，${from.name} 交给他的【${cardLabel(card)}】置于其武将牌上。`,
+        { seat: to.seatId },
+      );
+      done();
+      return;
+    }
+    to.hand.push(card);
+    done();
+  };
+  const eq = from.equipment;
+  for (const slot of EQUIP_SLOTS) {
+    if (eq[slot]?.id === card.id) {
+      // 吴景·风扬：异势力角色不能**获得**同队列吴景队友的装备牌
+      if (fengyangBlocksEquip(state, actorId ?? toSeatId, from, card)) {
+        done();
+        return;
+      }
+      eq[slot] = null;
+      // 失去装备要触发枭姬那类技能，所以不能直接 splice
+      const landEquip = (): void => {
+        land();
+      };
+      fireEquipLost(state, from, card, landEquip);
+      return;
+    }
+  }
+  // 判定区（延时锦囊）：也要从原处**摘掉**再放手里。
+  // ⚠️ 以前这里没有这一支，于是「获得其装备/判定区一张牌」那类技能（马谡·制蛮、
+  //    反馈…）拿走判定区的【闪电】之后，牌**同时在**新主人手里和原主人的判定区
+  //    ——模糊测试抓到的重复牌就是这么来的（一张牌同时存在于两个区域）。
+  const ji = from.judgment.findIndex((c) => c.id === card.id);
+  if (ji >= 0) {
+    from.judgment.splice(ji, 1);
+    if (reason === 'give') {
+      land();
+      return;
+    }
+    to.hand.push(card);
+    pushLog(state, 'skill', `${from.name} 判定区的【${cardLabel(card)}】被 ${to.name} 获得。`, {
+      seat: to.seatId,
+      action: 'gain',
+    });
+    done();
+    return;
+  }
+  // 「田」（邓艾·屯田放在**武将牌上**的牌）：【资粮】要把一张「田」交给同势力角色，
+  // 所以这里也认这个牌源（引擎里的牌源清单：手牌 / 装备区 / 判定区 / 田）。
+  const ti = from.tian.findIndex((c) => c.id === card.id);
+  if (ti >= 0) {
+    from.tian.splice(ti, 1);
+    land();
+    return;
+  }
+  // ⚠️ 询问是**跨步**的：选牌时这张牌还在，回答时可能已被别的效果搬走/弃掉。
+  //    取不到就不能往目标手里再推一份（否则同一张牌同时在两个区域——模糊测试抓过这类）。
+  //    这里是所有「获得他人一张牌」技能的公共落点（反馈/恩怨/授锋/制蛮/伪帝/附敌/问计/眩惑…）。
+  if (!removeCard(from.hand, card.id)) {
+    done();
+    return;
+  }
+  land();
+}
+
+/**
+ * 国战【空城】第二段的判据：这张牌是不是要**改置于武将牌上**而不是进手牌。
+ *
+ * 官方文本：「若你没有手牌，当**其他角色**于**你的回合外**「交给」你牌时，改为把这些牌
+ * 置于你的武将牌上；然后在你的下个摸牌阶段开始时获得这些牌。」
+ *
+ * 四个条件缺一不可（用户 2026-09-21 给的规格里反复强调过）：**交给**语义（不是获得/摸牌）、
+ * 你**没有手牌**（有手牌就不算空城状态）、当前**不是你的回合**、你有这条技能。
+ * ⚠️ 摸牌 / 五谷丰登 / 顺手牵羊**不能**被替换——否则「用五谷破空城」这条经典解法就没了。
+ */
+function shouldStashGivenCard(state: GameState, to: Player, reason: CardMoveReason): boolean {
+  if (state.mode !== 'guozhan') return false;
+  if (reason !== 'give') return false;
+  if (to.hand.length > 0) return false;
+  if (!effectiveHeroes(state, to).some((h) => h.stashGivenCards === true)) return false;
+  // 「于你的回合外」：当前回合者不是你（自己的回合里别人交给你的牌照常进手牌）
+  return state.seatOrder[state.turn.seatIndex] !== to.seatId;
+}
+
+/**
  * 构造注入给技能与钩子的引擎内部 API。
  *
  * `resumeTo`：伤害结算完之后把控制权还给谁。
@@ -10693,18 +10825,32 @@ function makeSkillApi(
       if (state.pending !== null || state.gameOver) return;
       resumePlay(state, seatId);
     },
-    giveDiscardedTo: (cards, targetSeatId, skillName) => {
+    giveDiscardedTo: (cards, targetSeatId, skillName, reason) => {
       const target = getPlayer(state, targetSeatId);
       if (!target) return;
       const got: string[] = [];
+      let stashed = 0;
       for (const c of cards) {
         const i = state.discard.findIndex((x) => x.id === c.id);
         if (i < 0) continue;
         state.discard.splice(i, 1);
-        target.hand.push(c);
+        // 交给 0 手牌的国战空城诸葛：改置于其武将牌上（礼让那种「交给」才走这一支）
+        if (shouldStashGivenCard(state, target, reason ?? 'gain')) {
+          target.kongcheng.push(c);
+          stashed++;
+        } else {
+          target.hand.push(c);
+        }
         got.push(cardLabel(c));
       }
-      if (got.length > 0) {
+      if (stashed > 0 && stashed === got.length) {
+        pushLog(
+          state,
+          'skill',
+          `【空城】：${target.name} 没有手牌，${got.join('、')} 置于其武将牌上。`,
+          { seat: target.seatId },
+        );
+      } else if (got.length > 0) {
         pushLog(state, 'skill', `${target.name} 因【${skillName ?? '礼让'}】获得了 ${got.join('、')}。`, {
           seat: target.seatId,
           action: 'gain',
@@ -10734,54 +10880,10 @@ function makeSkillApi(
         pushLog(state, 'chained', `${changed.join('、')} ${chained ? '被横置' : '被重置'}。`);
       }
     },
-    transferCard: (fromSeatId, card, toSeatId, after) => {
-      const from = getPlayer(state, fromSeatId);
-      const to = getPlayer(state, toSeatId);
-      const done = after ?? (() => {});
-      if (!from || !to) {
-        done();
-        return;
-      }
-      const eq = from.equipment;
-      for (const slot of EQUIP_SLOTS) {
-        if (eq[slot]?.id === card.id) {
-          // 吴景·风扬：异势力角色不能**获得**同队列吴景队友的装备牌
-          if (fengyangBlocksEquip(state, opts?.actor ?? toSeatId, from, card)) {
-            done();
-            return;
-          }
-          eq[slot] = null;
-          to.hand.push(card);
-          // 失去装备要触发枭姬那类技能，所以不能直接 splice
-          fireEquipLost(state, from, card, done);
-          return;
-        }
-      }
-      // 判定区（延时锦囊）：也要从原处**摘掉**再放手里。
-      // ⚠️ 以前这里没有这一支，于是「获得其装备/判定区一张牌」那类技能（马谡·制蛮、
-      //    反馈…）拿走判定区的【闪电】之后，牌**同时在**新主人手里和原主人的判定区
-      //    ——模糊测试抓到的重复牌就是这么来的（一张牌同时存在于两个区域）。
-      const ji = from.judgment.findIndex((c) => c.id === card.id);
-      if (ji >= 0) {
-        from.judgment.splice(ji, 1);
-        to.hand.push(card);
-        pushLog(state, 'skill', `${from.name} 判定区的【${cardLabel(card)}】被 ${to.name} 获得。`, {
-          seat: to.seatId,
-          action: 'gain',
-        });
-        done();
-        return;
-      }
-      // ⚠️ 询问是**跨步**的：选牌时这张牌还在，回答时可能已被别的效果搬走/弃掉。
-      //    取不到就不能往目标手里再推一份（否则同一张牌同时在两个区域——模糊测试抓过这类）。
-      //    这里是所有「获得他人一张牌」技能的公共落点（反馈/恩怨/授锋/制蛮/伪帝/附敌/问计/眩惑…）。
-      if (!removeCard(from.hand, card.id)) {
-        done();
-        return;
-      }
-      to.hand.push(card);
-      done();
-    },
+    transferCard: (fromSeatId, card, toSeatId, after) =>
+      moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'gain', opts?.actor),
+    giveCard: (fromSeatId, card, toSeatId, after) =>
+      moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'give', opts?.actor),
     dealDamage: (target, damage, sourceId, attribute, after) => {
       const attack: AttackContext = {
         sourceId,
@@ -11054,6 +11156,7 @@ export function createGame(
     removedHeroIds: [],
     tempGrantedSkills: [],
     tian: [],
+    kongcheng: [],
     qianhuan: [],
     hun: [],
     han: [],

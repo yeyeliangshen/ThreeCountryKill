@@ -205,6 +205,16 @@ export interface Hero {
    * 引擎在指定目标时校验，见 heroBlocksBeingTarget。
    */
   cannotBeTargetOf?: (state: GameState, self: Player, card: Card, source: Player) => boolean;
+  /**
+   * **国战**【空城】的第二段（与 `cannotBeTargetOf` 合起来才是完整的国战空城）：
+   * 「若你没有手牌，当其他角色于你的回合外交给你牌时，改为把这些牌置于你的武将牌上；
+   *   然后在你的下个摸牌阶段开始时获得这些牌。」
+   *
+   * 引擎在 `moveCardBetweenPlayers` 的落点处读它（见 engine 的 shouldStashGivenCard）：
+   * **只拦「交给」语义**（`api.giveCard`），摸牌/五谷丰登/获得他人牌都照常进手牌。
+   * 到账时机由这名角色的 drawPhase 钩子负责（摸牌阶段被跳过时顺延——没有那个时机）。
+   */
+  stashGivenCards?: boolean;
   /** 锁定技：使用锦囊牌无距离限制（黄月英·奇才） */
   ignoresTrickDistance?: boolean;
   /**
@@ -1504,14 +1514,15 @@ const ZHOUYU: Hero = {
         execute: (state, player, intent, api) => {
           const ids = intent.cardIds ?? [];
           if (ids.length !== 1) return '请选择一张手牌展示';
-          const card = removeCard(player.hand, ids[0]!);
+          const card = player.hand.find((x) => x.id === ids[0]);
           if (!card) return '找不到手牌';
           const targetId = intent.targetIds[0];
           if (!targetId) return '请选择一名其他角色';
           const target = getPlayer(state, targetId);
           if (!target || !target.alive) return '目标无效';
           if (target.seatId === player.seatId) return '不能选择自己';
-          target.hand.push(card);
+          // 「交给」走 giveCard：交给 0 手牌国战空城诸葛时改置于其武将牌上
+          api.giveCard(player.seatId, card, target.seatId);
           pushLog(
             state,
             'skill',
@@ -1783,13 +1794,25 @@ const HUANGYUEYING: Hero = {
 };
 
 /**
- * 观星：观看牌堆顶 X 张（X = 存活角色数，至多 5），把其中若干张置于牌堆底。
+ * 观星：观看牌堆顶 X 张（X = 存活角色数，至多 5），把这 X 张**以任意顺序**置于牌堆顶或牌堆底。
  *
- * 官方是「以**任意顺序**置于牌堆顶或牌堆底」——本实现只让玩家选「哪些沉底」，
- * 留在牌堆顶的保持原序（简化）。顺序自由需要带排序的选牌界面。
+ * 两步问完（用户 2026-09-21 给的规格：「也可以全部放顶、全部放底，或者任意拆分」）：
+ * ① 先选「置于牌堆**顶**」的（按点击顺序＝从最上面往下数）
+ * ② 再从**剩下的**里选「置于牌堆**底**」的（按点击顺序＝沉底后先被抽到的先点）
+ * 两处都是「一张不选＝这部分什么都不动」：
+ * - ① 一张不选 + ② 全选 = **全部放底**（任意顺序）；
+ * - ① 全选 = **全部放顶**（任意顺序）；
+ * - ①②都不选 = 全按原序留在牌堆顶（＝什么都不动）。
+ *
+ * ⚠️ 以前 ① 一张不选就直接收工（当作「都不动」），于是**「全部放底」根本不可达**
+ * （要表达「一张都不留在顶」就必须让 ① 空——而 ① 空又正好是那个收工分支）。
  *
  * 牌堆的「顶」是数组末尾（drawOne 从末尾 pop），所以：
  * 留在顶上的要**倒序**压回去，沉底的要 unshift 到数组最前面（最早被抽到时才会最后抽到）。
+ *
+ * 牌堆不够 X 张时**不是**「只看剩下的几张」就不管了：`drawOne` 在牌堆空时会立刻把弃牌堆
+ * 重洗成新摸牌堆（势力锦囊四张也正是在这第一次重洗时洗进来），所以跨越重洗继续观星
+ * 本来就是对的——用户 2026-09-21 明确要求按这个口径（FAQ：牌堆耗尽立即重洗，然后继续结算）。
  */
 function guanxing(state: GameState, player: Player, api: SkillApi): void {
   const count = Math.min(5, alivePlayers(state).length);
@@ -1819,38 +1842,43 @@ function guanxing(state: GameState, player: Player, api: SkillApi): void {
   api.askPickCards(
     state,
     player.seatId,
-    `【观星】：观看牌堆顶 ${top.length} 张。选择要置于牌堆**顶**的牌（按点击顺序＝从最上面往下数；一张不选＝都不动，全部按原序留在牌堆顶）`,
+    `【观星】：观看牌堆顶 ${top.length} 张。选择要置于牌堆**顶**的牌（按点击顺序＝从最上面往下数）`,
     top,
     0,
     top.length,
     (st, p, topPicked) => {
-      // 「一张不选」＝什么都不动（旧行为）：全部按原序留在牌堆顶，也不再问第二步。
-      // 想把某几张放回牌堆底，就在第一步里把**其余的**挑出来（挑出来的按点击顺序置顶）。
-      if (topPicked.length === 0) {
-        place(st, p, top, []);
-        return;
-      }
       const topIds = new Set(topPicked.map((c) => c.id));
+      // ⚠️ ① 一张不选**不能**直接收工：那正是「全部放底」的表达方式（接着在第二步全选）。
       const rest = top.filter((c) => !topIds.has(c.id));
       if (rest.length === 0) {
         place(st, p, topPicked, []);
         return;
       }
-      // 第二步：剩下的这些，哪些沉底、按什么顺序（先被抽到的先点）
+      // 第一步一张不选＝没人留顶：这时第二步才是「全部放底」的表达方式，所以它的「一张不选」
+      // 只能理解成**什么都不动**（下面按 nothingOnTop 分别给语义，两句话都写在提示里）
+      const nothingOnTop = topPicked.length === 0;
+      // 第二步：剩下的这些（第一步一张没选时就是全部 X 张），哪些沉底、按什么顺序
       api.askPickCards(
         st,
         p.seatId,
-        `【观星】：剩下的 ${rest.length} 张里，选择要置于牌堆**底**的牌（按点击顺序＝沉底后先抽到的先点；一张不选＝全部按原序沉底）`,
+        nothingOnTop
+          ? `【观星】：选择要置于牌堆**底**的牌（按点击顺序＝沉底后先抽到的先点；一张不选＝都不动，全部按原序留在牌堆顶）`
+          : `【观星】：剩下的 ${rest.length} 张里，选择要置于牌堆**底**的牌（按点击顺序＝沉底后先抽到的先点；一张不选＝其余全部按原序沉底）`,
         rest,
         0,
         rest.length,
         (st2, p2, bottomPicked) => {
+          const bottomIds = new Set(bottomPicked.map((c) => c.id));
           // ⚠️ 「一张不选」时 bottom = rest、middle 必须为**空**——否则同一张牌会被同时
           // 放进「顶上那批」和「沉底那批」两个数组里（牌堆里出现两张同样的牌！）
-          const bottomIds = new Set(bottomPicked.map((c) => c.id));
           const middle = bottomPicked.length > 0 ? rest.filter((c) => !bottomIds.has(c.id)) : [];
-          const bottom = bottomPicked.length > 0 ? bottomPicked : rest;
-          place(st2, p2, [...topPicked, ...middle], bottom);
+          // 「一张不选」的含义分两种（都写在提示里）：
+          // - 第一步一张没选 → 都不动：X 张全部按原序放回牌堆顶（它们已经被抽出来了，一张都不能丢）
+          // - 第一步选了牌 → 其余的（rest）全部沉底
+          const bottom = bottomPicked.length > 0 ? bottomPicked : nothingOnTop ? [] : rest;
+          const topPile =
+            nothingOnTop && bottomPicked.length === 0 ? rest : [...topPicked, ...middle];
+          place(st2, p2, topPile, bottom);
         },
         // 看牌堆顶是私密信息：日志只记张数，不记牌名
         { secret: true },
@@ -1981,25 +2009,60 @@ const ZHUGELIANG: Hero = {
   faction: 'shu',
   maxHp: 3,
   gender: 'male',
-  combos: ['huangyueying'],
-  // 空城：没有手牌时，不能被【杀】或【决斗】指定为目标
+  // 珠联璧合（国战）：黄月英、姜维、蒋琬费祎（用户 2026-09-21 核对）
+  combos: ['huangyueying', 'jiangwei', 'jiangwan_feyi'],
+  // 空城（第一段）：没有手牌时，不能被【杀】或【决斗】指定为目标。
+  // ⚠️ 检查时机是**成为目标时**（引擎在指定目标的校验里读它），**不是**「随时检查」——
+  //    已经指定完目标、结算中才变成 0 手牌的话，这次【杀】/【决斗】**不会**被追溯取消
+  //    （用户 2026-09-21 给的规格里专门点过这条；青龙偃月刀再出杀算**新的**一次使用，
+  //    那时要重新判目标合法性，见 engine 的 tryQinglongBlade）。
   cannotBeTargetOf: (_state, self, card) =>
     self.hand.length === 0 && (card.type === 'sha' || card.type === 'juedou'),
   lockedFields: ['cannotBeTargetOf'],
-  // 观星：准备阶段，你可以观看牌堆顶 X 张，把其中若干张置于牌堆底
+  // 空城（第二段，**国战**）：0 手牌时，其他角色于你回合外交给你的牌**不进手牌**，
+  // 改为置于你的武将牌上（`Player.kongcheng`，判据见 engine.shouldStashGivenCard），
+  // 到你的下一个摸牌阶段开始时一次性获得。
+  stashGivenCards: true,
+  // 观星：准备阶段，你可以观看牌堆顶 X 张，把这些牌以任意顺序置于牌堆顶或牌堆底
   hooks: [
     {
       timing: 'turnStart',
       skillId: '观星',
       handler: (ctx) => askGuanxing(ctx),
     },
+    {
+      timing: 'drawPhase',
+      skillId: '空城',
+      handler: (ctx) => {
+        // 国战空城第二段的到账时机：**摸牌阶段开始时**先拿到暂存牌，再照常摸牌。
+        // 只有国战有第二段；身份局的空城打完「不能被指定」就结束了。
+        if (ctx.state.mode !== 'guozhan') return;
+        const me = ctx.player;
+        // 摸牌阶段被跳过（兵粮寸断/神速/双雄）＝**没有「摸牌阶段开始时」这个时机**，
+        // 暂存牌顺延到下一个真正的摸牌阶段（用户 2026-09-21 明确要求）。
+        if (me.flags.skipDraw) return;
+        if (me.kongcheng.length === 0) return;
+        // 锁定技，不问：一次性全部获得（按放置顺序）
+        const gained = me.kongcheng.splice(0, me.kongcheng.length);
+        for (const c of gained) me.hand.push(c);
+        pushLog(
+          ctx.state,
+          'skill',
+          `${me.name} 的【空城】暂存牌 ${gained.length} 张于摸牌阶段开始时获得。`,
+          { seat: me.seatId },
+        );
+      },
+    },
   ],
   skills: [
     {
       name: '观星',
-      desc: '准备阶段，你可以观看牌堆顶 X 张牌（X 为存活角色数且至多为 5），然后将其中任意张置于牌堆底。（简化：留在牌堆顶的保持原序，不做任意排序）',
+      desc: '准备阶段，你可以观看牌堆顶 X 张牌（X 为存活角色数且至多为 5），然后将这些牌以任意顺序置于牌堆顶或牌堆底。',
     },
-    { name: '空城', desc: '锁定技，若你没有手牌，你不能成为【杀】或【决斗】的目标。' },
+    {
+      name: '空城',
+      desc: '锁定技，若你没有手牌：①你不能成为【杀】或【决斗】的目标（国战：成为目标时取消之，只影响成为目标的那一刻）；②（国战）当其他角色于你的回合外交给你牌时，改为把这些牌置于你的武将牌上，然后于你的下个摸牌阶段开始时获得之。',
+    },
   ],
 };
 
@@ -2932,6 +2995,8 @@ const JIANGWAN_FEYI: Hero = {
   maxHp: 3,
   gender: 'male',
   modes: ['guozhan'],
+  // 珠联璧合：诸葛亮（用户 2026-09-21 核对）。⚠️ 其余对象未核，只登记已确认的这一个。
+  combos: ['zhugeliang'],
   hooks: [
     {
       timing: 'discardPhase',
@@ -3530,10 +3595,11 @@ const DENGAI: Hero = {
             if (picked !== 'yes') return;
             const card = p.tian[0];
             if (!card) return;
-            p.tian.shift();
             const t = getPlayer(st, victim.seatId);
             if (!t) return;
-            t.hand.push(card);
+            // 「交给」走 giveCard（引擎的牌源里含「田」这个特殊区域）：
+            // 交给 0 手牌国战空城诸葛时会改置于其武将牌上
+            ctx.api.giveCard(p.seatId, card, t.seatId);
             pushLog(st, 'skill', `${p.name} 发动【资粮】，把一张「田」交给 ${t.name}。`);
           },
         );
@@ -4454,7 +4520,7 @@ function askMidao(ctx: HookContext): void {
         (st2, u2, chosen) => {
           const give = chosen[0];
           if (!give) return;
-          ctx.api.transferCard(u2.seatId, give, me.seatId, () => {
+          ctx.api.giveCard(u2.seatId, give, me.seatId, () => {
             pushLog(st2, 'skill', `${u2.name} 因【米道】交给 ${me.name} 【${cardLabel(give)}】。`, {
               seat: u2.seatId,
             });
@@ -5116,7 +5182,7 @@ function askShoufeng(ctx: HookContext): void {
             return;
           }
           // 走 API 而不是自己 splice：交出去的可能是装备，要触发失去装备那类技能
-          ctx.api.transferCard(p2.seatId, give, user.seatId, () => {
+          ctx.api.giveCard(p2.seatId, give, user.seatId, () => {
             pushLog(
               st2,
               'skill',
@@ -5777,8 +5843,8 @@ const CUIYAN_MAOJIE: Hero = {
                 (st3, p3, targetId) => {
                   const target = getPlayer(st3, targetId);
                   if (!target) return;
-                  removeCard(p3.hand, card.id);
-                  target.hand.push(card);
+                  // 「交给」走 giveCard（空城：国战 0 手牌诸葛的武将牌暂存）
+                  ctx.api.giveCard(p3.seatId, card, target.seatId);
                   pushLog(
                     st3,
                     'skill',
@@ -5884,10 +5950,7 @@ function caoyanSwapBack(state: GameState, me: Player, target: Player, api: Skill
         count,
         count,
         (st2, t2, chosen) => {
-          for (const c of chosen) {
-            removeCard(t2.hand, c.id);
-            me.hand.push(c);
-          }
+          for (const c of chosen) api.giveCard(t2.seatId, c, me.seatId);
           pushLog(st2, 'skill', `${t2.name} 交给 ${me.name} ${chosen.length} 张牌。`, {
             seat: t2.seatId,
           });
@@ -5955,8 +6018,8 @@ const YUJIN: Hero = {
                   (st3, p3, targetId) => {
                     const target = getPlayer(st3, targetId);
                     if (!target) return;
-                    removeCard(p3.hand, card.id);
-                    target.hand.push(card);
+                    // 「交给」走 giveCard（空城：国战 0 手牌诸葛的武将牌暂存）
+                    ctx.api.giveCard(p3.seatId, card, target.seatId);
                     pushLog(
                       st3,
                       'skill',
@@ -6102,7 +6165,7 @@ const FAZHENG: Hero = {
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
-                ctx.api.transferCard(p2.seatId, card, me.seatId, () => {
+                ctx.api.giveCard(p2.seatId, card, me.seatId, () => {
                   pushLog(st2, 'skill', `${p2.name} 因【恩怨】交给 ${me.name} 一张手牌。`);
                 });
               },
@@ -6249,7 +6312,7 @@ const XUANHUO: ActiveSkill = {
           const card = chosen[0];
           if (!card) return;
           // 走 transferCard 而不是自己 splice：统一由它处理「牌的去向」与日志时机
-          api.transferCard(p.seatId, card, donor.seatId, () => {
+          api.giveCard(p.seatId, card, donor.seatId, () => {
             pushLog(st, 'skill', `${p.name} 发动【眩惑】，交给 ${donor.name} 一张手牌。`);
             discardStep();
           });
@@ -6657,7 +6720,7 @@ const YUANSHU: Hero = {
                   return;
                 }
                 // 走 transferCard：还装备区的牌会触发枭姬那类「失去装备」的技能
-                api.transferCard(me.seatId, c, t.seatId, () => giveStep(i + 1));
+                api.giveCard(me.seatId, c, t.seatId, () => giveStep(i + 1));
               };
               giveStep(0);
             },
@@ -7722,7 +7785,7 @@ const ZHANGXIU: Hero = {
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
-                ctx.api.transferCard(p2.seatId, card, source.seatId, () => {
+                ctx.api.giveCard(p2.seatId, card, source.seatId, () => {
                   pushLog(st2, 'skill', `${p2.name} 发动【附敌】，交给 ${source.name} 一张手牌。`);
                   // 牌交出去之后**重算**候选（手牌变化可能影响不到体力，但保持与当下状态一致）
                   const list = fudiTargets(st2, p2, source);
@@ -9891,10 +9954,7 @@ const LUSU: Hero = {
                 half,
                 half,
                 (st2, p2, picked2) => {
-                  for (const c of picked2) {
-                    removeCard(p2.hand, c.id);
-                    target.hand.push(c);
-                  }
+                  for (const c of picked2) ctx.api.giveCard(p2.seatId, c, target.seatId);
                   pushLog(
                     st2,
                     'skill',
@@ -10326,11 +10386,13 @@ const LIUBEI: Hero = {
         if (!target || !target.alive) return '目标无效';
         const given: Card[] = [];
         for (const id of ids) {
-          const c = removeCard(player.hand, id);
+          const c = player.hand.find((x) => x.id === id);
           if (!c) return `找不到手牌 ${id}`;
           given.push(c);
         }
-        for (const c of given) target.hand.push(c);
+        // 「交给」走 api.giveCard（不是自己 hand.push）：国战【空城】第二段要按这个语义
+        // 把牌改置于 0 手牌诸葛的武将牌上——用户 2026-09-21 点名的两个典型之一。
+        for (const c of given) api.giveCard(player.seatId, c, target.seatId);
         pushLog(
           state,
           'skill',
@@ -11260,10 +11322,8 @@ const GUOJIA: Hero = {
                   (st3, p3, targetId) => {
                     const target = getPlayer(st3, targetId);
                     if (!target) return;
-                    for (const c of given) {
-                      removeCard(p3.hand, c.id);
-                      target.hand.push(c);
-                    }
+                    // 同上：交给走 giveCard（遗计也是用户点名的那两个之一）
+                    for (const c of given) ctx.api.giveCard(p3.seatId, c, target.seatId);
                     pushLog(
                       st3,
                       'skill',
@@ -11400,9 +11460,10 @@ const DONGZHAO: Hero = {
         if (!target || !target.alive) return '目标无效';
         if (!state.damagedThisPhase.includes(targetId))
           return '该角色在当前出牌阶段没有受到过伤害';
-        const card = removeCard(player.hand, ids[0]!);
+        const card = player.hand.find((c) => c.id === ids[0]);
         if (!card) return '找不到手牌';
-        target.hand.push(card);
+        // 「交给」走 giveCard（空城：国战 0 手牌诸葛的武将牌暂存）
+        api.giveCard(player.seatId, card, targetId);
         pushLog(
           state,
           'skill',
@@ -11507,6 +11568,9 @@ const JIANGWEI: Hero = {
   pack: 'zhen', // zhen 包：该包开关关闭时不进选将池
   maxHp: 4,
   gender: 'male',
+  // 珠联璧合：诸葛亮（用户 2026-09-21 核对）。⚠️ 姜维的**其余**珠联璧合对象还没核到，
+  // 这里只登记已确认的那一个（界钟会/刘禅那侧各自列了姜维，反向查得到）。
+  combos: ['zhugeliang'],
   // 挑衅（已核国战文本）：出牌阶段限一次，你可以令一名**攻击范围内包含你**的角色对你
   // 使用一张【杀】，否则你弃置其一张牌。
   //
@@ -12498,7 +12562,8 @@ const KONGRONG: Hero = {
               '【礼让】：交给谁？',
               others.map((p) => ({ id: p.seatId, label: p.name })),
               (st2, _p2, targetSeatId) => {
-                ctx.api.giveDiscardedTo(cards, targetSeatId);
+                // 礼让的文本就是「交给」→ 受国战【空城】第二段管辖
+                ctx.api.giveDiscardedTo(cards, targetSeatId, undefined, 'give');
               },
             );
           },
@@ -13076,8 +13141,8 @@ const HUANGTIAN: ActiveSkill = {
     const donors = huangtianDonors(state, player);
     if (donors.length === 0) return '场上没有明置的张角';
     const give = (target: Player): void => {
-      removeCard(player.hand, card.id);
-      target.hand.push(card);
+      // 「交给」走 giveCard（空城：国战 0 手牌诸葛的武将牌暂存）
+      api.giveCard(player.seatId, card, target.seatId);
       pushLog(
         state,
         'skill',
@@ -13393,7 +13458,7 @@ function askWenji(ctx: HookContext): void {
             return;
           }
           // 走 API 搬牌而不是自己 splice：交出来的可能是装备，要触发「失去装备」那类技能
-          ctx.api.transferCard(giver2.seatId, received, self.seatId, () => {
+          ctx.api.giveCard(giver2.seatId, received, self.seatId, () => {
             pushLog(
               st2,
               'skill',
@@ -13444,7 +13509,7 @@ function askWenji(ctx: HookContext): void {
                   );
                   return;
                 }
-                ctx.api.transferCard(self3.seatId, backCard, giver2.seatId, () => {
+                ctx.api.giveCard(self3.seatId, backCard, giver2.seatId, () => {
                   pushLog(
                     st3,
                     'skill',
@@ -15765,7 +15830,7 @@ function askJinfa(state: GameState, me: Player, api: SkillApi): string | undefin
                   const equip = picked[0];
                   if (!equip) return;
                   // 「交给」走 transferCard：装备区里的那张会正常触发失去装备
-                  api.transferCard(t4.seatId, equip, p2.seatId, () => {
+                  api.giveCard(t4.seatId, equip, p2.seatId, () => {
                     pushLog(
                       st4,
                       'skill',

@@ -68,6 +68,11 @@ export interface PlayerView {
   qianhuanCount?: number;
   /** 武将牌上的「魂」张数（左慈·役鬼） */
   hunCount?: number;
+  /**
+   * 国战【空城】第二段扣在武将牌上的**暂存牌张数**（诸葛亮，公开信息）。
+   * ⚠️ 只下发张数：内容是暗信息（交给时就是扣着给的），谁都不该看到牌名。
+   */
+  kongchengCount?: number;
   /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
   wounds?: Card[];
   /** 孟达·【求安】的「函」（公开信息） */
