@@ -863,36 +863,76 @@ const DIAOCHAN: Hero = {
  * 「是否发动」由调用方先问——官方写法是「**可以**进行判定」，
  * 之前实现成无条件发动，玩家没有选择权。
  */
-function luoshen(state: GameState, player: Player, guozhan: boolean): void {
-  const got: Card[] = [];
-  for (;;) {
-    const j = drawOne(state);
-    if (!j) break;
-    // 判定由甄姬自己做（「谁判定，判定牌就属于谁」）——红颜那类也要按她的口径看
-    if (isRed(cardAsSeenBy(state, player, j))) {
-      toDiscard(state, j);
+function luoshenStep(
+  api: SkillApi,
+  state: GameState,
+  player: Player,
+  guozhan: boolean,
+  collected: Card[],
+): void {
+  // ⚠️ 判定的颜色必须看**所有改判结束以后最终生效的那张牌**——司马懿·鬼才 / 张角·鬼道 都在
+  //    `api.judge` 的改判窗口里跑完才回调。自己 drawOne 读牌面的话，「甄姬+司马懿」就救不回
+  //    一次翻红的洛神了（用户 2026-09-18 给的规格专门点了这一条）。
+  // ⚠️ `api.judge` 的回调只给（判定牌, 能否拿）——**不给 state**：判定链可能跨步（改判要问人），
+  //    但 `state` 是同一个对象（原地改），所以这里直接用外层的 `state`。
+  api.judge(
+    '洛神',
+    (j, canTake) => {
+      const me = getPlayer(state, player.seatId);
+      if (!me) return;
+      const black = !!j && !isRed(cardAsSeenBy(state, me, j));
+      if (j && canTake) {
+        if (black) {
+          // **国战与身份的差别**（规格）：国战先记着、整次洛神结束才一次性获得；
+          // 身份局当场收下这张黑牌。被天妒那类收走的（canTake=false）不归我们处置。
+          if (guozhan) collected.push(j);
+          else me.hand.push(j);
+        } else {
+          toDiscard(state, j); // 红的不要，照常进弃牌堆
+        }
+      }
       pushLog(
         state,
         'skill',
-        guozhan
-          ? `${player.name} 发动【洛神】，判定${cardLabel(j)}为红色，结束。`
-          : `${player.name} 发动【洛神】，判定：${cardLabel(j)}。`,
+        `${me.name} 发动【洛神】，判定${j ? cardLabel(j) : '（无牌）'}为${black ? '黑色' : '红色'}。`,
       );
-      break;
-    }
-    pushLog(state, 'skill', `${player.name} 发动【洛神】，判定：${cardLabel(j)}。`);
-    got.push(j);
-  }
-  if (got.length > 0) {
-    player.hand.push(...got);
-    pushLog(
-      state,
-      'skill',
-      guozhan
-        ? `${player.name} 的【洛神】一次性获得 ${got.length} 张黑色判定牌。`
-        : `${player.name} 的【洛神】获得 ${got.length} 张黑色牌。`,
-    );
-  }
+      if (!black) {
+        finishLuoshen(state, me, guozhan, collected);
+        return;
+      }
+      // 「若结果为黑色，你**可以**重复此流程」——判黑之后问一句，不能一律判到红为止
+      api.askChoice(
+        state,
+        me.seatId,
+        '【洛神】：判定为黑色，是否继续？',
+        [
+          { id: 'yes', label: '继续判定' },
+          { id: 'no', label: '停止' },
+        ],
+        (st2, p2, picked) => {
+          if (picked !== 'yes') {
+            finishLuoshen(st2, p2, guozhan, collected);
+            return;
+          }
+          luoshenStep(api, st2, p2, guozhan, collected);
+        },
+      );
+    },
+    { keepCard: true }, // 判定牌的去处由上面自己决定（黑的收下、红的进弃牌堆）
+  );
+}
+
+/** 洛神收尾：把这一整次洛神攒下的黑色判定牌**一次性**收进手牌 */
+function finishLuoshen(state: GameState, player: Player, guozhan: boolean, collected: Card[]): void {
+  if (collected.length === 0) return;
+  player.hand.push(...collected);
+  pushLog(
+    state,
+    'skill',
+    guozhan
+      ? `${player.name} 的【洛神】一次性获得 ${collected.length} 张黑色判定牌。`
+      : `${player.name} 的【洛神】获得 ${collected.length} 张黑色牌。`,
+  );
 }
 
 /** 「是否发动洛神」的询问（准备阶段，可挂起） */
@@ -909,7 +949,7 @@ function askLuoshen(
       { id: 'no', label: '不发动' },
     ],
     (st, p, picked) => {
-      if (picked === 'yes') luoshen(st, p, guozhan);
+      if (picked === 'yes') luoshenStep(ctx.api, st, p, guozhan, []);
     },
   );
 }

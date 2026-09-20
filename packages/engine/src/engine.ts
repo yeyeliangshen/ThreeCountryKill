@@ -1915,8 +1915,15 @@ function askBeforeJudge(
   onDone: (finalCard: Card, gainer: Player | undefined) => void,
 ): void {
   const list: { player: Player; hook: HookRegistration }[] = [];
-  for (const p of state.players) {
-    if (!p.alive) continue;
+  // ⚠️ 改判（鬼才/鬼道）的响应顺序：**从当前回合玩家开始、按座次方向**（移动版规则问答：
+  //    同一次判定里各改判者依次响应，**每人只能响应一次**、放弃就不能等别人改完再回来）。
+  //    「每人一次」由这条链天然保证——每个人在这里只出现一次（下面 judgeHookStep 逐个问）。
+  const seatCount = state.seatOrder.length;
+  const anchor = seatCount > 0 ? ((state.turn.seatIndex % seatCount) + seatCount) % seatCount : 0;
+  const orderedSeats = [...state.seatOrder.slice(anchor), ...state.seatOrder.slice(0, anchor)];
+  for (const seatId of orderedSeats) {
+    const p = getPlayer(state, seatId);
+    if (!p || !p.alive) continue;
     const hooks = activeHeroes(state, p)
       .flatMap((h) => h.hooks?.filter((hk) => hk.timing === 'beforeJudge') ?? [])
       .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));

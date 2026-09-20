@@ -3303,10 +3303,15 @@ describe('新增技能（含国战版差异）', () => {
     // 洛神是「可以进行判定」，所以先出现是否发动的询问
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 第一张判黑（b1）→ 身份局**当场收下**，然后问「是否继续」
+    expect(b.hand.map((c) => c.id)).toContain('b1');
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('洛神');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 继续
+    expect(b.hand.map((c) => c.id)).toContain('b2');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 再继续 → 下一张是红牌
+    // 第三张红牌（r1）→ 洛神结束、红牌进弃牌堆
     const ids = b.hand.map((c) => c.id);
-    expect(ids).toContain('b1');
-    expect(ids).toContain('b2');
-    expect(ids).not.toContain('r1'); // 红牌不进手
+    expect(ids).not.toContain('r1');
     expect(state.discard.some((c) => c.id === 'r1')).toBe(true);
   });
 
@@ -3326,11 +3331,116 @@ describe('新增技能（含国战版差异）', () => {
     ok(act(state, A, { type: 'endPhase' }));
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 第一张判黑（b1）：**国战先不拿**——手牌此刻还是空的（这是国战与身份最关键的区别）
+    expect(b.hand).toHaveLength(0);
+    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('洛神');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 继续（「黑色后可以重复」）
+    expect(b.hand, '第二张也先不拿').toHaveLength(0);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 再继续 → 下一张是红牌
     const ids = b.hand.map((c) => c.id);
     expect(ids).toContain('b1');
     expect(ids).toContain('b2');
+    expect(ids).not.toContain('r1'); // 红牌不获得
     // 与身份局的关键差别：日志写明“一次性获得”，而不是逐张获得
     expect(state.log.some((e) => e.message.includes('一次性获得'))).toBe(true);
+  });
+
+  it('洛鬼（甄姬+司马懿）：判红用【鬼才】改成黑 → 洛神看**最终生效**的牌，能继续', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [] },
+        // 乙＝甄姬（主将）+ 司马懿（副将）：国战双将，都是魏 → 合法
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'zhenji',
+          deputyHeroId: 'simayi',
+          hand: [mk('sb', 'sha', 'spade', 8)], // 留给【鬼才】的那张黑牌
+        },
+      ],
+      'guozhan',
+    );
+    const b = state.players.find((p) => p.seatId === B)!;
+    // ⚠️ makeGameMode 不读 SeatOpts.deputyHeroId —— 副将要在这里手动设
+    b.deputyHeroId = 'simayi';
+    b.heroRevealed = true;
+    b.deputyRevealed = true;
+    // 牌堆从末尾抽：先翻出 ♥1（红）
+    state.deck.push(mk('r1', 'sha', 'heart', 1));
+    ok(act(state, A, { type: 'endPhase' })); // 乙的准备阶段
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 发动洛神
+    // 翻出红牌 → 改判窗口问【鬼才】（判定的最终颜色看改判之后那张）
+    const q = state.pending;
+    if (q?.kind !== 'choice') throw new Error(`预期【鬼才】询问，实际是 ${q?.kind}`);
+    expect(q.title).toContain('鬼才');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, B, { type: 'pickCards', cardIds: ['sb'] }));
+    }
+    // 换成 ♠8 → 最终是黑色 → 洛神问「是否继续」（手牌里那张已经打出去当判定牌了）
+    const q2 = state.pending;
+    if (q2?.kind !== 'choice') throw new Error(`预期洛神继续询问，实际是 ${q2?.kind}`);
+    expect(q2.title).toContain('洛神');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 停
+    // 国战：一次性获得那张黑色判定牌（就是刚才用鬼才打出去的 ♠8）
+    expect(b.hand.some((c) => c.id === 'sb'), '鬼才换上去的黑牌最终被洛神收下').toBe(true);
+    expect(state.discard.some((c) => c.id === 'r1'), '被换掉的旧判定牌进弃牌堆').toBe(true);
+  });
+
+  it('改判顺序：**从当前回合玩家起、按座次**（张角与司马懿各只问一次）', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'simayi', hand: [mk('sa', 'sha', 'spade', 3)] },
+        // 乙＝甄姬，当前回合玩家（他的准备阶段发动洛神）
+        { seatId: B, name: '乙', heroId: 'zhenji', hand: [] },
+        { seatId: C, name: '丙', heroId: 'zhangjiao', hand: [mk('cc', 'sha', 'club', 4)] },
+      ],
+      'guozhan',
+    );
+    for (const sid of [A, B, C]) {
+      const p = state.players.find((x) => x.seatId === sid)!;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    state.deck.push(mk('r1', 'sha', 'heart', 1)); // 先翻红
+    ok(act(state, A, { type: 'endPhase' })); // 轮到乙
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 从**当前回合玩家乙**起按座次：先丙（张角·鬼道），再甲（司马懿·鬼才）——不是从 1 号座甲开始
+    const first = state.pending;
+    if (first?.kind !== 'choice') throw new Error(`预期改判询问，实际是 ${first?.kind}`);
+    expect(first.seatId).toBe(C);
+    expect(first.title).toContain('鬼道');
+    ok(act(state, C, { type: 'chooseOption', optionId: 'no' })); // 丙放弃
+    const second = state.pending;
+    if (second?.kind !== 'choice') throw new Error(`预期第二个改判者，实际是 ${second?.kind}`);
+    expect(second.seatId).toBe(A);
+    expect(second.title).toContain('鬼才');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' })); // 甲也放弃（放弃即作废，不会再问回去）
+    // 两个人都放弃 → 最终仍是红 → 洛神结束（红判定不进手，洛神一张都没拿到）
+    expect(state.log.some((e) => e.message.includes('为红色'))).toBe(true);
+    expect(state.log.some((e) => e.message.includes('一次性获得'))).toBe(false);
+    expect(state.discard.some((c) => c.id === 'r1')).toBe(true);
+  });
+
+  it('改判：【鬼道】只能用黑色牌（张角手里只有红牌 → 连问都不问）', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangjiao', hand: [mk('ra', 'tao', 'heart', 5)] },
+        { seatId: B, name: '乙', heroId: 'zhenji', hand: [] },
+      ],
+      'guozhan',
+    );
+    for (const sid of [A, B]) {
+      const p = state.players.find((x) => x.seatId === sid)!;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    state.deck.push(mk('r1', 'sha', 'heart', 1)); // 红判定
+    ok(act(state, A, { type: 'endPhase' })); // 乙的准备阶段
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 发动洛神
+    // 甲（张角）手里只有红牌 → 【鬼道】发动不了，判定直接生效（不该出现鬼道的询问）
+    expect(state.log.some((e) => e.message.includes('鬼道'))).toBe(false);
+    expect(state.log.some((e) => e.message.includes('为红色'))).toBe(true);
   });
 
   it('洛神：选「不发动」→ 一张都不摸，回合照常推进', () => {
