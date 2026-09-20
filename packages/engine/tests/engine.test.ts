@@ -1,5 +1,20 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+
+/**
+ * ⚠️ **把随机源钉死**：引擎默认用 `Math.random` 洗牌，于是「谁发到什么牌」每次跑都不一样——
+ * 只要某个用例的断言或驱动步骤沾了具体牌面（实测一例：「界钟会·权计」里
+ * `find(c => c.equipName === 'qinggang')` 命中了**手牌里**另一把同名武器，于是「装备区那把被
+ * 收走」的断言偶发失败），它就会偶发红。这里统一换成可种子化的随机源：**种子固定 → 结果确定**
+ * （与 `smoke.test.ts` 的纪律一致），偶发失败从此可复现。自己显式传了 rng 的用例不受影响。
+ */
+beforeEach(() => {
+  const rnd = seededRng(20260920);
+  vi.spyOn(Math, 'random').mockImplementation(() => rnd());
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 import {  fangyuanHandLimitDelta,  woundedFactionCount,
   currentFactionCount,
@@ -40,7 +55,8 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
 
   type GameState,
   type SeatSetup,
-  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,} from '../src';
+  determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,  seededRng,
+} from '../src';
 import {
   capturePendingCheckpoint,
   notePendingSlotWrite,
@@ -23398,7 +23414,11 @@ describe('国战 · 界钟会（权计 / 排异）', () => {
     const state = createGame(
       seats.map((s) => ({ seatId: s.seatId, name: s.name, heroId: s.heroId })),
       'TEST',
-      { mode: 'guozhan' },
+      // ⚠️ 必须**钉死随机源**：不传 rng 时牌堆每次随机洗，一旦「乙」恰好摸到另一把同名武器，
+      //    find(c => c.equipName === 'qinggang') 就可能命中**手牌里那把**——于是「权」收的是
+      //    手牌版、装备区那把还在，最后一条断言偶发失败（实测遇到过一次）。
+      //    与 smoke.test.ts 同一条纪律：种子固定 → 结果确定。
+      { mode: 'guozhan', rng: seededRng(20260920) },
     );
     state.draft = null;
     for (const s of seats) {
