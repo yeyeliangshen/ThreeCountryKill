@@ -1155,6 +1155,8 @@ function runHooksPausable(
   const startedWith = state.pending;
   // 这条链的令牌：跑完就置死，用来拦住「排到很后面才醒」的陈旧续接（见 runHooksFrom 的注释）
   const token: ChainToken = { alive: true };
+  const prevChainTiming = probingChainTiming;
+  if (PROBE_CLOBBER) probingChainTiming = timing;
   runHooksFrom(
     state,
     player,
@@ -1165,6 +1167,7 @@ function runHooksPausable(
     (cancelled) => {
       token.alive = false;
       onDone(cancelled);
+      if (PROBE_CLOBBER) probingChainTiming = prevChainTiming;
       if (state.pending === null && ambient && !state.gameOver) {
         setPending(state, ambient);
       }
@@ -2317,6 +2320,38 @@ function dispatchRoundEnd(state: GameState, after: () => void): void {
   step(0);
 }
 
+/**
+ * 「先测量」探针的开关（`SGS_PROBE_CLOBBER=1` 打开）。
+ *
+ * 只在**测量脚本**里开：它会把每一次「收尾覆盖掉没答过的询问」都记进 `blockedTakeovers`
+ * （带调用点），用来补全围栏只覆盖锦囊那一半的盲区（docs §5.134 建议顺序 ②）。
+ * 模块级常量 ⇒ 关着的时候热路径就是一次布尔判断，零成本。
+ */
+/** 探针用：当前正在跑的钩子链时机（runHooksPausable 进出时维护，关着时只是两次赋值） */
+let probingChainTiming: string | null = null;
+
+const PROBE_CLOBBER = (() => {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    ?.env;
+  return !!env?.SGS_PROBE_CLOBBER;
+})();
+
+/** 取调用栈里第一帧「引擎内部」的位置（探针用；关着的时候根本不会调到） */
+function topStackFrame(): string {
+  const stack = (new Error().stack ?? '').split(String.fromCharCode(10));
+  const frames: string[] = [];
+  for (const line of stack.slice(2)) {
+    const m = /at\s+([^\s(]+)/.exec(line);
+    if (!m) continue;
+    const name = m[1]!;
+    if (name.includes('topStackFrame')) continue;
+    // 只保留目录内的帧（去掉 node_modules / vitest 的噪声），最多 8 级
+    frames.push(name.replace(/^.*[\/]/, ''));
+    if (frames.length >= 8) break;
+  }
+  return frames.join(' < ') || 'unknown';
+}
+
 /** 回到某玩家的出牌阶段（伤害结算后恢复来源回合） */
 function resumePlay(
   state: GameState,
@@ -2374,6 +2409,53 @@ function resumePlay(
     return;
   }
   state.turn.phase = 'play';
+  // **「先测量」探针（只记不改，默认关）**：把「收尾覆盖掉一条**还没人回答**的询问」这件事
+  // 全部记下来——围栏那半边只覆盖锦囊收尾（带 since 的两处），这只探针覆盖全部 19 个
+  // `resumePlay` 调用点，能给出「谁在抢谁的槽」的完整地图（docs §5.134 建议顺序 ②）。
+  // 开关是模块级常量，关着时零成本。
+  if (PROBE_CLOBBER && !since) {
+    const cur = state.pending;
+    if (cur && cur.kind === 'respondSha' && !answeredPendings.has(cur)) {
+      const atk = (cur as unknown as { attack?: { sourceId?: string; targetId?: string; cardId?: string } })
+        .attack;
+      console.log(
+        '[clobber-sha]',
+        'chain=', probingChainTiming,
+        'asker=',
+        (cur as unknown as { responderId?: string }).responderId,
+        'attackSrc=',
+        atk?.sourceId,
+        'attackTgt=',
+        atk?.targetId,
+        'card=',
+        atk?.cardId,
+        'turnSeat=',
+        state.seatOrder[state.turn.seatIndex],
+        'phase=',
+        state.turn.phase,
+        '| 最近日志:',
+        state.log
+          .slice(-4)
+          .map((l) => (l as unknown as { message?: string }).message ?? '')
+          .join(' / '),
+      );
+    }
+    if (cur && !isPlaceholderPending(cur) && !answeredPendings.has(cur)) {
+      state.blockedTakeovers.push({
+        finalizer: 'resumePlay(clobber)',
+        checkpointSeq: -1,
+        currentSeq: state.pendingSeq,
+        checkpointKind: null,
+        currentKind: cur.kind,
+        phase: String(state.turn.phase),
+        turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
+        inDying: cur.kind === 'respondDeath',
+        resumeQueueLength: state.resumeQueue.length,
+        sameUse: 'n/a',
+        caller: topStackFrame(),
+      } as unknown as (typeof state.blockedTakeovers)[number]);
+    }
+  }
   // **打点（只记不改）**：围栏「本来会挡住」的场合记一条结构化记录，用于把被挡的 takeover
   // 按**语义**聚类（恢复交互入口 vs 提交不可延迟的状态迁移）——行为保持不变（照旧覆盖），
   // 所以开着它本身不会让任何测试变红。设 SGS_TRACE_TAKEOVER=1 会顺带打到 stdout。
@@ -2859,8 +2941,10 @@ function afterShaTargetResolve(
     return;
   }
 
-  // 暂停：等待目标响应（出闪或弃权）
-  setPending(state, { kind: 'respondSha', responderId: targetId, attack });
+  // 暂停：等待目标响应（出闪或弃权）。记下这个询问对象：结算收尾要认它（谁建谁清）
+  const ask: GameState['pending'] = { kind: 'respondSha', responderId: targetId, attack };
+  attack.shanAsk = ask as { kind: string; responderId?: string };
+  setPending(state, ask);
 }
 
 /**
@@ -3221,6 +3305,13 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
 /** 杀结算（目标已出闪或已弃权） */
 function finishAttack(state: GameState, attack: AttackContext): void {
   const target = getPlayerOrThrow(state, attack.targetId);
+  // 「谁建谁清」：这次求闪的询问如果还挂在槽里、而它**从来没被玩家回答过**（八卦阵/护驾
+  // 那种自动代打会在同一个 intent 里创建又解决它），就给它打上「已处理」标记——
+  // 这样钩子链收尾的「环境还原」不会把一条处理完的旧询问摆回来，
+  // 诊断探针也不会把它误记成「收尾抢了一条没答过的询问」（docs §5.134 的测量口径）。
+  if (attack.shanAsk && state.pending === (attack.shanAsk as object)) {
+    answeredPendings.add(state.pending);
+  }
 
   if (attack.dodged) {
     pushLog(state, 'resolve', `【杀】被闪避。`);
@@ -9228,7 +9319,13 @@ function afterShanPlayed(state: GameState, who: Player, attack: AttackContext): 
     if (required > 1) {
       attack.requiredShan = required - 1;
       pushLog(state, 'shan', `${who.name} 还需出 ${required - 1} 张【闪】。`);
-      setPending(state, { kind: 'respondSha', responderId: attack.targetId, attack });
+      const ask2: GameState['pending'] = {
+        kind: 'respondSha',
+        responderId: attack.targetId,
+        attack,
+      };
+      attack.shanAsk = ask2 as { kind: string; responderId?: string };
+      setPending(state, ask2);
       return;
     }
     attack.dodged = true;
@@ -9618,7 +9715,9 @@ function resolveFactionCard(
 /** 没人代打：还原成发起者自己响应的那个提示 */
 function restoreFactionScene(state: GameState, seatId: string, scene: FactionScene): void {
   if (scene.kind === 'sha-response') {
-    setPending(state, { kind: 'respondSha', responderId: seatId, attack: scene.attack });
+    const ask3: GameState['pending'] = { kind: 'respondSha', responderId: seatId, attack: scene.attack };
+    scene.attack.shanAsk = ask3 as { kind: string; responderId?: string };
+    setPending(state, ask3);
     return;
   }
   setPending(state, { kind: 'respondTrick', responderId: seatId, ctx: scene.ctx });
