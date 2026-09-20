@@ -2614,8 +2614,26 @@ function besiegedBySha(state: GameState, sourceId: string, targetId: string): Pl
 
 /** 双方是否**已明置**且势力相同（国战里暗置＝没有势力，判断同势力一律走这里） */
 export function sameKnownFaction(state: GameState, a: Player, b: Player): boolean {
-  const fa = effectiveFaction(state, a);
-  return !!fa && fa === effectiveFaction(state, b);
+  const ka = factionGroupKey(state, a);
+  return !!ka && ka === factionGroupKey(state, b);
+}
+
+/**
+ * 「势力归属」的比较键——**一切「是不是同势力」的判断都该用它，不要直接比 `effectiveFaction`**。
+ *
+ * 用户 2026-09 给的官方口径：**每一个野心家各自是一种势力，野心家之间也不同势力**
+ * （出处见 docs §5.137）。所以两个野心家**不能**算同势力——而 `effectiveFaction` 对他们
+ * 都返回 `'ambitionist'`，直接相比会判成同势力（= 同势力奖惩、同势力技能全都会误触发）。
+ *
+ * 键：未确定势力 → `null`；野心家 → `ambitionist:<座号>`（各自一种势力）；
+ * 其余 → 势力本身。将来实装 2023「暴露野心 → 建立新势力」时，**同一次建立**的势力
+ * 会共享同一个 `forceId`（口径见 §5.137 最后一行），届时把这个键换成 `forceId` 即可。
+ */
+export function factionGroupKey(state: GameState, p: Player): string | null {
+  const f = effectiveFaction(state, p);
+  if (!f) return null;
+  if (f === 'ambitionist') return `ambitionist:${p.seatId}`;
+  return f;
 }
 
 /**

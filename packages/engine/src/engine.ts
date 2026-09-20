@@ -3546,10 +3546,13 @@ function damageStep(
     const needsPreDamage = state.players.some(
       (p) => p.alive && collectTimingHooks(state, p, 'beforeDamageApply', true).length > 0,
     );
-    // 宝物【盟军大纛】（君主专属）：**受到伤害时**弃两张牌防止此伤害。它是装备牌的效果，
-    // 不走英雄钩子，所以和【飞龙夺凤】一样在这里显式派发；装备持有者自己决定要不要弃。
+    /**
+     * ⚠️ **顺序按用户 2026-09 的裁定**（官方 FAQ）：「同一角色、同一时机，**武将技能优先于
+     * 装备技能**；宝物属于装备，所以也在武将技能之后」。所以这一层的次序是：
+     * ① 武将的 `damageDealt` 钩子（小乔·天香那类）→ ② 装备/宝物（【盟军大纛】→【护心镜】）。
+     * 以前【盟军大纛】被摆在武将技能**前面**问（那时记的是「引擎固定让宝物先问」），已按裁定改正。
+     */
     const afterPreDamage = (dmgNow: number): void =>
-    mengjunDajun(state, target, () =>
       runHooksPausable(state, 'damageDealt', target, { damage: dmgNow, attack }, () => {
       const prevented = target.flags.damagePrevented;
       const reduced = target.flags.damageReduce;
@@ -3559,6 +3562,7 @@ function damageStep(
         apply(dmgNow, true);
         return;
       }
+      // 武将技能都没拦住 → 才轮到装备层：宝物【盟军大纛】弃两张牌防止此伤害（装备持有者自己决定）
       const finalDmg = Math.max(0, dmgNow - reduced);
       if (finalDmg <= 0) {
         // 减到 0：等于没造成伤害（官方：伤害值变为 0 则不造成伤害）
@@ -3568,6 +3572,14 @@ function damageStep(
         apply(0, true);
         return;
       }
+        mengjunDajun(state, target, () => {
+        // ⚠️ 大纛走的是同一条「取消通道」（置 `flags.damagePrevented`），但它现在排在武将技能
+        //    **之后**，所以这里要**再读一次**这个标记——以前它排在钩子前面，靠钩子那一层读 ✓。
+        if (target.flags.damagePrevented) {
+          target.flags.damagePrevented = false;
+          apply(finalDmg, true);
+          return;
+        }
         withHuxinjing(state, attack, finalDmg, (hxPrevented) => {
           if (!hxPrevented) {
             target.hp -= finalDmg;
@@ -3584,9 +3596,9 @@ function damageStep(
             }
           }
           apply(finalDmg, hxPrevented);
+          });
         });
-      }),
-    );
+      });
     if (needsPreDamage) {
       // ⚠️ 这个 payload 是**可写**的：钩子可以在这一层改伤害值（潘濬·公清把「攻击范围 < 3」
       //    的伤害**调整为 1**——是「设为 1」不是「-1」，5 点也变 1 点）。改完以它为准往下走。

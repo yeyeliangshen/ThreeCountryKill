@@ -56,6 +56,7 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
   type GameState,
   type SeatSetup,
   determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,  seededRng,
+  sameKnownFaction,
 } from '../src';
 import {
   capturePendingCheckpoint,
@@ -21714,6 +21715,76 @@ describe('国战 · 君主将（特性）', () => {
     if (state.pending?.kind === 'choice' && state.pending.title.includes('授锋'))
       ok(act(state, seatId, { type: 'chooseOption', optionId: 'no' }));
   }
+
+  /**
+   * 用户 2026-09 给的官方 FAQ 口径（§5.137）：**同一角色、同一时机，武将技能优先于装备技能**
+   * （宝物也算装备）。这条以前是反的——引擎「固定让宝物先问」，【盟军大纛】被摆在武将技能前面。
+   */
+  it('时机顺序：同一角色同一时机，武将技能先于装备/宝物技能（天香 先问、盟军大纛 后问）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'xiaoqiao' },
+        { seatId: 'B', name: '乙', heroId: 'guanyu' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    // 甲＝小乔（天香是**武将技能**）+ 装备【盟军大纛】（**防具槽**的装备/宝物）
+    seatSet(state, 'A', 'xiaoqiao', 'wu', [mk('h1', 'tao', 'heart'), shan('h2'), shan('h3')]);
+    seatSet(state, 'B', 'guanyu', 'shu', [sha('b1')]);
+    state.players.find((x) => x.seatId === 'A')!.equipment.armor = {
+      id: 'm1',
+      type: 'armor',
+      suit: 'heart',
+      rank: 3,
+      equipName: 'mengjun',
+    } as never;
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: 'B' };
+    state.log = [];
+
+    ok(act(state, 'B', { type: 'playCard', cardId: 'b1', targetIds: ['A'] }));
+    ok(act(state, 'A', { type: 'pass' })); // 甲不出闪 → 甲受伤（此时两个「受到伤害时」都在）
+    // ⚠️ 先问的必须是【天香】（武将技能），不是【盟军大纛】（装备/宝物）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('天香');
+    ok(act(state, 'A', { type: 'chooseOption', optionId: 'no' })); // 天香不发动
+    // 武将技能没发动 → 才轮到装备层：【盟军大纛】这时才被问
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('盟军大纛');
+  });
+
+  it('野心家各自是一种势力：两个野心家**不算**同势力（官方口径，§5.137）', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'vanilla' },
+        { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        { seatId: 'C', name: '丙', heroId: 'vanilla' },
+        { seatId: 'D', name: '丁', heroId: 'vanilla' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const at = (id: string) => state.players.find((x) => x.seatId === id)!;
+    for (const [id, f] of [
+      ['A', 'ambitionist'],
+      ['B', 'ambitionist'],
+      ['C', 'wei'],
+      ['D', 'wei'],
+    ] as const) {
+      const p = at(id);
+      p.faction = f as never;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    expect(sameKnownFaction(state, at('C'), at('D')), '两个魏 → 同势力').toBe(true);
+    expect(sameKnownFaction(state, at('A'), at('B')), '两个野心家 → **不同**势力').toBe(false);
+    expect(sameKnownFaction(state, at('A'), at('C')), '野心家 vs 魏 → 不同势力').toBe(false);
+  });
 
   it('君威·盟军大纛：受伤时弃两张牌防止此伤害，防具本身也能当其中一张（然后销毁）', () => {
     const state = createGame(
