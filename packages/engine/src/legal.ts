@@ -351,16 +351,16 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         // 铁索连环可以只选自己；以逸待劳含自己；五谷丰登是全体
         legal = true;
       } else if (trickType === 'yuanjiao') {
-        // 需要一名「有明置武将牌 + 势力与你不同」的其他角色
+        // 需要一名「**已确定势力**与你不同」的其他角色（与结算处的口径一致：暗置不算势力）
+        const myFaction = effectiveFaction(state, player);
         legal =
-          player.faction !== null &&
+          myFaction !== null &&
           state.players.some(
             (p) =>
               p.alive &&
               p.seatId !== seatId &&
-              p.faction !== null &&
-              p.faction !== player.faction &&
-              (p.heroRevealed || p.deputyRevealed) &&
+              effectiveFaction(state, p) !== null &&
+              effectiveFaction(state, p) !== myFaction &&
               !heroBlocksBeingTarget(state, p, card, player),
           );
       } else {

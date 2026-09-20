@@ -578,9 +578,11 @@ export function canUseAnotherSha(state: GameState, p: Player): boolean {
 export function isAoyu(state: GameState): boolean {
   if (state.mode !== 'guozhan') return false;
   const alive = alivePlayers(state);
-  // 用**真实**势力：鏖战是客观的残局条件（场上还剩几个势力），不是互相认同。
-  // 暗置只是别人不知道，牌上的势力仍然在，所以暗置角色照样数进来。
-  const factions = new Set(alive.map((p) => p.faction).filter((f) => f && f !== 'ambitionist'));
+  // 口径（用户 2026-09-20）：暗置角色的卡面势力**不算数**——按**已确定势力**数「还剩几个阵营」。
+  // （野心家仍不当作一个「阵营」：这条沿用原口径，已在文档里标注为待实机复核项。）
+  const factions = new Set(
+    alive.map((p) => effectiveFaction(state, p)).filter((f) => f && f !== 'ambitionist'),
+  );
   return factions.size === 2;
   // 注：这里数的是「还剩几个阵营」，与 bigFactions 的「谁是大势力」不是一回事
 }
@@ -4464,10 +4466,11 @@ function guozhanWinner(state: GameState): string | null {
   if (alive.length === 1) return alive[0]!.faction ?? alive[0]!.seatId;
   const counts = new Map<string, number>();
   for (const p of alive) {
-    // `determinedFaction` 在**双势力**与**野心家武将**身上是「对外确定下来的那个势力」：
-    // 后者正是口径里那句「主将暗置期间**暂时按照副将确定势力**」——不读它的话，
-    // 野心家武将会被当成 'ambitionist' 从胜负统计里漏掉（他们此刻本该算副将那一方的人）。
-    const key = p.forceId ?? p.determinedFaction ?? p.faction ?? 'neutral';
+    // ⚠️ 口径（用户 2026-09-20 确认）：**暗置武将的卡面数据不参与公开规则判断**，胜负也一样——
+    //    所以这里只看**已确定势力**（`effectiveFaction`：没明置任何一张将 → null → 不计入）。
+    //    `forceId` 优先：野心家/建国后的新势力用它（各自一种势力）。
+    const named = effectiveFaction(state, p);
+    const key = p.forceId ?? (named ? (p.determinedFaction ?? named) : null) ?? 'neutral';
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const half = Math.floor(alive.length / 2);
@@ -7047,14 +7050,12 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
-  const n = state.seatOrder.length;
-  const idx = state.seatOrder.indexOf(me.seatId);
-  const queue: string[] = [];
-  for (let k = 1; k <= n; k++) {
-    const sid = state.seatOrder[(idx + k) % n]!;
-    if (sid === target.seatId) continue; // 目标自己不选
-    if (getPlayer(state, sid)?.alive) queue.push(sid);
-  }
+  // ⚠️ 座次环绕走 `aliveSeatsFrom`（它会跳过被【调虎离山】移出座次的角色）——
+  //    手写 `(idx + k) % n` 会把「暂时不计入座次」的人也算进来（用户 2026-09-20 的检查项）。
+  //    顺序沿用既有口径（§5.137.2）：**从使用者的下家起、按座次环绕**，使用者本人在名单末尾
+  //    （他是参与者之一，不能按 me.seatId 滤掉），再排除目标自己。
+  const fromMe = aliveSeatsFrom(state, me.seatId);
+  const others = [...fromMe.slice(1), fromMe[0]!].filter((sid) => !!sid && sid !== target.seatId);
   pushLog(
     state,
     'trick',
@@ -7064,9 +7065,9 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
 
   const step = (i: number): void => {
     const done = (): void => endTrickResolution(state, ctx);
-    const cur = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+    const cur = i < others.length ? getPlayer(state, others[i]!) : undefined;
     if (!cur || !cur.alive) {
-      if (i < queue.length) step(i + 1);
+      if (i < others.length) step(i + 1);
       else done();
       return;
     }
@@ -7339,14 +7340,10 @@ function resolveWenHeLuanWu(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
-  // 「所有角色」**含使用者本人**；顺序同其余多目标牌：从使用者的下家起按座次环绕
-  const n = state.seatOrder.length;
-  const idx = state.seatOrder.indexOf(me.seatId);
-  const queue: string[] = [];
-  for (let k = 1; k <= n; k++) {
-    const sid = state.seatOrder[(idx + k) % n]!;
-    if (getPlayer(state, sid)?.alive) queue.push(sid);
-  }
+  // 「所有角色」**含使用者本人**；顺序同其余多目标牌：从使用者的**下家**起按座次环绕
+  // （走 `aliveSeatsFrom`：跳过被【调虎离山】移出座次的人——手写 `% n` 会把他们算进来）
+  const fromMe = aliveSeatsFrom(state, me.seatId);
+  const queue = [...fromMe.slice(1), fromMe[0]!].filter((sid) => !!sid);
   pushLog(state, 'trick', `${me.name} 使用【文和乱武】，所有角色依次展示手牌。`, {
     seat: me.seatId,
   });
@@ -7758,7 +7755,7 @@ function resolveXietianzi(state: GameState, ctx: TrickContext): void {
   pushLog(
     state,
     'trick',
-    `${player.name} 使用【挟天子以令诸侯】，结束出牌阶段；若弃牌阶段弃了牌，将追加一个回合。`,
+    `${player.name} 使用【挟天子以令诸侯】，结束出牌阶段；若弃牌阶段弃置了手牌，将追加一个回合。`,
     { seat: player.seatId, action: 'xietianzi' },
   );
   goToDiscardPhase(state, player);
@@ -9958,7 +9955,9 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
         runAllPlayersHooks(
           state,
           'factionCountChanged',
-          { faction: player.faction, from: 0, to },
+          // ⚠️ payload 里报的必须是**确定下来的那个势力**（joinFaction＝determinedFaction ?? faction），
+          //    不然双势力角色亮将时，监听者按 `player.faction`（牌面主将势力）去记会记错人。
+          { faction: joinFaction, from: 0, to },
           () => {},
         );
       }
@@ -10231,9 +10230,13 @@ function makeSkillApi(
       const wantFaction = effectiveFaction(state, owner) ?? mainHero.faction;
       let picked: string | null = null;
       const revealed: string[] = [];
+      // ⚠️ 双势力武将牌的两面都算「与该势力相同」（找士兵牌/替补牌时按**牌面**匹配，
+      //    这是给这名角色自己换牌、不是公开规则判断；见 docs §5.153）
+      const heroMatches = (hero: { faction?: string; secondFaction?: string } | undefined): boolean =>
+        !!hero && (hero.faction === wantFaction || hero.secondFaction === wantFaction);
       for (const id of preferred) {
         const hero = getHeroForMode(id, state.mode);
-        if (hero && hero.faction === wantFaction) {
+        if (heroMatches(hero)) {
           state.heroPool.splice(state.heroPool.indexOf(id), 1);
           picked = id;
           break;
@@ -10243,7 +10246,7 @@ function makeSkillApi(
         const id = state.heroPool.shift()!;
         const hero = getHeroForMode(id, state.mode);
         revealed.push(hero?.name ?? id);
-        if (hero && hero.faction === wantFaction) {
+        if (heroMatches(hero)) {
           picked = id;
           break;
         }

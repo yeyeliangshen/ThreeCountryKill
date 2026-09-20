@@ -175,7 +175,7 @@ const STANDARD_WEI: RosterEntry[] = [
     pack: 'standard',
     status: 'done',
     primitives: ['judge_ownership', 'pick_cards'],
-    note: '天妒自动收取（白拿牌严格优于不拿，等于最优出牌）。遗计按「每次伤害事件触发一次」（官方为逐点）。',
+    note: '天妒自动收取（白拿牌严格优于不拿，等于最优出牌）。遗计按「每次伤害事件触发一次」——现行国战文本虽是「受到 1 点伤害后」，但 2025-09-19 调整后遗计按次触发（按点的是荀彧·节命）。',
   },
   { id: 'zhenji', name: '甄姬', faction: 'wei', pack: 'standard', status: 'done' },
   {

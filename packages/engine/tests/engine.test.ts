@@ -1211,6 +1211,11 @@ describe('国战模式', () => {
         hp: 1,
       },
     ]);
+    // 口径（用户 2026-09-20）：胜负/鏖战按**已确定势力**算——暗置角色的卡面势力不算数 → 先把武将明置
+    for (const p of state.players) {
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
     // A(shu) 杀 C(qun, hp1) → C 阵亡 → 只剩 A、B（均 shu）→ 蜀势力胜
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
     ok(act(state, C, { type: 'pass' }));
@@ -2257,6 +2262,11 @@ describe('国战进阶（Step 7）', () => {
       },
       { seatId: B, name: '乙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [] },
     ]);
+    // 口径（用户 2026-09-20）：胜负/鏖战按**已确定势力**算——暗置角色的卡面势力不算数 → 先把武将明置
+    for (const p of state.players) {
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
     // 2 人国战 = 2 阵营存活 → 鏖战激活
     // A 用桃当杀打 B
     ok(act(state, A, { type: 'playCard', cardId: 't1', targetIds: [B], as: 'sha' }));
@@ -2410,6 +2420,40 @@ describe('国战进阶（Step 7）', () => {
   });
 
   // 5. 阵营多数胜利
+  it('胜负按**已确定势力**算：暗置的那几个不算人数（用户 2026-09-20 口径）', () => {
+    const state = makeGuozhanGame([
+      // 甲：决斗打丙（距离 2，杀够不着）、杀打丁（相邻）——两张都留着
+      // ⚠️ 丙必须是**别的势力**：阵亡会亮将（`doDeath` 里翻明置标志），若他和甲同为蜀，
+      //    甲的「杀死同势力角色 → 弃置所有牌」奖惩会把 a2 一起弃掉（`applyKillPenalty`）。
+      { seatId: A, name: '甲', heroId: 'zhangfei', deputyHeroId: 'guanyu', faction: 'shu', hand: [juedou('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'zhaoyun', deputyHeroId: 'machao', faction: 'shu', hand: [] },
+      { seatId: C, name: '丙', heroId: 'xuchu', deputyHeroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+      { seatId: D, name: '丁', heroId: 'lvbu', deputyHeroId: 'diaochan', faction: 'qun', hand: [], hp: 1 },
+    ]);
+    const at = (id: string) => state.players.find((x) => x.seatId === id)!;
+    // 只明置甲（蜀）——乙、丙虽然牌面也是同一批将，但**暗置**，不算人数
+    at(A).heroRevealed = true;
+    at(A).deputyRevealed = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    while (state.pending?.kind === 'respondDeath') {
+      const asked = state.pending.askQueue[state.pending.askIndex]!;
+      ok(act(state, asked, { type: 'pass' }));
+    }
+    // 丙阵亡后：存活 3 人里**只有甲**是已确定势力（蜀 1 ≤ half(3)=1）→ 不该判胜负
+    expect(state.gameOver, '暗置角色不参与胜负统计').toBe(false);
+    // 乙明置 → 蜀 2；再打死丁（存活 2 人）→ 蜀 2 > half(2)=1 → 蜀胜
+    at(B).heroRevealed = true;
+    at(B).deputyRevealed = true;
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [D] }));
+    ok(act(state, D, { type: 'pass' }));
+    while (state.pending?.kind === 'respondDeath') {
+      const asked = state.pending.askQueue[state.pending.askIndex]!;
+      ok(act(state, asked, { type: 'pass' }));
+    }
+    expect(state.winner).toBe('shu');
+  });
+
   it('阵营多数胜利：3 存活中 2 蜀 → 蜀胜', () => {
     const state = makeGuozhanGame([
       {
@@ -2447,6 +2491,11 @@ describe('国战进阶（Step 7）', () => {
         hp: 1,
       },
     ]);
+    // 口径（用户 2026-09-20）：胜负/鏖战按**已确定势力**算——暗置角色的卡面势力不算数 → 先把武将明置
+    for (const p of state.players) {
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
     // A 杀 D(hp1) → D 阵亡 → 存活 [A,B,C]，蜀 2 > half(3)=1 → 蜀胜
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [D] }));
     ok(act(state, D, { type: 'pass' }));
@@ -14866,103 +14915,26 @@ describe('国战 · 阵法技（队列 / 围攻关系）', () => {
   }
 
   // ——————————————————————————————————————————
-  // 阵法召唤（移动版口径，见 docs §5.132）
-  // ——————————————————————————————————————————
-  /** 把某人变回**全暗**（未确定势力）——阵法召唤只问这种人 */
-  function makeDark(state: GameState, seatId: string): void {
-    const p = state.players.find((x) => x.seatId === seatId)!;
-    p.heroRevealed = false;
-    p.deputyRevealed = false;
-  }
-
-  it('阵法召唤（队列型）：只问「亮将后能接进队列」的人；有人响应后**重新算**下一个够格的人', () => {
-    // 甲(曹洪·鹤翼，魏) 乙(暗魏) 丙(暗魏) 丁(吴) 戊(蜀) 己(群)
-    // ⚠️ 用 **6 人局**：4 人局里第 3 个魏会按「超过全场一半」**明置转化**成野心家（引擎的正当行为），
-    //    那样丙就不再是魏、队列也接不上——不是本用例要验的东西。
-    const state = gz([
-      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
-      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
-      { seatId: E, name: '戊', heroId: 'vanilla', faction: 'shu' },
-      { seatId: 's5', name: '己', heroId: 'vanilla', faction: 'qun' },
-    ]);
-    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
-    makeDark(state, B);
-    makeDark(state, C);
-    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
-    // 乙先被问：他是当时**唯一**亮将后能与甲同队列的暗将
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
-    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
-    expect(at(B).heroRevealed).toBe(true);
-    // ⚠️ 关键：乙亮将之后**丙才够格**（队列往后接）→ 丙这时才被问，而不是一开始就问
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
-    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
-    expect(at(C).heroRevealed).toBe(true);
-    expect(formationQueue(state, at(A)).map((p) => p.seatId)).toEqual([A, B, C]);
-  });
-
-  it('阵法召唤：「是队友」不够——中间隔着别的势力就不给问（也不该把技能摆出来）', () => {
-    // 甲(魏) — 乙(吴，已亮) — 丙(暗魏)：丙亮将也接不进甲的队列
-    const state = gz([
-      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
-      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
-      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
-    ]);
-    makeDark(state, C);
-    // 一个可问的人都没有 → 技能不出现在可选项里，硬发也发不动
+  /**
+   * ⛔ **阵法召唤已从当前规则中删除**（2026-08-28 移动版国战更新正式移除）。
+   *
+   * 按项目口径（只实现当前移动版国战的最终有效状态）这里**不留实现、不留开关、也不留 skip**，
+   * 只留一条「不存在这个入口」的断言——免得以后有人扫测试以为它还是待支持功能。
+   * ⚠️ 注意区分：**阵法技本身**（队列 / 围攻 / 飞影…）照常按武将文本实现，测试见本 describe 后半段。
+   */
+  it('阵法召唤：当前规则已删除该机制（技能列表里没有、硬发也打不出来）', () => {
+    const state = gz(
+      [
+        // 曹洪带【鹤翼】（队列型阵法技）——旧版他会多出【阵法召唤】这条主动技
+        { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+        { seatId: D, name: '丁', heroId: 'vanilla', faction: 'qun' },
+      ],
+      A,
+    );
     expect(toSnapshot(state, A).prompt?.legalSkillIds ?? []).not.toContain('zhenfa_summon');
     fail(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
-  });
-
-  it('阵法召唤（围攻型）：亮将后成为**同一围攻关系**的围攻角色才算够格', () => {
-    // 甲(蒋钦·鸟翔，魏) 乙(吴) 丙(暗魏) 丁(蜀)：丙亮魏 → 甲、丙同为乙的围攻者
-    const state = gz([
-      { seatId: A, name: '甲', heroId: 'jiangqin', faction: 'wei' },
-      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu' },
-      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
-    ]);
-    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
-    makeDark(state, C);
-    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
-    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
-    expect(
-      siegeRelations(state).some(
-        (r) => r.besiegedSeatId === B && r.besiegers.includes(A) && r.besiegers.includes(C),
-      ),
-    ).toBe(true);
-  });
-
-  it('阵法召唤：可以**拒绝**；且出牌阶段限一次、存活不足 4 人时不可用', () => {
-    const state = gz([
-      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
-      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
-    ]);
-    const at = (id: string) => state.players.find((p) => p.seatId === id)!;
-    makeDark(state, B);
-    ok(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
-    expect(state.pending?.kind).toBe('choice');
-    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 不响应
-    expect(at(B).heroRevealed).toBe(false); // 没亮
-    expect(state.pending?.kind).toBe('play'); // 流程正常回到出牌阶段
-    // 限一次：本阶段再来一次会被拒
-    fail(act(state, A, { type: 'useSkill', skillId: 'zhenfa_summon', targetIds: [] }));
-    // 前提：阵法技需要存活 ≥4
-    const small = gz([
-      { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei' },
-      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei' },
-      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
-    ]);
-    makeDark(small, B);
-    expect(toSnapshot(small, A).prompt?.legalSkillIds ?? []).not.toContain('zhenfa_summon');
   });
 
   it('围攻关系：左右都是敌人的角色处于被围攻', () => {
