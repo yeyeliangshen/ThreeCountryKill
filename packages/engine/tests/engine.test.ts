@@ -192,6 +192,17 @@ function skipRevealAsk(state: GameState) {
 }
 
 /** 快速跳过濒死救援轮（所有人弃权） */
+/**
+ * 回答「选择目标区域里的一张牌」的询问（【过河拆桥】/【顺手牵羊】）。
+ *
+ * 2026-09-18 起这两张牌改成**结算中选牌**：装备/判定这类明牌精确点（`card:<id>`）、
+ * 手牌只能**盲选一张牌背**（`hand:<第几张>`，0 起）——以前是「系统随机抽一张」，所以老用例
+ * 不用答这一问。规格见 docs §5.149。
+ */
+function pickZoneCard(state: GameState, seat: string, optionId: string) {
+  ok(act(state, seat, { type: 'chooseOption', optionId }));
+}
+
 function passDeathSaves(state: GameState) {
   while (state.pending?.kind === 'respondDeath') {
     const asked = state.pending.askQueue[state.pending.askIndex]!;
@@ -1229,6 +1240,95 @@ describe('即时锦囊', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
+  /**
+   * 「目标区域选牌」的验收（用户 2026-09-18 给的规格，docs §5.149）：
+   * 三个区域同时可选、明牌精确选、**手牌只能盲选一张牌背**（不泄露牌面）、
+   * 逐张判合法性、提交时重新校验。
+   */
+  describe('目标区域选牌：明牌精确选 / 手牌暗选（拆、顺共用原语）', () => {
+    const build = (targetExtra: { equip?: boolean; judgment?: boolean; hand?: number } = {}) => {
+      const state = makeGame([
+        { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('a1'), shunshou('a2')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+        { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      ]);
+      const b = state.players.find((p) => p.seatId === B)!;
+      b.equipment.weapon = targetExtra.equip ? wpn('w1') : null;
+      if (targetExtra.judgment) b.judgment.push(lebu('j1'));
+      b.hand = Array.from({ length: targetExtra.hand ?? 0 }, (_, i) => sha(`b${i + 1}`));
+      return { state, b };
+    };
+
+    it('三个区域同时可选；明牌给牌名，手牌只给「第 k 张（暗）」——不泄露牌面', () => {
+      const { state, b } = build({ equip: true, judgment: true, hand: 2 });
+      ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+      passWuxie(state);
+      const q = state.pending;
+      if (q?.kind !== 'choice') throw new Error(`预期区域选牌，实际是 ${q?.kind}`);
+      expect(q.options.map((o) => o.id).sort()).toEqual(
+        ['card:j1', 'card:w1', 'hand:0', 'hand:1'].sort(),
+      );
+      const labels = q.options.map((o) => o.label).join('｜');
+      expect(labels).toContain('装备'); // 明牌：牌名
+      expect(labels).toContain('判定区');
+      expect(labels).toContain('第 1 张手牌（暗');
+      // 暗牌的选项里**不能**出现牌名/花色/点数
+      expect(labels).not.toContain('杀');
+      expect(labels).not.toContain('♠');
+      // 选判定区的【乐不思蜀】→ 弃置它
+      pickZoneCard(state, A, 'card:j1');
+      expect(b.judgment).toHaveLength(0);
+      expect(state.discard.some((c) => c.id === 'j1')).toBe(true);
+    });
+
+    it('拆：选装备/选暗手牌都正确弃置（手牌是盲选的那一张）', () => {
+      const eq = build({ equip: true, hand: 1 });
+      ok(act(eq.state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+      passWuxie(eq.state);
+      pickZoneCard(eq.state, A, 'card:w1');
+      expect(eq.b.equipment.weapon).toBeNull();
+      expect(eq.state.discard.some((c) => c.id === 'w1')).toBe(true);
+
+      const hd = build({ hand: 2 });
+      ok(act(hd.state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+      passWuxie(hd.state);
+      pickZoneCard(hd.state, A, 'hand:0'); // 盲选第 1 张
+      expect(hd.b.hand.map((c) => c.id)).toEqual(['b2']);
+      expect(hd.state.discard.some((c) => c.id === 'b1')).toBe(true);
+    });
+
+    it('顺：选装备/选判定牌都是**实体牌**进使用者手牌（判定牌不结算延时效果）', () => {
+      const { state, b } = build({ equip: true, judgment: true });
+      const a = state.players.find((p) => p.seatId === A)!;
+      state.deck.push(mk('jc', 'sha', 'heart', 1)); // 万一结算了判定，红桃会「无效」——用日志钉死没结算
+      ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
+      passWuxie(state);
+      pickZoneCard(state, A, 'card:j1');
+      expect(b.judgment).toHaveLength(0);
+      expect(a.hand.some((c) => c.id === 'j1')).toBe(true); // 进的是手牌
+      // 没有触发它的延时效果：牌直接归甲，流程照常交回出牌阶段（没有插一段判定/生效）
+      expect(state.pending).toEqual({ kind: 'play', seatId: A });
+    });
+
+    it('提交时重新校验：那张牌已经不在原区域 → 重问一次（不随便换一张）', () => {
+      const { state, b } = build({ equip: true, hand: 1 });
+      ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+      passWuxie(state);
+      const q = state.pending;
+      if (q?.kind !== 'choice') throw new Error(`预期区域选牌，实际是 ${q?.kind}`);
+      expect(q.options.some((o) => o.id === 'card:w1')).toBe(true);
+      // 模拟「跨步期间那张牌被搬走」：直接把武器拿掉
+      b.equipment.weapon = null;
+      pickZoneCard(state, A, 'card:w1');
+      expect(state.log.some((e) => e.message.includes('不在原处'))).toBe(true);
+      const again = state.pending;
+      if (again?.kind !== 'choice') throw new Error(`预期重问，实际是 ${again?.kind}`);
+      expect(again.options.some((o) => o.id === 'card:w1')).toBe(false); // 那张牌已经不在候选里
+      pickZoneCard(state, A, 'hand:0'); // 重选一张 → 正常结算
+      expect(b.hand).toHaveLength(0);
+    });
+  });
+
   it('过河拆桥：弃目标 1 张手牌', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [guohe('a1')] },
@@ -1237,6 +1337,7 @@ describe('即时锦囊', () => {
     ]);
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0'); // 手牌只能盲选一张（规格：不再随机抽）
     const b = state.players.find((p) => p.seatId === B)!;
     expect(b.hand).toHaveLength(0);
     expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
@@ -1264,6 +1365,7 @@ describe('即时锦囊', () => {
     ]);
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     const a = state.players.find((p) => p.seatId === A)!;
     expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
     const b = state.players.find((p) => p.seatId === B)!;
@@ -1656,6 +1758,7 @@ describe('武将技能（Step 6）', () => {
     // 黑桃闪当过河拆桥，对 B 使用
     ok(act(state, A, { type: 'playCard', cardId: 'a1', as: 'guohe', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     // B 的手牌被拆
     const b = state.players.find((p) => p.seatId === B)!;
     expect(b.hand).toHaveLength(0);
@@ -4053,12 +4156,14 @@ describe('新增武将（按最新国战标准）', () => {
   it('谦逊：陆逊不能被【顺手牵羊】【乐不思蜀】指定，【过河拆桥】不受影响', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [shunshou('a1'), lebu('a2'), guohe('a3')] },
-      { seatId: B, name: '乙', heroId: 'luxun', hand: [] },
+      { seatId: B, name: '乙', heroId: 'luxun', hand: [sha('b1')] },
       { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
     ]);
     fail(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     fail(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
     ok(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [B] }));
+    passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
   });
 
   it('帷幕：贾诩不能被黑色锦囊指定，红色锦囊可以', () => {
@@ -4534,6 +4639,7 @@ describe('阶段 2.3 原语与验证技能', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     ok(act(state, A, { type: 'playCard', cardId: 'g1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     // B 的手牌没了，但没有枭姬的询问
     expect(state.log.some((e) => e.message.includes('枭姬'))).toBe(false);
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
@@ -4721,6 +4827,7 @@ describe('阶段 2.4 原语与验证技能', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     ok(act(state, A, { type: 'playCard', cardId: 'g1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     // 乙的手牌被拆空 → 连营
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
@@ -12811,7 +12918,7 @@ describe('国战标准版 · 姜维（挑衅）', () => {
     // 由姜维挑：只有一张手牌 → 只有「手牌（随机）」这个选项
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
-    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
     expect(b.hand).toHaveLength(0);
     expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
   });
@@ -12827,8 +12934,8 @@ describe('国战标准版 · 姜维（挑衅）', () => {
     ok(act(state, A, { type: 'useSkill', skillId: 'tiaoxin', cardIds: [], targetIds: [B] }));
     ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
     const opts = state.pending?.kind === 'choice' ? state.pending.options.map((o) => o.id) : [];
-    expect(opts).toContain('arm1');
-    ok(act(state, A, { type: 'chooseOption', optionId: 'arm1' }));
+    expect(opts).toContain('card:arm1'); // 选项 id 带 card: 前缀（区域选牌原语）
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:arm1' }));
     expect(b.equipment.armor).toBeNull();
     expect(state.discard.some((c) => c.id === 'arm1')).toBe(true);
   });
@@ -12859,7 +12966,7 @@ describe('国战标准版 · 姜维（挑衅）', () => {
       expect(state.pending.options.map((o) => o.id)).toEqual(['no']);
     }
     ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
     expect(state.players.find((p) => p.seatId === B)!.hand).toHaveLength(0);
   });
 
@@ -13460,7 +13567,7 @@ describe('国战 · 曹洪（护援）', () => {
     // 拆丙的牌（丙只有一张手牌 → 只有「随机手牌」这个选项）
     ok(act(state, A, { type: 'chooseOption', optionId: C }));
     expect(state.pending?.kind).toBe('choice');
-    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
     expect(c.hand).toHaveLength(0);
     expect(state.discard.some((x) => x.id === 'c1')).toBe(true);
   });
@@ -13840,13 +13947,13 @@ describe('国战 · 陈武董袭（断绁 / 奋命）', () => {
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     // 第一个横置的是甲（座次从头数），他自己没有可弃的？—— 手里有 a1
     expect(state.pending?.kind).toBe('choice');
-    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
     expect(a.hand).toHaveLength(0);
     expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
     // 轮到乙
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('乙');
-    ok(act(state, A, { type: 'chooseOption', optionId: '__hand' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
     // 注意：这一弃之后回合就结束了，乙已经开始新回合（摸了两张）——
     // 所以只断言「乙的牌进了弃牌堆」，不去数他的手牌
     expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
@@ -13917,7 +14024,7 @@ describe('国战 · 董卓（横征）/ 臧霸（横江）', () => {
     // 候选里没有甲（他空手空装备）→ 直接问丙
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('丙');
-    ok(act(state, B, { type: 'chooseOption', optionId: '__hand' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'hand:0' }));
     expect(c.hand).toHaveLength(0);
     expect(b.hand).toHaveLength(1); // 拿到了
     expect(state.log.some((e) => e.message.includes('横征'))).toBe(true);
@@ -14171,10 +14278,10 @@ describe('国战 · 凌统（旋略 / 勇进）', () => {
     // 乙的明牌里只有装备（手牌是随机的兜底选项）
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') {
-      expect(state.pending.options.map((o) => o.id)).toContain('a-' + B);
-      expect(state.pending.options.map((o) => o.id)).toContain('__hand');
+      expect(state.pending.options.map((o) => o.id)).toContain('card:a-' + B);
+      expect(state.pending.options.map((o) => o.id)).toContain('hand:0');
     }
-    ok(act(state, A, { type: 'chooseOption', optionId: 'a-' + B }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:a-' + B }));
     expect(b.equipment.armor).toBeNull();
     expect(state.discard.some((c) => c.id === 'a-' + B)).toBe(true);
     void a;
@@ -14852,6 +14959,7 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     state.deck = [mk('j1', 'sha', 'club', 5)];
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     // 过河拆桥结算完（乙掉了一张手牌）→ 屯田问乙
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') {
@@ -14876,6 +14984,7 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     state.deck = [mk('j1', 'sha', 'heart', 5)];
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     expect(b.tian).toHaveLength(0);
@@ -14897,6 +15006,7 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
       state.deck = [mk('j1', 'sha', suit, 5)];
       ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
       passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
       expect(state.pending?.kind).toBe('choice');
       ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
       expect(b.tian).toHaveLength(0); // 天妒先收走了，当不了「田」
@@ -14920,6 +15030,7 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('t1');
     ok(act(state, A, { type: 'playCard', cardId: 't1', as: 'shunshou', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     expect(a.tian).toHaveLength(0); // 田被取走
     expect(b.hand).toHaveLength(0); // 顺手牵羊拿走了乙那张牌
     expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
@@ -14957,6 +15068,7 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     expect(toSnapshot(state, A).prompt?.legalCardIds).toContain('t1');
     ok(act(state, A, { type: 'playCard', cardId: 't1', as: 'shunshou', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     expect(a.tian).toHaveLength(0);
     expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
   });
@@ -15171,6 +15283,7 @@ describe('国战 · 荀攸（奇策 / 智愚）', () => {
     // 再选目标
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    pickZoneCard(state, A, 'hand:0');
     // 两张手牌当【过河拆桥】打出去 → 拆掉乙一张牌
     expect(a.hand).toHaveLength(0);
     expect(b.hand).toHaveLength(0);
@@ -15412,6 +15525,7 @@ describe('国战 · 吕范（调度 / 典财）', () => {
     for (const id of ['b1', 'b2', 'b3']) {
       ok(act(state, B, { type: 'playCard', cardId: id, targetIds: [A] }));
       passWuxie(state);
+      pickZoneCard(state, B, 'hand:0');
     }
     expect(a.hand).toHaveLength(0);
     expect(a.flags.lostCardsThisPhase).toBe(3);
@@ -17633,13 +17747,10 @@ describe('国战 · 吴景（调归 / 风扬）', () => {
       C,
     );
     const b = state.players.find((p) => p.seatId === B)!;
-    // 丙用【过河拆桥】指定乙的装备 → 被风扬挡住（选牌返回 null，装备还在）
-    ok(act(state, C, { type: 'playCard', cardId: 'c1', targetIds: [B], targetCardId: 'b1' }));
-    passWuxie(state);
-    expect(b.equipment.weapon?.id).toBe('b1');
-    // 丙用【顺手牵羊】指定同一张 → 同样被挡
-    ok(act(state, C, { type: 'playCard', cardId: 'c2', targetIds: [B], targetCardId: 'b1' }));
-    passWuxie(state);
+    // ⚠️ 新规则（规格第八/十二条）：逐张判合法性，目标必须**至少有一张可操作的牌**。
+    //    乙只有那件被风扬保护的武器、又没有手牌 → 他**不再是**【过河拆桥】/【顺手牵羊】的合法目标。
+    fail(act(state, C, { type: 'playCard', cardId: 'c1', targetIds: [B], targetCardId: 'b1' }));
+    fail(act(state, C, { type: 'playCard', cardId: 'c2', targetIds: [B], targetCardId: 'b1' }));
     expect(b.equipment.weapon?.id).toBe('b1');
     expect(state.players.find((p) => p.seatId === C)!.hand.some((c) => c.id === 'b1')).toBe(false);
   });
@@ -17728,7 +17839,7 @@ describe('国战 · 严白虎（雉盗 / 寄篱）', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'yanbaihu', faction: 'qun', hand: [sha('a1'), guohe('a2')] },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [] },
-      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [sha('c1')] },
       { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu', hand: [] },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
@@ -17747,6 +17858,7 @@ describe('国战 · 严白虎（雉盗 / 寄篱）', () => {
     // 指定丙 → 放行
     ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [C] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
   });
 
   it('雉盗：出牌阶段内第一次对其造成伤害后，获得其区域里的一张牌', () => {
@@ -17766,9 +17878,9 @@ describe('国战 · 严白虎（雉盗 / 寄篱）', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') {
       expect(state.pending.title).toContain('雉盗');
-      expect(state.pending.options.map((o) => o.id)).toContain('b1');
+      expect(state.pending.options.map((o) => o.id)).toContain('card:b1');
     }
-    ok(act(state, A, { type: 'chooseOption', optionId: 'b1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:b1' }));
     expect(a.hand.some((c) => c.id === 'b1')).toBe(true);
     expect(b.equipment.weapon).toBeNull();
     expect(state.log.some((e) => e.message.includes('雉盗'))).toBe(true);
@@ -18246,6 +18358,7 @@ describe('国战 · 严白虎·寄篱（再使用一张虚拟同名牌）', () =
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], targetCardId: 'b2' }));
     // passWuxie 会一直清到没有无懈窗口为止——第二张牌自己也会开一个新的无懈链
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0'); // 第二张（虚拟牌）没带明牌目标 → 弹选择界面
     // 第一遍拆掉了武器；第二张（虚拟牌）没带明牌目标 → 拆手牌
     expect(b.equipment.weapon).toBeNull();
     expect(state.log.some((e) => e.message.includes('再使用一张【过河拆桥】'))).toBe(true);
@@ -19082,6 +19195,7 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     skipRevealAsk(state);
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0'); // 顺手牵羊：明牌精确选、手牌盲选一张
     expect(c.hand.length).toBe(0); // 拿到了丙的牌
     expect(state.suzhiTriggers).toBe(1);
   });
@@ -22271,10 +22385,9 @@ describe('国战 · 君主将（特性）', () => {
     s3.log = [];
     ok(act(s3, 'B', { type: 'playCard', cardId: 'b1', targetIds: ['A'] }));
     passWuxie(s3);
-    // 两遍结算各可能问一次「拿哪张」（引擎在某些路径上自动挑），问到就答
-    for (let i = 0; i < 3 && s3.pending?.kind === 'pickCards'; i++) {
-      ok(act(s3, 'B', { type: 'pickCards', cardIds: [s3.pending.cards[0]!.id] }));
-    }
+    // 据江让这张牌**额外结算一次** → 两次结算各要选一张（明牌精确选、手牌盲选）
+    pickZoneCard(s3, 'B', 'hand:0');
+    if (s3.pending?.kind === 'choice') pickZoneCard(s3, 'B', 'hand:0');
     expect(s3.players.find((x) => x.seatId === 'A')!.hand.length).toBe(0); // 两张都被拿走
     expect(s3.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
   });
@@ -24022,6 +24135,7 @@ describe('国战 · 苏飞（联翩）', () => {
     a.hand = [mk('gh1', 'guohe', 'spade'), sha('s1')];
     ok(act(state, A, { type: 'playCard', cardId: 'gh1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     if (state.pending?.kind === 'pickCards') {
       ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
     }
@@ -24060,11 +24174,13 @@ describe('国战 · 苏飞（联翩）', () => {
     a.hand = [mk('gh1', 'guohe', 'spade'), mk('gh2', 'guohe', 'club')];
     ok(act(state, A, { type: 'playCard', cardId: 'gh1', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     if (state.pending?.kind === 'pickCards') {
       ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
     }
     ok(act(state, A, { type: 'playCard', cardId: 'gh2', targetIds: [B] }));
     passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
     if (state.pending?.kind === 'pickCards') {
       ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
     }
@@ -24086,9 +24202,7 @@ describe('国战 · 苏飞（联翩）', () => {
     // 甲弃 3 张：过河拆桥 1 张 + 结束阶段弃 2 张
     ok(act(state, A, { type: 'playCard', cardId: 'gh1', targetIds: [B] }));
     passWuxie(state);
-    if (state.pending?.kind === 'pickCards') {
-      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
-    }
+    if (state.pending?.kind === 'choice') pickZoneCard(state, A, 'hand:0');
     a.hand = taos('a', 4);
     a.hp = 2; // 手牌上限 2 → 弃 2 张
     ok(act(state, A, { type: 'endPhase' }));
@@ -24102,10 +24216,11 @@ describe('国战 · 苏飞（联翩）', () => {
     // 苏飞已受伤（2/4）→ 两个分支都合法
     expect(ask.options.map((o) => o.id).sort()).toEqual(['discard', 'heal', 'no'].sort());
     ok(act(state, A, { type: 'chooseOption', optionId: 'discard' }));
-    // 选苏飞哪张牌的也是甲
-    if (state.pending?.kind === 'pickCards') {
+    // 选苏飞哪张牌的也是甲——走「目标区域选牌」：明牌精确选、**手牌盲选一张牌背**
+    // （不再把苏飞的手牌摊开给对面看）
+    if (state.pending?.kind === 'choice') {
       expect(state.pending.seatId).toBe(A);
-      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
+      pickZoneCard(state, A, 'hand:0');
     }
     // 日志告诉我们：**执行弃置的是甲**（牌主是苏飞）
     expect(state.log.some((e) => e.message.includes('甲 因【联翩】弃置了 苏飞 的'))).toBe(true);
@@ -24134,9 +24249,7 @@ describe('国战 · 苏飞（联翩）', () => {
     for (const id of ['gh1', 'gh2', 'gh3']) {
       ok(act(state, A, { type: 'playCard', cardId: id, targetIds: [B] }));
       passWuxie(state);
-      if (state.pending?.kind === 'pickCards') {
-        ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
-      }
+      pickZoneCard(state, A, 'hand:0'); // 拆：明牌精确选、手牌盲选一张
     }
     expect(turnDiscardCountBy(state, A)).toBe(3);
     ok(act(state, A, { type: 'endPhase' })); // 甲的结束阶段
@@ -24145,9 +24258,7 @@ describe('国战 · 苏飞（联翩）', () => {
     if (ask1?.kind !== 'choice') throw new Error(`预期苏飞甲的联翩，实际是 ${ask1?.kind}`);
     expect(ask1.title).toContain('苏飞甲');
     ok(act(state, A, { type: 'chooseOption', optionId: 'discard' }));
-    if (state.pending?.kind === 'pickCards') {
-      ok(act(state, A, { type: 'pickCards', cardIds: [state.pending.cards[0]!.id] }));
-    }
+    if (state.pending?.kind === 'choice') pickZoneCard(state, A, 'hand:0');
     // 苏飞乙（体力 3 → 门槛 4）**实时**重算：4 >= 4 → 也满足（快照在结算前就看不到了）
     const ask2 = state.pending;
     if (ask2?.kind !== 'choice') throw new Error(`预期苏飞乙的联翩，实际是 ${ask2?.kind}`);

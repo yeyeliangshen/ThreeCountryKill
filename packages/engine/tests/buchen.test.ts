@@ -232,7 +232,7 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       // 丙（蜀，非魏）→ 弃置乙一张牌：乙只有手牌 → 随机弃置
       const q2 = state.pending;
       if (q2?.kind !== 'choice') throw new Error(`预期选牌目标，实际是 ${q2?.kind}`);
-      act(state, 'C', { type: 'chooseOption', optionId: '__hand' });
+      act(state, 'C', { type: 'chooseOption', optionId: 'hand:0' });
       expect(b.hand.length, '乙的手牌被弃置了一张').toBe(0);
       // 第二问给**甲自己**（使用者本人也是「其余角色」——这正是 2026-09-18 定的那条口径）
       const q3 = state.pending;
@@ -284,8 +284,9 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       // ②魏＝获得：装备是明牌，直接点它
       const q2 = state.pending;
       if (q2?.kind !== 'choice') throw new Error(`预期选牌，实际是 ${q2?.kind}`);
-      expect(q2.options.some((o) => o.id === 'bw')).toBe(true);
-      act(state, 'C', { type: 'chooseOption', optionId: 'bw' });
+      // 选项 id 带 `card:` 前缀（「目标区域选牌」原语：明牌精确选、手牌盲选牌背）
+      expect(q2.options.some((o) => o.id === 'card:bw')).toBe(true);
+      act(state, 'C', { type: 'chooseOption', optionId: 'card:bw' });
       expect(b.equipment.weapon, '乙的装备被拿走了').toBe(null);
       expect(c.hand.some((x) => x.id === 'bw'), '丙获得了那张装备牌').toBe(true);
       // 轮到甲（使用者本人）

@@ -110,6 +110,10 @@ import {
   sameHeroBody,
 
   sameKnownFaction,
+  hasOperableTargetCard,
+  targetCardOptions,
+  takeTargetCardByChoice,
+  findTargetCardByChoice,
   skillOnField,
   fengyangBlocksEquip,
   zhidaoTargetsBlocked,
@@ -5579,6 +5583,9 @@ function playTrick(
       distance(state, player.seatId, tid) > 1
     )
       return err('顺手牵羊目标超出距离 1');
+    // 【过河拆桥】/【顺手牵羊】的目标：区域内**至少有一张可操作的牌**（用户 2026-09-18 规格）
+    if ((type === 'guohe' || type === 'shunshou') && !hasOperableTargetCard(state, player.seatId, t))
+      return err('目标区域里没有可操作的牌');
   } else if (type === 'jiedao') {
     if (intent.targetIds.length !== 2)
       return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');
@@ -6169,40 +6176,113 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
   }
 }
 
-/** 过河拆桥：弃目标 1 张牌 */
+/**
+ * 旧路径的兼容桥：调用方在**出牌意图**里就把目标牌带上了（`targetCardId`）。
+ *
+ * 现在的正式交互是「结算中弹选择界面」（规格：无懈窗口之后才选），但引擎内部与既有用例
+ * 仍会提前指定一张牌——那张牌若在结算时**仍在原区域**就直接用（等价于玩家早就选好了），
+ * 不在就落到选择界面重选。⚠️ 这条兼容桥**不会**让界面拿到暗牌信息：手牌的 id 只有引擎
+ * 自己（与测试）才知道。
+ */
+function presetTargetChoice(target: Player, cardId: string | undefined): string | undefined {
+  if (!cardId) return undefined;
+  if (EQUIP_SLOTS.some((s) => target.equipment[s]?.id === cardId)) return `card:${cardId}`;
+  if (target.judgment.some((c) => c.id === cardId)) return `card:${cardId}`;
+  const hi = target.hand.findIndex((c) => c.id === cardId);
+  if (hi >= 0) return `hand:${hi}`;
+  return undefined;
+}
+
+/**
+ * 「选目标区域里的一张牌」的询问（拆/顺共用；原语在 `heroes.ts`，规则见那里的注释）。
+ *
+ * 三区同时进入选择界面、明牌精确选、**手牌盲选**（按第 k 张，不是 `random()`）；
+ * 回答回来**重新校验**——选项是跨步给出的，那时那张牌可能已经被搬走，取不到就**重问一次**
+ * （规格第十三条：绝不「随便换一张」）。
+ */
+function askTargetCardPick(
+  state: GameState,
+  source: Player,
+  target: Player,
+  verb: '弃置' | '获得',
+  after: (picked: { card: Card; from: 'hand' | 'equip' | 'judge' } | null) => void,
+  /** 调用方**已经**指定了牌（旧路径/引擎内部/测试）→ 只要它此刻仍在原区域就直接用，不弹询问 */
+  preset?: string,
+): void {
+  if (preset) {
+    const got = takeTargetCardByChoice(state, source.seatId, target, preset);
+    if (got) {
+      after(got);
+      return;
+    }
+    // 那张牌已经不在原处 → 落到下面的询问（规格第十三条：重新选，别随便换一张）
+  }
+  const ask = (): void => {
+    if (!target.alive || !hasOperableTargetCard(state, source.seatId, target)) {
+      pushLog(state, 'trick', `${target.name} 没有可${verb}的牌。`);
+      after(null);
+      return;
+    }
+    askChoice(
+      state,
+      source.seatId,
+      `【选择区域里的一张牌】${verb} ${target.name} 的一张牌`,
+      targetCardOptions(state, source.seatId, target, verb),
+      (st, _p, picked) => {
+        const got = takeTargetCardByChoice(st, source.seatId, target, picked);
+        if (!got) {
+          pushLog(st, 'trick', '所选的那张牌已经不在原处，请重新选择。');
+          ask();
+          return;
+        }
+        after(got);
+      },
+    );
+  };
+  ask();
+}
+
+/** 过河拆桥：弃置目标区域内 1 张牌（由使用者选：明牌精确点、手牌盲选一张） */
 function resolveGuohe(state: GameState, ctx: TrickContext): void {
+  const source = getPlayer(state, ctx.sourceId)!;
   const target = getPlayer(state, ctx.targetId!);
   if (!target || !target.alive) {
     endTrickResolution(state, ctx);
     return;
   }
-  const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
-  if (got) {
+  askTargetCardPick(
+    state,
+    source,
+    target,
+    '弃置',
+    (got) => {
+    if (!got) {
+      endTrickResolution(state, ctx);
+      return;
+    }
     toDiscard(state, got.card);
-    pushLog(
-      state,
-      'trick',
-      `${getPlayer(state, ctx.sourceId)!.name} 拆了 ${target.name} 的【${cardLabel(got.card)}】。`,
-    );
+    pushLog(state, 'trick', `${source.name} 拆了 ${target.name} 的【${cardLabel(got.card)}】。`);
     // 拆掉的是装备 → 目标失去装备区的一张牌（枭姬）；之后还要补上「因弃置」的收口
     // ⚠️ 以前这一支直接 endTrickResolution，装备被拆**不进**弃置收口：礼让听不到、
     //    夙智③那种「其他角色因弃置进弃牌堆」的旁观技能也听不到（测试抓到的）。
-    if (got.fromEquip) {
+    if (got.from === 'equip') {
       fireEquipLost(state, target, got.card, () =>
         fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId),
       );
       return;
     }
-    // ⚠️ 「因弃置」那套要派发（孔的礼让），而且**执行弃置动作的是使用者**——
+    // ⚠️ 「因弃置」那套要派发（孔融的礼让），而且**执行弃置动作的是使用者**——
     //    两个维度分开记（见 state.turnDiscards）：牌主是 target，执行者是 ctx.sourceId。
-    fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId);
-    return;
-  }
-  pushLog(state, 'trick', `${target.name} 没有牌可拆。`);
-  endTrickResolution(state, ctx);
+      fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId);
+    },
+    presetTargetChoice(target, ctx.targetCardId),
+  );
 }
 
-/** 顺手牵羊：获得目标 1 张牌 */
+/**
+ * 顺手牵羊：获得目标区域内 1 张牌（与拆同一套选择界面；区别只在选完之后的去处）。
+ * ⚠️ 拿到**判定区**的牌 = 该**实体牌**进使用者手牌，**不结算**它的延时锦囊效果。
+ */
 function resolveShunshou(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId)!;
   const target = getPlayer(state, ctx.targetId!);
@@ -6210,23 +6290,28 @@ function resolveShunshou(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
-  const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
-  if (got) {
-    source.hand.push(got.card);
-    pushLog(
-      state,
-      'trick',
-      `${source.name} 从 ${target.name} 处获得了【${cardLabel(got.card)}】。`,
-    );
-    if (got.fromEquip) {
-      fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
+  askTargetCardPick(
+    state,
+    source,
+    target,
+    '获得',
+    (got) => {
+    if (!got) {
+      endTrickResolution(state, ctx);
       return;
     }
-  } else {
-    pushLog(state, 'trick', `${target.name} 没有牌可偷。`);
-  }
-  endTrickResolution(state, ctx);
+    source.hand.push(got.card);
+    pushLog(state, 'trick', `${source.name} 从 ${target.name} 处获得了【${cardLabel(got.card)}】。`);
+      if (got.from === 'equip') {
+        fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
+        return;
+      }
+      endTrickResolution(state, ctx);
+    },
+    presetTargetChoice(target, ctx.targetCardId),
+  );
 }
+
 
 /** 从目标的牌中选取一张（优先指定明牌区，否则随机手牌，再否则随机装备/判定） */
 function pickTargetCard(
@@ -6862,18 +6947,8 @@ function haolingPickableOptions(
   target: Player,
   verb: '弃置' | '获得',
 ): { id: string; label: string }[] {
-  const options: { id: string; label: string }[] = [];
-  for (const slot of EQUIP_SLOTS) {
-    const c = target.equipment[slot];
-    if (!c) continue;
-    // 吴景·风扬：异势力角色不能弃置/获得同队列吴景队友的装备牌
-    if (fengyangBlocksEquip(state, actorSeatId, target, c)) continue;
-    options.push({ id: c.id, label: `${verb}其装备【${cardLabel(c)}】` });
-  }
-  if (target.hand.length > 0) {
-    options.push({ id: '__hand', label: `${verb}其一张手牌（随机，共 ${target.hand.length} 张）` });
-  }
-  return options;
+  // 与拆/顺、与「获得其一张牌」类技能共用同一套「目标区域选牌」原语（明牌精确选、手牌盲选）
+  return targetCardOptions(state, actorSeatId, target, verb);
 }
 
 /**
@@ -7021,21 +7096,9 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
                   next,
                 );
               };
-              if (picked2 === '__hand') {
-                const pickIdx = Math.floor(st2.rng() * target.hand.length);
-                const card = target.hand[pickIdx];
-                if (!card) {
-                  next();
-                  return;
-                }
-                doIt(card);
-                return;
-              }
-              const chosen = EQUIP_SLOTS.map((s) => target.equipment[s]).find(
-                (c) => c?.id === picked2,
-              );
+              const chosen = findTargetCardByChoice(st2, p2.seatId, target, picked2);
               if (!chosen) {
-                next();
+                next(); // 跨步：那张牌已经不在原区域了
                 return;
               }
               doIt(chosen);

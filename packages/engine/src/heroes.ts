@@ -3464,17 +3464,9 @@ function takeOneOfTargetCards(
   skillName: string,
   after?: () => void,
 ): void {
-  const visible: Card[] = [
-    ...(EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[]),
-    ...target.judgment,
-  ];
-  const options: { id: string; label: string }[] = visible.map((c) => ({
-    id: c.id,
-    label: `获得其【${cardLabel(c)}】`,
-  }));
-  if (target.hand.length > 0) {
-    options.push({ id: '__hand', label: `获得其一张手牌（随机，共 ${target.hand.length} 张）` });
-  }
+  // 三个区域统一走「目标区域选牌」原语：明牌精确选、**手牌盲选一张牌背**（不再随机抽）。
+  // 取牌交给 `api.transferCard`（它自己会摘牌并派发「失去装备」那套）——所以这里只**查**不取。
+  const options = targetCardOptions(state, picker.seatId, target, '获得');
   if (options.length === 0) {
     after?.();
     return;
@@ -3485,19 +3477,9 @@ function takeOneOfTargetCards(
     `【${skillName}】：获得 ${target.name} 的一张牌`,
     options,
     (st, _p, picked) => {
-      if (picked === '__hand') {
-        const idx = Math.floor(state.rng() * target.hand.length);
-        const card = target.hand[idx];
-        if (!card) {
-          after?.();
-          return;
-        }
-        api.transferCard(target.seatId, card, picker.seatId, after);
-        return;
-      }
-      const card = visible.find((c) => c.id === picked);
+      const card = findTargetCardByChoice(st, picker.seatId, target, picked);
       if (!card) {
-        after?.();
+        after?.(); // 跨步：那张牌已经不在原区域了（规格第十三条）
         return;
       }
       api.transferCard(target.seatId, card, picker.seatId, after);
@@ -7452,6 +7434,153 @@ const WUJING: Hero = {
  * 动手的人（actor）与那名吴景**势力不同或未确定势力**。吴景自己动手不受自己限制。
  * 引擎在几个收口处读它（见吴景武将注释里的清单）。
  */
+/**
+ * 「从目标的**区域**里选一张牌」的公共原语（用户 2026-09-18 给的规格）。
+ * 【过河拆桥】【顺手牵羊】以及所有「弃置/获得其区域内一张牌」的技能都走这一套。
+ *
+ * 规则要点（照抄规格）：
+ * - 三个区域（**手牌 / 装备 / 判定**）同时进入选择界面，不许「先选区域、再由系统随机」；
+ * - **装备区、判定区是明牌** → 精确选择（选项直接给牌名）；
+ * - **手牌是暗牌** → 只能**盲选**：选项按「第 k 张」给（不含牌名/花色/点数/类型），
+ *   引擎保留「我选了对方手里第 k 张未知牌」这个动作——**不是** `random()` 替玩家抽
+ *   （对玩家而言信息上等价，但交互与实体牌一致，也让「牌离开区域后要重校验」这条有意义）；
+ * - 逐张判合法性（风扬那类「不能被弃置/获得」的保护在这一层生效）；
+ * - 目标是否合法看「**至少有一张可操作的牌**」，不是「三个区非空」就算。
+ */
+
+/** 这张牌此刻能不能被 `actorSeatId` 弃置/获得（目前只有风扬那类装备保护） */
+export function canOperateTargetCard(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+  card: Card,
+): boolean {
+  const onEquip = EQUIP_SLOTS.some((s) => target.equipment[s]?.id === card.id);
+  if (onEquip) return !fengyangBlocksEquip(state, actorSeatId, target, card);
+  return true;
+}
+
+/** 目标三个区域里**可操作**的牌（手牌的「可操作」一律为真——保护只发生在装备区） */
+export function operableTargetCards(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+): { hand: Card[]; equip: Card[]; judge: Card[] } {
+  const ok = (c: Card): boolean => canOperateTargetCard(state, actorSeatId, target, c);
+  return {
+    hand: target.hand.filter(ok),
+    equip: EQUIP_SLOTS.map((s) => target.equipment[s]).filter((c): c is Card => !!c && ok(c)),
+    judge: target.judgment.filter(ok),
+  };
+}
+
+/** 目标至少有一张可操作的牌（＝可以成为【过河拆桥】/【顺手牵羊】的合法目标） */
+export function hasOperableTargetCard(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+): boolean {
+  const z = operableTargetCards(state, actorSeatId, target);
+  return z.hand.length + z.equip.length + z.judge.length > 0;
+}
+
+/**
+ * 选择项：明牌给牌名 + 真实 id（`card:<id>`），手牌给「第 k 张（暗）」（`hand:<k>`）。
+ *
+ * ⚠️ 手牌的 `k` 是**当前手牌数组的下标**：`operableTargetCards` 对手牌不过滤，
+ * 所以下标与 `target.hand` 一一对应 ✓（改这一条时别忘了两边一起看）。
+ * ⚠️ 选项里**不能**出现手牌的 id/牌名/花色/点数——那是暗信息（规格第九条）。
+ */
+export function targetCardOptions(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+  verb: '弃置' | '获得',
+  opts2?: { noJudgment?: boolean },
+): { id: string; label: string }[] {
+  const z = operableTargetCards(state, actorSeatId, target);
+  const opts: { id: string; label: string }[] = [];
+  for (const c of z.equip) opts.push({ id: `card:${c.id}`, label: `${verb}其装备【${cardLabel(c)}】` });
+  if (opts2?.noJudgment) {
+    // 凌统·旋略：只能弃手牌/装备，不能动判定区
+  } else {
+    for (const c of z.judge) opts.push({ id: `card:${c.id}`, label: `${verb}其判定区【${cardLabel(c)}】` });
+  }
+  z.hand.forEach((_c, i) =>
+    opts.push({ id: `hand:${i}`, label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）` }),
+  );
+  return opts;
+}
+
+/**
+ * 按选项 id 把那张牌**从原区域取出来**（取出来 = 已经离开原区域，调用方负责放去该去的地方）。
+ *
+ * ⚠️ **提交时重新校验**（规格第十三条）：选项是跨步给出的，回答回来时那张牌可能已经被
+ * 别的效果搬走/弃掉；取不到就返回 null，调用方**重问一次**——绝不「随便换一张」。
+ */
+/**
+ * 按选项 id 找到那张牌，但**不把它取出来**（只做「还在不在原区域」的校验）。
+ *
+ * 给「交给引擎自己的搬运入口」的技能用：`api.transferCard` / `api.discardTargetCard` 自己会
+ * 从区域里摘牌、并派发「失去装备 / 因弃置」那套收口——先取再交就取不到了（牌已不在原区域）。
+ */
+export function findTargetCardByChoice(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+  choiceId: string,
+): Card | null {
+  if (choiceId.startsWith('hand:')) {
+    const idx = Number(choiceId.slice('hand:'.length));
+    if (!Number.isInteger(idx) || idx < 0 || idx >= target.hand.length) return null;
+    return target.hand[idx] ?? null;
+  }
+  if (choiceId.startsWith('card:')) {
+    const id = choiceId.slice('card:'.length);
+    for (const slot of EQUIP_SLOTS) {
+      const c = target.equipment[slot];
+      if (c?.id === id) return canOperateTargetCard(state, actorSeatId, target, c) ? c : null;
+    }
+    const jc = target.judgment.find((c) => c.id === id);
+    if (jc) return canOperateTargetCard(state, actorSeatId, target, jc) ? jc : null;
+  }
+  return null;
+}
+
+export function takeTargetCardByChoice(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+  choiceId: string,
+): { card: Card; from: 'hand' | 'equip' | 'judge' } | null {
+  if (choiceId.startsWith('hand:')) {
+    const idx = Number(choiceId.slice('hand:'.length));
+    if (!Number.isInteger(idx) || idx < 0 || idx >= target.hand.length) return null;
+    const [c] = target.hand.splice(idx, 1);
+    return c ? { card: c, from: 'hand' } : null;
+  }
+  if (choiceId.startsWith('card:')) {
+    const id = choiceId.slice('card:'.length);
+    for (const slot of EQUIP_SLOTS) {
+      const c = target.equipment[slot];
+      if (c?.id === id) {
+        // ⚠️ 逐张判合法性（规格第八条）：风扬那类「不能被弃置/获得」的保护在这里也要生效——
+        //    否则「提前指定了那张牌」的调用方就能绕过保护（兼容桥刚加时就是这个 bug）。
+        if (!canOperateTargetCard(state, actorSeatId, target, c)) return null;
+        target.equipment[slot] = null;
+        return { card: c, from: 'equip' };
+      }
+    }
+    const ji = target.judgment.findIndex((c) => c.id === id);
+    if (ji >= 0) {
+      const [c] = target.judgment.splice(ji, 1);
+      if (c && !canOperateTargetCard(state, actorSeatId, target, c)) return null;
+      return c ? { card: c, from: 'judge' } : null;
+    }
+  }
+  return null;
+}
+
 export function fengyangBlocksEquip(
   state: GameState,
   actorSeatId: string,
@@ -11416,17 +11545,10 @@ function pickOneOfTargetCards(
   // 凌统·旋略只能弃手牌/装备，官方明确不能动判定区
   opts?: { noJudgment?: boolean },
 ): void {
-  const visible: Card[] = [
-    ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
-    ...(opts?.noJudgment ? [] : target.judgment),
-  ];
-  const options: { id: string; label: string }[] = visible.map((c) => ({
-    id: c.id,
-    label: `弃置其【${cardLabel(c)}】`,
-  }));
-  if (target.hand.length > 0) {
-    options.push({ id: '__hand', label: `弃置其一张手牌（随机，共 ${target.hand.length} 张）` });
-  }
+  // 与「获得其一张牌」共用同一套原语（明牌精确选、手牌盲选牌背）；弃置交给 discardTargetCard。
+  const options = targetCardOptions(state, picker.seatId, target, '弃置', {
+    ...(opts?.noJudgment ? { noJudgment: true } : {}),
+  });
   if (options.length === 0) {
     pushLog(state, 'skill', `${target.name} 没有牌可以被弃置。`);
     after?.();
@@ -11438,7 +11560,12 @@ function pickOneOfTargetCards(
     `【${skillName}】：弃置 ${target.name} 的一张牌`,
     options,
     (st, _p, picked) => {
-      api.discardTargetCard(target.seatId, picked === '__hand' ? undefined : picked, after);
+      const card = findTargetCardByChoice(st, picker.seatId, target, picked);
+      if (!card) {
+        after?.(); // 跨步：那张牌已经不在原区域了
+        return;
+      }
+      api.discardTargetCard(target.seatId, card.id, after);
     },
   );
 }
@@ -13888,35 +14015,30 @@ function askLianpian(ctx: HookContext): void {
         );
         return;
       }
-      // ① 弃置苏飞的一张牌：选牌与**执行弃置的都是结束阶段那位**
-      const pool = handAndEquipOf(me);
-      if (pool.length === 0) return;
-      const pick = (st2: GameState, chosen: typeof pool): void => {
-        const card = chosen[0];
-        if (!card) return;
-        // ⚠️ 第四个参数是**执行弃置动作的人**——账本因此记在结束阶段这位名下
-        //    （这也会让他本回合的弃置数 +1，所以多个苏飞要逐个实时重算门槛）
-        ctx.api.discardCard(me.seatId, card, () => {
-          pushLog(
-            st2,
-            'skill',
-            `${ending.name} 因【联翩】弃置了 ${me.name} 的【${cardLabel(card)}】。`,
-            { seat: ending.seatId },
-          );
-        }, ending.seatId);
-      };
-      if (pool.length === 1) {
-        pick(st, pool);
-        return;
-      }
-      ctx.api.askPickCards(
+      // ① 弃置苏飞的一张牌：选牌与**执行弃置的都是结束阶段那位**。
+      //    选牌走「目标区域选牌」原语（明牌精确选、**手牌盲选一张牌背**）——不能把苏飞的
+      //    手牌摊开给对面看（规格第九条）；「一张牌」= 手牌 + 装备，不含判定区（用户给的口径）。
+      const options = targetCardOptions(st, ending.seatId, me, '弃置', { noJudgment: true });
+      if (options.length === 0) return;
+      ctx.api.askChoice(
         st,
         ending.seatId,
-        `【联翩】：选择要弃置的 ${me.name} 的一张牌`,
-        pool,
-        1,
-        1,
-        (st2, _p2, chosen) => pick(st2, chosen),
+        `【联翩】：弃置 ${me.name} 的一张牌`,
+        options,
+        (st2, _p2, picked2) => {
+          const card = findTargetCardByChoice(st2, ending.seatId, me, picked2);
+          if (!card) return; // 跨步：那张牌已经不在原区域了
+          // ⚠️ 第四个参数是**执行弃置动作的人**——账本因此记在结束阶段这位名下
+          //    （这也会让他本回合的弃置数 +1，所以多个苏飞要逐个实时重算门槛）
+          ctx.api.discardCard(me.seatId, card, () => {
+            pushLog(
+              st2,
+              'skill',
+              `${ending.name} 因【联翩】弃置了 ${me.name} 的【${cardLabel(card)}】。`,
+              { seat: ending.seatId },
+            );
+          }, ending.seatId);
+        },
       );
     },
   );

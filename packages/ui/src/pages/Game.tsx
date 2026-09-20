@@ -1294,12 +1294,18 @@ export function Game() {
                 </button>
               )}
 
-              {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…） */}
+              {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…）。
+                  ⚠️ 选目标区域里的牌时，手牌那几个选项是 `hand:<第几张>`（引擎的「目标区域选牌」
+                  原语，docs §5.149）——它们是**暗牌**，只给牌背样式，牌名/花色一律不显示。 */}
               {prompt.kind === 'choice' && (
                 <>
                   {prompt.choiceOptions?.map((o) => (
-                    <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
-                      {o.label}
+                    <button
+                      key={o.id}
+                      className={o.id.startsWith('hand:') ? 'card-back-option' : 'primary'}
+                      onClick={() => chooseOption(o.id)}
+                    >
+                      {o.id.startsWith('hand:') ? '🂠 牌背' : o.label}
                     </button>
                   ))}
                 </>
