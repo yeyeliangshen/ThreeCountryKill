@@ -16490,12 +16490,19 @@ export function determineDualFaction(
   const isWild = (h: Hero): boolean => h.faction === 'ambitionist';
   const mainDual = !!main.secondFaction;
   const deputyDual = !!deputy.secondFaction;
-  if (!mainDual && !deputyDual) return null; // 两张都是单势力 → 不归它管
-  // 与野心家武将组合 → 玩家自己选那张双势力牌的势力
-  if (isWild(main) || isWild(deputy)) {
-    const dual = mainDual ? main : deputy;
-    return { kind: 'choice', options: factionsOf(dual) };
+  // ⚠️ 野心家的分支必须在「两张都是单势力 → 不归它管」**之前**：
+  //    「野心家武将 + 单势力副将」是最常见的组合（用户 2026-09-18 口径：主将暗置期间
+  //    **暂时按照副将确定势力**），以前被那条早退挡掉 → 孙綝配关羽直接报「需选 2 位同阵营武将」，
+  //    等于野心家武将根本选不出来。
+  if (isWild(main)) {
+    // 主将野心家：势力按**副将**定（副将单势力 → 自动；副将双势力 → 玩家自己选一面）
+    return deputyDual
+      ? { kind: 'choice', options: factionsOf(deputy) }
+      : { kind: 'auto', faction: deputy.faction };
   }
+  // 副将野心家不合法（只能在主将位），由 pickHero 拦，这里不表态
+  if (isWild(deputy)) return null;
+  if (!mainDual && !deputyDual) return null; // 两张都是单势力 → 不归它管
   const shared = factionsOf(main).filter((f) => factionsOf(deputy).includes(f));
   if (shared.length === 1) return { kind: 'auto', faction: shared[0]! };
   if (shared.length >= 2) return { kind: 'choice', options: shared };

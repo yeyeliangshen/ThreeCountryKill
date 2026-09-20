@@ -2122,14 +2122,15 @@ function afterTurnEnd(state: GameState): void {
   const next = nextAliveSeat(state, state.turn.seatIndex);
   clearTurnScoped(); // 下家算完了，本回合的临时标记可以清了
   if (next === state.turn.seatIndex) {
-    // 兜底：仅剩 1 人 → 判胜负
-    checkWin(state);
-    if (!state.gameOver) {
+    // 兜底：仅剩 1 人 → 判胜负（「暴露野心 → 建立新势力」那套流程也会在这里接管，见 §5.141）
+    const forceEnd = (): void => {
       state.gameOver = true;
       setPending(state, null);
       state.turn.phase = 'gameOver';
       pushLog(state, 'gameover', '游戏结束。');
-    }
+    };
+    if (checkWin(state, forceEnd)) return;
+    forceEnd();
     return;
   }
   // 「一轮」走完的标志：下一个回合的座次比当前**靠前**（正常推进只会往后跳，
@@ -4275,8 +4276,14 @@ function setWinner(state: GameState, winner: string): true {
           ? '游戏结束，队伍2（座位2/4）胜利。'
           : '游戏结束。';
   } else if (state.mode === 'guozhan') {
+    // 建国后的新势力：胜方是 `force:序号`（官方没给国号，等实测；先报「新势力」）
+    const isForce = winner.startsWith('force:');
     const fname = (winner && FACTION_NAME[winner as Faction]) || '';
-    msg = fname ? `游戏结束，${fname}势力胜利。` : '游戏结束。';
+    msg = isForce
+      ? '游戏结束，新势力胜利。'
+      : fname
+        ? `游戏结束，${fname}势力胜利。`
+        : '游戏结束。';
   } else {
     const wp = getPlayer(state, winner);
     msg = wp ? `游戏结束，${wp.name} 获胜。` : '游戏结束。';
@@ -4285,8 +4292,8 @@ function setWinner(state: GameState, winner: string): true {
   return true;
 }
 
-/** 死亡后检查胜负：返回 true 表示游戏已结束 */
-function checkWin(state: GameState): boolean {
+/** 死亡后检查胜负：返回 true 表示游戏已结束（或「暴露野心」流程已接管，见 §5.141） */
+function checkWin(state: GameState, resume?: () => void): boolean {
   const alive = alivePlayers(state);
 
   if (state.mode === '2v2') {
@@ -4317,23 +4324,11 @@ function checkWin(state: GameState): boolean {
   }
 
   if (state.mode === 'guozhan') {
-    if (alive.length === 0) return false;
-    if (alive.length === 1) return setWinner(state, alive[0]!.faction ?? alive[0]!.seatId);
-    // 统计存活阵营（统一走 factionAliveCount，别再手写一份 Map）
-    const factionCounts = new Map<string, number>();
-    for (const p of alive) {
-      const f = p.faction ?? 'neutral';
-      factionCounts.set(f, (factionCounts.get(f) ?? 0) + 1);
-    }
-    // 某非野心家阵营存活数 > 半数 → 该阵营胜
-    const half = Math.floor(alive.length / 2);
-    for (const f of factionCounts.keys()) {
-      if (f === 'ambitionist' || f === 'neutral') continue;
-      if (factionAliveCount(state, f as Faction) > half) return setWinner(state, f);
-    }
-    // 到这里说明没有任何阵营过半，且场上还有 ≥2 名存活者。
-    // 「只剩 1 个非野心家阵营」的情况不必单独判——那时它的存活数等于存活总数，
-    // 必然满足上面的过半条件（上面已把野心家/中立排除在计数之外）。
+    // 「暴露野心 → 建立新势力」的截断（§5.141）：有「主将还没明置的野心家武将」时，
+    // **不能直接结束游戏**——先让他决定要不要暴露/建国，跑完再看胜负。
+    if (interceptVictoryForAmbition(state, resume)) return true;
+    const v = guozhanWinner(state);
+    if (v) return setWinner(state, v);
     return false;
   }
 
@@ -4343,6 +4338,251 @@ function checkWin(state: GameState): boolean {
     return setWinner(state, '');
   }
   return false;
+}
+
+/**
+ * 国战「本该谁赢」（没有则 null）。
+ *
+ * 分档键：**归属势力 id（`Player.forceId`）优先**——建国后的新势力是一个独立势力，
+ * 成员共享 `forceId`，照样可以「过半获胜」（§5.141）；没有 `forceId` 的用**真实势力** `p.faction`。
+ *
+ * ⚠️ 这里**不能**用 `factionGroupKey`：那个走 `effectiveFaction`（**明置**口径），暗置角色会变成
+ * `null` ——而胜负一向按**真实势力**判（「暗置只是别人不知道，牌上的势力仍然在」，
+ * 与 `factionAliveCount`/鏖战同一口径）。第一版就是踩了这个坑，两条国战胜利用例当场变红。
+ * ⚠️ 单个野心家（独立 `force:序号`）永远过不了半，只能靠成为最后存活者获胜——与官方一致。
+ */
+function guozhanWinner(state: GameState): string | null {
+  const alive = alivePlayers(state);
+  if (alive.length === 0) return null;
+  if (alive.length === 1) return alive[0]!.faction ?? alive[0]!.seatId;
+  const counts = new Map<string, number>();
+  for (const p of alive) {
+    const key = p.forceId ?? p.faction ?? 'neutral';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const half = Math.floor(alive.length / 2);
+  for (const [key, c] of counts) {
+    if (key === 'neutral') continue;
+    if (c > half) return key;
+  }
+  return null;
+}
+
+/**
+ * 还没暴露主将的「**野心家武将**」角色（§5.141 的触发条件）：
+ * 存活 + **只明置了副将**（主将暗置）+ 主将牌是野心家武将 → 他此刻暂时按副将的势力算。
+ *
+ * ⚠️ 与「因势力超编转成的普通野心家」无关：那种角色没有这套流程（用户 2026-09-18 专门纠正）。
+ */
+function unexposedAmbitionistCaptains(state: GameState): Player[] {
+  return state.players.filter(
+    (p) =>
+      p.alive &&
+      !p.heroRevealed &&
+      !!p.deputyRevealed &&
+      getHeroForMode(p.heroId, state.mode)?.faction === 'ambitionist',
+  );
+}
+
+/** 势力数变化（只在跨越 0 时才派发）——会盟那类监听「某势力首次出现/消失」的技能靠它 */
+function fireFactionCountChange(
+  state: GameState,
+  label: string,
+  from: number,
+  to: number,
+  after: () => void,
+): void {
+  if (!((from === 0 && to > 0) || (from > 0 && to === 0))) {
+    after();
+    return;
+  }
+  runAllPlayersHooks(state, 'factionCountChanged', { faction: label as Faction, from, to }, after);
+}
+
+/**
+ * 胜利结算前的「暴露野心」截断（§5.141）。返回 true＝**已接管**：调用方别再结算胜利、
+ * 也别继续往下走；整条流程跑完由 `settleAfterAmbition` 决定「有人赢 → 结算；没人赢 → resume()」。
+ *
+ * ⚠️ 口径（用户 2026-09-18 给定，见 docs §5.141）：
+ * - 触发：即将满足胜利条件、且仍有「只明置了副将的野心家武将」存活 → 不能直接结束游戏；
+ * - 暴露后：明置主将、身份/势力**转为野心家**（不再按副将的势力算）；
+ * - **即使存活不足 3 人也能建国**；建国生成独立 `forceId`、发起者立即属于它；
+ * - **所有存活玩家**分别选择加入/不加入（旧版「只能拉一个」「第一个加入就停」「只有加入者有补偿」
+ *   全部作废）；不加入者**可选**领取补偿（手牌补到 4 张 + 回复 1 点体力，官方用「可」）。
+ *
+ * ⚠️ 官方公告没写细、本仓库**按座次**取的实现选择（等实机实测校正，别当成口径）：
+ * 多个野心家同时暴露时谁先被问（按座次）、邀请其他玩家的顺序（发起者的下家起按座次）。
+ * 另外「不暴露 / 不建国 / 不领补偿」都做成**询问**——若实机是无条件自动执行，改这里即可。
+ */
+function interceptVictoryForAmbition(state: GameState, resume?: () => void): boolean {
+  const verdict = guozhanWinner(state);
+  if (!verdict) {
+    state.ambitionAsked = []; // 这一轮没有胜利条件了 → 下次重新给机会
+    return false;
+  }
+  const captains = unexposedAmbitionistCaptains(state).filter(
+    (p) => !state.ambitionAsked.includes(p.seatId),
+  );
+  if (captains.length === 0) return false;
+  const cur = captains[0]!;
+  state.ambitionAsked.push(cur.seatId);
+  pushLog(
+    state,
+    'faction',
+    `胜利结算前先处理【暴露野心】：${cur.name} 的野心家主将尚未明置。`,
+    { seat: cur.seatId },
+  );
+  askChoice(
+    state,
+    cur.seatId,
+    '【暴露野心】：明置你的野心家主将、转为野心家？',
+    [
+      { id: 'yes', label: '暴露野心' },
+      { id: 'no', label: '不暴露' },
+    ],
+    (st, p, picked) => {
+      if (picked !== 'yes') {
+        settleAfterAmbition(st, resume);
+        return;
+      }
+      exposeAmbition(st, p, () => askBuildForce(st, p, resume));
+    },
+  );
+  return true;
+}
+
+/** 一条暴露/建国流程跑完（或某人拒绝）之后：还有别的野心家要问就接着问，否则判胜负/交回控制权 */
+function settleAfterAmbition(state: GameState, resume?: () => void): void {
+  if (interceptVictoryForAmbition(state, resume)) return;
+  const v = guozhanWinner(state);
+  if (v !== null) {
+    setWinner(state, v);
+    return;
+  }
+  state.ambitionAsked = [];
+  (resume ?? (() => {}))();
+}
+
+/** 暴露野心：明置主将（走正常亮将入口）+ 身份/势力转为野心家 */
+function exposeAmbition(state: GameState, p: Player, after: () => void): void {
+  const mainHeroId = p.heroId;
+  if (mainHeroId) makeSkillApi(state, { actor: p.seatId }).revealHeroCard(p.seatId, mainHeroId);
+  // 「自身身份/势力转为野心家」——即便副将那个势力没过半也照转（口径原文如此）
+  p.faction = 'ambitionist';
+  p.determinedFaction = 'ambitionist';
+  if (!p.forceId) p.forceId = `force:${++state.forceSeq}`;
+  pushLog(
+    state,
+    'faction',
+    `${p.name} 暴露野心：明置野心家主将【${getHeroForMode(p.heroId, state.mode)?.name ?? p.heroId}】，转为野心家。`,
+    { seat: p.seatId },
+  );
+  after();
+}
+
+/** 「随后可以进入建立新势力流程」——官方用「可」，所以问一句 */
+function askBuildForce(state: GameState, p: Player, resume?: () => void): void {
+  askChoice(
+    state,
+    p.seatId,
+    '【建立新势力】：建立属于你的新势力？',
+    [
+      { id: 'yes', label: '建立新势力' },
+      { id: 'no', label: '暂不建立' },
+    ],
+    (st, p2, picked) => {
+      if (picked !== 'yes') {
+        settleAfterAmbition(st, resume);
+        return;
+      }
+      buildForce(st, p2, resume);
+    },
+  );
+}
+
+/** 建国 + 逐个邀请其他存活玩家（顺序：发起者的下家起、按座次） */
+function buildForce(state: GameState, p: Player, resume?: () => void): void {
+  p.forceId = p.forceId ?? `force:${++state.forceSeq}`;
+  pushLog(state, 'faction', `${p.name} 建立新势力，其他存活角色可选择是否加入。`, {
+    seat: p.seatId,
+  });
+  fireFactionCountChange(state, 'ambitionist', 0, 1, () => {
+    const n = state.seatOrder.length;
+    const idx = state.seatOrder.indexOf(p.seatId);
+    const others: string[] = [];
+    for (let k = 1; k < n; k++) {
+      const sid = state.seatOrder[(idx + k) % n]!;
+      if (sid === p.seatId) continue;
+      if (getPlayer(state, sid)?.alive) others.push(sid);
+    }
+    const step = (i: number): void => {
+      const cur = i < others.length ? getPlayer(state, others[i]!) : undefined;
+      if (!cur || !cur.alive) {
+        if (i < others.length) step(i + 1);
+        else settleAfterAmbition(state, resume);
+        return;
+      }
+      askChoice(
+        state,
+        cur.seatId,
+        `【${p.name}】建立了新势力，是否加入？`,
+        [
+          { id: 'yes', label: '加入' },
+          { id: 'no', label: '不加入' },
+        ],
+        (st, cp, picked) => {
+          if (picked === 'yes') {
+            joinForce(st, cp, p, () => step(i + 1));
+            return;
+          }
+          // 不加入的补偿是**可选**的（官方用「可」，见 §5.141）
+          askChoice(
+            st,
+            cp.seatId,
+            '【不加入】：是否将手牌补至 4 张并回复 1 点体力？',
+            [
+              { id: 'yes', label: '领取补偿' },
+              { id: 'no', label: '不领取' },
+            ],
+            (st2, cp2, pick2) => {
+              if (pick2 === 'yes') {
+                let got = 0;
+                while (cp2.hand.length < 4) {
+                  const c = drawOne(st2);
+                  if (!c) break;
+                  cp2.hand.push(c);
+                  got++;
+                }
+                const healed = cp2.hp < cp2.maxHp ? 1 : 0;
+                cp2.hp = Math.min(cp2.maxHp, cp2.hp + 1);
+                pushLog(
+                  st2,
+                  'faction',
+                  `${cp2.name} 不加入新势力：将手牌补至 4 张（摸 ${got} 张）并回复 ${healed} 点体力。`,
+                  { seat: cp2.seatId },
+                );
+              }
+              step(i + 1);
+            },
+          );
+        },
+      );
+    };
+    step(0);
+  });
+}
+
+/** 加入新势力：势力/归属键改为发起者的，并派发旧势力的人数变化（可能归零 → 会盟要听到） */
+function joinForce(state: GameState, joiner: Player, initiator: Player, after: () => void): void {
+  const oldFaction = effectiveFaction(state, joiner) ?? joiner.faction;
+  const before = oldFaction ? knownFactionCount(state, oldFaction) : 0;
+  joiner.faction = 'ambitionist';
+  joiner.determinedFaction = 'ambitionist';
+  joiner.forceId = initiator.forceId;
+  pushLog(state, 'faction', `${joiner.name} 加入 ${initiator.name} 建立的新势力。`, {
+    seat: joiner.seatId,
+  });
+  fireFactionCountChange(state, oldFaction ?? 'neutral', before, Math.max(0, before - 1), after);
 }
 
 /**
@@ -4523,7 +4763,7 @@ function doDeath(
               state.judgmentInFlight = null;
             }
 
-            if (checkWin(state)) return;
+            if (checkWin(state, done)) return;
             // 清完牌就交回给发起濒死的流程（它决定回出牌阶段、还是接着自己的下一步）
             done();
           };
@@ -10610,6 +10850,7 @@ export function createGame(
     // 势力锦囊四张（不臣篇）：**开局不进摸牌堆**（所以开局还是 160 张），等第一次重洗再洗入
     pendingFactionTricks: mode === 'guozhan' && ext.buchen !== 'off' ? factionTrickCards() : [],
     forceSeq: 0,
+    ambitionAsked: [],
     exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
@@ -10702,9 +10943,13 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     const deputyHero = getHero(deputyId);
     if (!mainHero || !deputyHero) return err('武将不存在');
     // 同阵营校验：双势力武将牌有两面，只要**有共同势力**就算同阵营（2023 口径）
-    const pairOk = [mainHero.faction, mainHero.secondFaction]
-      .filter(Boolean)
-      .some((f) => f === deputyHero.faction || f === deputyHero.secondFaction);
+    // ⚠️ 例外：**野心家武将在主将位时配任意副将都合法**——他是「野」势力，按用户 2026-09-18 的
+    //    口径「只明置副将期间**暂时按照副将确定势力**」（§5.141），硬套同阵营会让他根本选不出来。
+    const pairOk =
+      mainHero.faction === 'ambitionist' ||
+      [mainHero.faction, mainHero.secondFaction]
+        .filter(Boolean)
+        .some((f) => f === deputyHero.faction || f === deputyHero.secondFaction);
     if (!pairOk) return err('国战需选 2 位同阵营武将');
     if (deputyHero.faction === 'ambitionist') return err('野心家武将只能作为主将');
     // 君主将只能作主将

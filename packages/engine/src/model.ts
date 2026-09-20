@@ -502,7 +502,6 @@ export interface Player {
    * 一切「是不是同势力」的判断都走 `heroes.factionGroupKey`（它优先读这个字段）。
    */
   forceId?: string;
-
   lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
 }
 
@@ -841,6 +840,13 @@ export interface GameState {
    */
   /** 归属势力 id 的自增号（`Player.forceId` 用它生成，见那里的说明） */
   forceSeq: number;
+  /**
+   * 本轮胜利判定里**已经问过要不要暴露野心**的座位（§5.141）。
+   *
+   * 存在的意义是防止死循环：某人选「不暴露」后，胜利判定还会再来一次，
+   * 不记住就会把同一句话反复问。一旦这轮不再存在胜利条件就清空（下次重新给机会）。
+   */
+  ambitionAsked: string[];
   pendingFactionTricks: Card[];
   /**
    * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：
