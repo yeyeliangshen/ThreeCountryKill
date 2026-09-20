@@ -4522,24 +4522,14 @@ function interceptVictoryForAmbition(state: GameState, resume?: () => void): boo
     `胜利结算前先处理【暴露野心】：${cur.name} 的野心家主将尚未明置。`,
     { seat: cur.seatId },
   );
-  askChoice(
-    state,
-    cur.seatId,
-    '【暴露野心】：明置你的野心家主将、转为野心家？',
-    [
-      { id: 'yes', label: '暴露野心' },
-      { id: 'no', label: '不暴露' },
-    ],
-    (st, p, picked) => {
-      if (picked !== 'yes') {
-        settleAfterAmbition(st, resume);
-        return;
-      }
-      // 2023 公告写的是「当野心家暴露野心，建立新势力时……」——一句话，**不拆成两个窗口**
-      // （用户 2026-09-18 明确：多问一句「是否建国」依据不足，先按一条流程做）
-      exposeAmbition(st, p, () => buildForce(st, p, resume));
-    },
-  );
+  // ⚠️ **强制暴露，没有「不暴露」这个选项**（用户 2026-09-18 明确纠正）：
+  // 旧移动版实测是「达成唯一一方胜利条件时，符合条件的暗主野心家**均需要**明置（即暴露野心）」；
+  // 2023 公告里那个「可以」说的是「**少于 3 人时也允许**走这套机制」（旧规则是 <3 人不能走），
+  // 不是「弹窗问你要不要暴露」——公告紧接着就写「当野心家暴露野心，建立新势力时……」，
+  // 也没有新增「不暴露」的操作规则。所以拦截之后**直接暴露 + 建国**，整条流程无需玩家确认。
+  // （`ambitionAsked` 现在的作用只剩一个：**这一次尝试失败**（例：邹氏·祸水的回合内不能明置）
+  //   或已经处理过的座位，不要在同一次胜利判定里反复重试 —— 否则会死循环。）
+  exposeAmbition(state, cur, (st, p) => buildForce(st, p, resume));
   return true;
 }
 
@@ -4557,9 +4547,24 @@ function settleAfterAmbition(state: GameState, resume?: () => void): void {
 }
 
 /** 暴露野心：明置主将（走正常亮将入口）+ 身份/势力转为野心家 */
-function exposeAmbition(state: GameState, p: Player, after: () => void): void {
+function exposeAmbition(state: GameState, p: Player, after: (st: GameState, who: Player) => void): void {
   const mainHeroId = p.heroId;
-  if (mainHeroId) makeSkillApi(state, { actor: p.seatId }).revealHeroCard(p.seatId, mainHeroId);
+  // 亮将入口会挡住「不能明置」的情形（例：邹氏·祸水——她的回合内其他角色不能明置武将牌）。
+  // 挡住了就不建国、也不再宣称「转为野心家」，让胜利照原样结算（该角色已经在 ambitionAsked 里，
+  // 同一次胜利判定不会再试一遍）。
+  const revealed = mainHeroId
+    ? makeSkillApi(state, { actor: p.seatId }).revealHeroCard(p.seatId, mainHeroId)
+    : false;
+  if (!revealed) {
+    pushLog(
+      state,
+      'faction',
+      `${p.name} 的野心家主将无法明置（例如【祸水】），【暴露野心】本轮处理不了。`,
+      { seat: p.seatId },
+    );
+    settleAfterAmbition(state);
+    return;
+  }
   // 「自身身份/势力转为野心家」——即便副将那个势力没过半也照转（口径原文如此）
   p.faction = 'ambitionist';
   p.determinedFaction = 'ambitionist';
@@ -4570,7 +4575,7 @@ function exposeAmbition(state: GameState, p: Player, after: () => void): void {
     `${p.name} 暴露野心：明置野心家主将【${getHeroForMode(p.heroId, state.mode)?.name ?? p.heroId}】，转为野心家。`,
     { seat: p.seatId },
   );
-  after();
+  after(state, p);
 }
 
 /** 建国 + 逐个邀请其他存活玩家（顺序：发起者的下家起、按座次） */
