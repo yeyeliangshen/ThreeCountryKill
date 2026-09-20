@@ -225,18 +225,20 @@ describe('国战 · 贾诩 × 邓艾（乱武 / 屯田 / 急袭 / 帷幕）', ()
     const spadeTian = makeTian(A, state, mk('t1', 'sha', 'spade', 5));
     const clubTian = makeTian(A, state, mk('t2', 'sha', 'club', 5));
     const diamondTian = makeTian(A, state, mk('t3', 'sha', 'diamond', 8));
-    // 黑桃田 → 黑色【顺手牵羊】→ 帷幕取消这个目标（整次使用不成立）
-    const r1 = act(state, A, { type: 'playCard', cardId: spadeTian.id, as: 'shunshou', targetIds: [B] });
-    expect(r1.ok, '黑色田转化的顺手牵羊要被帷幕挡掉').toBe(false);
-    const r2 = act(state, A, { type: 'playCard', cardId: clubTian.id, as: 'shunshou', targetIds: [B] });
-    expect(r2.ok, '梅花田同理').toBe(false);
-    expect(a.tian.map((c) => c.id)).toEqual(['t1', 't2', 't3']); // 都没被消耗
+    // 黑桃田 → 黑色【顺手牵羊】→ **先打出去、再被帷幕取消**（田照样用掉进弃牌堆，牌没偷到）
+    ok(act(state, A, { type: 'playCard', cardId: spadeTian.id, as: 'shunshou', targetIds: [B] }));
+    expect(state.log.some((e) => e.message.includes('帷幕'))).toBe(true);
+    expect(a.tian.map((c) => c.id)).toEqual(['t2', 't3']);
+    expect(state.discard.some((c) => c.id === 't1')).toBe(true);
+    expect(b.hand).toHaveLength(2);
+    ok(act(state, A, { type: 'playCard', cardId: clubTian.id, as: 'shunshou', targetIds: [B] }));
+    expect(a.tian.map((c) => c.id)).toEqual(['t3']);
     expect(b.hand).toHaveLength(2);
     // 方块田 → 红色【顺手牵羊】→ 帷幕不管，正常结算
     ok(act(state, A, { type: 'playCard', cardId: diamondTian.id, as: 'shunshou', targetIds: [B] }));
     passWuxie(state);
     ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' })); // 盲选一张手牌
-    expect(a.tian.map((c) => c.id)).toEqual(['t1', 't2']); // 方块田用掉了
+    expect(a.tian).toHaveLength(0); // 方块田用掉了
     expect(b.hand).toHaveLength(1);
     expect(a.hand.map((c) => c.id)).toEqual(['b1']); // 拿到的牌进了手牌
   });

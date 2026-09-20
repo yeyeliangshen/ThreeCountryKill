@@ -80,6 +80,7 @@ import {
   effectiveHeroes,
   revealedHeroes,
   heroBlocksBeingTarget,
+  targetBlockingSkillName,
   heroCanUseAs,
   heroDuelShaRequired,
   fangyuanHandLimitDelta,
@@ -2501,8 +2502,8 @@ function playSha(
     seenTargets.add(targetId);
     const target = getPlayer(state, targetId);
     if (!target || !target.alive) return err('目标无效');
-    // 锁定技（空城等）：不能成为此牌的目标
-    if (heroBlocksBeingTarget(state, target, card, source)) return err('该角色不能成为此牌的目标');
+    // ⚠️ 锁定技（空城等）**不在这里拦**：用户 2026-09-21 定的口径是「牌先打出去、再取消那个
+    //    目标」（见 cancelBlockedTargets / startAttack）。拦在这里等于「不能选他当目标」。
     // 距离校验：攻击范围 ≥ 距离（天义拼点赢则本回合无视距离）
     // 夏侯霸·豹烈②：**目标级**的无距离限制（只对满足条件的目标放行，其余照常判距离）
     const noDistanceToTarget = activeHeroes(state, source).some(
@@ -2617,6 +2618,40 @@ function fangtianRule(
  * `targetIds` 超过一个只可能来自【方天画戟】：第一个目标先结算，其余留在
  * `attack.fangtianQueue` 里逐个接着打（见 afterAttackSettled）。
  */
+/**
+ * 「成为目标时，取消之」的**统一落点**（空城 / 谦逊 / 帷幕 / 明光铠 / 调虎离山那套锁定技）。
+ *
+ * 用户 2026-09-21 定的实现形式：**牌先用出去，再把这个目标取消** —— 不是「不能选他当目标」。
+ * 所以出牌校验（playSha / playTrick / playDelayedTrick）不再拦这些目标，改由各结算入口在这里
+ * 统一剔除：牌照常进弃牌堆、日志与 useCard 钩子照常跑，只是被取消的目标不参与结算
+ * （一个都不剩时，这次使用就没有效果）。
+ *
+ * ⚠️ 引擎**自己**按规则算出来的目标名单（南蛮/万箭的响应队列、赤令、克复中原、知己知彼…）
+ *    不在这里处理：那些不是「玩家指定的目标」，在算的时候就把他们排除掉才是对的。
+ */
+function cancelBlockedTargets(
+  state: GameState,
+  source: Player,
+  card: Card,
+  targetIds: string[],
+): string[] {
+  const keep: string[] = [];
+  for (const id of targetIds) {
+    const t = getPlayer(state, id);
+    if (!t) continue;
+    if (heroBlocksBeingTarget(state, t, card, source)) {
+      const skill = targetBlockingSkillName(state, t, card, source) ?? '锁定技';
+      pushLog(state, 'resolve', `${t.name} 成为目标时【${skill}】生效，取消之。`, {
+        seat: t.seatId,
+        action: 'shield',
+      });
+      continue;
+    }
+    keep.push(id);
+  }
+  return keep;
+}
+
 function startAttack(
   state: GameState,
   source: Player,
@@ -2625,9 +2660,17 @@ function startAttack(
   asType: import('@sgs/protocol').CardType,
   opts?: { countTowardLimit?: boolean; asAttribute?: DamageAttribute; abortOnDodge?: boolean },
 ): void {
+  // 「成为目标时取消之」：被空城/谦逊/帷幕那类取消的目标在这里剔除（牌已经打出去了）
+  const effectiveTargets = cancelBlockedTargets(state, source, card, targetIds);
+  if (effectiveTargets.length === 0) {
+    // 牌**已经使用**：照常离开原处进弃牌堆，只是没有目标（等一会儿的结算都不跑）
+    consumeCard(state, source, card);
+    pushLog(state, 'resolve', `【${cardShortName(card)}】的目标全部被取消，这次使用没有效果。`);
+    return;
+  }
   // 多目标按**座次顺序**结算：官方规则里目标是同时确定的，效果从使用者的下家起
   // 按座次依次生效。不排一下的话，国战版「一人闪则其余无效」就变成谁点得快谁占便宜。
-  const ordered = sortTargetsBySeat(state, source.seatId, targetIds);
+  const ordered = sortTargetsBySeat(state, source.seatId, effectiveTargets);
   const targetId = ordered[0]!;
   const target = getPlayerOrThrow(state, targetId);
   // 【丈八蛇矛】的虚拟杀在这里收的是两张 material 手牌（见 consumeCard）
@@ -3392,20 +3435,10 @@ function tryQinglongBlade(
             onDecline();
             return;
           }
-          // ⚠️ 再使用的这张【杀】是**新的一次使用**，目标要**重新判合法性**——老目标是
-          //    「上一张【杀】指定过」的，这次不继承。典型就是空城：诸葛亮用最后一张【闪】
-          //    挡掉上一张【杀】之后手牌归零，青龙偃月刀**不能**再对他出杀（用户 2026-09-21
-          //    给的规格里专门拿这个当例子）。`startAttack` 自己不校验目标（常规路径由
-          //    playSha 先校验过），所以这里补一次。
-          if (heroBlocksBeingTarget(st2, target, card, p2)) {
-            pushLog(
-              st2,
-              'equip',
-              `${target.name} 不能成为【杀】的目标（【空城】那类锁定技），【青龙偃月刀】不能再出杀。`,
-            );
-            onDecline();
-            return;
-          }
+          // ⚠️ 再使用的这张【杀】是**新的一次使用**：目标要重新走一遍「成为目标时」。
+          //    典型就是空城——诸葛亮用最后一张【闪】挡掉上一张【杀】后手牌归零，这一张新的
+          //    【杀】照常打出去、但那个目标会被取消（用户 2026-09-21 的口径：**先打出去再
+          //    取消**，不是「不能选他」）。取消统一在 `startAttack` 里做。
           pushLog(
             st2,
             'equip',
@@ -5614,7 +5647,6 @@ function playDelayedTrick(
   if (targetId === player.seatId) return err('不能以自己为目标');
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) return err('目标无效');
-  if (heroBlocksBeingTarget(state, target, card, player)) return err('该角色不能成为此牌的目标');
   // 奇才：使用锦囊牌无距离限制；刘琦·问计标记的那张实体牌同样无距离限制
   if (
     !heroIgnoresTrickDistance(activeHeroes(state, player), player) &&
@@ -5626,6 +5658,18 @@ function playDelayedTrick(
   {
     const gone = takeForField(state, player, card);
     if (gone) return err(gone);
+  }
+  // 「成为目标时取消之」（谦逊那类）：牌**已经用出去了**，取消的是这个目标 →
+  // 延时锦囊不进判定区，直接进弃牌堆（用户 2026-09-21 的口径：先打出去再取消）
+  if (heroBlocksBeingTarget(state, target, card, player)) {
+    const skill = targetBlockingSkillName(state, target, card, player) ?? '锁定技';
+    pushLog(state, 'resolve', `${target.name} 成为目标时【${skill}】生效，取消之。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
+    toDiscard(state, card);
+    runHooksPausable(state, 'useCard', player, { card }, () => {});
+    return { ok: true };
   }
   target.judgment.push(card);
   pushLog(
@@ -5664,7 +5708,8 @@ function playTrick(
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
     // 锁定技（帷幕/谦逊等）：不能成为此牌的目标
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
+    // 目标被锁定技取消（帷幕/谦逊…）不在这里拦——先打出去，结算入口再取消（见
+    // cancelBlockedTargets）。距离与「区域内有没有可操作的牌」仍要校验。
     // 奇才：使用锦囊牌无距离限制
     if (
       type === 'shunshou' &&
@@ -5697,8 +5742,7 @@ function playTrick(
     for (const tid of intent.targetIds) {
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
-      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
-    }
+      }
   } else if (type === 'yuanjiao') {
     // 远交近攻：一名与你势力不同、且已明置武将牌的其他角色
     if (intent.targetIds.length !== 1) return err('【远交近攻】需指定 1 名目标');
@@ -5711,7 +5755,6 @@ function playTrick(
     // 暗置的角色没有势力（暗将之间互视为不同势力）；目标必须已明置才谈得上「势力不同」
     if (effectiveFaction(state, player) === effectiveFaction(state, t))
       return err('【远交近攻】只能指定与你势力不同的角色');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
   } else if (type === 'xietianzi') {
     // 挟天子以令诸侯：只有大势力角色能对自己使用
     if (intent.targetIds.length !== 0) return err('【挟天子以令诸侯】只能对自己使用');
@@ -5729,8 +5772,7 @@ function playTrick(
       if (tid === player.seatId) return err('不能以自己为目标');
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
-      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
-    }
+      }
   } else if (type === 'shuiyan') {
     // 水淹七军：一名**装备区里有牌**的其他角色
     if (intent.targetIds.length !== 1) return err('【水淹七军】需指定 1 名目标');
@@ -5738,7 +5780,6 @@ function playTrick(
     if (tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
     if (EQUIP_SLOTS.every((s) => !t.equipment[s]))
       return err('目标装备区里没有牌，不能成为【水淹七军】的目标');
   } else if (type === 'zhibi') {
@@ -5747,7 +5788,6 @@ function playTrick(
     if (tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
   } else if (type === 'guoanjianbang') {
     // 【固国安邦】：对自己使用，无需指定目标
     if (intent.targetIds.length !== 0) return err('【固国安邦】只对自己使用，无需指定目标');
@@ -5758,7 +5798,6 @@ function playTrick(
     const tid = intent.targetIds[0]!;
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
     if (!haolingTargets(state).some((x) => x.seatId === tid))
       return err('【号令天下】的目标须是体力值不是最少的角色');
   } else if (type === 'kefuzhongyuan') {
@@ -5768,8 +5807,7 @@ function playTrick(
     for (const tid of intent.targetIds) {
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
-      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
-    }
+      }
   } else if (type === 'wenheluanwu') {
     // 【文和乱武】：对所有角色使用（含使用者本人），目标由规则决定、无需玩家指定
     if (intent.targetIds.length !== 0) return err('【文和乱武】的目标由规则决定，无需指定');
@@ -5817,6 +5855,14 @@ function startTrickResolution(
 ): void {
   const type = card.type as TrickType;
 
+  // 「成为目标时取消之」（帷幕/谦逊/空城…）：**玩家指定的目标**在这里统一剔除。
+  // 牌已经打出去了（进弃牌堆、日志、useCard 钩子都跑过了），取消后一个都不剩时这次使用没有效果。
+  // ⚠️ AOE（南蛮/万箭）不走这里：它们的目标是引擎按规则算的，算的时候就已经排除了。
+  const keptTargets =
+    type === 'nanman' || type === 'wanjian'
+      ? targetIds.slice()
+      : cancelBlockedTargets(state, player, card, targetIds);
+
   // 构建 TrickContext
   const ctx: TrickContext = {
     sourceId: player.seatId,
@@ -5827,13 +5873,13 @@ function startTrickResolution(
     pendingFence: capturePendingCheckpoint(state),
     responders: [],
     responderIndex: 0,
-    targetIds: targetIds.slice(),
+    targetIds: keptTargets.slice(),
     targetId:
       type === 'guohe' || type === 'shunshou' || type === 'juedou' || type === 'huogong'
-        ? targetIds[0]
+        ? keptTargets[0]
         : undefined,
     targetCardId,
-    shaTargetId: type === 'jiedao' ? targetIds[1] : undefined,
+    shaTargetId: type === 'jiedao' ? keptTargets[1] : undefined,
   };
 
   // AOE：所有其他存活玩家按座次依次响应
@@ -5865,9 +5911,9 @@ function startTrickResolution(
     //    名单就是响应队列（已被不能被指定的角色过滤掉，与「最终确定的目标」一致）。
     ctx.targetIds = ctx.responders.slice();
   }
-  // 单目标响应锦囊：responders = [target]
+  // 单目标响应锦囊：responders = [target]（可能已被取消 → 空队列，结算直接收尾）
   if (type === 'juedou' || type === 'huogong' || type === 'jiedao') {
-    ctx.responders = [targetIds[0]!];
+    if (keptTargets[0]) ctx.responders = [keptTargets[0]];
     if (type === 'juedou') ctx.duelTurn = 'target';
   }
 
@@ -8501,6 +8547,17 @@ function resolvePlayedSha(
 ): void {
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
+    if (after) after();
+    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    return;
+  }
+  // 「成为目标时取消之」（空城那类）：目标照常指定，这里取消 → 这次【杀】没有效果
+  if (heroBlocksBeingTarget(state, target, card, source)) {
+    const skill = targetBlockingSkillName(state, target, card, source) ?? '锁定技';
+    pushLog(state, 'resolve', `${target.name} 成为目标时【${skill}】生效，取消之。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
     if (after) after();
     else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
     return;

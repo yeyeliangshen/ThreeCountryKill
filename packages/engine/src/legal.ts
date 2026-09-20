@@ -212,7 +212,6 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
           (p) =>
             p.alive &&
             p.seatId !== seatId &&
-            !heroBlocksBeingTarget(state, p, card, player) &&
             (heroIgnoresTrickDistance(heroes, player) || distance(state, seatId, p.seatId) <= 1),
         );
       if (canShunshouViaTian) {
@@ -243,7 +242,6 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
             p.alive &&
             p.seatId !== seatId &&
             !p.judgment.some((t) => t.type === trickType) &&
-            !heroBlocksBeingTarget(state, p, card, player) &&
             (noDistance || wenjiMarked(player, card.id) || distance(state, seatId, p.seatId) <= 1),
         );
         if (hasTarget) {
@@ -290,7 +288,6 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
           (p) =>
             p.alive &&
             p.seatId !== seatId &&
-            !heroBlocksBeingTarget(state, p, card, player) &&
             (heroIgnoresTrickDistance(heroes) ||
               wenjiMarked(player, card.id) ||
               distance(state, seatId, p.seatId) <= 1),
@@ -314,38 +311,35 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         legal = true;
       } else if (trickType === 'haolingtianxia') {
         // 【号令天下】：要有「体力值不是最少」的角色可指（目标可以包括自己）
-        legal = haolingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));
+        // ⚠️ 不按「能不能成为目标」筛：取消是**成为目标时**才发生的（用户 2026-09-21 口径）
+        legal = haolingTargets(state).length > 0;
       } else if (trickType === 'kefuzhongyuan') {
         // 【克复中原】：至少一名角色（可以指自己），只要场上有人就能用
-        legal = state.players.some((p) => p.alive && !heroBlocksBeingTarget(state, p, card, player));
+        legal = state.players.some((p) => p.alive);
       } else if (trickType === 'wenheluanwu') {
         // 【文和乱武】：对所有角色（含自己）——场上有人就能用
         legal = state.players.some((p) => p.alive);
       } else if (trickType === 'chiling') {
         // 【敕令】：对所有**没有势力**的角色使用（可能包括你自己）
-        legal = chilingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));
+        legal = chilingTargets(state).length > 0;
       } else if (trickType === 'lianjun') {
         // 【联军盛宴】：要有一个「与你不同、且已有人明置」的其他势力
         legal = state.players.some(
           (p) =>
             p.alive &&
             p.seatId !== seatId &&
-            !heroBlocksBeingTarget(state, p, card, player) &&
             lianjunFactionOk(state, player, p),
         );
       } else if (trickType === 'tiaohu') {
         // 一至两名其他角色（可以只选一个）
-        legal = state.players.some(
-          (p) => p.alive && p.seatId !== seatId && !heroBlocksBeingTarget(state, p, card, player),
-        );
+        legal = state.players.some((p) => p.alive && p.seatId !== seatId);
       } else if (trickType === 'shuiyan') {
         // 需要一名「装备区里有牌」的其他角色
         legal = state.players.some(
           (p) =>
             p.alive &&
             p.seatId !== seatId &&
-            EQUIP_SLOTS.some((s) => p.equipment[s]) &&
-            !heroBlocksBeingTarget(state, p, card, player),
+            EQUIP_SLOTS.some((s) => p.equipment[s]),
         );
       } else if (trickType === 'tiesuo' || trickType === 'yiyi' || trickType === 'wugu') {
         // 铁索连环可以只选自己；以逸待劳含自己；五谷丰登是全体
@@ -360,16 +354,12 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
               p.alive &&
               p.seatId !== seatId &&
               effectiveFaction(state, p) !== null &&
-              effectiveFaction(state, p) !== myFaction &&
-              !heroBlocksBeingTarget(state, p, card, player),
+              effectiveFaction(state, p) !== myFaction,
           );
       } else {
-        // 决斗 / 火攻 / 过河拆桥 / 知己知彼：需要一个**能成为目标**的其他存活玩家。
-        // 这里以前只数「有没有别人」，于是帷幕（贾诩）或明光铠（火焰锦囊）的持有者
-        // 明明一个都点不了，界面却把牌列成可用。
-        legal = state.players.some(
-          (p) => p.alive && p.seatId !== seatId && !heroBlocksBeingTarget(state, p, card, player),
-        );
+        // 决斗 / 火攻 / 过河拆桥 / 知己知彼：只要有一个其他存活玩家就能用 ——
+        // 帷幕/空城那类是「成为目标时取消之」，不是「选不了他」（用户 2026-09-21 口径）。
+        legal = state.players.some((p) => p.alive && p.seatId !== seatId);
       }
       if (legal) {
         legalCardIds.push(card.id);
@@ -381,9 +371,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     for (const it of ['guohe', 'huogong', 'juedou'] as const) {
       if (seen.has(card.id)) break;
       if (!canUseAsCard(state, player, card, it)) continue;
-      const legal = state.players.some(
-        (p) => p.alive && p.seatId !== seatId && !heroBlocksBeingTarget(state, p, card, player),
-      );
+      const legal = state.players.some((p) => p.alive && p.seatId !== seatId);
       if (legal) {
         legalCardIds.push(card.id);
         seen.add(card.id);
@@ -400,7 +388,6 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
           p.alive &&
           p.seatId !== seatId &&
           !p.judgment.some((t) => t.type === trickType) &&
-          !heroBlocksBeingTarget(state, p, asTrick, player) &&
           (noDistance || wenjiMarked(player, card.id) || distance(state, seatId, p.seatId) <= 1),
       );
       if (hasTarget) {

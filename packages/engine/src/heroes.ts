@@ -2011,14 +2011,15 @@ const ZHUGELIANG: Hero = {
   gender: 'male',
   // 珠联璧合（国战）：黄月英、姜维、蒋琬费祎（用户 2026-09-21 核对）
   combos: ['huangyueying', 'jiangwei', 'jiangwan_feyi'],
-  // 空城（第一段）：没有手牌时，不能被【杀】或【决斗】指定为目标。
-  // ⚠️ 检查时机是**成为目标时**（引擎在指定目标的校验里读它），**不是**「随时检查」——
-  //    已经指定完目标、结算中才变成 0 手牌的话，这次【杀】/【决斗】**不会**被追溯取消
-  //    （用户 2026-09-21 给的规格里专门点过这条；青龙偃月刀再出杀算**新的**一次使用，
-  //    那时要重新判目标合法性，见 engine 的 tryQinglongBlade）。
+  // 空城（第一段）：当你成为【杀】或【决斗】的目标时，取消之。
+  // ⚠️ 实现形式（用户 2026-09-21 定）：**牌先打出去，再把这个目标取消**——不是在选目标时
+  //    就拦掉（见 engine 的 cancelBlockedTargets）。检查时机仍是「成为目标时」：结算中途才变成
+  //    0 手牌的，这次【杀】/【决斗】不会被追溯取消（青龙再出的那一张算新的使用，照常取消）。
   cannotBeTargetOf: (_state, self, card) =>
     self.hand.length === 0 && (card.type === 'sha' || card.type === 'juedou'),
   lockedFields: ['cannotBeTargetOf'],
+  // 登记这个字段由【空城】提供：取消时的日志要报技能名（targetBlockingSkillName 读它）
+  skillFields: { 空城: ['cannotBeTargetOf'] },
   // 空城（第二段，**国战**）：0 手牌时，其他角色于你回合外交给你的牌**不进手牌**，
   // 改为置于你的武将牌上（`Player.kongcheng`，判据见 engine.shouldStashGivenCard），
   // 到你的下一个摸牌阶段开始时一次性获得。
@@ -10045,9 +10046,10 @@ const LUXUN: Hero = {
   faction: 'wu',
   maxHp: 3,
   gender: 'male',
-  // 谦逊：不能被【顺手牵羊】和【乐不思蜀】指定为目标
+  // 谦逊：当你成为【顺手牵羊】或【乐不思蜀】的目标时，取消之（先打出去再取消，同空城）
   cannotBeTargetOf: (_state, _self, card) => card.type === 'shunshou' || card.type === 'lebu',
   lockedFields: ['cannotBeTargetOf'],
+  skillFields: { 谦逊: ['cannotBeTargetOf'] },
   // 连营：失去最后一张手牌后，你可以摸一张牌。
   // 挂 handEmptied —— 引擎在每个 intent 结束时比对各家手牌数，覆盖所有减手牌的路径。
   hooks: [
@@ -10282,10 +10284,11 @@ const JIAXU: Hero = {
   faction: 'qun',
   maxHp: 3,
   gender: 'male',
-  // 帷幕：不能被黑色锦囊牌（含延时锦囊）指定为目标
+  // 帷幕：当你成为黑色锦囊牌（含延时锦囊）的目标时，取消之（先打出去再取消，同空城）
   cannotBeTargetOf: (_state, _self, card) =>
     (isInstantTrick(card) || isDelayedTrick(card)) && !isRed(card),
   lockedFields: ['cannotBeTargetOf', 'blocksExternalSaves'],
+  skillFields: { 帷幕: ['cannotBeTargetOf'], 完杀: ['blocksExternalSaves'] },
   blocksExternalSaves: true, // 完杀
   // 乱武（限定技，已核国战文本）：出牌阶段，你可以令所有其他角色依次选择一项：
   // ①对其距离最近的另一名角色使用一张【杀】；②失去 1 点体力。
@@ -14797,15 +14800,52 @@ function askHuaiyi(state: GameState, player: Player, api: SkillApi): string | un
             step(i + 1, acc);
             return;
           }
-          // takeOneOfTargetCards 的回调不带参数：用「拿牌前后手牌差集」认出拿到的那张
-          const beforeIds = new Set(p.hand.map((c) => c.id));
-          takeOneOfTargetCards(st, p, t, api, '怀异', () => {
-            const got = p.hand.find((c) => !beforeIds.has(c.id));
-            pushLog(st, 'skill', `${p.name} 的【怀异】：获得了 ${t.name} 的一张牌。`, {
-              seat: p.seatId,
-            });
-            step(i + 1, got ? [...acc, got] : acc);
-          });
+          // ⚠️ 文本是「令至多 X 名其他角色**各交给你**一张牌」——**由该角色自己挑**一张交给你
+          //    （用户 2026-09-21：改成文本的形式）。以前走 takeOneOfTargetCards，那是「你获得
+          //    其一张牌」＝由公孙渊挑，规则上不是一回事。
+          //    候选＝他的手牌（对他自己当然看得到，所以按牌名列出）＋ 装备区。
+          const pool = handAndEquipOf(t);
+          if (pool.length === 0) {
+            step(i + 1, acc);
+            return;
+          }
+          const options = [
+            ...t.hand.map((c) => ({ id: `card:${c.id}`, label: `交给对方手牌【${cardLabel(c)}】` })),
+            ...EQUIP_SLOTS.map((slot) => t.equipment[slot])
+              .filter((c): c is Card => c !== null)
+              .map((c) => ({ id: `card:${c.id}`, label: `交给对方装备区的【${cardLabel(c)}】` })),
+          ];
+          api.askChoice(
+            st,
+            t.seatId,
+            `【怀异】（${p.name} 令你交给他一张牌）：选择要交出的一张牌`,
+            options,
+            (st2, t2, pickedId) => {
+              const id = pickedId.startsWith('card:') ? pickedId.slice('card:'.length) : null;
+              // 跨步重新校验：那张牌可能已经被别的效果搬走了 → 这家跳过，不「随便换一张」
+              const card = id ? handAndEquipOf(t2).find((c) => c.id === id) : undefined;
+              if (!card) {
+                step(i + 1, acc);
+                return;
+              }
+              const giver = getPlayer(st2, p.seatId);
+              if (!giver) {
+                step(i + 1, acc);
+                return;
+              }
+              // 「交给」走 giveCard（空城那类照常换算）；给了装备区的牌会正常触发失去装备
+              api.giveCard(t2.seatId, card, giver.seatId, () => {
+                pushLog(
+                  st2,
+                  'skill',
+                  `${t2.name} 因【怀异】把【${cardLabel(card)}】交给 ${giver.name}。`,
+                  { seat: giver.seatId },
+                );
+                step(i + 1, [...acc, card]);
+              });
+            },
+            p.seatId,
+          );
         };
         step(0, obtained);
       },
@@ -16957,6 +16997,29 @@ export function heroBlocksBeingTarget(
   return revealedHeroes(state.mode, target).some(
     (h) => h.cannotBeTargetOf?.(state, target, card, source) ?? false,
   );
+}
+
+/**
+ * 「挡住这个目标的锁定技」叫什么名字（日志文案用）：
+ * 空城 / 谦逊 / 帷幕 / 明光铠 各报自己的名字，「调虎离山」不是技能、报它自己的名。
+ *
+ * 与 `heroBlocksBeingTarget` 同一套判据（那边是布尔、这边是文案）——用户 2026-09-21 要求
+ * 「成为目标时取消之」要有日志说明是谁cancel的。
+ */
+export function targetBlockingSkillName(
+  state: GameState,
+  target: Player,
+  card: Card,
+  source: Player,
+): string | null {
+  if (target.flags.cannotBeTargetThisTurn) return '调虎离山';
+  if (armorCancelsFireTrick(state, target, card)) return '明光铠';
+  for (const hero of revealedHeroes(state.mode, target)) {
+    if (hero.cannotBeTargetOf?.(state, target, card, source)) {
+      return skillNameForField([hero], 'cannotBeTargetOf') ?? '锁定技';
+    }
+  }
+  return null;
 }
 
 /** 这组生效武将里是否有人无视锦囊牌的距离限制（黄月英·奇才） */
