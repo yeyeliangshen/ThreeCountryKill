@@ -100,9 +100,50 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
     >
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
-        {/* 特殊牌区（公开信息）：权 / 异 / 函 是**实体牌**，戮是**武将牌**（只显示牌名） */}
-        {me.quan?.length || me.yi?.length || me.han?.length || me.luCount ? (
+        {/* 特殊牌区（公开信息）：权 / 异 / 函 是**实体牌**，戮是**武将牌**（只显示牌名），
+            田 / 千幻 / 魂 / 创 / 【空城】暂存牌 只公开**张数**（田与空城那批的内容是暗的）。
+            没有明细的用 tianCount 那几个计数，避免把暗牌摊开。 */}
+        {me.quan?.length ||
+        me.yi?.length ||
+        me.han?.length ||
+        me.luCount ||
+        me.tianCount ||
+        me.qianhuanCount ||
+        me.hunCount ||
+        me.wounds?.length ||
+        me.kongchengCount ? (
           <div className="special-zones">
+            {me.tianCount ? (
+              <span className="zone-chip" {...bind('田', '邓艾·屯田放在武将牌上的牌：距离 -X')}>
+                田·{me.tianCount}
+              </span>
+            ) : null}
+            {me.qianhuanCount ? (
+              <span className="zone-chip" {...bind('千幻', '于吉·千幻放在武将牌上的牌')}>
+                幻·{me.qianhuanCount}
+              </span>
+            ) : null}
+            {me.hunCount ? (
+              <span className="zone-chip" {...bind('魂', '左慈·役鬼扣在武将牌上的武将牌')}>
+                魂·{me.hunCount}
+              </span>
+            ) : null}
+            {me.wounds?.length ? (
+              <span
+                className="zone-chip"
+                {...bind('创', '周泰·不屈扣在武将牌上的牌（点数都不同才挡得住死）')}
+              >
+                创·{me.wounds.length}
+              </span>
+            ) : null}
+            {me.kongchengCount ? (
+              <span
+                className="zone-chip"
+                {...bind('城', '国战【空城】暂存牌：下个摸牌阶段开始时一次性获得')}
+              >
+                城·{me.kongchengCount}
+              </span>
+            ) : null}
             {me.quan?.map((c) => (
               <span key={`quan-${c.id}`} className="zone-chip">
                 权·{c.type}
