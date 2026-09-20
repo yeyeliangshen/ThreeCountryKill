@@ -381,13 +381,17 @@ export function seededRng(seed: number): () => number {
  *
  * 牌面（用户给定）：魏 ♠Q【号令天下】、蜀 ♦A【克复中原】、吴 ♥A【固国安邦】、群 ♣Q【文和乱武】。
  * 效果口径见 docs/guozhan-roster.md §5.136。
+ *
+ * ⚠️ 没实装的那几张**不要放进来**：它们没有 effect handler，玩家抽到就是一张**无法结算的死牌**
+ * （用户 2026-09-18 的说法）。**每张写完结算逻辑、过了测试，才加进这个列表。**
  */
 export function factionTrickCards(): Card[] {
   return [
     // ✅ 已实装：【固国安邦】（吴 ♥A）——摸八张 + 至少选六张（非吴弃置；吴可至多 6 张转交同势力）
     { id: 'faction-guoanjianbang', type: 'guoanjianbang', suit: 'heart', rank: 1 },
-    // ⛔ 尚未实装（效果口径已给，见 docs §5.136；**先不放进牌堆**，免得抽到一张打不出的死牌）：
-    //    魏 ♠Q【号令天下】、蜀 ♦A【克复中原】、群 ♣Q【文和乱武】
+    // ✅ 已实装：【号令天下】（魏 ♠Q）——除目标外的所有角色（**含使用者本人**）依次二选一
+    { id: 'faction-haolingtianxia', type: 'haolingtianxia', suit: 'spade', rank: 12 },
+    // ⛔ 尚未实装（效果口径已定，见 docs §5.136/§5.136.3）：蜀 ♦A【克复中原】、群 ♣Q【文和乱武】
   ];
 }
 

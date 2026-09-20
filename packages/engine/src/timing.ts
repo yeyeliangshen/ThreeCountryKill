@@ -584,6 +584,17 @@ export interface SkillApi {
       generatedBy?: string;
       /** 目标级「不能响应」判定（黄祖·袭射：目标体力值 < 黄祖时不能出闪） */
       unrespondableTo?: (st: GameState, target: Player) => boolean;
+      /**
+       * 这张【杀】**整个结算完**（含求闪、伤害、濒死/阵亡）之后要做的事。
+       * 有它才能把「一个人一个人接着问」的链推下去（【号令天下】的①）。
+       */
+      after?: () => void;
+      /**
+       * 是否**计入出杀次数**（默认不计，与神速那类「视为使用」一致）。
+       * 【号令天下】的口径是「受次数限制且计入次数」——它自己先查 `canUseAnotherSha`，
+       * 再叫这里带上 `countTowardLimit: true`。
+       */
+      countTowardLimit?: boolean;
     },
   ) => void;
   /**

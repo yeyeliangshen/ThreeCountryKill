@@ -520,6 +520,24 @@ export function activeHeroes(state: GameState, player: Player): Hero[] {
   return effectiveHeroes(state, player);
 }
 
+/**
+ * 某角色**本回合的出杀上限**（诸葛连弩＝无限，否则＝武将给的最高值 + 陆抗·筑围那类加成）。
+ *
+ * 收口用：这段本来在 `startAttack` 与 `legal.buildPrompt` 里各写了一份，
+ * 【号令天下】又要用第三份（它产生的【杀】「受次数限制且计入次数」，见 §5.138.1）。
+ */
+export function shaLimitOf(state: GameState, p: Player): number {
+  const hasZhuge = p.equipment.weapon?.equipName === 'zhuge';
+  return hasZhuge
+    ? Infinity
+    : Math.max(1, ...activeHeroes(state, p).map(heroShaLimit)) + p.flags.shaLimitBonus;
+}
+
+/** 这名角色现在还能不能再出一张【杀】（只判「次数限制」这一层，距离/目标数不在此处） */
+export function canUseAnotherSha(state: GameState, p: Player): boolean {
+  return p.flags.shaCountThisTurn < shaLimitOf(state, p);
+}
+
 /** 鏖战：国战残局仅 2 个非野心家阵营存活时，桃可当杀使用 */
 export function isAoyu(state: GameState): boolean {
   if (state.mode !== 'guozhan') return false;
@@ -2335,12 +2353,8 @@ function playSha(
     if (source.equipment.weapon?.equipName !== 'zhuque')
       return err('没有【朱雀羽扇】，不能把【杀】改成火属性');
   }
-  const heroes = activeHeroes(state, source);
   // 诸葛连弩：本回合可出无限杀。另外加上「本回合次数 +N」（陆抗·筑围给当前回合角色）
-  const hasZhuge = source.equipment.weapon?.equipName === 'zhuge';
-  const maxSha = hasZhuge
-    ? Infinity
-    : Math.max(1, ...heroes.map(heroShaLimit)) + source.flags.shaLimitBonus;
+  const maxSha = shaLimitOf(state, source);
   // 崔琰毛玠·征辟①：本回合对那名角色「使用牌无距离和次数限制」——
   // 目标里有他就跳过次数限制（距离那层由 distance() 放行）
   const limitless =
@@ -5259,8 +5273,18 @@ function playTrick(
   } else if (type === 'guoanjianbang') {
     // 【固国安邦】：对自己使用，无需指定目标
     if (intent.targetIds.length !== 0) return err('【固国安邦】只对自己使用，无需指定目标');
-  } else if (type === 'haolingtianxia' || type === 'kefuzhongyuan' || type === 'wenheluanwu') {
-    // 这三张势力锦囊**尚未实装**（效果口径已给，见 docs §5.136）——不应出现在牌堆里，
+  } else if (type === 'haolingtianxia') {
+    // 【号令天下】：一名**体力值不是最少**的角色（口径见 docs §5.136.3；目标可以包括使用者自己——
+    // 牌面写的是「一名角色」，没有「其他」）
+    if (intent.targetIds.length !== 1) return err('【号令天下】需指定 1 名目标');
+    const tid = intent.targetIds[0]!;
+    const t = getPlayer(state, tid);
+    if (!t || !t.alive) return err('目标无效');
+    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
+    if (!haolingTargets(state).some((x) => x.seatId === tid))
+      return err('【号令天下】的目标须是体力值不是最少的角色');
+  } else if (type === 'kefuzhongyuan' || type === 'wenheluanwu') {
+    // 这两张势力锦囊**尚未实装**（效果口径已给，见 docs §5.136）——不应出现在牌堆里，
     // 真被拿到也不允许打出来（宁可报错，也不要打出一张什么都不做的牌）
     return err('【' + CARD_TYPE_NAME[type] + '】尚未实装');
   } else if (type === 'chiling') {
@@ -5725,6 +5749,9 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       return;
     case 'guoanjianbang':
       resolveGuoAnJianBang(state, ctx);
+      return;
+    case 'haolingtianxia':
+      resolveHaoLingTianXia(state, ctx);
       return;
     case 'lianjun':
       resolveLianjun(state, ctx);
@@ -6414,6 +6441,217 @@ function resolveGuoAnJianBang(state: GameState, ctx: TrickContext): void {
 
 export function chilingTargets(state: GameState): Player[] {
   return state.players.filter((p) => p.alive && effectiveFaction(state, p) === null);
+}
+
+/**
+ * 【号令天下】（魏·势力锦囊 ♠Q）的合法目标：**体力值不是最少**的角色。
+ *
+ * 牌面/口径（用户 2026-09 给定，docs §5.136/§5.136.3）：
+ * 「出牌阶段，对一名体力值不是最少的角色使用。其余角色各选择：①弃一张手牌，视为对其使用
+ *   普通【杀】；②弃置其一张牌。魏势力角色选①不用弃手牌，选②则改为获得该牌。」
+ *
+ * 目标可以包括使用者自己——牌面写的是「一名角色」，没有「其他」两个字。
+ */
+export function haolingTargets(state: GameState): Player[] {
+  const alive = state.players.filter((p) => p.alive);
+  if (alive.length === 0) return [];
+  const minHp = Math.min(...alive.map((p) => p.hp));
+  return alive.filter((p) => p.hp > minHp);
+}
+
+/** 「弃置/获得其一张牌」能选的目标牌：**手牌 + 装备**（不含判定区——用户给的「其牌」口径） */
+function haolingPickableOptions(
+  state: GameState,
+  actorSeatId: string,
+  target: Player,
+  verb: '弃置' | '获得',
+): { id: string; label: string }[] {
+  const options: { id: string; label: string }[] = [];
+  for (const slot of EQUIP_SLOTS) {
+    const c = target.equipment[slot];
+    if (!c) continue;
+    // 吴景·风扬：异势力角色不能弃置/获得同队列吴景队友的装备牌
+    if (fengyangBlocksEquip(state, actorSeatId, target, c)) continue;
+    options.push({ id: c.id, label: `${verb}其装备【${cardLabel(c)}】` });
+  }
+  if (target.hand.length > 0) {
+    options.push({ id: '__hand', label: `${verb}其一张手牌（随机，共 ${target.hand.length} 张）` });
+  }
+  return options;
+}
+
+/**
+ * 【号令天下】的结算：除目标外的所有角色**依次**二选一。
+ *
+ * ⚠️ 三条口径（2026-09-18 用户明确，别再按直觉改）：
+ * - 「其余角色」＝**除目标外的所有角色，含牌的使用者本人**（「其余角色」是相对**目标**说的；
+ *   「其他角色」才是相对**使用者**说的，见 §5.137.2/§5.138.1）。目标自己**不参与**选择。
+ * - ①产生的【杀】**受次数限制且计入次数**（`canUseAnotherSha` + `countTowardLimit`）；
+ *   魏势力角色选①**不用弃手牌**（其他人要弃一张手牌作为代价）。
+ * - 魏势力角色选②**改为获得**该牌（其他人是弃置）。
+ *
+ * 推进方式：一条闭包链（同乱武/固国安邦）——每次询问都会挂起，出杀还要等那张【杀】整个结算完，
+ * 所以只能一个接一个地推。顺序取引擎对「依次」的既定约定：**从使用者的下家起、按座次环绕**。
+ */
+function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
+  const me = getPlayer(state, ctx.sourceId);
+  // ⚠️ 单目标锦囊只有 `guohe/shunshou/juedou/huogong` 那几张会把目标写进 `ctx.targetId`，
+  //    其余的一律只填 `ctx.targetIds`（构建 ctx 那处就是这么写的）。
+  const targetId = ctx.targetId ?? ctx.targetIds?.[0];
+  const target = targetId ? getPlayer(state, targetId) : undefined;
+  if (!me || !me.alive || !target || !target.alive) {
+    endTrickResolution(state, ctx);
+    return;
+  }
+  const n = state.seatOrder.length;
+  const idx = state.seatOrder.indexOf(me.seatId);
+  const queue: string[] = [];
+  for (let k = 1; k <= n; k++) {
+    const sid = state.seatOrder[(idx + k) % n]!;
+    if (sid === target.seatId) continue; // 目标自己不选
+    if (getPlayer(state, sid)?.alive) queue.push(sid);
+  }
+  pushLog(
+    state,
+    'trick',
+    `${me.name} 使用【号令天下】，目标为 ${target.name}；其余角色（含使用者本人）依次选择。`,
+    { seat: me.seatId },
+  );
+
+  const step = (i: number): void => {
+    const done = (): void => endTrickResolution(state, ctx);
+    const cur = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+    if (!cur || !cur.alive) {
+      if (i < queue.length) step(i + 1);
+      else done();
+      return;
+    }
+    // 目标没了（被前面的【杀】打死、或自己阵亡）→ 这张牌就这么结束
+    if (!target.alive) {
+      done();
+      return;
+    }
+    const next = (): void => step(i + 1);
+    const isWei = effectiveFaction(state, cur) === 'wei';
+    const canSha = canUseAnotherSha(state, cur) && (isWei || cur.hand.length > 0);
+    const pickOptions = haolingPickableOptions(state, cur.seatId, target, isWei ? '获得' : '弃置');
+    if (!canSha && pickOptions.length === 0) {
+      pushLog(state, 'trick', `${cur.name} 两项都做不了，跳过【号令天下】的选择。`, {
+        seat: cur.seatId,
+      });
+      next();
+      return;
+    }
+    const options: { id: string; label: string }[] = [];
+    if (canSha) {
+      options.push({
+        id: 'sha',
+        label: isWei ? '视为对其使用普通【杀】（魏：不用弃手牌）' : '弃一张手牌，视为对其使用普通【杀】',
+      });
+    }
+    if (pickOptions.length > 0) {
+      options.push({ id: 'card', label: isWei ? '获得其一张牌（魏）' : '弃置其一张牌' });
+    }
+    askChoice(
+      state,
+      cur.seatId,
+      `【号令天下】（${me.name}）：对 ${target.name}，你选择一项`,
+      options,
+      (st, p, picked) => {
+        const api = makeSkillApi(st, { actor: p.seatId });
+        const cast = (): void => {
+          pushLog(
+            st,
+            'trick',
+            `${p.name} 因【号令天下】视为对 ${target.name} 使用普通【杀】。`,
+            { seat: p.seatId },
+          );
+          api.castVirtualSha(p.seatId, target.seatId, {
+            logKind: 'trick',
+            countTowardLimit: true, // 口径：受次数限制且计入次数
+            after: next,
+          });
+        };
+        if (picked === 'sha') {
+          if (isWei || p.hand.length === 0) {
+            cast();
+            return;
+          }
+          // 非魏：先弃一张手牌（代价）——走「一次弃一张」的收口，枭姬/礼让那类照常
+          askPickCards(
+            st,
+            p.seatId,
+            '【号令天下】：弃置一张手牌（①的代价）',
+            p.hand.slice(),
+            1,
+            1,
+            (_st2, _p2, chosen) => {
+              const cost = chosen[0];
+              if (!cost) {
+                cast();
+                return;
+              }
+              api.discardCards(p.seatId, [cost], cast);
+            },
+          );
+          return;
+        }
+        if (picked === 'card') {
+          askChoice(
+            st,
+            p.seatId,
+            `【号令天下】：${isWei ? '获得' : '弃置'} ${target.name} 的一张牌`,
+            pickOptions,
+            (st2, p2, picked2) => {
+              const doIt = (card: Card): void => {
+                if (isWei) {
+                  // 魏：②改为「获得该牌」（手牌/装备都走同一个搬运入口）
+                  makeSkillApi(st2, { actor: p2.seatId }).transferCard(
+                    target.seatId,
+                    card,
+                    p2.seatId,
+                    () => {
+                      pushLog(st2, 'trick', `${p2.name} 因【号令天下】获得了 ${target.name} 的一张牌。`, {
+                        seat: p2.seatId,
+                      });
+                      next();
+                    },
+                  );
+                  return;
+                }
+                makeSkillApi(st2, { actor: p2.seatId }).discardTargetCard(
+                  target.seatId,
+                  card.id,
+                  next,
+                );
+              };
+              if (picked2 === '__hand') {
+                const pickIdx = Math.floor(st2.rng() * target.hand.length);
+                const card = target.hand[pickIdx];
+                if (!card) {
+                  next();
+                  return;
+                }
+                doIt(card);
+                return;
+              }
+              const chosen = EQUIP_SLOTS.map((s) => target.equipment[s]).find(
+                (c) => c?.id === picked2,
+              );
+              if (!chosen) {
+                next();
+                return;
+              }
+              doIt(chosen);
+            },
+          );
+          return;
+        }
+        next();
+      },
+    );
+  };
+  step(0);
 }
 
 /**
@@ -9429,7 +9667,11 @@ function makeSkillApi(
     castVirtualSha: (sourceSeatId, targetId, opts) => {
       const source = getPlayer(state, sourceSeatId);
       const target = getPlayer(state, targetId);
-      if (!source || !source.alive || !target || !target.alive) return;
+      if (!source || !source.alive || !target || !target.alive) {
+        // 中途没了也要把链推下去（同 useShaOn）：否则「一个人一个人接着问」会停在这
+        opts?.after?.();
+        return;
+      }
       // 虚拟牌没有实体，id 用序号保证唯一（不会进任何牌堆）
       const card: Card = {
         id: `virtual-sha-${state.logSeq}`,
@@ -9439,10 +9681,13 @@ function makeSkillApi(
         ...(opts?.attribute ? { attribute: opts.attribute } : {}),
         ...(opts?.generatedBy ? { generatedBy: opts.generatedBy } : {}),
       };
+      // 【号令天下】①：口径是「产生的【杀】受次数限制且计入次数」（§5.138.1），
+      // 调用方已经查过 `canUseAnotherSha`，这里按它的要求计数。
+      if (opts?.countTowardLimit) source.flags.shaCountThisTurn++;
       resolvePlayedSha(state, source, targetId, card, 'sha', {
         kind: opts?.logKind ?? 'skill',
         text: `${source.name} 视为对 ${target.name} 使用了一张【杀】。`,
-      }, undefined, {
+      }, opts?.after, {
         // 目标级的「不能响应」判定（黄祖·袭射：目标体力值小于黄祖时不能出闪）
         unrespondableTo: opts?.unrespondableTo,
       });

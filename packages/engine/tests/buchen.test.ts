@@ -113,11 +113,15 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       return state;
     };
 
-    it('开局不进摸牌堆（仍是 160 张），第一次重洗才把四张洗进来', () => {
+    it('开局不进摸牌堆（仍是 160 张），第一次重洗才把已实装的几张洗进来', () => {
       const state = gz3();
       expect(state.deck.length).toBe(160);
-      // 目前只有【固国安邦】实装 → 只有它进循环；另外三张等实现后再放（先避免「抽到打不出的死牌」）
-      expect(state.pendingFactionTricks.map((c) => c.type)).toEqual(['guoanjianbang']);
+      // 已实装的是【固国安邦】与【号令天下】→ 只有它们进循环；另外两张等实现后再放
+      // （没实装就放进去 = 抽到一张打不出的死牌）
+      expect(state.pendingFactionTricks.map((c) => c.type)).toEqual([
+        'guoanjianbang',
+        'haolingtianxia',
+      ]);
       // 把摸牌堆摸空、并往弃牌堆放几张（重洗的前提是「牌堆空 + 弃牌堆非空」）→ 四张随新堆洗入
       let guard = 0;
       while (state.deck.length > 0 && guard++ < 400) state.discard.push(drawOne(state)!);
@@ -126,6 +130,7 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       expect(state.pendingFactionTricks.length).toBe(0);
       const pool = [...state.deck, ...(drawn ? [drawn] : [])];
       expect(pool.some((c) => c.type === 'guoanjianbang'), '固国安邦 应已洗进摸牌堆').toBe(true);
+      expect(pool.some((c) => c.type === 'haolingtianxia'), '号令天下 应已洗进摸牌堆').toBe(true);
     });
 
     it('固国安邦（非吴）：摸八张、选至少六张 → 选中的直接弃置；用过的牌移出游戏', () => {
@@ -182,6 +187,139 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       expect(b.hand.length).toBe(2); // 乙收了 2 张
       expect(a.hand.length).toBe(2); // 8 - 6
       expect(state.discard.filter((c) => c.id.startsWith('deck-') || true).length).toBeGreaterThan(0);
+    });
+
+    /**
+     * 【号令天下】（魏 ♠Q）——口径见 docs §5.136/§5.136.3 与 §5.138.1（用户 2026-09-18 定版）：
+     * 「其余角色」＝**除目标外的所有角色、含使用者本人**；
+     * ①产生的【杀】受次数限制且计入次数；魏势力选①不用弃手牌、选②改为「获得」。
+     */
+    const haoling = () =>
+      ({ id: 'h1', type: 'haolingtianxia', suit: 'spade', rank: 12 }) as never;
+
+    it('号令天下：目标须是「体力值不是最少」的角色；其余角色含**使用者本人**、按座次依次选择', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'wei';
+      c.faction = 'shu';
+      a.hp = 4;
+      a.maxHp = 4;
+      b.hp = 4;
+      b.maxHp = 4;
+      c.hp = 2; // 体力最少 → 不能当目标
+      c.maxHp = 2;
+      a.hand = [haoling()];
+      b.hand = [{ id: 'b1', type: 'sha', suit: 'spade', rank: 7 } as never];
+      c.hand = [];
+      // 体力值最少的角色不能成为目标
+      const bad = act(state, 'A', { type: 'playCard', cardId: 'h1', targetIds: ['C'] });
+      expect(bad.ok, '体力值最少的角色不该能当目标').toBe(false);
+      // 指乙（4 > 2）
+      const r = act(state, 'A', { type: 'playCard', cardId: 'h1', targetIds: ['B'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      // 第一问给丙（甲的下家、且不是目标）
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.seatId).toBe('C');
+      act(state, 'C', { type: 'chooseOption', optionId: 'card' });
+      // 丙（蜀，非魏）→ 弃置乙一张牌：乙只有手牌 → 随机弃置
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期选牌目标，实际是 ${q2?.kind}`);
+      act(state, 'C', { type: 'chooseOption', optionId: '__hand' });
+      expect(b.hand.length, '乙的手牌被弃置了一张').toBe(0);
+      // 第二问给**甲自己**（使用者本人也是「其余角色」——这正是 2026-09-18 定的那条口径）
+      const q3 = state.pending;
+      if (q3?.kind !== 'choice') throw new Error(`预期轮到使用者本人，实际是 ${q3?.kind}`);
+      expect(q3.seatId, '「其余角色」含使用者本人').toBe('A');
+      expect(q3.options.some((o) => o.id === 'sha')).toBe(true);
+      act(state, 'A', { type: 'chooseOption', optionId: 'sha' }); // 魏：不用弃手牌
+      expect(a.hand.length, '魏势力选①不用弃手牌').toBe(0);
+      // 乙的【闪】窗口 → 不出 → 掉 1 血；整张牌就此结算完、控制权回到甲的出牌阶段
+      const q4 = state.pending;
+      if (q4?.kind !== 'respondSha') throw new Error(`预期求闪，实际是 ${q4?.kind}`);
+      expect(q4.responderId).toBe('B');
+      act(state, 'B', { type: 'pass' });
+      expect(b.hp).toBe(3);
+      expect(a.flags.shaCountThisTurn, '由此产生的【杀】计入次数').toBe(1);
+      expect(state.pending?.kind).toBe('play');
+    });
+
+    it('号令天下：②魏势力改为「获得其一张牌」（非魏是弃置）；①的代价付不出时不给这一项', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'shu';
+      c.faction = 'wei'; // 魏 → ①免手牌、②改为获得
+      a.hp = 4;
+      a.maxHp = 4;
+      b.hp = 4;
+      b.maxHp = 4;
+      c.hp = 2;
+      c.maxHp = 2;
+      a.hand = [haoling()];
+      b.hand = [];
+      b.equipment.weapon = {
+        id: 'bw',
+        type: 'weapon',
+        equipName: 'qinggang',
+        suit: 'spade',
+        rank: 5,
+      } as never;
+      const r = act(state, 'A', { type: 'playCard', cardId: 'h1', targetIds: ['B'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      // 丙（魏、手里没牌）→ ① 仍然可选（魏不用弃手牌）
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.options.some((o) => o.id === 'sha'), '魏势力选①不用手牌').toBe(true);
+      act(state, 'C', { type: 'chooseOption', optionId: 'card' });
+      // ②魏＝获得：装备是明牌，直接点它
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期选牌，实际是 ${q2?.kind}`);
+      expect(q2.options.some((o) => o.id === 'bw')).toBe(true);
+      act(state, 'C', { type: 'chooseOption', optionId: 'bw' });
+      expect(b.equipment.weapon, '乙的装备被拿走了').toBe(null);
+      expect(c.hand.some((x) => x.id === 'bw'), '丙获得了那张装备牌').toBe(true);
+      // 轮到甲（使用者本人）
+      const q3 = state.pending;
+      if (q3?.kind !== 'choice') throw new Error(`预期轮到使用者本人，实际是 ${q3?.kind}`);
+      expect(q3.seatId).toBe('A');
+      act(state, 'A', { type: 'chooseOption', optionId: 'sha' });
+      const q4 = state.pending;
+      if (q4?.kind !== 'respondSha') throw new Error(`预期求闪，实际是 ${q4?.kind}`);
+      act(state, 'B', { type: 'pass' });
+      expect(b.hp).toBe(3);
+    });
+
+    it('号令天下：① 受**次数限制**——本回合出杀已用完就不给这一项（只有②）', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'shu';
+      c.faction = 'shu'; // 非魏，手里有一张手牌（不然①会因为付不出代价而消失）
+      a.hp = 4;
+      a.maxHp = 4;
+      b.hp = 4;
+      b.maxHp = 4;
+      c.hp = 2;
+      c.maxHp = 2;
+      c.hand = [{ id: 'c1', type: 'shan', suit: 'heart', rank: 2 } as never];
+      c.flags.shaCountThisTurn = 1; // 本回合已经出过杀了（上限 1）
+      a.hand = [haoling()];
+      b.hand = [{ id: 'b1', type: 'sha', suit: 'spade', rank: 7 } as never];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'h1', targetIds: ['B'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.seatId).toBe('C');
+      expect(q1.options.some((o) => o.id === 'sha'), '次数已用完，①不该出现').toBe(false);
+      expect(q1.options.some((o) => o.id === 'card')).toBe(true);
     });
   });
 
