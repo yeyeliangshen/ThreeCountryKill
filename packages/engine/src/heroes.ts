@@ -3661,12 +3661,30 @@ const DENGAI: Hero = {
                   pushLog(st, 'skill', '【屯田】判定为红桃，此牌不能作为「田」。');
                   return;
                 }
-                judge.tian = true;
-                p.tian.push(judge);
-                pushLog(
+                // 国战文本是「若结果不为♥，你**可以**将此判定牌置于武将牌上作为「田」」——
+                // 所以问一句，不是看到非红桃就强塞进田区（用户 2026-09-18 的规格）。
+                ctx.api.askChoice(
                   st,
-                  'skill',
-                  `【屯田】判定牌置于武将牌上作为「田」（现有 ${p.tian.length} 张）。`,
+                  p.seatId,
+                  `【屯田】：判定牌【${cardLabel(judge)}】不是红桃，是否置为「田」？`,
+                  [
+                    { id: 'yes', label: '置于武将牌上作为「田」' },
+                    { id: 'no', label: '不置为「田」' },
+                  ],
+                  (st2, p2, picked2) => {
+                    if (picked2 !== 'yes') {
+                      toDiscard(st2, judge);
+                      pushLog(st2, 'skill', '【屯田】放弃将该判定牌置为「田」，此牌进弃牌堆。');
+                      return;
+                    }
+                    judge.tian = true;
+                    p2.tian.push(judge);
+                    pushLog(
+                      st2,
+                      'skill',
+                      `【屯田】判定牌置于武将牌上作为「田」（现有 ${p2.tian.length} 张）。`,
+                    );
+                  },
                 );
               },
               { keepCard: true },

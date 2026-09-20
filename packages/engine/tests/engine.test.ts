@@ -15077,11 +15077,110 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
       expect(state.pending.title).toContain('屯田');
     }
     const distBefore = distance(state, B, C);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 发动屯田
+    // 非红桃 → 问「是否置为『田』」（国战文本是「**可以**」，不是强塞）
+    const q2 = state.pending;
+    if (q2?.kind !== 'choice') throw new Error(`预期收田询问，实际是 ${q2?.kind}`);
+    expect(q2.title).toContain('屯田');
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     expect(b.tian).toHaveLength(1);
     expect(b.tian[0]!.id).toBe('j1');
     expect(b.tian[0]!.tian).toBe(true); // 打上「田」标记（急袭靠它认牌）
     expect(distance(state, B, C)).toBe(distBefore - 1); // 一张「田」→ 距离 -1
+  });
+
+  it('屯田：非红桃也可以**不收**（国战文本是「可以」）——判定牌进弃牌堆', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
+      { seatId: B, name: '乙', heroId: 'dengai', faction: 'wei', hand: [tao('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'sha', 'club', 5)]; // 非红桃
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    pickZoneCard(state, A, 'hand:0'); // 拆：明牌精确选、手牌盲选
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 发动屯田
+    const q = state.pending;
+    if (q?.kind !== 'choice') throw new Error(`预期收田询问，实际是 ${q?.kind}`);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'no' })); // 不收
+    expect(b.tian).toHaveLength(0);
+    expect(state.discard.some((c) => c.id === 'j1')).toBe(true);
+  });
+
+  it('屯田×鬼才：翻红桃用【鬼才】换成黑 → 看**最终生效**的牌，可以收为「田」', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
+      // 乙＝邓艾（主将）+ 司马懿（副将）：国战双将，都是魏
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'dengai',
+        deputyHeroId: 'simayi',
+        faction: 'wei',
+        hand: [mk('decoy', 'tao', 'heart', 8), mk('gb', 'sha', 'spade', 5)],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    state.deck = [mk('j1', 'tao', 'heart', 3)]; // 翻出红桃 → 正常屯田失败
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 发动屯田
+    // 红桃 → 改判窗口问【鬼才】：打出手牌 ♠5 替换
+    const q1 = state.pending;
+    if (q1?.kind !== 'choice') throw new Error(`预期【鬼才】询问，实际是 ${q1?.kind}`);
+    expect(q1.title).toContain('鬼才');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, B, { type: 'pickCards', cardIds: ['gb'] }));
+    }
+    // 最终生效的是 ♠5（黑，非红桃）→ 问「是否置为田」
+    const q2 = state.pending;
+    if (q2?.kind !== 'choice') throw new Error(`预期收田询问，实际是 ${q2?.kind}`);
+    expect(q2.title).toContain('屯田');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.tian.map((c) => c.id), '田＝鬼才换上去的那张黑牌').toEqual(['gb']);
+    expect(state.discard.some((c) => c.id === 'j1'), '被换掉的旧判定牌（红桃）进弃牌堆').toBe(true);
+  });
+
+  it('屯田连锁：【鬼才】打出的手牌也是一次「回合外失去牌」→ 排队触发第二次屯田', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'dengai',
+        deputyHeroId: 'simayi',
+        faction: 'wei',
+        hand: [mk('decoy', 'tao', 'heart', 8), mk('gb', 'sha', 'spade', 5)],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+    ]);
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 牌堆从**末尾**抽：先 heart（屯田①）再 club（屯田②）
+    state.deck = [mk('j2', 'sha', 'club', 9), mk('j1', 'tao', 'heart', 3)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    passWuxie(state);
+    pickZoneCard(state, A, 'hand:0');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 屯田①
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 鬼才：换 ♠5
+    if (state.pending?.kind === 'pickCards') {
+      ok(act(state, B, { type: 'pickCards', cardIds: ['gb'] }));
+    }
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 屯田①收为田
+    expect(b.tian.map((c) => c.id)).toEqual(['gb']);
+    // ⚠️ 关键：鬼才打出的那张手牌本身也是「回合外失去牌」→ 又触发一次屯田，
+    //    而且这条新触发**排在屯田①结算完之后**（不会覆盖它的判定上下文）
+    const again = state.pending;
+    if (again?.kind !== 'choice') throw new Error(`预期第二次屯田询问，实际是 ${again?.kind}`);
+    expect(again.title).toContain('屯田');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 屯田②
+    const q = state.pending;
+    if (q?.kind !== 'choice') throw new Error(`预期屯田②收田询问，实际是 ${q?.kind}`);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    expect(b.tian.map((c) => c.id), '屯田①的田还在，②又收了一张').toEqual(['gb', 'j2']);
   });
 
   it('屯田：红桃判定牌不作为「田」，直接进弃牌堆', () => {
