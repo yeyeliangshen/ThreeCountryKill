@@ -7352,7 +7352,7 @@ describe('吕蒙（克己 / 谋断）与鲁肃（好施 / 缔盟）', () => {
     // 手上一张牌都没有（都用掉了）→ 直接进结束阶段 → 谋断询问
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
-    ok(act(state, A, { type: 'chooseOption', optionId: 'arm1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:arm1' }));
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, A, { type: 'chooseOption', optionId: A }));
     expect(b.equipment.armor).toBeNull();
@@ -12126,7 +12126,7 @@ describe('国战标准版 · 张郃（巧变：跳过阶段）', () => {
     ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] })); // 代价
     // 奖励：移动场上的一张牌
     expect(state.pending?.kind).toBe('choice');
-    ok(act(state, B, { type: 'chooseOption', optionId: 'arm1' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'card:arm1' }));
     ok(act(state, B, { type: 'chooseOption', optionId: A }));
     expect(c.equipment.armor).toBeNull();
     expect(state.players.find((p) => p.seatId === A)!.equipment.armor?.id).toBe('arm1');
@@ -14689,7 +14689,7 @@ describe('国战 · 变更副将 与 马谡·制蛮', () => {
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     // 挑要拿的牌（只有装备区的武器）
     expect(state.pending?.kind).toBe('choice');
-    ok(act(state, A, { type: 'chooseOption', optionId: 'w1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:w1' }));
     expect(b.equipment.weapon).toBeNull();
     expect(state.players.find((p) => p.seatId === A)!.hand.some((c) => c.id === 'w1')).toBe(true);
     expect(b.hp).toBe(4); // 伤害被防止
@@ -14717,7 +14717,7 @@ describe('国战 · 变更副将 与 马谡·制蛮', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' }));
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: 'arm1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:arm1' }));
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     expect(b.deputyHeroId).toBe('huangzhong'); // 连续亮到蜀将为止
     expect(b.deputyRevealed).toBe(false); // 新副将暗置
@@ -19318,6 +19318,38 @@ describe('国战 · 公孙渊（怀异 / 恣睢）', () => {
     return state;
   }
 
+  it('多选座位原语：候选/数量/去重都会校验；确认后一次把选中的几家交给技能', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'gongsunyuan',
+        faction: 'ambitionist',
+        hand: [mk('a1', 'tao', 'heart')], // 只弃 1 张 → X=1 → 至多选 1 名
+      },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wei', hand: [mk('b1', 'tao', 'heart')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [mk('c1', 'tao', 'heart')] },
+    ], A);
+    ok(act(state, A, { type: 'useSkill', skillId: 'huaiyi', targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'red' }));
+    const q = state.pending;
+    if (q?.kind !== 'pickSeats') throw new Error(`预期多选座位，实际是 ${q?.kind}`);
+    expect(q.candidates.sort()).toEqual([B, C].sort()); // 候选＝两家有牌的其他角色
+    expect(q.max).toBe(1); // 弃了 1 张 → 至多 1 名
+    // 非法回答：不在候选里 / 重复 / 超过上限 —— 都要被拒
+    fail(act(state, A, { type: 'pickSeats', seatIds: ['nobody'] }));
+    fail(act(state, A, { type: 'pickSeats', seatIds: [B, B] }));
+    fail(act(state, A, { type: 'pickSeats', seatIds: [B, C] }));
+    expect(state.pending?.kind).toBe('pickSeats'); // 三次都被挡下来了，提示还在
+    // 合法：选乙 → 接着问「拿乙的哪张牌」（区域选牌原语）
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B] }));
+    const pick = state.pending;
+    if (pick?.kind !== 'choice') throw new Error(`预期拿牌询问，实际是 ${pick?.kind}`);
+    pickZoneCard(state, A, 'hand:0');
+    expect(state.players.find((p) => p.seatId === B)!.hand).toHaveLength(0);
+    expect(state.players.find((p) => p.seatId === A)!.hand.some((c) => c.id === 'b1')).toBe(true);
+  });
+
   it('怀异：**单色**手牌也能发动（移动版没有「必须红黑双色」）', () => {
     const state = gz([
       {
@@ -19335,10 +19367,10 @@ describe('国战 · 公孙渊（怀异 / 恣睢）', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('怀异');
     ok(act(state, A, { type: 'chooseOption', optionId: 'red' }));
-    // 全弃 3 张 → X=3 → 可以选目标（这里选乙）
-    expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('怀异');
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 全弃 3 张 → X=3 → 一次点完要选哪几家（多选座位原语，这里选乙）
+    expect(state.pending?.kind).toBe('pickSeats');
+    if (state.pending?.kind === 'pickSeats') expect(state.pending.title).toContain('怀异');
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B] })); // 一次点完（多选座位原语）
     // 「获得其一张牌」会先问一句（雉盗同款）→ 选乙手里的那张
     if (state.pending?.kind === 'choice') {
       const opt = state.pending.options.find((o) => o.id === 'b1') ?? state.pending.options[0];
@@ -19362,11 +19394,10 @@ describe('国战 · 公孙渊（怀异 / 恣睢）', () => {
     ok(act(state, A, { type: 'useSkill', skillId: 'huaiyi', targetIds: [] }));
     ok(act(state, A, { type: 'chooseOption', optionId: 'black' }));
     // 弃 2 张黑 → 至多 2 名目标：先选乙、再选丙，然后自动结束（X=2 用完）
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B, C] })); // 一次点完（多选座位原语）
     if (state.pending?.kind === 'choice') {
       ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
     }
-    ok(act(state, A, { type: 'chooseOption', optionId: C }));
     if (state.pending?.kind === 'choice') {
       ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
     }
@@ -19390,11 +19421,10 @@ describe('国战 · 公孙渊（怀异 / 恣睢）', () => {
     const a = state.players.find((p) => p.seatId === A)!;
     ok(act(state, A, { type: 'useSkill', skillId: 'huaiyi', targetIds: [] }));
     ok(act(state, A, { type: 'chooseOption', optionId: 'red' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: B })); // 拿乙的装备牌
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B] })); // 拿乙的装备牌（多选座位原语）
     if (state.pending?.kind === 'choice') {
       ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
     }
-    ok(act(state, A, { type: 'chooseOption', optionId: 'stop' })); // 结束选择
     expect(a.yi.some((c) => c.id === 'b1')).toBe(true); // 装备 → 异
     expect(a.hand.some((c) => c.id === 'b1')).toBe(false);
     expect(state.log.some((e) => e.message.includes('成为「异」'))).toBe(true);
@@ -21434,7 +21464,7 @@ describe('制蛮：拿走判定区的牌要摘干净', () => {
     // 选「获得其【闪电】」
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('获得');
-    ok(act(state, A, { type: 'chooseOption', optionId: 'sd1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:sd1' }));
     // 牌进了甲手里；乙的判定区**不能再留着它**
     expect(a.hand.some((c) => c.id === 'sd1')).toBe(true);
     expect(b.judgment.some((c) => c.id === 'sd1')).toBe(false);

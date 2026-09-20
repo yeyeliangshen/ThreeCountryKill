@@ -111,6 +111,21 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         choiceOptions: pending.options,
       };
 
+    case 'pickSeats':
+      if (pending.seatId !== seatId) return null;
+      return {
+        kind: 'pickSeats',
+        message: pending.title,
+        legalCardIds: [],
+        // 可点的座位＝候选（界面据此点亮这几家）；下面两个数字是「至少/至多选几个」
+        legalTargetIds: pending.candidates.slice(),
+        mustSelectTargetCount: 0,
+        pickTitle: pending.title,
+        seatCandidates: pending.candidates.slice(),
+        pickMin: pending.min,
+        pickMax: pending.max,
+      };
+
     case 'pickCards':
       if (pending.seatId !== seatId) return null;
       return {

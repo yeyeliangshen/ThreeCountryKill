@@ -5380,14 +5380,16 @@ const MASU: Hero = {
               ...t.judgment,
             ];
             if (cards.length === 0) return;
+            // 文本只写「装备区或判定区里的一张牌」→ 明牌精确选（不含手牌，走公共原语）
+            const options = targetCardOptions(st, ctx.player.seatId, t, '获得', { noHand: true });
             ctx.api.askChoice(
               st,
               ctx.player.seatId,
               `【制蛮】：获得 ${t.name} 的哪张牌？`,
-              cards.map((c) => ({ id: c.id, label: `获得其【${cardLabel(c)}】` })),
+              options,
               (st2, p2, cardId) => {
-                const card = cards.find((c) => c.id === cardId);
-                if (!card) return;
+                const card = findTargetCardByChoice(st2, p2.seatId, t, cardId);
+                if (!card) return; // 跨步：那张牌已经不在了
                 ctx.api.transferCard(t.seatId, card, p2.seatId, () => {
                   // 同势力的话，**其**可以变更副将（可选）
                   const t2 = getPlayer(st2, t.seatId);
@@ -7496,7 +7498,7 @@ export function targetCardOptions(
   actorSeatId: string,
   target: Player,
   verb: '弃置' | '获得',
-  opts2?: { noJudgment?: boolean },
+  opts2?: { noJudgment?: boolean; noHand?: boolean },
 ): { id: string; label: string }[] {
   const z = operableTargetCards(state, actorSeatId, target);
   const opts: { id: string; label: string }[] = [];
@@ -7506,9 +7508,11 @@ export function targetCardOptions(
   } else {
     for (const c of z.judge) opts.push({ id: `card:${c.id}`, label: `${verb}其判定区【${cardLabel(c)}】` });
   }
-  z.hand.forEach((_c, i) =>
-    opts.push({ id: `hand:${i}`, label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）` }),
-  );
+  if (!opts2?.noHand) {
+    z.hand.forEach((_c, i) =>
+      opts.push({ id: `hand:${i}`, label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）` }),
+    );
+  }
   return opts;
 }
 
@@ -7524,6 +7528,78 @@ export function targetCardOptions(
  * 给「交给引擎自己的搬运入口」的技能用：`api.transferCard` / `api.discardTargetCard` 自己会
  * 从区域里摘牌、并派发「失去装备 / 因弃置」那套收口——先取再交就取不到了（牌已不在原区域）。
  */
+/**
+ * 「移动/弃置/获得**场上**的一张牌」的候选：所有存活角色**装备区 + 判定区**的明牌。
+ *
+ * 与「目标区域选牌」是同一类交互，只是候选来自**全场**而不是某一个目标：
+ * 【谋断】【勇进】那类「移动场上的一张牌」用它（规格 §10：这类原语应当共用）。
+ * 手牌不在候选里——这些技能只看明牌，所以没有暗牌泄露的问题。
+ */
+export interface FieldCardEntry {
+  card: Card;
+  ownerSeatId: string;
+  zone: 'equip' | 'judge';
+}
+
+/** 全场可操作的明牌（过一遍 `canOperateTargetCard`：风扬那类「不能被弃置/获得」的保护也在这里生效） */
+export function fieldCardEntries(state: GameState, actorSeatId: string): FieldCardEntry[] {
+  const out: FieldCardEntry[] = [];
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    for (const slot of EQUIP_SLOTS) {
+      const c = p.equipment[slot];
+      if (c && canOperateTargetCard(state, actorSeatId, p, c)) {
+        out.push({ card: c, ownerSeatId: p.seatId, zone: 'equip' });
+      }
+    }
+    for (const c of p.judgment) {
+      if (canOperateTargetCard(state, actorSeatId, p, c)) {
+        out.push({ card: c, ownerSeatId: p.seatId, zone: 'judge' });
+      }
+    }
+  }
+  return out;
+}
+
+/** 选项：id 用 `card:<牌 id>`（与「目标区域选牌」同一套命名），label 写清是谁的什么区的牌 */
+export function fieldCardOptions(
+  state: GameState,
+  actorSeatId: string,
+  entries: FieldCardEntry[],
+  verb: '移动' | '弃置' | '获得',
+): { id: string; label: string }[] {
+  void state;
+  void actorSeatId;
+  return entries.map((e) => ({
+    id: `card:${e.card.id}`,
+    label: `${verb} ${getPlayer(state, e.ownerSeatId)?.name ?? e.ownerSeatId} ${
+      e.zone === 'equip' ? '装备区' : '判定区'
+    }的【${cardLabel(e.card)}】`,
+  }));
+}
+
+/**
+ * 按选项 id 找回候选条目，并**重新校验它还在原处**（选项是跨步给出的：期间可能已被搬走）。
+ * 取不到就返回 null，调用方重问一次——不随便换一张。
+ */
+export function findFieldCardByChoice(
+  state: GameState,
+  entries: FieldCardEntry[],
+  choiceId: string,
+): FieldCardEntry | null {
+  if (!choiceId.startsWith('card:')) return null;
+  const id = choiceId.slice('card:'.length);
+  const entry = entries.find((e) => e.card.id === id);
+  if (!entry) return null;
+  const owner = getPlayer(state, entry.ownerSeatId);
+  if (!owner) return null;
+  const stillThere =
+    entry.zone === 'equip'
+      ? EQUIP_SLOTS.some((slot) => owner.equipment[slot]?.id === id)
+      : owner.judgment.some((c) => c.id === id);
+  return stillThere ? entry : null;
+}
+
 export function findTargetCardByChoice(
   state: GameState,
   actorSeatId: string,
@@ -10915,29 +10991,12 @@ export const EQUIP_SLOTS = ['weapon', 'armor', 'plusMount', 'minusMount', 'treas
 function askMoveFieldCard(ctx: HookContext, skillName: string): void {
   const state = ctx.state;
   const player = ctx.player;
-  const entries: { card: Card; ownerSeatId: string; label: string }[] = [];
-  for (const p of state.players) {
-    if (!p.alive) continue;
-    for (const slot of EQUIP_SLOTS) {
-      const c = p.equipment[slot];
-      if (c)
-        entries.push({
-          card: c,
-          ownerSeatId: p.seatId,
-          label: `${p.name} 装备区的【${cardLabel(c)}】`,
-        });
-    }
-    for (const c of p.judgment) {
-      entries.push({
-        card: c,
-        ownerSeatId: p.seatId,
-        label: `${p.name} 判定区的【${cardLabel(c)}】`,
-      });
-    }
-  }
+  // 候选与选项走公共原语（与拆/顺、与「获得其一张牌」同一套命名：`card:<牌 id>`）。
+  // 这类技能只看**明牌**（装备区 + 判定区），所以没有暗牌泄露的问题。
+  const entries = fieldCardEntries(state, player.seatId);
   if (entries.length === 0) return;
   if (state.players.filter((p) => p.alive).length < 2) return;
-  const options = entries.map((e) => ({ id: e.card.id, label: `移动 ${e.label}` }));
+  const options = fieldCardOptions(state, player.seatId, entries, '移动');
   options.push({ id: 'no', label: '不发动' });
   ctx.api.askChoice(
     state,
@@ -10946,8 +11005,8 @@ function askMoveFieldCard(ctx: HookContext, skillName: string): void {
     options,
     (st, _p, picked) => {
       if (picked === 'no') return;
-      const entry = entries.find((e) => e.card.id === picked);
-      if (!entry) return;
+      const entry = findFieldCardByChoice(st, entries, picked);
+      if (!entry) return; // 跨步：那张牌已经不在原处
       // 移到**别人**的区域去——移给自己等于没动
       const candidates = st.players.filter((x) => x.alive && x.seatId !== entry.ownerSeatId);
       if (candidates.length === 0) return;
@@ -10957,6 +11016,7 @@ function askMoveFieldCard(ctx: HookContext, skillName: string): void {
         `【${skillName}】：把【${cardLabel(entry.card)}】移到谁的对应区域？`,
         candidates.map((x) => ({ id: x.seatId, label: x.name })),
         (st2, _p2, seatId) => {
+          void st2;
           ctx.api.moveFieldCard(entry.card, seatId);
         },
       );
@@ -14774,45 +14834,45 @@ function askHuaiyi(state: GameState, player: Player, api: SkillApi): string | un
       );
     }
   };
-  const pickTargets = (st0: GameState, me: Player, left: number, picked: string[], obtained: Card[]): void => {
-    if (left <= 0) {
-      finish(st0, me, obtained);
-      return;
-    }
+  const pickTargets = (st0: GameState, me: Player, left: number, obtained: Card[]): void => {
     const cands = st0.players.filter(
-      (q) => q.alive && q.seatId !== me.seatId && !picked.includes(q.seatId) && handAndEquipOf(q).length > 0,
+      (q) => q.alive && q.seatId !== me.seatId && handAndEquipOf(q).length > 0,
     );
-    if (cands.length === 0) {
+    if (left <= 0 || cands.length === 0) {
       finish(st0, me, obtained);
       return;
     }
-    api.askChoice(
+    // 一次点完（**多选座位原语**）：至多 X 名**不同**角色，可以少选甚至不选。
+    // 以前是「逐个问 + 可提前结束」的近似——那个既多点几次，也表达不出「同时定下这几家」。
+    api.askPickSeats(
       st0,
       me.seatId,
-      `【怀异】：选择第 ${picked.length + 1} 名角色获得其一张牌（至多 ${left + picked.length} 名，可提前结束）`,
-      [
-        ...cands.map((q) => ({ id: q.seatId, label: `${q.name}（${q.hand.length} 张手牌）` })),
-        { id: 'stop', label: '结束选择' },
-      ],
-      (st, p, pickedId) => {
-        if (pickedId === 'stop') {
-          finish(st, p, obtained);
-          return;
-        }
-        const t = getPlayer(st, pickedId);
-        if (!t) {
-          pickTargets(st, p, left - 1, picked, obtained);
-          return;
-        }
-        // takeOneOfTargetCards 的回调不带参数：用「拿牌前后手牌差集」认出拿到的那张
-        const beforeIds = new Set(p.hand.map((c) => c.id));
-        takeOneOfTargetCards(st, p, t, api, '怀异', () => {
-          const got = p.hand.find((c) => !beforeIds.has(c.id));
-          pushLog(st, 'skill', `${p.name} 的【怀异】：获得了 ${t.name} 的一张牌。`, {
-            seat: p.seatId,
+      `【怀异】：选择至多 ${left} 名角色，各获得其一张牌（可少选）`,
+      cands.map((q) => q.seatId),
+      0,
+      left,
+      (st, p, picked) => {
+        const step = (i: number, acc: Card[]): void => {
+          const t = i < picked.length ? getPlayer(st, picked[i]!) : undefined;
+          if (!t) {
+            finish(st, p, acc);
+            return;
+          }
+          if (!t.alive) {
+            step(i + 1, acc);
+            return;
+          }
+          // takeOneOfTargetCards 的回调不带参数：用「拿牌前后手牌差集」认出拿到的那张
+          const beforeIds = new Set(p.hand.map((c) => c.id));
+          takeOneOfTargetCards(st, p, t, api, '怀异', () => {
+            const got = p.hand.find((c) => !beforeIds.has(c.id));
+            pushLog(st, 'skill', `${p.name} 的【怀异】：获得了 ${t.name} 的一张牌。`, {
+              seat: p.seatId,
+            });
+            step(i + 1, got ? [...acc, got] : acc);
           });
-          pickTargets(st, p, left - 1, [...picked, pickedId], got ? [...obtained, got] : obtained);
-        });
+        };
+        step(0, obtained);
       },
     );
   };
@@ -14834,7 +14894,7 @@ function askHuaiyi(state: GameState, player: Player, api: SkillApi): string | un
           `${p.name} 的【怀异】：弃置${picked === 'red' ? '红' : '黑'}色手牌 ${cards.length} 张。`,
           { seat: p.seatId },
         );
-        pickTargets(st, p, cards.length, [], []);
+        pickTargets(st, p, cards.length, []);
       });
     },
     player.seatId,

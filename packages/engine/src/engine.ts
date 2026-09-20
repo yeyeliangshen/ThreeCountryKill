@@ -321,6 +321,38 @@ export function askPickCards(
 }
 
 /**
+ * 一次**选多名角色**（多选座位原语）。
+ *
+ * 用法：`askPickSeats(state, 界钟会, '选择至多 X 名角色', 候选座位, 0, X, (st, p, picked) => {...})`
+ *
+ * ⚠️ 与「逐个问 + 可提前结束」的旧近似相比，这个是**一次点完再确认**：候选在发起时筛好
+ *    （存活、可被选…），回答时再校验一遍（跨步期间有人阵亡/离场）。
+ */
+export function askPickSeats(
+  state: GameState,
+  seatId: string,
+  title: string,
+  candidates: string[],
+  min: number,
+  max: number,
+  resolve: (state: GameState, player: Player, picked: string[]) => void,
+  opts?: { returnTo?: string },
+): void {
+  setPending(state, {
+    kind: 'pickSeats',
+    seatId,
+    title,
+    candidates,
+    // 与 askPickCards 同一条兜底：候选比 min 少时按候选来（跨步期间候选可能变少，
+    // min 大于候选数就**答不上来**了）。
+    min: Math.min(min, candidates.length),
+    max,
+    resolve,
+    returnTo: opts?.returnTo,
+  });
+}
+
+/**
  * 手牌上限：默认 = 当前体力；技能可以覆盖（周瑜·英姿 = 体力上限）。
  * 多个武将给出上限时取最宽松的那个，最后再加上本回合的标记加成（阴阳鱼）。
  */
@@ -5169,6 +5201,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       return onUseSkill(state, seatId, intent);
     case 'pickCards':
       return onPickCards(state, seatId, intent);
+    case 'pickSeats':
+      return onPickSeats(state, seatId, intent);
     case 'factionCall':
       return onFactionCall(state, seatId, intent);
     case 'recast':
@@ -5235,6 +5269,38 @@ function onPickCards(
       completePendingRequest(state, pendingIdOf(pending));
       drainResume(state);
       return { ok: true };
+}
+
+/** 多选座位的回答处理：校验候选/数量/去重，然后交给 resolve */
+function onPickSeats(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'pickSeats' }>,
+): ApplyResult {
+  const pending = state.pending;
+  if (!pending || pending.kind !== 'pickSeats') return err('当前没有需要选角色的地方');
+  if (pending.seatId !== seatId) return err('不是你在选角色');
+  const player = getPlayerOrThrow(state, seatId);
+  const ids = intent.seatIds ?? [];
+  // 跨步校验：候选里还在的才算（有人阵亡/离场就当他不在候选里了）
+  const alive = ids.filter((id) => pending.candidates.includes(id) && getPlayer(state, id)?.alive);
+  if (alive.length !== ids.length) return err('选的座位不在候选里');
+  if (new Set(ids).size !== ids.length) return err('同一个座位不能选两次');
+  if (ids.length < pending.min || ids.length > pending.max)
+    return err(`需选择 ${pending.min}-${pending.max} 名角色`);
+  setPending(state, null);
+  pushLog(
+    state,
+    'skill',
+    `${player.name} 选择了 ${
+      ids.map((id) => getPlayer(state, id)?.name ?? id).join('、') || '（无）'
+    }。`,
+  );
+  runResume(() => pending.resolve(state, player, ids));
+  if (state.pending === null && pending.returnTo) {
+    resumePlay(state, pending.returnTo);
+  }
+  return { ok: true };
 }
 
 function onPlayCard(
@@ -10073,6 +10139,7 @@ function makeSkillApi(
   return {
     askChoice,
     askPickCards,
+    askPickSeats,
     replaceJudgeCard: (card) => {
       // 没有 judgeBox 说明不在判定流程里，静默忽略
       if (judgeBox) {

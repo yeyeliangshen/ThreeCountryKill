@@ -771,6 +771,24 @@ export type Pending =
       secret?: boolean;
     }
   /**
+   * 一次**选多名角色**（多选座位原语）。
+   *
+   * 那些「至多 X 名（不同）角色」的技能以前只能「逐个问 + 可提前结束」近似（怀异那类），
+   * 现在可以一次点亮好几家再确认。`candidates` 由调用方按规则筛好（存活、可被选…）。
+   */
+  | {
+      kind: 'pickSeats';
+      seatId: string;
+      title: string;
+      candidates: string[];
+      min: number;
+      max: number;
+      /** 选完怎么继续。收到的是选中的座位 id 列表 */
+      resolve: (state: GameState, player: Player, picked: string[]) => void;
+      /** 选完把控制权还给谁（技能发起的必须传，钩子发起的不传） */
+      returnTo?: string;
+    }
+  /**
    * 势力技：依次问**同势力**角色是否代打一张牌（曹操·护驾 / 刘备·激将）。
    * 结构与 wuxieQueue 相同：一个按座次询问的队列。
    */

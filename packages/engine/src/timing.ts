@@ -348,6 +348,20 @@ export interface SkillApi {
     opts?: { returnTo?: string; secret?: boolean },
   ) => void;
   /**
+   * 一次**选多名角色**（多选座位原语）：候选、至多/至少几个，回答给选中的座位 id 列表。
+   * 给「至多 X 名（不同）角色」那类技能用（怀异…）——比「逐个问 + 可提前结束」更贴近规则。
+   */
+  askPickSeats: (
+    state: GameState,
+    seatId: string,
+    title: string,
+    candidates: string[],
+    min: number,
+    max: number,
+    resolve: (state: GameState, player: Player, picked: string[]) => void,
+    opts?: { returnTo?: string },
+  ) => void;
+  /**
    * 修改体力上限（董卓·崩坏减、袁术·庸肆之类）。
    * 上限变小时会把当前体力夹到新上限，并做一次濒死检查。
    */
