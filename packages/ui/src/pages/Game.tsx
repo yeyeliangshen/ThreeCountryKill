@@ -36,6 +36,7 @@ import {
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
+import { cardBack } from '../components/cardBack';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { useStore } from '../store';
@@ -407,6 +408,8 @@ export function Game() {
    * 为什么要它：这几类点一下就生效，而牌面说明平时只有**悬停**才看得到（触屏上根本没有悬停）；
    * 装装备尤其疼（点错就把装备丢进装备区、还顶掉原来那件）。
    */
+  /** 多选座位（`pickSeats` 提示）：点亮了几家，确认时才发出去 */
+  const [seatPick, setSeatPick] = useState<string[]>([]);
   const [confirmUse, setConfirmUse] = useState<{
     title: string;
     desc: string;
@@ -459,6 +462,12 @@ export function Game() {
   const myDeputyHero = getHeroForMode(me.deputyHeroId, snapshot.mode);
   const others = snapshot.players.filter((p) => p.seatId !== snapshot.seatId);
   const prompt = snapshot.prompt;
+  // 多选座位的提示换了一轮（候选变了）→ 清空上一轮点亮的
+  const seatPickKey =
+    prompt?.kind === 'pickSeats' ? (prompt.seatCandidates ?? []).join(',') + '|' + prompt.pickMax : '';
+  useEffect(() => {
+    setSeatPick([]);
+  }, [seatPickKey]);
   const legalSet = new Set(prompt?.legalCardIds ?? []);
   const targetSet = new Set(prompt?.legalTargetIds ?? []);
   const myTurn = snapshot.turn.seatId === snapshot.seatId;
@@ -1030,6 +1039,12 @@ export function Game() {
 
   // 判断某对手是否可被点击（选目标 / 技能选目标）
   function canClickTarget(p: PlayerView): boolean {
+    // 多选座位：候选里那几家可点（再点一下取消）；选满 max 之后只能取消、不能继续加
+    if (prompt?.kind === 'pickSeats') {
+      if (!(prompt.seatCandidates ?? []).includes(p.seatId)) return false;
+      if (seatPick.includes(p.seatId)) return true;
+      return seatPick.length < (prompt.pickMax ?? 99);
+    }
     if (!p.isAlive) return false;
     if (lianhengCard) return lianhengSet.has(p.seatId);
     if (!targeting) return false;
@@ -1045,6 +1060,12 @@ export function Game() {
   }
 
   function handleTargetClick(p: PlayerView) {
+    if (prompt?.kind === 'pickSeats') {
+      setSeatPick((prev) =>
+        prev.includes(p.seatId) ? prev.filter((x) => x !== p.seatId) : [...prev, p.seatId],
+      );
+      return;
+    }
     if (lianhengCard) {
       // 只选中（同一个再点一下＝取消）；发出交给「确认连横」
       setLianhengPick((prev) => (prev === p.seatId ? null : p.seatId));
@@ -1188,10 +1209,11 @@ export function Game() {
           {others.map((p) => {
             const isTarget = canClickTarget(p);
             const isPickedTarget =
-              targeting &&
-              (selected?.picked.includes(p.seatId) ||
-                skillMode?.targetIds.includes(p.seatId) ||
-                lianhengPick === p.seatId);
+              (prompt?.kind === 'pickSeats' && seatPick.includes(p.seatId)) ||
+              (targeting &&
+                (selected?.picked.includes(p.seatId) ||
+                  skillMode?.targetIds.includes(p.seatId) ||
+                  lianhengPick === p.seatId));
             const isCurrent = snapshot.turn.seatId === p.seatId;
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
@@ -1294,14 +1316,56 @@ export function Game() {
                 </button>
               )}
 
-              {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…） */}
+              {/* 多选座位（怀异那类「至多 X 名角色」）：点面板点亮，确认才发出去 */}
+              {prompt.kind === 'pickSeats' && (
+                <>
+                  <span className="hint">
+                    {prompt.pickTitle}（已选 {seatPick.length}
+                    {prompt.pickMax !== undefined ? ` / 至多 ${prompt.pickMax}` : ''}）
+                  </span>
+                  <span className="use-effect-desc">
+                    点上面的角色面板选择；再点一下取消
+                    {prompt.pickMin ? `（至少选 ${prompt.pickMin} 名）` : '（可以一个都不选）'}
+                  </span>
+                  <button
+                    className="primary"
+                    disabled={seatPick.length < (prompt.pickMin ?? 0)}
+                    onClick={() => {
+                      sendIntent({ type: 'pickSeats', seatIds: seatPick });
+                      setSeatPick([]);
+                    }}
+                  >
+                    确认选择
+                  </button>
+                </>
+              )}
+
+              {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…）。
+                  ⚠️ 选目标区域里的牌时，手牌那几个选项是 `hand:<第几张>`（引擎的「目标区域选牌」
+                  原语，docs §5.149）——它们是**暗牌**，只给牌背样式，牌名/花色一律不显示。 */}
               {prompt.kind === 'choice' && (
                 <>
-                  {prompt.choiceOptions?.map((o) => (
-                    <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
-                      {o.label}
-                    </button>
-                  ))}
+                  {prompt.choiceOptions?.map((o) =>
+                    o.id.startsWith('hand:') ? (
+                      // 暗牌：只画**卡背**，不给牌名/花色/点数（规格第九条）
+                      <button
+                        key={o.id}
+                        className="card-back-option"
+                        title="对方的一张手牌（看不到牌面）"
+                        onClick={() => chooseOption(o.id)}
+                      >
+                        {cardBack ? (
+                          <img className="card-back-img" src={cardBack} alt="牌背" />
+                        ) : (
+                          '🂠'
+                        )}
+                      </button>
+                    ) : (
+                      <button key={o.id} className="primary" onClick={() => chooseOption(o.id)}>
+                        {o.label}
+                      </button>
+                    ),
+                  )}
                 </>
               )}
 

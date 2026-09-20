@@ -448,6 +448,15 @@ export interface Player {
    */
   tian: Card[];
   /**
+   * 国战【空城】第二段的**暂存牌**：0 手牌的空城诸葛在自己回合外被其他角色「交给」牌时，
+   * 这些牌改为置于其**武将牌上**（**不进手牌**，所以空城照旧成立），到他的下一个
+   * 摸牌阶段开始时**一次性获得**（见 heroes.ts 的 kongchengStash 与 engine 的 giveCard）。
+   *
+   * ⚠️ 内容是**暗信息**（交给时就是扣着给的，诸葛亮自己也未必知道是哪几张），
+   *    张数是公开的（牌就扣在武将牌上）——`snapshot` 只下发 `kongchengCount`。
+   */
+  kongcheng: Card[];
+  /**
    * 已被**移除**的武将牌（id 列表）。
    *
    * 国战「移除」：那张牌离场，角色用「士兵牌」顶上——**势力/性别/体力上限都保留**，
@@ -590,6 +599,17 @@ export interface AttackContext {
    * 所以必须挂在这个收尾点上，不能在 useShaOn 后面直接往下写。
    */
   afterSettled?: () => void;
+  /**
+   * 这次【杀】摆上槽的那个「求闪询问」（`{kind:'respondSha'}`）对象本身。
+   *
+   * 用途是「**谁建谁清**」：自动响应（八卦阵/护驾那类代打）会在**同一个 intent 里**
+   * 把这条询问创建又解决掉，槽里于是留下一个**已经处理完、却没人答过**的旧对象
+   * （`answeredPendings` 里没有它）。不认它的话，钩子链收尾的「环境 pending 还原」会把它
+   * 当成还在等人回答的询问原样还回去，诊断探针也会把它记成「收尾抢了一条没答过的询问」——
+   * 实测（scripts/measure-takeover.ts，60 局）69 次记录**全是**这一类误报。
+   * 所以结算收尾（`finishAttack`）认一次它的身份、打上「已处理」标记。
+   */
+  shanAsk?: { kind: string; responderId?: string } | null;
   /**
    * 刘禅·享乐问过了吗。
    * 享乐是「除非使用者弃一张基本牌，否则此【杀】对你无效」：付款之后要继续走
@@ -771,6 +791,24 @@ export type Pending =
       secret?: boolean;
     }
   /**
+   * 一次**选多名角色**（多选座位原语）。
+   *
+   * 那些「至多 X 名（不同）角色」的技能以前只能「逐个问 + 可提前结束」近似（怀异那类），
+   * 现在可以一次点亮好几家再确认。`candidates` 由调用方按规则筛好（存活、可被选…）。
+   */
+  | {
+      kind: 'pickSeats';
+      seatId: string;
+      title: string;
+      candidates: string[];
+      min: number;
+      max: number;
+      /** 选完怎么继续。收到的是选中的座位 id 列表 */
+      resolve: (state: GameState, player: Player, picked: string[]) => void;
+      /** 选完把控制权还给谁（技能发起的必须传，钩子发起的不传） */
+      returnTo?: string;
+    }
+  /**
    * 势力技：依次问**同势力**角色是否代打一张牌（曹操·护驾 / 刘备·激将）。
    * 结构与 wuxieQueue 相同：一个按座次询问的队列。
    */
@@ -855,6 +893,12 @@ export interface GameState {
    * 「一个建国者可以接纳多人」，没放开「中途改投」。与 `ambitionAsked` 同时清空。
    */
   ambitionJoined: string[];
+  /**
+   * 「一手意图的收尾钩子」里**因为槽被占而排队**的那些（`handEmptied` / `cardsLost`，见
+   * `fireEndOfIntentHooks`）。存的是闭包，和 `Pending.resolve` 同一性质——引擎本来就把闭包
+   * 放在状态里，不额外破坏什么。
+   */
+  deferredEndOfIntentHooks: (() => void)[];
   pendingFactionTricks: Card[];
   /**
    * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：

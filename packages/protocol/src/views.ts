@@ -68,6 +68,11 @@ export interface PlayerView {
   qianhuanCount?: number;
   /** 武将牌上的「魂」张数（左慈·役鬼） */
   hunCount?: number;
+  /**
+   * 国战【空城】第二段扣在武将牌上的**暂存牌张数**（诸葛亮，公开信息）。
+   * ⚠️ 只下发张数：内容是暗信息（交给时就是扣着给的），谁都不该看到牌名。
+   */
+  kongchengCount?: number;
   /** 周泰·不屈的「创」：扣在武将牌上的牌（公开信息） */
   wounds?: Card[];
   /** 孟达·【求安】的「函」（公开信息） */
@@ -120,6 +125,7 @@ export type PromptKind =
   | 'activeSkill'
   | 'choice' // 通用「选择一项」
   | 'pickCards' // 从一组牌里选若干张
+  | 'pickSeats' // 一次选多名角色（多选座位原语）
   | 'viewCards' // 私密查看（知己知彼）：只有本人看得到内容
   | 'factionCall'; // 势力技：依次问同势力角色是否代打一张牌
 
@@ -173,6 +179,11 @@ export interface PromptView {
    * 界面拿 id 去 myHand 查是查不到的。
    */
   pickTitle?: string;
+  /**
+   * 多选座位的候选座位（仅 `pickSeats` 有）：界面据此把这几家的面板点亮、可点。
+   * 至多/至少几个看 `pickMin` / `pickMax`（与选牌共用）。
+   */
+  seatCandidates?: string[];
   pickCards?: Card[];
   pickMin?: number;
   pickMax?: number;

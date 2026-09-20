@@ -265,6 +265,15 @@ export interface EquipLostPayload {
 }
 
 /**
+ * 一张牌**为什么**换主人——牌移动的动作语义。
+ *
+ * 目前只落地了需要区分行为的两类（`transferCard` = gain / `giveCard` = give，
+ * 差别在国战【空城】第二段只拦「交给」）；`steal` / `draw` / `distribute` 先占位，
+ * 等 #9（统一的 CardMove）铺开时再给它们各自的落点规则。
+ */
+export type CardMoveReason = 'gain' | 'give' | 'steal' | 'draw' | 'distribute';
+
+/**
  * 引擎注入给技能与钩子的内部 API。
  *
  * 定义放在 timing.ts（而不是 heroes.ts）是为了让 HookContext 能用它——
@@ -348,6 +357,20 @@ export interface SkillApi {
     opts?: { returnTo?: string; secret?: boolean },
   ) => void;
   /**
+   * 一次**选多名角色**（多选座位原语）：候选、至多/至少几个，回答给选中的座位 id 列表。
+   * 给「至多 X 名（不同）角色」那类技能用（怀异…）——比「逐个问 + 可提前结束」更贴近规则。
+   */
+  askPickSeats: (
+    state: GameState,
+    seatId: string,
+    title: string,
+    candidates: string[],
+    min: number,
+    max: number,
+    resolve: (state: GameState, player: Player, picked: string[]) => void,
+    opts?: { returnTo?: string },
+  ) => void;
+  /**
    * 修改体力上限（董卓·崩坏减、袁术·庸肆之类）。
    * 上限变小时会把当前体力夹到新上限，并做一次濒死检查。
    */
@@ -393,11 +416,22 @@ export interface SkillApi {
    */
   setPindianRank: (rank: number) => void;
   /**
-   * 把某人的一张牌（手牌或装备区）转给另一个人。
+   * 把某人的一张牌（手牌或装备区）转给另一个人——**「获得」语义**（拿走/夺得/收缴）。
    * 拿走装备会触发「失去装备」的技能（枭姬那类），after 在所有结算完成后调用。
    * 反馈 / 突袭 / 顺手牵羊那类「获得他人一张牌」都该走这里，别自己 splice。
    */
   transferCard: (fromSeatId: string, card: Card, toSeatId: string, after?: () => void) => void;
+  /**
+   * 把某人的一张牌**交给**另一个人——**「交给」语义**（自愿给出的那种，文本里写「交给」的操作）。
+   *
+   * 与 `transferCard` 的搬运机制完全相同，区别只在这个语义：国战【空城】第二段
+   * （「其他角色于你的回合外交给你牌时，改为把这些牌置于你的武将牌上」）**只拦「交给」**——
+   * 摸牌/五谷丰登/获得他人牌（顺手牵羊、突袭…）都照常进手牌，不能靠它们把空城破掉。
+   *
+   * ⚠️ 技能文本里写「交给」的一律走这里（仁德/遗计/反间/恩怨/好施…），别自己 hand.push。
+   *    这是 `docs/guozhan-roster.md` 里 #9「统一的牌移动语义」的第一块落地。
+   */
+  giveCard: (fromSeatId: string, card: Card, toSeatId: string, after?: () => void) => void;
   /**
    * 让某人弃置自己的一张牌（手牌或装备区）。失去装备会触发那类技能。
    * after 在结算完成后调用。
@@ -464,8 +498,17 @@ export interface SkillApi {
    * 把**刚进弃牌堆**的几张牌交给某个角色（孔融·礼让）。
    * 按 id 从弃牌堆里取出来塞进目标手牌；找不到的（已经被别人拿走了）跳过。
    */
-  /** 把刚进弃牌堆的牌交给某人（孔融·礼让 / 小乔·天香）。skillName 只影响日志文案。 */
-  giveDiscardedTo: (cards: Card[], targetSeatId: string, skillName?: string) => void;
+  /**
+   * 把刚进弃牌堆的牌交给某人（孔融·礼让 / 小乔·天香）。skillName 只影响日志文案。
+   * `reason` 填 'give' 表示这是文本里的「交给」（礼让），要受国战【空城】第二段管辖；
+   * 不填＝获得（天香那种「令其获得之」）。
+   */
+  giveDiscardedTo: (
+    cards: Card[],
+    targetSeatId: string,
+    skillName?: string,
+    reason?: CardMoveReason,
+  ) => void;
   /** 交换两名角色的全部手牌（鲁肃·缔盟） */
   swapHands: (seatA: string, seatB: string) => void;
   /**

@@ -1599,6 +1599,29 @@ select:focus-visible,
 
 /* —— 技能交互模式 —— */
 /* 生效前的确认（主动发起的效果：【杀】【酒】/装装备）：把「要做什么 + 效果」摆在确认按钮上方 */
+/* 「目标区域选牌」里的**暗牌**选项（手牌）：只给牌背，不给任何牌面信息（规格第九条） */
+.card-back-option {
+  padding: 2px;
+  border: 1px solid #6b4f2a;
+  border-radius: 6px;
+  background: #2c2013;
+  color: #e8d9b0;
+  font-size: 12px;
+  line-height: 0;
+  cursor: pointer;
+}
+/* 卡背图：按卡牌比例（1 : 1.414），界面上显示 60×85 */
+.card-back-img {
+  width: 60px;
+  height: 85px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.card-back-option:hover {
+  filter: brightness(1.25);
+}
+
 .use-confirm {
   display: flex;
   flex-direction: column;

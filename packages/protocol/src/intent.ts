@@ -49,6 +49,8 @@ export type Intent =
   | { type: 'chooseOption'; optionId: string }
   // 从一组牌里选若干张（选牌原语：观星看牌堆顶、刚烈弃两张、仁德送牌…）
   | { type: 'pickCards'; cardIds: string[] }
+  // 一次选多名角色（多选座位原语：怀异那种「至多 X 名不同角色」）
+  | { type: 'pickSeats'; seatIds: string[] }
   // 势力技：需要打出一张牌时，令同势力角色代打（曹操·护驾 / 刘备·激将）
   | { type: 'factionCall'; skillId: string }
   // 重铸：出牌阶段把一张可重铸的牌置入弃牌堆，然后摸一张牌（不是「使用」）

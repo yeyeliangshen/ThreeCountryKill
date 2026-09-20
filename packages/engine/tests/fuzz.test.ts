@@ -62,18 +62,45 @@ describe('随机对局不变式：控制权不丢', () => {
       console.log('发现问题：' + String.fromCharCode(10) + problems.slice(0, 10).join(String.fromCharCode(10)));
     expect(problems).toEqual([]);
   }, 60000);
+
+  /**
+   * 回归（2026-09-18 修）：seed=650 第 84 步——陆逊用**最后一张手牌**打出【五谷丰登】，
+   * 五谷刚把「从亮出的牌里选一张」摆上槽，同一手意图的收尾检测就派发【连营】发问，
+   * 把那一问顶掉 → 亮出的 5 张牌再也没人处置（连续 5 个稳定步不在任何区域）。
+   *
+   * 修法：收尾钩子（handEmptied / cardsLost）在槽里正等回答时**先排队**，等那串流程跑完再派
+   * （见 `fireEndOfIntentHooks`）。这条用例把那一局固定下来——它跑得完、牌也都在。
+   */
+  it('回归 seed=650：收尾钩子不再顶掉「正在等回答」的槽（陆逊 + 五谷）', () => {
+    const seed = 650;
+    const rand = rng(seed * 977);
+    const state = riskyGame(seed);
+    const watch = makeCardWatch(allCardIds(state));
+    let steps = 0;
+    while (!state.gameOver && steps < 4000) {
+      step(state, rand);
+      steps++;
+      if (!state.pending) {
+        expect(state.gameOver, `第 ${steps} 步控制权丢了`).toBe(true);
+        break;
+      }
+      if (state.pending.kind !== 'play' && state.pending.kind !== 'discard') continue;
+      const bad = checkDuplicate(state) ?? watch.observe(state);
+      expect(bad, `第 ${steps} 步：${bad}`).toBeNull();
+    }
+  }, 30000);
 });
 
 describe('随机对局不变式：牌不会同时挂在两处、也不会被流程积压', () => {
   it('200 局随机对局里都不出现重复牌 / 长期缺席', () => {
     const problems: string[] = [];
     for (let seed = 1; seed <= 200; seed++) {
-      // ⚠️ 已知的**既有**漏洞（不是徐庶/刘琦带来的）：seed=47、137 里【恪守】的判定牌在
-      //    特定路径下没有被放回任何区域（判定牌凭空消失）。现场：这两局的阵容里**没有徐庶**，
-      //    刘琦那两条也只是纯数据账本；新增的三个派发层（beforeDamageApply / anyShanUsed /
-      //    roundStart）都加了「场上真有人挂这个时机才走」的守卫，不走它们就与原路径等价。
-      //    待办：修 api.judge / judgeHookStep 的判定牌清理（风险面较大，单独一轮做）。
-      if (seed === 47 || seed === 137) continue;
+      // ✅ 2026-09-18：这里原先跳过 seed=47、137（当时以为与【恪守】的判定牌有关）。现在两条
+      //    都不再复现，跳过已撤；改用更大的网（1500 局离线扫）抓到了**同一类**的另一例并修掉：
+      //    **intent 收尾的钩子往「正在等回答」的槽里插队**——陆逊用最后一张手牌打出【五谷丰登】，
+      //    五谷刚摆好「选一张」的槽，收尾检测就派发【连营】发问、把那一问顶掉，亮出的 5 张牌
+      //    再也没人处置。修法见 `fireEndOfIntentHooks`（同一处还有 cardsLost），回归用例见本文件
+      //    的「seed=650」那条。
       const rand = rng(seed * 977);
       const state = riskyGame(seed);
       const watch = makeCardWatch(allCardIds(state));

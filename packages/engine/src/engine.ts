@@ -80,6 +80,7 @@ import {
   effectiveHeroes,
   revealedHeroes,
   heroBlocksBeingTarget,
+  targetBlockingSkillName,
   heroCanUseAs,
   heroDuelShaRequired,
   fangyuanHandLimitDelta,
@@ -110,6 +111,10 @@ import {
   sameHeroBody,
 
   sameKnownFaction,
+  hasOperableTargetCard,
+  targetCardOptions,
+  takeTargetCardByChoice,
+  findTargetCardByChoice,
   skillOnField,
   fengyangBlocksEquip,
   zhidaoTargetsBlocked,
@@ -118,7 +123,7 @@ import {
   type Hero,
   type SkillApi,
 } from './heroes';
-import type { HookContext, HookRegistration, Timing } from './timing';
+import type { CardMoveReason, HookContext, HookRegistration, Timing } from './timing';
 
 // —— 对外 API ——
 export interface SeatSetup {
@@ -313,6 +318,38 @@ export function askPickCards(
     resolve,
     returnTo: opts?.returnTo,
     secret: opts?.secret,
+  });
+}
+
+/**
+ * 一次**选多名角色**（多选座位原语）。
+ *
+ * 用法：`askPickSeats(state, 界钟会, '选择至多 X 名角色', 候选座位, 0, X, (st, p, picked) => {...})`
+ *
+ * ⚠️ 与「逐个问 + 可提前结束」的旧近似相比，这个是**一次点完再确认**：候选在发起时筛好
+ *    （存活、可被选…），回答时再校验一遍（跨步期间有人阵亡/离场）。
+ */
+export function askPickSeats(
+  state: GameState,
+  seatId: string,
+  title: string,
+  candidates: string[],
+  min: number,
+  max: number,
+  resolve: (state: GameState, player: Player, picked: string[]) => void,
+  opts?: { returnTo?: string },
+): void {
+  setPending(state, {
+    kind: 'pickSeats',
+    seatId,
+    title,
+    candidates,
+    // 与 askPickCards 同一条兜底：候选比 min 少时按候选来（跨步期间候选可能变少，
+    // min 大于候选数就**答不上来**了）。
+    min: Math.min(min, candidates.length),
+    max,
+    resolve,
+    returnTo: opts?.returnTo,
   });
 }
 
@@ -542,9 +579,11 @@ export function canUseAnotherSha(state: GameState, p: Player): boolean {
 export function isAoyu(state: GameState): boolean {
   if (state.mode !== 'guozhan') return false;
   const alive = alivePlayers(state);
-  // 用**真实**势力：鏖战是客观的残局条件（场上还剩几个势力），不是互相认同。
-  // 暗置只是别人不知道，牌上的势力仍然在，所以暗置角色照样数进来。
-  const factions = new Set(alive.map((p) => p.faction).filter((f) => f && f !== 'ambitionist'));
+  // 口径（用户 2026-09-20）：暗置角色的卡面势力**不算数**——按**已确定势力**数「还剩几个阵营」。
+  // （野心家仍不当作一个「阵营」：这条沿用原口径，已在文档里标注为待实机复核项。）
+  const factions = new Set(
+    alive.map((p) => effectiveFaction(state, p)).filter((f) => f && f !== 'ambitionist'),
+  );
   return factions.size === 2;
   // 注：这里数的是「还剩几个阵营」，与 bigFactions 的「谁是大势力」不是一回事
 }
@@ -1116,6 +1155,8 @@ function runHooksPausable(
   const startedWith = state.pending;
   // 这条链的令牌：跑完就置死，用来拦住「排到很后面才醒」的陈旧续接（见 runHooksFrom 的注释）
   const token: ChainToken = { alive: true };
+  const prevChainTiming = probingChainTiming;
+  if (PROBE_CLOBBER) probingChainTiming = timing;
   runHooksFrom(
     state,
     player,
@@ -1126,6 +1167,7 @@ function runHooksPausable(
     (cancelled) => {
       token.alive = false;
       onDone(cancelled);
+      if (PROBE_CLOBBER) probingChainTiming = prevChainTiming;
       if (state.pending === null && ambient && !state.gameOver) {
         setPending(state, ambient);
       }
@@ -1879,8 +1921,15 @@ function askBeforeJudge(
   onDone: (finalCard: Card, gainer: Player | undefined) => void,
 ): void {
   const list: { player: Player; hook: HookRegistration }[] = [];
-  for (const p of state.players) {
-    if (!p.alive) continue;
+  // ⚠️ 改判（鬼才/鬼道）的响应顺序：**从当前回合玩家开始、按座次方向**（移动版规则问答：
+  //    同一次判定里各改判者依次响应，**每人只能响应一次**、放弃就不能等别人改完再回来）。
+  //    「每人一次」由这条链天然保证——每个人在这里只出现一次（下面 judgeHookStep 逐个问）。
+  const seatCount = state.seatOrder.length;
+  const anchor = seatCount > 0 ? ((state.turn.seatIndex % seatCount) + seatCount) % seatCount : 0;
+  const orderedSeats = [...state.seatOrder.slice(anchor), ...state.seatOrder.slice(0, anchor)];
+  for (const seatId of orderedSeats) {
+    const p = getPlayer(state, seatId);
+    if (!p || !p.alive) continue;
     const hooks = activeHeroes(state, p)
       .flatMap((h) => h.hooks?.filter((hk) => hk.timing === 'beforeJudge') ?? [])
       .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
@@ -2271,6 +2320,38 @@ function dispatchRoundEnd(state: GameState, after: () => void): void {
   step(0);
 }
 
+/**
+ * 「先测量」探针的开关（`SGS_PROBE_CLOBBER=1` 打开）。
+ *
+ * 只在**测量脚本**里开：它会把每一次「收尾覆盖掉没答过的询问」都记进 `blockedTakeovers`
+ * （带调用点），用来补全围栏只覆盖锦囊那一半的盲区（docs §5.134 建议顺序 ②）。
+ * 模块级常量 ⇒ 关着的时候热路径就是一次布尔判断，零成本。
+ */
+/** 探针用：当前正在跑的钩子链时机（runHooksPausable 进出时维护，关着时只是两次赋值） */
+let probingChainTiming: string | null = null;
+
+const PROBE_CLOBBER = (() => {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    ?.env;
+  return !!env?.SGS_PROBE_CLOBBER;
+})();
+
+/** 取调用栈里第一帧「引擎内部」的位置（探针用；关着的时候根本不会调到） */
+function topStackFrame(): string {
+  const stack = (new Error().stack ?? '').split(String.fromCharCode(10));
+  const frames: string[] = [];
+  for (const line of stack.slice(2)) {
+    const m = /at\s+([^\s(]+)/.exec(line);
+    if (!m) continue;
+    const name = m[1]!;
+    if (name.includes('topStackFrame')) continue;
+    // 只保留目录内的帧（去掉 node_modules / vitest 的噪声），最多 8 级
+    frames.push(name.replace(/^.*[\/]/, ''));
+    if (frames.length >= 8) break;
+  }
+  return frames.join(' < ') || 'unknown';
+}
+
 /** 回到某玩家的出牌阶段（伤害结算后恢复来源回合） */
 function resumePlay(
   state: GameState,
@@ -2328,6 +2409,53 @@ function resumePlay(
     return;
   }
   state.turn.phase = 'play';
+  // **「先测量」探针（只记不改，默认关）**：把「收尾覆盖掉一条**还没人回答**的询问」这件事
+  // 全部记下来——围栏那半边只覆盖锦囊收尾（带 since 的两处），这只探针覆盖全部 19 个
+  // `resumePlay` 调用点，能给出「谁在抢谁的槽」的完整地图（docs §5.134 建议顺序 ②）。
+  // 开关是模块级常量，关着时零成本。
+  if (PROBE_CLOBBER && !since) {
+    const cur = state.pending;
+    if (cur && cur.kind === 'respondSha' && !answeredPendings.has(cur)) {
+      const atk = (cur as unknown as { attack?: { sourceId?: string; targetId?: string; cardId?: string } })
+        .attack;
+      console.log(
+        '[clobber-sha]',
+        'chain=', probingChainTiming,
+        'asker=',
+        (cur as unknown as { responderId?: string }).responderId,
+        'attackSrc=',
+        atk?.sourceId,
+        'attackTgt=',
+        atk?.targetId,
+        'card=',
+        atk?.cardId,
+        'turnSeat=',
+        state.seatOrder[state.turn.seatIndex],
+        'phase=',
+        state.turn.phase,
+        '| 最近日志:',
+        state.log
+          .slice(-4)
+          .map((l) => (l as unknown as { message?: string }).message ?? '')
+          .join(' / '),
+      );
+    }
+    if (cur && !isPlaceholderPending(cur) && !answeredPendings.has(cur)) {
+      state.blockedTakeovers.push({
+        finalizer: 'resumePlay(clobber)',
+        checkpointSeq: -1,
+        currentSeq: state.pendingSeq,
+        checkpointKind: null,
+        currentKind: cur.kind,
+        phase: String(state.turn.phase),
+        turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
+        inDying: cur.kind === 'respondDeath',
+        resumeQueueLength: state.resumeQueue.length,
+        sameUse: 'n/a',
+        caller: topStackFrame(),
+      } as unknown as (typeof state.blockedTakeovers)[number]);
+    }
+  }
   // **打点（只记不改）**：围栏「本来会挡住」的场合记一条结构化记录，用于把被挡的 takeover
   // 按**语义**聚类（恢复交互入口 vs 提交不可延迟的状态迁移）——行为保持不变（照旧覆盖），
   // 所以开着它本身不会让任何测试变红。设 SGS_TRACE_TAKEOVER=1 会顺带打到 stdout。
@@ -2456,8 +2584,8 @@ function playSha(
     seenTargets.add(targetId);
     const target = getPlayer(state, targetId);
     if (!target || !target.alive) return err('目标无效');
-    // 锁定技（空城等）：不能成为此牌的目标
-    if (heroBlocksBeingTarget(state, target, card, source)) return err('该角色不能成为此牌的目标');
+    // ⚠️ 锁定技（空城等）**不在这里拦**：用户 2026-09-21 定的口径是「牌先打出去、再取消那个
+    //    目标」（见 cancelBlockedTargets / startAttack）。拦在这里等于「不能选他当目标」。
     // 距离校验：攻击范围 ≥ 距离（天义拼点赢则本回合无视距离）
     // 夏侯霸·豹烈②：**目标级**的无距离限制（只对满足条件的目标放行，其余照常判距离）
     const noDistanceToTarget = activeHeroes(state, source).some(
@@ -2572,6 +2700,40 @@ function fangtianRule(
  * `targetIds` 超过一个只可能来自【方天画戟】：第一个目标先结算，其余留在
  * `attack.fangtianQueue` 里逐个接着打（见 afterAttackSettled）。
  */
+/**
+ * 「成为目标时，取消之」的**统一落点**（空城 / 谦逊 / 帷幕 / 明光铠 / 调虎离山那套锁定技）。
+ *
+ * 用户 2026-09-21 定的实现形式：**牌先用出去，再把这个目标取消** —— 不是「不能选他当目标」。
+ * 所以出牌校验（playSha / playTrick / playDelayedTrick）不再拦这些目标，改由各结算入口在这里
+ * 统一剔除：牌照常进弃牌堆、日志与 useCard 钩子照常跑，只是被取消的目标不参与结算
+ * （一个都不剩时，这次使用就没有效果）。
+ *
+ * ⚠️ 引擎**自己**按规则算出来的目标名单（南蛮/万箭的响应队列、赤令、克复中原、知己知彼…）
+ *    不在这里处理：那些不是「玩家指定的目标」，在算的时候就把他们排除掉才是对的。
+ */
+function cancelBlockedTargets(
+  state: GameState,
+  source: Player,
+  card: Card,
+  targetIds: string[],
+): string[] {
+  const keep: string[] = [];
+  for (const id of targetIds) {
+    const t = getPlayer(state, id);
+    if (!t) continue;
+    if (heroBlocksBeingTarget(state, t, card, source)) {
+      const skill = targetBlockingSkillName(state, t, card, source) ?? '锁定技';
+      pushLog(state, 'resolve', `${t.name} 成为目标时【${skill}】生效，取消之。`, {
+        seat: t.seatId,
+        action: 'shield',
+      });
+      continue;
+    }
+    keep.push(id);
+  }
+  return keep;
+}
+
 function startAttack(
   state: GameState,
   source: Player,
@@ -2580,9 +2742,17 @@ function startAttack(
   asType: import('@sgs/protocol').CardType,
   opts?: { countTowardLimit?: boolean; asAttribute?: DamageAttribute; abortOnDodge?: boolean },
 ): void {
+  // 「成为目标时取消之」：被空城/谦逊/帷幕那类取消的目标在这里剔除（牌已经打出去了）
+  const effectiveTargets = cancelBlockedTargets(state, source, card, targetIds);
+  if (effectiveTargets.length === 0) {
+    // 牌**已经使用**：照常离开原处进弃牌堆，只是没有目标（等一会儿的结算都不跑）
+    consumeCard(state, source, card);
+    pushLog(state, 'resolve', `【${cardShortName(card)}】的目标全部被取消，这次使用没有效果。`);
+    return;
+  }
   // 多目标按**座次顺序**结算：官方规则里目标是同时确定的，效果从使用者的下家起
   // 按座次依次生效。不排一下的话，国战版「一人闪则其余无效」就变成谁点得快谁占便宜。
-  const ordered = sortTargetsBySeat(state, source.seatId, targetIds);
+  const ordered = sortTargetsBySeat(state, source.seatId, effectiveTargets);
   const targetId = ordered[0]!;
   const target = getPlayerOrThrow(state, targetId);
   // 【丈八蛇矛】的虚拟杀在这里收的是两张 material 手牌（见 consumeCard）
@@ -2771,8 +2941,10 @@ function afterShaTargetResolve(
     return;
   }
 
-  // 暂停：等待目标响应（出闪或弃权）
-  setPending(state, { kind: 'respondSha', responderId: targetId, attack });
+  // 暂停：等待目标响应（出闪或弃权）。记下这个询问对象：结算收尾要认它（谁建谁清）
+  const ask: GameState['pending'] = { kind: 'respondSha', responderId: targetId, attack };
+  attack.shanAsk = ask as { kind: string; responderId?: string };
+  setPending(state, ask);
 }
 
 /**
@@ -3133,6 +3305,13 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
 /** 杀结算（目标已出闪或已弃权） */
 function finishAttack(state: GameState, attack: AttackContext): void {
   const target = getPlayerOrThrow(state, attack.targetId);
+  // 「谁建谁清」：这次求闪的询问如果还挂在槽里、而它**从来没被玩家回答过**（八卦阵/护驾
+  // 那种自动代打会在同一个 intent 里创建又解决它），就给它打上「已处理」标记——
+  // 这样钩子链收尾的「环境还原」不会把一条处理完的旧询问摆回来，
+  // 诊断探针也不会把它误记成「收尾抢了一条没答过的询问」（docs §5.134 的测量口径）。
+  if (attack.shanAsk && state.pending === (attack.shanAsk as object)) {
+    answeredPendings.add(state.pending);
+  }
 
   if (attack.dodged) {
     pushLog(state, 'resolve', `【杀】被闪避。`);
@@ -3347,6 +3526,10 @@ function tryQinglongBlade(
             onDecline();
             return;
           }
+          // ⚠️ 再使用的这张【杀】是**新的一次使用**：目标要重新走一遍「成为目标时」。
+          //    典型就是空城——诸葛亮用最后一张【闪】挡掉上一张【杀】后手牌归零，这一张新的
+          //    【杀】照常打出去、但那个目标会被取消（用户 2026-09-21 的口径：**先打出去再
+          //    取消**，不是「不能选他」）。取消统一在 `startAttack` 里做。
           pushLog(
             st2,
             'equip',
@@ -4421,10 +4604,11 @@ function guozhanWinner(state: GameState): string | null {
   if (alive.length === 1) return alive[0]!.faction ?? alive[0]!.seatId;
   const counts = new Map<string, number>();
   for (const p of alive) {
-    // `determinedFaction` 在**双势力**与**野心家武将**身上是「对外确定下来的那个势力」：
-    // 后者正是口径里那句「主将暗置期间**暂时按照副将确定势力**」——不读它的话，
-    // 野心家武将会被当成 'ambitionist' 从胜负统计里漏掉（他们此刻本该算副将那一方的人）。
-    const key = p.forceId ?? p.determinedFaction ?? p.faction ?? 'neutral';
+    // ⚠️ 口径（用户 2026-09-20 确认）：**暗置武将的卡面数据不参与公开规则判断**，胜负也一样——
+    //    所以这里只看**已确定势力**（`effectiveFaction`：没明置任何一张将 → null → 不计入）。
+    //    `forceId` 优先：野心家/建国后的新势力用它（各自一种势力）。
+    const named = effectiveFaction(state, p);
+    const key = p.forceId ?? (named ? (p.determinedFaction ?? named) : null) ?? 'neutral';
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const half = Math.floor(alive.length / 2);
@@ -4974,6 +5158,8 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
       }
     }
     // 手牌清空检测放最后：续接都跑完了才是这一手意图的真正终态
+    // 先把上一手「被问住、排队等着」的收尾钩子放出去（槽这会儿多半已经空出来了）
+    flushEndOfIntentHooks(state);
     checkHandEmptied(state, handBefore);
     checkCardsLost(state, ownedBefore);
   }
@@ -5017,6 +5203,42 @@ function attributeDeckGains(state: GameState, ownedBefore: string[][]): void {
  * 少掉的牌就是这一手失去的。只派人**自己的回合之外**的那一条（官方条件），
  * 交给技能自己判断要不要发动。
  */
+/**
+ * 「这一手意图的收尾钩子」的统一入口：**槽里已经在等回答时先排队**，等那串流程跑完再派。
+ *
+ * ⚠️ 这是模糊测试抓到的真 bug（seed=650，2026-09）：
+ *    陆逊用**最后一张手牌**打出【五谷丰登】——五谷刚把「从亮出的牌里选一张」摆上槽，
+ *    同一手意图的收尾检测就发现「他手牌清空了」，于是【连营】发问、**把那一问顶掉**；
+ *    五谷亮出的 5 张牌再也没人处置（缺席守望器报「连续 5 个稳定步不在任何区域」）。
+ *    收尾钩子不能往「正在等回答」的槽里插队——与 `drainResume` 那条纪律同一个道理。
+ *
+ * 触发**判定**仍在原地做（例如「谁的手牌清空了」要按当时的快照算），这里只管**派发时机**。
+ */
+function fireEndOfIntentHooks(state: GameState, fire: () => void): void {
+  // 「没人正在等回答」＝ null 或出牌/弃牌的**占位空位**（这两种格子谁摆都一样，不是询问）。
+  // ⚠️ 别用 `isIdlePending`：它**故意**不认出牌阶段（那是回合交接的窗口），拿它做判据的话，
+  //    排队的东西会一直躺在 `resumeQueue` 里出不来（实测：连营的询问整局没弹出来）。
+  if (state.pending === null || isPlaceholderPending(state.pending)) {
+    fire();
+    return;
+  }
+  state.deferredEndOfIntentHooks.push(fire);
+}
+
+/**
+ * 每次意图收尾把攒下的收尾钩子放出去：槽一被占就停，剩下的等下一次（见 fireEndOfIntentHooks）。
+ *
+ * 放在 `applyIntent` 的收尾里跑，是因为**只有那里能保证「这一手流程已经走完」**——
+ * 例如五谷的选牌链：最后一名选取者答完 → 五谷结算收尾 → 控制权还给出牌阶段（槽变成占位空位）
+ * → 同一手意图的收尾就把攒下的【连营】放出来，不必等玩家再动一次手。
+ */
+function flushEndOfIntentHooks(state: GameState): void {
+  while (state.deferredEndOfIntentHooks.length > 0) {
+    if (!(state.pending === null || isPlaceholderPending(state.pending))) return;
+    state.deferredEndOfIntentHooks.shift()!();
+  }
+}
+
 function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
   const turnSeat = state.seatOrder[state.turn.seatIndex];
   state.players.forEach((p, i) => {
@@ -5029,7 +5251,11 @@ function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
     // 「你于此阶段失去了几张牌」（吕范·典财）：不管是不是自己的回合都累加
     p.flags.lostCardsThisPhase += lost.length;
     if (p.seatId === turnSeat) return; // 屯田那种「回合外失去牌」才派发
-    runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
+    // 失去牌的名单是**此刻**算出来的快照，派发时机交给统一入口（槽被占就先排队）
+    fireEndOfIntentHooks(state, () => {
+      if (!p.alive) return;
+      runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
+    });
   });
 }
 
@@ -5044,8 +5270,14 @@ function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
  *    要精确覆盖得把触发点下沉到每一处移牌，代价是改二十多个调用点。
  */
 function checkHandEmptied(state: GameState, handBefore: number[]): void {
-  state.players.forEach((p, i) => {
-    if ((handBefore[i] ?? 0) > 0 && p.hand.length === 0 && p.alive) {
+  // ⚠️ 「谁清空了」必须按**此刻**的快照定下来：排队期间他可能又摸到牌（五谷选牌正是如此），
+  //    那时再比就漏触发了——触发已经发生，只是派发要等槽空出来（见 fireEndOfIntentHooks）。
+  const emptied = state.players.filter(
+    (p, i) => (handBefore[i] ?? 0) > 0 && p.hand.length === 0 && p.alive,
+  );
+  for (const p of emptied) {
+    fireEndOfIntentHooks(state, () => {
+      if (!p.alive) return; // 排队期间可能已阵亡
       runHooksPausable(state, 'handEmptied', p, undefined, () => {
         // 「**其他角色**失去所有手牌后」（蒋琬费祎·守成）：连营那种只发给本人的
         // 时机观察不到别人的手牌清空，所以这里再派一轮给旁人
@@ -5057,8 +5289,8 @@ function checkHandEmptied(state: GameState, handBefore: number[]): void {
           p.seatId,
         );
       });
-    }
-  });
+    });
+  }
 }
 
 function applyIntentInner(state: GameState, seatId: string, intent: Intent): ApplyResult {
@@ -5117,6 +5349,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       return onUseSkill(state, seatId, intent);
     case 'pickCards':
       return onPickCards(state, seatId, intent);
+    case 'pickSeats':
+      return onPickSeats(state, seatId, intent);
     case 'factionCall':
       return onFactionCall(state, seatId, intent);
     case 'recast':
@@ -5183,6 +5417,38 @@ function onPickCards(
       completePendingRequest(state, pendingIdOf(pending));
       drainResume(state);
       return { ok: true };
+}
+
+/** 多选座位的回答处理：校验候选/数量/去重，然后交给 resolve */
+function onPickSeats(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'pickSeats' }>,
+): ApplyResult {
+  const pending = state.pending;
+  if (!pending || pending.kind !== 'pickSeats') return err('当前没有需要选角色的地方');
+  if (pending.seatId !== seatId) return err('不是你在选角色');
+  const player = getPlayerOrThrow(state, seatId);
+  const ids = intent.seatIds ?? [];
+  // 跨步校验：候选里还在的才算（有人阵亡/离场就当他不在候选里了）
+  const alive = ids.filter((id) => pending.candidates.includes(id) && getPlayer(state, id)?.alive);
+  if (alive.length !== ids.length) return err('选的座位不在候选里');
+  if (new Set(ids).size !== ids.length) return err('同一个座位不能选两次');
+  if (ids.length < pending.min || ids.length > pending.max)
+    return err(`需选择 ${pending.min}-${pending.max} 名角色`);
+  setPending(state, null);
+  pushLog(
+    state,
+    'skill',
+    `${player.name} 选择了 ${
+      ids.map((id) => getPlayer(state, id)?.name ?? id).join('、') || '（无）'
+    }。`,
+  );
+  runResume(() => pending.resolve(state, player, ids));
+  if (state.pending === null && pending.returnTo) {
+    resumePlay(state, pending.returnTo);
+  }
+  return { ok: true };
 }
 
 function onPlayCard(
@@ -5472,7 +5738,6 @@ function playDelayedTrick(
   if (targetId === player.seatId) return err('不能以自己为目标');
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) return err('目标无效');
-  if (heroBlocksBeingTarget(state, target, card, player)) return err('该角色不能成为此牌的目标');
   // 奇才：使用锦囊牌无距离限制；刘琦·问计标记的那张实体牌同样无距离限制
   if (
     !heroIgnoresTrickDistance(activeHeroes(state, player), player) &&
@@ -5484,6 +5749,18 @@ function playDelayedTrick(
   {
     const gone = takeForField(state, player, card);
     if (gone) return err(gone);
+  }
+  // 「成为目标时取消之」（谦逊那类）：牌**已经用出去了**，取消的是这个目标 →
+  // 延时锦囊不进判定区，直接进弃牌堆（用户 2026-09-21 的口径：先打出去再取消）
+  if (heroBlocksBeingTarget(state, target, card, player)) {
+    const skill = targetBlockingSkillName(state, target, card, player) ?? '锁定技';
+    pushLog(state, 'resolve', `${target.name} 成为目标时【${skill}】生效，取消之。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
+    toDiscard(state, card);
+    runHooksPausable(state, 'useCard', player, { card }, () => {});
+    return { ok: true };
   }
   target.judgment.push(card);
   pushLog(
@@ -5522,7 +5799,8 @@ function playTrick(
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
     // 锁定技（帷幕/谦逊等）：不能成为此牌的目标
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
+    // 目标被锁定技取消（帷幕/谦逊…）不在这里拦——先打出去，结算入口再取消（见
+    // cancelBlockedTargets）。距离与「区域内有没有可操作的牌」仍要校验。
     // 奇才：使用锦囊牌无距离限制
     if (
       type === 'shunshou' &&
@@ -5531,6 +5809,9 @@ function playTrick(
       distance(state, player.seatId, tid) > 1
     )
       return err('顺手牵羊目标超出距离 1');
+    // 【过河拆桥】/【顺手牵羊】的目标：区域内**至少有一张可操作的牌**（用户 2026-09-18 规格）
+    if ((type === 'guohe' || type === 'shunshou') && !hasOperableTargetCard(state, player.seatId, t))
+      return err('目标区域里没有可操作的牌');
   } else if (type === 'jiedao') {
     if (intent.targetIds.length !== 2)
       return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');
@@ -5552,8 +5833,7 @@ function playTrick(
     for (const tid of intent.targetIds) {
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
-      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
-    }
+      }
   } else if (type === 'yuanjiao') {
     // 远交近攻：一名与你势力不同、且已明置武将牌的其他角色
     if (intent.targetIds.length !== 1) return err('【远交近攻】需指定 1 名目标');
@@ -5566,7 +5846,6 @@ function playTrick(
     // 暗置的角色没有势力（暗将之间互视为不同势力）；目标必须已明置才谈得上「势力不同」
     if (effectiveFaction(state, player) === effectiveFaction(state, t))
       return err('【远交近攻】只能指定与你势力不同的角色');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
   } else if (type === 'xietianzi') {
     // 挟天子以令诸侯：只有大势力角色能对自己使用
     if (intent.targetIds.length !== 0) return err('【挟天子以令诸侯】只能对自己使用');
@@ -5584,8 +5863,7 @@ function playTrick(
       if (tid === player.seatId) return err('不能以自己为目标');
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
-      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
-    }
+      }
   } else if (type === 'shuiyan') {
     // 水淹七军：一名**装备区里有牌**的其他角色
     if (intent.targetIds.length !== 1) return err('【水淹七军】需指定 1 名目标');
@@ -5593,7 +5871,6 @@ function playTrick(
     if (tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
     if (EQUIP_SLOTS.every((s) => !t.equipment[s]))
       return err('目标装备区里没有牌，不能成为【水淹七军】的目标');
   } else if (type === 'zhibi') {
@@ -5602,7 +5879,6 @@ function playTrick(
     if (tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
   } else if (type === 'guoanjianbang') {
     // 【固国安邦】：对自己使用，无需指定目标
     if (intent.targetIds.length !== 0) return err('【固国安邦】只对自己使用，无需指定目标');
@@ -5613,7 +5889,6 @@ function playTrick(
     const tid = intent.targetIds[0]!;
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
-    if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
     if (!haolingTargets(state).some((x) => x.seatId === tid))
       return err('【号令天下】的目标须是体力值不是最少的角色');
   } else if (type === 'kefuzhongyuan') {
@@ -5623,8 +5898,7 @@ function playTrick(
     for (const tid of intent.targetIds) {
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
-      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
-    }
+      }
   } else if (type === 'wenheluanwu') {
     // 【文和乱武】：对所有角色使用（含使用者本人），目标由规则决定、无需玩家指定
     if (intent.targetIds.length !== 0) return err('【文和乱武】的目标由规则决定，无需指定');
@@ -5672,6 +5946,14 @@ function startTrickResolution(
 ): void {
   const type = card.type as TrickType;
 
+  // 「成为目标时取消之」（帷幕/谦逊/空城…）：**玩家指定的目标**在这里统一剔除。
+  // 牌已经打出去了（进弃牌堆、日志、useCard 钩子都跑过了），取消后一个都不剩时这次使用没有效果。
+  // ⚠️ AOE（南蛮/万箭）不走这里：它们的目标是引擎按规则算的，算的时候就已经排除了。
+  const keptTargets =
+    type === 'nanman' || type === 'wanjian'
+      ? targetIds.slice()
+      : cancelBlockedTargets(state, player, card, targetIds);
+
   // 构建 TrickContext
   const ctx: TrickContext = {
     sourceId: player.seatId,
@@ -5682,13 +5964,13 @@ function startTrickResolution(
     pendingFence: capturePendingCheckpoint(state),
     responders: [],
     responderIndex: 0,
-    targetIds: targetIds.slice(),
+    targetIds: keptTargets.slice(),
     targetId:
       type === 'guohe' || type === 'shunshou' || type === 'juedou' || type === 'huogong'
-        ? targetIds[0]
+        ? keptTargets[0]
         : undefined,
     targetCardId,
-    shaTargetId: type === 'jiedao' ? targetIds[1] : undefined,
+    shaTargetId: type === 'jiedao' ? keptTargets[1] : undefined,
   };
 
   // AOE：所有其他存活玩家按座次依次响应
@@ -5720,9 +6002,9 @@ function startTrickResolution(
     //    名单就是响应队列（已被不能被指定的角色过滤掉，与「最终确定的目标」一致）。
     ctx.targetIds = ctx.responders.slice();
   }
-  // 单目标响应锦囊：responders = [target]
+  // 单目标响应锦囊：responders = [target]（可能已被取消 → 空队列，结算直接收尾）
   if (type === 'juedou' || type === 'huogong' || type === 'jiedao') {
-    ctx.responders = [targetIds[0]!];
+    if (keptTargets[0]) ctx.responders = [keptTargets[0]];
     if (type === 'juedou') ctx.duelTurn = 'target';
   }
 
@@ -6121,40 +6403,113 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
   }
 }
 
-/** 过河拆桥：弃目标 1 张牌 */
+/**
+ * 旧路径的兼容桥：调用方在**出牌意图**里就把目标牌带上了（`targetCardId`）。
+ *
+ * 现在的正式交互是「结算中弹选择界面」（规格：无懈窗口之后才选），但引擎内部与既有用例
+ * 仍会提前指定一张牌——那张牌若在结算时**仍在原区域**就直接用（等价于玩家早就选好了），
+ * 不在就落到选择界面重选。⚠️ 这条兼容桥**不会**让界面拿到暗牌信息：手牌的 id 只有引擎
+ * 自己（与测试）才知道。
+ */
+function presetTargetChoice(target: Player, cardId: string | undefined): string | undefined {
+  if (!cardId) return undefined;
+  if (EQUIP_SLOTS.some((s) => target.equipment[s]?.id === cardId)) return `card:${cardId}`;
+  if (target.judgment.some((c) => c.id === cardId)) return `card:${cardId}`;
+  const hi = target.hand.findIndex((c) => c.id === cardId);
+  if (hi >= 0) return `hand:${hi}`;
+  return undefined;
+}
+
+/**
+ * 「选目标区域里的一张牌」的询问（拆/顺共用；原语在 `heroes.ts`，规则见那里的注释）。
+ *
+ * 三区同时进入选择界面、明牌精确选、**手牌盲选**（按第 k 张，不是 `random()`）；
+ * 回答回来**重新校验**——选项是跨步给出的，那时那张牌可能已经被搬走，取不到就**重问一次**
+ * （规格第十三条：绝不「随便换一张」）。
+ */
+function askTargetCardPick(
+  state: GameState,
+  source: Player,
+  target: Player,
+  verb: '弃置' | '获得',
+  after: (picked: { card: Card; from: 'hand' | 'equip' | 'judge' } | null) => void,
+  /** 调用方**已经**指定了牌（旧路径/引擎内部/测试）→ 只要它此刻仍在原区域就直接用，不弹询问 */
+  preset?: string,
+): void {
+  if (preset) {
+    const got = takeTargetCardByChoice(state, source.seatId, target, preset);
+    if (got) {
+      after(got);
+      return;
+    }
+    // 那张牌已经不在原处 → 落到下面的询问（规格第十三条：重新选，别随便换一张）
+  }
+  const ask = (): void => {
+    if (!target.alive || !hasOperableTargetCard(state, source.seatId, target)) {
+      pushLog(state, 'trick', `${target.name} 没有可${verb}的牌。`);
+      after(null);
+      return;
+    }
+    askChoice(
+      state,
+      source.seatId,
+      `【选择区域里的一张牌】${verb} ${target.name} 的一张牌`,
+      targetCardOptions(state, source.seatId, target, verb),
+      (st, _p, picked) => {
+        const got = takeTargetCardByChoice(st, source.seatId, target, picked);
+        if (!got) {
+          pushLog(st, 'trick', '所选的那张牌已经不在原处，请重新选择。');
+          ask();
+          return;
+        }
+        after(got);
+      },
+    );
+  };
+  ask();
+}
+
+/** 过河拆桥：弃置目标区域内 1 张牌（由使用者选：明牌精确点、手牌盲选一张） */
 function resolveGuohe(state: GameState, ctx: TrickContext): void {
+  const source = getPlayer(state, ctx.sourceId)!;
   const target = getPlayer(state, ctx.targetId!);
   if (!target || !target.alive) {
     endTrickResolution(state, ctx);
     return;
   }
-  const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
-  if (got) {
+  askTargetCardPick(
+    state,
+    source,
+    target,
+    '弃置',
+    (got) => {
+    if (!got) {
+      endTrickResolution(state, ctx);
+      return;
+    }
     toDiscard(state, got.card);
-    pushLog(
-      state,
-      'trick',
-      `${getPlayer(state, ctx.sourceId)!.name} 拆了 ${target.name} 的【${cardLabel(got.card)}】。`,
-    );
+    pushLog(state, 'trick', `${source.name} 拆了 ${target.name} 的【${cardLabel(got.card)}】。`);
     // 拆掉的是装备 → 目标失去装备区的一张牌（枭姬）；之后还要补上「因弃置」的收口
     // ⚠️ 以前这一支直接 endTrickResolution，装备被拆**不进**弃置收口：礼让听不到、
     //    夙智③那种「其他角色因弃置进弃牌堆」的旁观技能也听不到（测试抓到的）。
-    if (got.fromEquip) {
+    if (got.from === 'equip') {
       fireEquipLost(state, target, got.card, () =>
         fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId),
       );
       return;
     }
-    // ⚠️ 「因弃置」那套要派发（孔的礼让），而且**执行弃置动作的是使用者**——
+    // ⚠️ 「因弃置」那套要派发（孔融的礼让），而且**执行弃置动作的是使用者**——
     //    两个维度分开记（见 state.turnDiscards）：牌主是 target，执行者是 ctx.sourceId。
-    fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId);
-    return;
-  }
-  pushLog(state, 'trick', `${target.name} 没有牌可拆。`);
-  endTrickResolution(state, ctx);
+      fireCardDiscarded(state, target, [got.card], () => endTrickResolution(state, ctx), ctx.sourceId);
+    },
+    presetTargetChoice(target, ctx.targetCardId),
+  );
 }
 
-/** 顺手牵羊：获得目标 1 张牌 */
+/**
+ * 顺手牵羊：获得目标区域内 1 张牌（与拆同一套选择界面；区别只在选完之后的去处）。
+ * ⚠️ 拿到**判定区**的牌 = 该**实体牌**进使用者手牌，**不结算**它的延时锦囊效果。
+ */
 function resolveShunshou(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId)!;
   const target = getPlayer(state, ctx.targetId!);
@@ -6162,23 +6517,28 @@ function resolveShunshou(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
-  const got = pickTargetCard(state, ctx.sourceId, target, ctx.targetCardId);
-  if (got) {
-    source.hand.push(got.card);
-    pushLog(
-      state,
-      'trick',
-      `${source.name} 从 ${target.name} 处获得了【${cardLabel(got.card)}】。`,
-    );
-    if (got.fromEquip) {
-      fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
+  askTargetCardPick(
+    state,
+    source,
+    target,
+    '获得',
+    (got) => {
+    if (!got) {
+      endTrickResolution(state, ctx);
       return;
     }
-  } else {
-    pushLog(state, 'trick', `${target.name} 没有牌可偷。`);
-  }
-  endTrickResolution(state, ctx);
+    source.hand.push(got.card);
+    pushLog(state, 'trick', `${source.name} 从 ${target.name} 处获得了【${cardLabel(got.card)}】。`);
+      if (got.from === 'equip') {
+        fireEquipLost(state, target, got.card, () => endTrickResolution(state, ctx));
+        return;
+      }
+      endTrickResolution(state, ctx);
+    },
+    presetTargetChoice(target, ctx.targetCardId),
+  );
 }
+
 
 /** 从目标的牌中选取一张（优先指定明牌区，否则随机手牌，再否则随机装备/判定） */
 function pickTargetCard(
@@ -6773,7 +7133,8 @@ function resolveGuoAnJianBang(state: GameState, ctx: TrickContext): void {
             }
             received[to.seatId] = (received[to.seatId] ?? 0) + 1;
             const api2 = makeSkillApi(st2, { actor: p2.seatId });
-            api2.transferCard(p2.seatId, card, to.seatId, () => {
+            // 固国安邦的文本就是「交给」（吴势力锦囊）
+            api2.giveCard(p2.seatId, card, to.seatId, () => {
               pushLog(st2, 'trick', `${p2.name} 因【固国安邦】将一张手牌交给 ${to.name}。`, {
                 seat: to.seatId,
               });
@@ -6814,18 +7175,8 @@ function haolingPickableOptions(
   target: Player,
   verb: '弃置' | '获得',
 ): { id: string; label: string }[] {
-  const options: { id: string; label: string }[] = [];
-  for (const slot of EQUIP_SLOTS) {
-    const c = target.equipment[slot];
-    if (!c) continue;
-    // 吴景·风扬：异势力角色不能弃置/获得同队列吴景队友的装备牌
-    if (fengyangBlocksEquip(state, actorSeatId, target, c)) continue;
-    options.push({ id: c.id, label: `${verb}其装备【${cardLabel(c)}】` });
-  }
-  if (target.hand.length > 0) {
-    options.push({ id: '__hand', label: `${verb}其一张手牌（随机，共 ${target.hand.length} 张）` });
-  }
-  return options;
+  // 与拆/顺、与「获得其一张牌」类技能共用同一套「目标区域选牌」原语（明牌精确选、手牌盲选）
+  return targetCardOptions(state, actorSeatId, target, verb);
 }
 
 /**
@@ -6851,14 +7202,12 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
-  const n = state.seatOrder.length;
-  const idx = state.seatOrder.indexOf(me.seatId);
-  const queue: string[] = [];
-  for (let k = 1; k <= n; k++) {
-    const sid = state.seatOrder[(idx + k) % n]!;
-    if (sid === target.seatId) continue; // 目标自己不选
-    if (getPlayer(state, sid)?.alive) queue.push(sid);
-  }
+  // ⚠️ 座次环绕走 `aliveSeatsFrom`（它会跳过被【调虎离山】移出座次的角色）——
+  //    手写 `(idx + k) % n` 会把「暂时不计入座次」的人也算进来（用户 2026-09-20 的检查项）。
+  //    顺序沿用既有口径（§5.137.2）：**从使用者的下家起、按座次环绕**，使用者本人在名单末尾
+  //    （他是参与者之一，不能按 me.seatId 滤掉），再排除目标自己。
+  const fromMe = aliveSeatsFrom(state, me.seatId);
+  const others = [...fromMe.slice(1), fromMe[0]!].filter((sid) => !!sid && sid !== target.seatId);
   pushLog(
     state,
     'trick',
@@ -6868,9 +7217,9 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
 
   const step = (i: number): void => {
     const done = (): void => endTrickResolution(state, ctx);
-    const cur = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+    const cur = i < others.length ? getPlayer(state, others[i]!) : undefined;
     if (!cur || !cur.alive) {
-      if (i < queue.length) step(i + 1);
+      if (i < others.length) step(i + 1);
       else done();
       return;
     }
@@ -6973,21 +7322,9 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
                   next,
                 );
               };
-              if (picked2 === '__hand') {
-                const pickIdx = Math.floor(st2.rng() * target.hand.length);
-                const card = target.hand[pickIdx];
-                if (!card) {
-                  next();
-                  return;
-                }
-                doIt(card);
-                return;
-              }
-              const chosen = EQUIP_SLOTS.map((s) => target.equipment[s]).find(
-                (c) => c?.id === picked2,
-              );
+              const chosen = findTargetCardByChoice(st2, p2.seatId, target, picked2);
               if (!chosen) {
-                next();
+                next(); // 跨步：那张牌已经不在原区域了
                 return;
               }
               doIt(chosen);
@@ -7155,14 +7492,10 @@ function resolveWenHeLuanWu(state: GameState, ctx: TrickContext): void {
     endTrickResolution(state, ctx);
     return;
   }
-  // 「所有角色」**含使用者本人**；顺序同其余多目标牌：从使用者的下家起按座次环绕
-  const n = state.seatOrder.length;
-  const idx = state.seatOrder.indexOf(me.seatId);
-  const queue: string[] = [];
-  for (let k = 1; k <= n; k++) {
-    const sid = state.seatOrder[(idx + k) % n]!;
-    if (getPlayer(state, sid)?.alive) queue.push(sid);
-  }
+  // 「所有角色」**含使用者本人**；顺序同其余多目标牌：从使用者的**下家**起按座次环绕
+  // （走 `aliveSeatsFrom`：跳过被【调虎离山】移出座次的人——手写 `% n` 会把他们算进来）
+  const fromMe = aliveSeatsFrom(state, me.seatId);
+  const queue = [...fromMe.slice(1), fromMe[0]!].filter((sid) => !!sid);
   pushLog(state, 'trick', `${me.name} 使用【文和乱武】，所有角色依次展示手牌。`, {
     seat: me.seatId,
   });
@@ -7574,7 +7907,7 @@ function resolveXietianzi(state: GameState, ctx: TrickContext): void {
   pushLog(
     state,
     'trick',
-    `${player.name} 使用【挟天子以令诸侯】，结束出牌阶段；若弃牌阶段弃了牌，将追加一个回合。`,
+    `${player.name} 使用【挟天子以令诸侯】，结束出牌阶段；若弃牌阶段弃置了手牌，将追加一个回合。`,
     { seat: player.seatId, action: 'xietianzi' },
   );
   goToDiscardPhase(state, player);
@@ -8309,6 +8642,17 @@ function resolvePlayedSha(
     else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
     return;
   }
+  // 「成为目标时取消之」（空城那类）：目标照常指定，这里取消 → 这次【杀】没有效果
+  if (heroBlocksBeingTarget(state, target, card, source)) {
+    const skill = targetBlockingSkillName(state, target, card, source) ?? '锁定技';
+    pushLog(state, 'resolve', `${target.name} 成为目标时【${skill}】生效，取消之。`, {
+      seat: target.seatId,
+      action: 'shield',
+    });
+    if (after) after();
+    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    return;
+  }
   const attack: AttackContext = {
     sourceId: source.seatId,
     cardId: card.id,
@@ -8975,7 +9319,13 @@ function afterShanPlayed(state: GameState, who: Player, attack: AttackContext): 
     if (required > 1) {
       attack.requiredShan = required - 1;
       pushLog(state, 'shan', `${who.name} 还需出 ${required - 1} 张【闪】。`);
-      setPending(state, { kind: 'respondSha', responderId: attack.targetId, attack });
+      const ask2: GameState['pending'] = {
+        kind: 'respondSha',
+        responderId: attack.targetId,
+        attack,
+      };
+      attack.shanAsk = ask2 as { kind: string; responderId?: string };
+      setPending(state, ask2);
       return;
     }
     attack.dodged = true;
@@ -9365,7 +9715,9 @@ function resolveFactionCard(
 /** 没人代打：还原成发起者自己响应的那个提示 */
 function restoreFactionScene(state: GameState, seatId: string, scene: FactionScene): void {
   if (scene.kind === 'sha-response') {
-    setPending(state, { kind: 'respondSha', responderId: seatId, attack: scene.attack });
+    const ask3: GameState['pending'] = { kind: 'respondSha', responderId: seatId, attack: scene.attack };
+    scene.attack.shanAsk = ask3 as { kind: string; responderId?: string };
+    setPending(state, ask3);
     return;
   }
   setPending(state, { kind: 'respondTrick', responderId: seatId, ctx: scene.ctx });
@@ -9774,7 +10126,9 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
         runAllPlayersHooks(
           state,
           'factionCountChanged',
-          { faction: player.faction, from: 0, to },
+          // ⚠️ payload 里报的必须是**确定下来的那个势力**（joinFaction＝determinedFaction ?? faction），
+          //    不然双势力角色亮将时，监听者按 `player.faction`（牌面主将势力）去记会记错人。
+          { faction: joinFaction, from: 0, to },
           () => {},
         );
       }
@@ -9933,6 +10287,126 @@ export function prelitableSkills(
 }
 
 /**
+ * 「把某人的一张牌搬给另一个人」的**唯一落点**（`api.transferCard` / `api.giveCard` 共用）。
+ *
+ * 搬运机制两种语义完全一样，区别只在 `reason`：
+ * - `gain`：获得（反馈/突袭/顺手牵羊/五谷…）——牌进手牌；
+ * - `give`：**交给**（仁德/遗计/反间/恩怨/好施…）——0 手牌的国战空城诸葛在自己回合外
+ *   被交给牌时，牌**改为置于其武将牌上**（`Player.kongcheng`），所以空城照旧成立。
+ *
+ * ⚠️ 这是 `docs/guozhan-roster.md` §5.153 里 #9（统一的牌移动语义）的第一块落地：
+ *    目前只有「交给 / 获得」这一对语义进了公共搬运，`steal` / `draw` / `distribute`
+ *    还没有各自的落点差异，技能文本里写「交给」的一律用 `giveCard`。
+ */
+function moveCardBetweenPlayers(
+  state: GameState,
+  fromSeatId: string,
+  card: Card,
+  toSeatId: string,
+  after: (() => void) | undefined,
+  reason: CardMoveReason,
+  actorId?: string,
+): void {
+  const from = getPlayer(state, fromSeatId);
+  const to = getPlayer(state, toSeatId);
+  const done = after ?? (() => {});
+  if (!from || !to) {
+    done();
+    return;
+  }
+  /** 落点：交给 0 手牌空城诸葛的牌改置于其武将牌上，其余照常进手牌（**不含收尾**） */
+  const land = (): void => {
+    if (shouldStashGivenCard(state, to, reason)) {
+      to.kongcheng.push(card);
+      pushLog(
+        state,
+        'skill',
+        `【空城】：${to.name} 没有手牌，${from.name} 交给他的【${cardLabel(card)}】置于其武将牌上。`,
+        { seat: to.seatId },
+      );
+      return;
+    }
+    to.hand.push(card);
+  };
+  /** 落地 + 收尾（牌先落到新主人那里，再跑调用方的续接） */
+  const landAndDone = (): void => {
+    land();
+    done();
+  };
+  const eq = from.equipment;
+  for (const slot of EQUIP_SLOTS) {
+    if (eq[slot]?.id === card.id) {
+      // 吴景·风扬：异势力角色不能**获得**同队列吴景队友的装备牌
+      if (fengyangBlocksEquip(state, actorId ?? toSeatId, from, card)) {
+        done();
+        return;
+      }
+      eq[slot] = null;
+      // 失去装备要触发枭姬那类技能，所以不能直接 splice。
+      // ⚠️ 顺序与改之前一致：**先把牌放到新主人那里**（可能进空城暂存区），再跑「失去装备」，
+      //    最后才收尾——避免钩子里读到「牌凭空不在任何区域」的中间态。
+      land();
+      fireEquipLost(state, from, card, done);
+      return;
+    }
+  }
+  // 判定区（延时锦囊）：也要从原处**摘掉**再放手里。
+  // ⚠️ 以前这里没有这一支，于是「获得其装备/判定区一张牌」那类技能（马谡·制蛮、
+  //    反馈…）拿走判定区的【闪电】之后，牌**同时在**新主人手里和原主人的判定区
+  //    ——模糊测试抓到的重复牌就是这么来的（一张牌同时存在于两个区域）。
+  const ji = from.judgment.findIndex((c) => c.id === card.id);
+  if (ji >= 0) {
+    from.judgment.splice(ji, 1);
+    if (reason === 'give') {
+      landAndDone();
+      return;
+    }
+    to.hand.push(card);
+    pushLog(state, 'skill', `${from.name} 判定区的【${cardLabel(card)}】被 ${to.name} 获得。`, {
+      seat: to.seatId,
+      action: 'gain',
+    });
+    done();
+    return;
+  }
+  // 「田」（邓艾·屯田放在**武将牌上**的牌）：【资粮】要把一张「田」交给同势力角色，
+  // 所以这里也认这个牌源（引擎里的牌源清单：手牌 / 装备区 / 判定区 / 田）。
+  const ti = from.tian.findIndex((c) => c.id === card.id);
+  if (ti >= 0) {
+    from.tian.splice(ti, 1);
+    landAndDone();
+    return;
+  }
+  // ⚠️ 询问是**跨步**的：选牌时这张牌还在，回答时可能已被别的效果搬走/弃掉。
+  //    取不到就不能往目标手里再推一份（否则同一张牌同时在两个区域——模糊测试抓过这类）。
+  //    这里是所有「获得他人一张牌」技能的公共落点（反馈/恩怨/授锋/制蛮/伪帝/附敌/问计/眩惑…）。
+  if (!removeCard(from.hand, card.id)) {
+    done();
+    return;
+  }
+  landAndDone();
+}
+
+/**
+ * 国战【空城】第二段的判据：这张牌是不是要**改置于武将牌上**而不是进手牌。
+ *
+ * 官方文本：「若你没有手牌，当**其他角色**于**你的回合外**「交给」你牌时，改为把这些牌
+ * 置于你的武将牌上；然后在你的下个摸牌阶段开始时获得这些牌。」
+ *
+ * 四个条件缺一不可（用户 2026-09-21 给的规格里反复强调过）：**交给**语义（不是获得/摸牌）、
+ * 你**没有手牌**（有手牌就不算空城状态）、当前**不是你的回合**、你有这条技能。
+ * ⚠️ 摸牌 / 五谷丰登 / 顺手牵羊**不能**被替换——否则「用五谷破空城」这条经典解法就没了。
+ */
+function shouldStashGivenCard(state: GameState, to: Player, reason: CardMoveReason): boolean {
+  if (state.mode !== 'guozhan') return false;
+  if (reason !== 'give') return false;
+  if (to.hand.length > 0) return false;
+  if (!effectiveHeroes(state, to).some((h) => h.stashGivenCards === true)) return false;
+  // 「于你的回合外」：当前回合者不是你（自己的回合里别人交给你的牌照常进手牌）
+  return state.seatOrder[state.turn.seatIndex] !== to.seatId;
+}
+
+/**
  * 构造注入给技能与钩子的引擎内部 API。
  *
  * `resumeTo`：伤害结算完之后把控制权还给谁。
@@ -9962,6 +10436,7 @@ function makeSkillApi(
   return {
     askChoice,
     askPickCards,
+    askPickSeats,
     replaceJudgeCard: (card) => {
       // 没有 judgeBox 说明不在判定流程里，静默忽略
       if (judgeBox) {
@@ -10046,9 +10521,13 @@ function makeSkillApi(
       const wantFaction = effectiveFaction(state, owner) ?? mainHero.faction;
       let picked: string | null = null;
       const revealed: string[] = [];
+      // ⚠️ 双势力武将牌的两面都算「与该势力相同」（找士兵牌/替补牌时按**牌面**匹配，
+      //    这是给这名角色自己换牌、不是公开规则判断；见 docs §5.153）
+      const heroMatches = (hero: { faction?: string; secondFaction?: string } | undefined): boolean =>
+        !!hero && (hero.faction === wantFaction || hero.secondFaction === wantFaction);
       for (const id of preferred) {
         const hero = getHeroForMode(id, state.mode);
-        if (hero && hero.faction === wantFaction) {
+        if (heroMatches(hero)) {
           state.heroPool.splice(state.heroPool.indexOf(id), 1);
           picked = id;
           break;
@@ -10058,7 +10537,7 @@ function makeSkillApi(
         const id = state.heroPool.shift()!;
         const hero = getHeroForMode(id, state.mode);
         revealed.push(hero?.name ?? id);
-        if (hero && hero.faction === wantFaction) {
+        if (heroMatches(hero)) {
           picked = id;
           break;
         }
@@ -10505,18 +10984,32 @@ function makeSkillApi(
       if (state.pending !== null || state.gameOver) return;
       resumePlay(state, seatId);
     },
-    giveDiscardedTo: (cards, targetSeatId, skillName) => {
+    giveDiscardedTo: (cards, targetSeatId, skillName, reason) => {
       const target = getPlayer(state, targetSeatId);
       if (!target) return;
       const got: string[] = [];
+      let stashed = 0;
       for (const c of cards) {
         const i = state.discard.findIndex((x) => x.id === c.id);
         if (i < 0) continue;
         state.discard.splice(i, 1);
-        target.hand.push(c);
+        // 交给 0 手牌的国战空城诸葛：改置于其武将牌上（礼让那种「交给」才走这一支）
+        if (shouldStashGivenCard(state, target, reason ?? 'gain')) {
+          target.kongcheng.push(c);
+          stashed++;
+        } else {
+          target.hand.push(c);
+        }
         got.push(cardLabel(c));
       }
-      if (got.length > 0) {
+      if (stashed > 0 && stashed === got.length) {
+        pushLog(
+          state,
+          'skill',
+          `【空城】：${target.name} 没有手牌，${got.join('、')} 置于其武将牌上。`,
+          { seat: target.seatId },
+        );
+      } else if (got.length > 0) {
         pushLog(state, 'skill', `${target.name} 因【${skillName ?? '礼让'}】获得了 ${got.join('、')}。`, {
           seat: target.seatId,
           action: 'gain',
@@ -10546,54 +11039,10 @@ function makeSkillApi(
         pushLog(state, 'chained', `${changed.join('、')} ${chained ? '被横置' : '被重置'}。`);
       }
     },
-    transferCard: (fromSeatId, card, toSeatId, after) => {
-      const from = getPlayer(state, fromSeatId);
-      const to = getPlayer(state, toSeatId);
-      const done = after ?? (() => {});
-      if (!from || !to) {
-        done();
-        return;
-      }
-      const eq = from.equipment;
-      for (const slot of EQUIP_SLOTS) {
-        if (eq[slot]?.id === card.id) {
-          // 吴景·风扬：异势力角色不能**获得**同队列吴景队友的装备牌
-          if (fengyangBlocksEquip(state, opts?.actor ?? toSeatId, from, card)) {
-            done();
-            return;
-          }
-          eq[slot] = null;
-          to.hand.push(card);
-          // 失去装备要触发枭姬那类技能，所以不能直接 splice
-          fireEquipLost(state, from, card, done);
-          return;
-        }
-      }
-      // 判定区（延时锦囊）：也要从原处**摘掉**再放手里。
-      // ⚠️ 以前这里没有这一支，于是「获得其装备/判定区一张牌」那类技能（马谡·制蛮、
-      //    反馈…）拿走判定区的【闪电】之后，牌**同时在**新主人手里和原主人的判定区
-      //    ——模糊测试抓到的重复牌就是这么来的（一张牌同时存在于两个区域）。
-      const ji = from.judgment.findIndex((c) => c.id === card.id);
-      if (ji >= 0) {
-        from.judgment.splice(ji, 1);
-        to.hand.push(card);
-        pushLog(state, 'skill', `${from.name} 判定区的【${cardLabel(card)}】被 ${to.name} 获得。`, {
-          seat: to.seatId,
-          action: 'gain',
-        });
-        done();
-        return;
-      }
-      // ⚠️ 询问是**跨步**的：选牌时这张牌还在，回答时可能已被别的效果搬走/弃掉。
-      //    取不到就不能往目标手里再推一份（否则同一张牌同时在两个区域——模糊测试抓过这类）。
-      //    这里是所有「获得他人一张牌」技能的公共落点（反馈/恩怨/授锋/制蛮/伪帝/附敌/问计/眩惑…）。
-      if (!removeCard(from.hand, card.id)) {
-        done();
-        return;
-      }
-      to.hand.push(card);
-      done();
-    },
+    transferCard: (fromSeatId, card, toSeatId, after) =>
+      moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'gain', opts?.actor),
+    giveCard: (fromSeatId, card, toSeatId, after) =>
+      moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'give', opts?.actor),
     dealDamage: (target, damage, sourceId, attribute, after) => {
       const attack: AttackContext = {
         sourceId,
@@ -10661,15 +11110,29 @@ function makeSkillApi(
         'damage',
         `${target.name} 失去 ${amount} 点体力，剩余 ${Math.max(0, target.hp)} 体力。`,
       );
-      if (target.hp <= 0) {
-        enterNearDeath(state, {
-          sourceId: target.seatId,
-          cardId: '',
-          asType: 'sha',
-          targetId: target.seatId,
-          damage: amount,
-          dodged: false,
-        }, () => resumeTurnPlay(state));
+      if (target.hp <= 0 && target.alive) {
+        // ⚠️ **进濒死时 after 必须等濒死链走完再跑**（与 dealDamage 那条 tail 同一时序）。
+        //    以前是 `enterNearDeath(...)` 之后**立刻** `after?.()`：求桃队列刚摆上槽就被
+        //    after 里的询问顶掉——【乱武】里「失去 1 点体力 → 濒死」紧接着要问下一个人，
+        //    实测就是人停在 0 体力不死、乱武照常往下推（用户 2026-09-21 点名的【完杀】场景）。
+        //    链子走完（被救回或阵亡）才轮到调用方的续接；after 没留下询问才把出牌阶段还回去
+        //    （与 dealDamage 的 `if (state.pending === null && resumeTo)` 同一口径）。
+        enterNearDeath(
+          state,
+          {
+            sourceId: target.seatId,
+            cardId: '',
+            asType: 'sha',
+            targetId: target.seatId,
+            damage: amount,
+            dodged: false,
+          },
+          () => {
+            after?.();
+            if (state.pending === null) resumeTurnPlay(state);
+          },
+        );
+        return;
       }
       after?.();
     },
@@ -10866,6 +11329,7 @@ export function createGame(
     removedHeroIds: [],
     tempGrantedSkills: [],
     tian: [],
+    kongcheng: [],
     qianhuan: [],
     hun: [],
     han: [],
@@ -10945,6 +11409,7 @@ export function createGame(
     forceSeq: 0,
     ambitionAsked: [],
     ambitionJoined: [],
+    deferredEndOfIntentHooks: [],
     exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },

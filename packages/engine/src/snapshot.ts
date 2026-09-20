@@ -48,6 +48,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     removedHeroIds: p.removedHeroIds.slice(),
     // 「田」「千幻」都是扣在武将牌上的牌，公开信息
     tianCount: p.tian.length,
+    // 国战【空城】的暂存牌：张数公开、内容暗（只下发数量）
+    kongchengCount: p.kongcheng.length,
     qianhuanCount: p.qianhuan.length,
     hunCount: p.hun.length,
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上

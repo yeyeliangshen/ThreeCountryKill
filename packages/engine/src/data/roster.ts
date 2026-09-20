@@ -175,7 +175,7 @@ const STANDARD_WEI: RosterEntry[] = [
     pack: 'standard',
     status: 'done',
     primitives: ['judge_ownership', 'pick_cards'],
-    note: '天妒自动收取（白拿牌严格优于不拿，等于最优出牌）。遗计按「每次伤害事件触发一次」（官方为逐点）。',
+    note: '天妒自动收取（白拿牌严格优于不拿，等于最优出牌）。遗计按「每次伤害事件触发一次」——现行国战文本虽是「受到 1 点伤害后」，但 2025-09-19 调整后遗计按次触发（按点的是荀彧·节命）。',
   },
   { id: 'zhenji', name: '甄姬', faction: 'wei', pack: 'standard', status: 'done' },
   {
@@ -269,7 +269,7 @@ const STANDARD_SHU: RosterEntry[] = [
     pack: 'standard',
     status: 'done',
     primitives: ['pick_cards', 'deck_top'],
-    note: '观星已实现。「任意顺序」两句都实现了：先选「置于牌堆顶」的牌（**按点击顺序**＝从最上面往下数），再从剩下的里选「置于牌堆底」的（同样按点击顺序）；第一步一张不选＝都不动（旧行为）。界面给选中的牌标了序号，所以点选顺序看得见。⚠️ 顺手修了一个真 bug：第二步一张不选时，同一张牌会被同时放进「顶堆」和「底堆」两个数组（牌堆里出现两张同样的牌）。',
+    note: '观星 + 空城（**国战两段**）都已实现（用户 2026-09-21 规格，见 docs §5.154）。观星：X = min(存活, 5)；「任意顺序置于牌堆顶或牌堆底」三种摆法都可达——**「全部放底」原来不可达**（第一步「一张不选」被当成「都不动」直接收工，而那正是它的表达方式），现在两步都问、两张牌都能自定顺序；牌堆不够 X 张时按「立即重洗、继续结算」（`drawOne` 本来就会重洗，势力锦囊也正是在这第一次重洗洗入）。空城①：只在**成为目标时**判（0 手牌挡【杀】【决斗】），结算中途变成 0 手牌不追溯取消；青龙偃月刀「继续出杀」算新的一次使用，已补目标合法性重判。空城②（国战专属）：0 手牌时其他角色于其回合外交给他的牌改置于武将牌上（`Player.kongcheng`，新增 `api.giveCard` 的「交给」语义；**只拦交给**，摸牌/五谷/获得不算），下一个摸牌阶段开始时一次性获得，摸牌阶段被跳过则顺延。珠联璧合：黄月英 / 姜维 / 蒋琬费祎。1.5 阴阳鱼 → `maxHp: 3`。',
   },
   { id: 'zhaoyun', name: '赵云', faction: 'shu', pack: 'standard', status: 'done' },
   { id: 'machao', name: '马超', faction: 'shu', pack: 'standard', status: 'done' },
@@ -527,7 +527,7 @@ const ZHEN: RosterEntry[] = [
     pack: 'zhen',
     status: 'done',
     primitives: ['awaken_skill', 'pick_cards'],
-    note: '屯田（新时机 cardsLost：意图前后对「手牌+装备区」做快照比对，只在自己回合外派发）+ 急袭（主将技、减半个阴阳鱼：田当顺手牵羊，靠 Card.tian 标记 + usableCardsOf/findUsableCard/takeUsableCard 扩展）+ 资粮（副将技：同势力角色受伤后交一张田）都已实现并有测试。局限：同一段结算里「先丢掉又摸回来」检测不到（与 handEmptied 同一处局限）。',
+    note: '屯田（新时机 cardsLost：意图前后对「手牌+装备区」做快照比对，只在自己回合外派发）+ 急袭（主将技、减半个阴阳鱼：田当顺手牵羊，**保留这张田的真实花色/颜色**，所以【帷幕】按颜色照常生效——只有♦田能偷贾诩，靠 Card.tian 标记 + usableCardsOf/findUsableCard/takeUsableCard 扩展）+ 资粮（副将技：同势力角色受伤后交一张田）都已实现并有测试。局限：同一段结算里「先丢掉又摸回来」检测不到（与 handEmptied 同一处局限）。',
   },
   {
     id: 'caohong',
@@ -620,7 +620,7 @@ const SHI: RosterEntry[] = [
     pack: 'shi',
     status: 'done',
     primitives: ['hook_interaction', 'pick_cards'],
-    note: '潜袭（2013 印刷版：判定 → 令距离 1 的角色本回合不能用/打出该颜色手牌）+ 马术。颜色限制是新标记 flags.cannotPlayColor，在「使用/重铸/打出响应」三处统一拦。2018 修订版（摸一弃一代替判定）未采用。技能判定已接入「判定牌生效前」的公共时机（见下条说明），所以鬼才/鬼道可以改判、天妒可以收牌。',
+    note: '潜袭（2013 印刷版：判定 → 令距离 1 的角色本回合不能用/打出该颜色手牌）+ 马术。候选是「距离**为 1**」的角色：马术 -1 之后相邻者被**距离下限 1** 兜住，所以相邻的三个人都能选（用户 2026-09-21 的口径，见 docs §5.155）。颜色限制是新标记 flags.cannotPlayColor，在「使用/重铸/打出响应」三处统一拦。2018 修订版（摸一弃一代替判定）未采用。技能判定已接入「判定牌生效前」的公共时机（见下条说明），所以鬼才/鬼道可以改判、天妒可以收牌。',
   },
   {
     id: 'mifuren',
