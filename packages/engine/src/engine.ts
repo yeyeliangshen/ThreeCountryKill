@@ -10954,15 +10954,29 @@ function makeSkillApi(
         'damage',
         `${target.name} 失去 ${amount} 点体力，剩余 ${Math.max(0, target.hp)} 体力。`,
       );
-      if (target.hp <= 0) {
-        enterNearDeath(state, {
-          sourceId: target.seatId,
-          cardId: '',
-          asType: 'sha',
-          targetId: target.seatId,
-          damage: amount,
-          dodged: false,
-        }, () => resumeTurnPlay(state));
+      if (target.hp <= 0 && target.alive) {
+        // ⚠️ **进濒死时 after 必须等濒死链走完再跑**（与 dealDamage 那条 tail 同一时序）。
+        //    以前是 `enterNearDeath(...)` 之后**立刻** `after?.()`：求桃队列刚摆上槽就被
+        //    after 里的询问顶掉——【乱武】里「失去 1 点体力 → 濒死」紧接着要问下一个人，
+        //    实测就是人停在 0 体力不死、乱武照常往下推（用户 2026-09-21 点名的【完杀】场景）。
+        //    链子走完（被救回或阵亡）才轮到调用方的续接；after 没留下询问才把出牌阶段还回去
+        //    （与 dealDamage 的 `if (state.pending === null && resumeTo)` 同一口径）。
+        enterNearDeath(
+          state,
+          {
+            sourceId: target.seatId,
+            cardId: '',
+            asType: 'sha',
+            targetId: target.seatId,
+            damage: amount,
+            dodged: false,
+          },
+          () => {
+            after?.();
+            if (state.pending === null) resumeTurnPlay(state);
+          },
+        );
+        return;
       }
       after?.();
     },

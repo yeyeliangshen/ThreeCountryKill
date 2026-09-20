@@ -14329,7 +14329,11 @@ describe('国战 · 马岱（潜袭 / 马术）', () => {
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('潜袭');
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     expect(state.pending?.kind).toBe('choice');
-    if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id)).toEqual([D]);
+    // ⚠️ 候选是「距离**为 1**」的角色。乙（马岱）有【马术】-1，座次上相邻的三个人
+    //    原本都是 1 → 减 1 之后**被下限 1 兜住**（距离下限是 1，用户 2026-09-21 的口径），
+    //    所以甲、丙、丁都在候选里；以前 `Math.max(0, d)` 会把甲/丙压成 0 从而漏掉他们。
+    if (state.pending?.kind === 'choice')
+      expect(state.pending.options.map((o) => o.id).sort()).toEqual([A, C, D]);
     ok(act(state, B, { type: 'chooseOption', optionId: D }));
     expect(d.flags.cannotPlayColor).toBe('black');
     // 乙的出牌阶段：对丁出【杀】
@@ -15040,6 +15044,7 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
       { seatId: A, name: '甲', heroId: 'vanilla', faction: 'qun', hand: [mk('a1', 'guohe', 'spade', 6)] },
       { seatId: B, name: '乙', heroId: 'dengai', faction: 'wei', hand: [tao('b1')] },
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: D, name: '丁', heroId: 'vanilla', faction: 'wu' },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
     state.deck = [mk('j1', 'sha', 'club', 5)];
@@ -15052,7 +15057,8 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
       expect(state.pending.seatId).toBe(B);
       expect(state.pending.title).toContain('屯田');
     }
-    const distBefore = distance(state, B, C);
+    // 距离修正要在**够得着**的地方才看得出来：丙相邻（座次距离 1），丁隔一个（2）
+    const distBefore = distance(state, B, D);
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' })); // 发动屯田
     // 非红桃 → 问「是否置为『田』」（国战文本是「**可以**」，不是强塞）
     const q2 = state.pending;
@@ -15062,7 +15068,10 @@ describe('国战 · 邓艾（屯田 / 急袭 / 资粮）', () => {
     expect(b.tian).toHaveLength(1);
     expect(b.tian[0]!.id).toBe('j1');
     expect(b.tian[0]!.tian).toBe(true); // 打上「田」标记（急袭靠它认牌）
-    expect(distance(state, B, C)).toBe(distBefore - 1); // 一张「田」→ 距离 -1
+    // 一张「田」→ 距离 -1：丁从 2 降到 1；丙本来就是 1 → **被下限 1 兜住**（距离下限是 1）
+    expect(distBefore).toBe(2);
+    expect(distance(state, B, D)).toBe(1);
+    expect(distance(state, B, C)).toBe(1);
   });
 
   it('屯田：非红桃也可以**不收**（国战文本是「可以」）——判定牌进弃牌堆', () => {

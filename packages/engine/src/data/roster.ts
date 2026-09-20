@@ -527,7 +527,7 @@ const ZHEN: RosterEntry[] = [
     pack: 'zhen',
     status: 'done',
     primitives: ['awaken_skill', 'pick_cards'],
-    note: '屯田（新时机 cardsLost：意图前后对「手牌+装备区」做快照比对，只在自己回合外派发）+ 急袭（主将技、减半个阴阳鱼：田当顺手牵羊，靠 Card.tian 标记 + usableCardsOf/findUsableCard/takeUsableCard 扩展）+ 资粮（副将技：同势力角色受伤后交一张田）都已实现并有测试。局限：同一段结算里「先丢掉又摸回来」检测不到（与 handEmptied 同一处局限）。',
+    note: '屯田（新时机 cardsLost：意图前后对「手牌+装备区」做快照比对，只在自己回合外派发）+ 急袭（主将技、减半个阴阳鱼：田当顺手牵羊，**保留这张田的真实花色/颜色**，所以【帷幕】按颜色照常生效——只有♦田能偷贾诩，靠 Card.tian 标记 + usableCardsOf/findUsableCard/takeUsableCard 扩展）+ 资粮（副将技：同势力角色受伤后交一张田）都已实现并有测试。局限：同一段结算里「先丢掉又摸回来」检测不到（与 handEmptied 同一处局限）。',
   },
   {
     id: 'caohong',
@@ -620,7 +620,7 @@ const SHI: RosterEntry[] = [
     pack: 'shi',
     status: 'done',
     primitives: ['hook_interaction', 'pick_cards'],
-    note: '潜袭（2013 印刷版：判定 → 令距离 1 的角色本回合不能用/打出该颜色手牌）+ 马术。颜色限制是新标记 flags.cannotPlayColor，在「使用/重铸/打出响应」三处统一拦。2018 修订版（摸一弃一代替判定）未采用。技能判定已接入「判定牌生效前」的公共时机（见下条说明），所以鬼才/鬼道可以改判、天妒可以收牌。',
+    note: '潜袭（2013 印刷版：判定 → 令距离 1 的角色本回合不能用/打出该颜色手牌）+ 马术。候选是「距离**为 1**」的角色：马术 -1 之后相邻者被**距离下限 1** 兜住，所以相邻的三个人都能选（用户 2026-09-21 的口径，见 docs §5.155）。颜色限制是新标记 flags.cannotPlayColor，在「使用/重铸/打出响应」三处统一拦。2018 修订版（摸一弃一代替判定）未采用。技能判定已接入「判定牌生效前」的公共时机（见下条说明），所以鬼才/鬼道可以改判、天妒可以收牌。',
   },
   {
     id: 'mifuren',

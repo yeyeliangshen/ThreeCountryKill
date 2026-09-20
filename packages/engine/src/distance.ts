@@ -61,7 +61,11 @@ export function distance(state: GameState, fromId: string, toId: string): number
       if (hero.distanceMinusPerTian === true) d -= from.tian.length;
     }
   }
-  return Math.max(0, d);
+  // ⚠️ **距离下限是 1**（用户 2026-09-21 的口径，也是官方基本规则）：修正再多也不能把距离压到 0。
+  //    以前写的是 `Math.max(0, d)` —— 有田/马术的邓艾算「距离最近的另一名角色」时，
+  //    原本距离 1 的人会被压成 0 而**独占**最近，把原本并列的人挤出去（乱武选目标就会错）。
+  //    对「距离≤1」那类检查（顺手牵羊/兵粮）两种下限等价，但 `=== 1` 那类判断会漏人。
+  return Math.max(1, d);
 }
 
 /**
