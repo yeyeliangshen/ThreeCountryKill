@@ -20370,6 +20370,81 @@ describe('国战 · 技能判定接入改判时机', () => {
     expect(state.log.some((e) => e.message.includes('替换判定牌'))).toBe(true);
   });
 
+  /**
+   * 「同一时机、同一层内由该角色自己决定次序」（官方口径，docs §5.137.3；实现见 §5.143）。
+   *
+   * 三条覆盖：①两个技能**都会发动** → 问一句「先结算哪一个」，选中的先结算；
+   * ②只有一个会发动 → **不问**（这是上一版失败的原因：按「注册数 ≥2」去问，满场都是询问）；
+   * ③同层里有钩子**没填 `applies`**（引擎预判不了）→ 退回按 priority 固定排，也不问。
+   */
+  describe('同层内自选次序（§5.143）', () => {
+    /** 甲杀乙、乙不出闪 → 乙受伤（乙是双将，受伤后可能有两个技能同时想发动） */
+    const hit = (state: ReturnType<typeof gz>, a = A, b = B) => {
+      ok(act(state, a, { type: 'playCard', cardId: 'a1', targetIds: [b] }));
+      ok(act(state, b, { type: 'pass' }));
+    };
+
+    it('两个技能都会发动 → 先问顺序，选中者先结算', () => {
+      const state = gz(
+        [
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+          // 乙＝夏侯惇（刚烈）+ 郭嘉（遗计）：受伤后两个都想发动
+          { seatId: B, name: '乙', heroId: 'xiahoudun', deputyHeroId: 'guojia', faction: 'wei', hand: [] },
+        ],
+        A,
+      );
+      state.deck = [mk('j1', 'shan', 'spade', 8)];
+      hit(state);
+      const q = state.pending;
+      if (q?.kind !== 'choice') throw new Error(`预期顺序询问，实际是 ${q?.kind}`);
+      expect(q.title).toContain('先结算哪一个');
+      expect(q.options.map((o) => o.label).sort()).toEqual(['刚烈', '遗计']);
+      // 选【遗计】先 → 先问遗计（不发动）→ 才轮到刚烈的判定
+      const yiji = q.options.find((o) => o.label === '遗计')!;
+      ok(act(state, B, { type: 'chooseOption', optionId: yiji.id }));
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期遗计的询问，实际是 ${q2?.kind}`);
+      expect(q2.title).toContain('遗计');
+      ok(act(state, B, { type: 'chooseOption', optionId: 'no' }));
+      // 刚烈这才开始判定 → 判定牌被天妒收走
+      expect(state.log.some((e) => e.message.includes('天妒'))).toBe(true);
+      const b = state.players.find((p) => p.seatId === B)!;
+      expect(b.hand.some((c) => c.id === 'j1')).toBe(true);
+    });
+
+    it('只有一个技能会发动 → **不问**（回归：按注册数去问会让满场都是询问）', () => {
+      const state = gz(
+        [
+          // 甲把唯一的牌打出去 → 空手、无装备 → 反馈没牌可拿（条件不成立）
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+          { seatId: B, name: '乙', heroId: 'simayi', deputyHeroId: 'guojia', faction: 'wei', hand: [] },
+        ],
+        A,
+      );
+      hit(state);
+      const q = state.pending;
+      if (q?.kind !== 'choice') throw new Error(`预期遗计的询问，实际是 ${q?.kind}`);
+      expect(q.title, '只有一个会发动 → 不该问顺序').not.toContain('先结算哪一个');
+      expect(q.title).toContain('遗计');
+    });
+
+    it('同层里有钩子没填 applies（预判不了）→ 退回固定排序，也不问', () => {
+      const state = gz(
+        [
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
+          // 乙＝郭嘉（遗计，已声明）+ 张鲁（布施，**没填 applies**）
+          { seatId: B, name: '乙', heroId: 'guojia', deputyHeroId: 'zhanglu', faction: 'wei', hand: [] },
+        ],
+        A,
+      );
+      hit(state);
+      expect(
+        !!state.pending && state.pending.kind === 'choice' && state.pending.title.includes('先结算哪一个'),
+        '有预判不了的钩子 → 不做自选次序',
+      ).toBe(false);
+    });
+  });
+
   it('天妒能收走**技能判定**的判定牌（夏侯惇+郭嘉的双将）', () => {
     const state = gz(
       [
@@ -20389,7 +20464,14 @@ describe('国战 · 技能判定接入改判时机', () => {
     const b = state.players.find((p) => p.seatId === B)!;
     state.deck = [mk('j1', 'shan', 'spade', 8)];
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤 → 刚烈判定（黑桃）→ 天妒收走
+    ok(act(state, B, { type: 'pass' })); // 不出闪 → 受伤
+    // ⚠️ 乙是**双将**（夏侯惇+郭嘉），受伤后【刚烈】【遗计】同时想发动
+    //    → 引擎先问「你先结算哪一个」（同层自选次序，docs §5.143）。这里选【刚烈】先。
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('先结算哪一个')) {
+      const ganglie = state.pending.options.find((o) => o.label.includes('刚烈'));
+      ok(act(state, B, { type: 'chooseOption', optionId: ganglie!.id }));
+    }
+    // 刚烈判定（黑桃）→ 天妒收走
     // 判定牌进了乙手里（天妒）；刚烈对黑桃也生效 → 甲被问选一项
     expect(b.hand.some((c) => c.id === 'j1')).toBe(true);
     expect(state.log.some((e) => e.message.includes('天妒'))).toBe(true);

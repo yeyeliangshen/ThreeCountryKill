@@ -1133,6 +1133,7 @@ function runHooksPausable(
     attackBox,
     token,
     startedWith,
+    true, // 可挂起的链 → 允许「同层内自选次序」的询问
   );
 }
 
@@ -1156,6 +1157,11 @@ function runHooksFrom(
   token?: ChainToken,
   /** 链**开始时**槽里的那一格（见 runHooksPausable）——分辨「这个待回答是不是本链造成的」 */
   startedWith?: GameState['pending'],
+  /**
+   * 这条链能不能插入询问（＝它是不是走 `runHooksPausable` 派发的）。
+   * 只有能问的链才做「同层内自选次序」——不能挂起的时机里问了会被后续代码静默覆盖。
+   */
+  canAsk = false,
 ): void {
   // ⚠️ 这条链可能**已经跑完**：它被询问打断、续接排到了很后面，中途棋局翻篇
   //    （回合结束、角色阵亡…），等续接终于排到，链其实早就走完了。
@@ -1169,27 +1175,72 @@ function runHooksFrom(
   // ⚠️ 只在**链条第一次**进入时记（from === 0）：这是个可挂起的时机，续接时会再进本函数，
   //    重复登记会让账本里同一张牌出现多次。
   if (from === 0) markCardUsed(state, timing, player, payload);
-  for (let k = from; k < hooks.length; k++) {
-    /**
-     * ⚠️ **「同层内让拥有者自选次序」在这一版里做不了**（用户 2026-09 的裁定本身没问题，
-     * 是这个引擎的形状不支持）——试过、量过、回退，如实记：
-     *
-     * 这里按「剩下的钩子 ≥2 个」就问一句「先结算哪一个」，结果是**每一处会有多个钩子注册的
-     * 时机都多出一问**（19 条用例变红、冒烟 40 局直接卡在 5000 步不结束）。原因是本引擎的钩子
-     * 模型是「**注册即触发、要不要发动由 handler 自己决定**」——派发前根本不知道哪几个**真的会
-     * 发动**，而官方那条口径说的是「多个技能**同时想发动**时由该角色决定次序」。
-     *
-     * 要做它必须先**把「可选触发」统一成声明式**（每个钩子在派发前就能回答「我这次要不要发动」——
-     * 例如统一走一次「是否发动【X】」的询问，引擎据此得到「本次会发动的技能清单」，再对清单问顺序）。
-     * 那是单独一块改造，动手前先在 docs §5.137.3 里看当时的量测结论。
-     */
-    const res = hooks[k]!.handler({
-      state,
-      player,
-      timing,
-      payload,
-      api: makeSkillApi(state, { attackBox, actor: player.seatId }),
-    });
+  // 「同一时机、同一层内由该角色自己决定次序」（官方口径，docs §5.137.3）。
+  //
+  // 做法：每步派发之前先算一次「**本次会发动的技能清单**」——`locked`（锁定技）恒真，
+  // 其余看钩子自己声明的 `applies`；清单 ≥2 个时问一句「先结算哪一个」，选中的排到最前再继续。
+  //
+  // ⚠️ **只要剩下的钩子里有一个「说不准」（没填 `applies` 且不是锁定技），就整个退回按
+  //    `priority` 固定排**——宁可非自选，也不要瞎问：上一版按「注册数 ≥2」去问，
+  //    结果每一处有两个钩子注册的时机都多出一问（19 条用例变红、冒烟 40 局卡在 5000 步，
+  //    量测记录见 §5.137.4）。
+  // ⚠️ 只有**可挂起**的链能问（`canAsk`），否则询问会被后续代码静默覆盖
+  //    （见 `timing.ts` 里 `applies` 的说明）。
+  const hookCtx = (): HookContext => ({
+    state,
+    player,
+    timing,
+    payload,
+    api: makeSkillApi(state, { attackBox, actor: player.seatId }),
+  });
+  const willingFrom = (k: number): { idx: number; name: string }[] | null => {
+    if (!canAsk) return null;
+    const rest = hooks.slice(k);
+    if (rest.length < 2) return null;
+    // ⚠️ 锁定技**也要**填 applies：`locked` 只表示「玩家不能选择不发动」，
+    //    它的**触发条件**照样要判（没伤害时恩怨根本不触发）——把它当「恒真」会凭空多出询问。
+    if (!rest.every((h) => !!h.applies)) return null;
+    const willing = rest
+      .map((hook, i) => ({ idx: k + i, hook }))
+      .filter(({ hook }) => hook.applies!(hookCtx()) === true);
+    if (willing.length < 2) return null;
+    return willing.map(({ idx, hook }) => ({ idx, name: hook.skillId ?? '（未命名技能）' }));
+  };
+
+  /**
+   * `skipOrderAsk`：这一步刚被玩家选过顺序，**别再问一遍**。
+   *
+   * ⚠️ 少了它会死循环：选中的钩子被排到 k 之后如果又进「算一遍清单 → 问一句」，
+   *    清单里还是它自己（两个条件都成立）→ 同一句话问不完（实测过，玩家永远答不完）。
+   *    正确形状是「**每问一次就结算掉一个**」：选中 → 排在 k → 直接执行 → 再对**剩下的**
+   *    问下一轮（剩下的少了一个，所以一定会收敛）。
+   */
+  const step = (k: number, skipOrderAsk = false): void => {
+    if (token && !token.alive) return;
+    if (k >= hooks.length) {
+      onDone(false);
+      return;
+    }
+    const willing = skipOrderAsk ? null : willingFrom(k);
+    if (willing) {
+      askChoice(
+        state,
+        player.seatId,
+        '同时触发了多个技能：你先结算哪一个？',
+        willing.map((w) => ({ id: `hook:${w.idx}`, label: w.name })),
+        (_st, _p, picked) => {
+          const chosenIdx = Number(String(picked).replace('hook:', ''));
+          const at = hooks.findIndex((_h, i) => i === chosenIdx && i >= k);
+          if (at >= 0) {
+            const [chosen] = hooks.splice(at, 1);
+            hooks.splice(k, 0, chosen!);
+          }
+          step(k, true);
+        },
+      );
+      return;
+    }
+    const res = hooks[k]!.handler(hookCtx());
     if (res && res.cancel) {
       onDone(true);
       return;
@@ -1217,12 +1268,25 @@ function runHooksFrom(
       (state.pending?.kind === 'respondDeath' && state.pending !== startedWith)
     ) {
       pushResume(state, () =>
-        runHooksFrom(state, player, timing, payload, hooks, k + 1, onDone, attackBox, token, startedWith),
+        runHooksFrom(
+          state,
+          player,
+          timing,
+          payload,
+          hooks,
+          k + 1,
+          onDone,
+          attackBox,
+          token,
+          startedWith,
+          canAsk,
+        ),
       );
       return;
     }
-  }
-  onDone(false);
+    step(k + 1);
+  };
+  step(from);
 }
 
 /**

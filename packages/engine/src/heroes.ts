@@ -1015,6 +1015,11 @@ const SIMAYI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '反馈',
+      applies: (ctx) => {
+        const srcId = damageEvent(ctx).attack?.sourceId;
+        const src = srcId ? getPlayer(ctx.state, srcId) : undefined;
+        return damagedByOther(ctx) && !!src && handAndEquipOf(src).length > 0;
+      },
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; /* ⚠️ 直写槽：heroes 不能 import engine（循环依赖），这一处暂不过版本号，见 docs §5.124 待办 */ damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
@@ -1078,6 +1083,7 @@ const XIAHOUDUN: Hero = {
     {
       timing: 'afterDamage',
       skillId: '刚烈',
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         if (!payload?.attack || !payload.damage) return;
@@ -1640,6 +1646,10 @@ const CAOCAO: Hero = {
     {
       timing: 'afterDamage',
       skillId: '奸雄',
+      applies: (ctx) => {
+        const id = damageEvent(ctx).attack?.cardId;
+        return !!id && ctx.state.discard.some((c) => c.id === id);
+      },
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const cardId = payload?.attack?.cardId;
@@ -6173,6 +6183,7 @@ const FAZHENG: Hero = {
       timing: 'afterDamage',
       skillId: '恩怨',
       locked: true,
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const sourceId = payload?.attack?.sourceId;
@@ -7188,6 +7199,10 @@ const YANBAIHU: Hero = {
       timing: 'afterDamageDealt',
       skillId: '雉盗',
       locked: true,
+      applies: (ctx) =>
+        !!ctx.player.flags.cardTargetOnlySeat &&
+        !ctx.player.flags.zhidaoHitDone &&
+        ctx.state.turn.phase === 'play',
       handler: (ctx) => {
         const me = ctx.player;
         const locked = me.flags.cardTargetOnlySeat;
@@ -7251,6 +7266,7 @@ const YANBAIHU: Hero = {
       timing: 'damageDealt',
       skillId: '寄篱',
       locked: true,
+      applies: (ctx) => damagedPositive(ctx) && ctx.player.flags.damageCount === 1,
       handler: (ctx) => {
         const me = ctx.player;
         const payload = ctx.payload as { damage?: number } | undefined;
@@ -8002,6 +8018,10 @@ const ZUOCI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '汲魂',
+      applies: (ctx) =>
+        damagedPositive(ctx) &&
+        !ctx.player.usedOncePerGame.jihunDamage &&
+        ctx.state.heroPool.length > 0,
       handler: (ctx) => {
         const me = ctx.player;
         if (me.usedOncePerGame.jihunDamage) return; // 「受伤害后」每回合一次（flag 随回合清）
@@ -8644,6 +8664,7 @@ const XUNYOU: Hero = {
     {
       timing: 'afterDamage',
       skillId: '智愚',
+      applies: damagedPositive,
       handler: (ctx) => {
         const me = ctx.player;
         const sourceId = (ctx.payload as { attack?: AttackContext } | undefined)?.attack?.sourceId;
@@ -9546,6 +9567,10 @@ const LIDIAN: Hero = {
     {
       timing: 'afterDamageDealt',
       skillId: '忘隙',
+      applies: (ctx) => {
+        const a = damageEvent(ctx).attack;
+        return !!a && (damageEvent(ctx).damage ?? 0) > 0 && a.targetId !== ctx.player.seatId;
+      },
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const attack = payload?.attack;
@@ -9556,6 +9581,7 @@ const LIDIAN: Hero = {
     {
       timing: 'afterDamage',
       skillId: '忘隙',
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const attack = payload?.attack;
@@ -10465,6 +10491,7 @@ const XUNYU: Hero = {
     {
       timing: 'afterDamage',
       skillId: '节命',
+      applies: damagedPositive,
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         // 【节命】官方触发词是「当你受到**1点**伤害后」：一次受到 2 点要**依次触发两次**
@@ -10592,6 +10619,7 @@ const CAOPI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '放逐',
+      applies: (ctx) => damagedPositive(ctx) && ctx.player.maxHp - ctx.player.hp > 0,
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         if (!payload?.damage) return;
@@ -11109,6 +11137,7 @@ const GUOJIA: Hero = {
     {
       timing: 'afterDamage',
       skillId: '遗计',
+      applies: damagedPositive,
       handler: (ctx) => {
         const payload = ctx.payload as { damage?: number } | undefined;
         if (!payload?.damage) return;
@@ -14026,7 +14055,13 @@ const XUYOU: Hero = {
   hooks: [
     // 「使用牌结算结束」：目前引擎只在**杀**打完（attackSettled）时派发一次
     { timing: 'cardUseEnded', skillId: '成略', handler: askChenglue },
-    { timing: 'afterDamage', skillId: '恃才', locked: true, handler: askShicai },
+    {
+      timing: 'afterDamage',
+      skillId: '恃才',
+      locked: true,
+      applies: damagedPositive,
+      handler: askShicai,
+    },
   ],
   skills: [
     {
@@ -16795,6 +16830,30 @@ function removeCard(hand: Card[], id: string): Card | null {
 function handAndEquipOf(p: Player): Card[] {
   const eq = p.equipment;
   return [...p.hand, ...EQUIP_SLOTS.map((s) => eq[s]).filter((c): c is Card => c !== null)];
+}
+
+/**
+ * 「这次伤害事件」的 payload 形状（`afterDamage` / `afterDamageDealt` 两个时机共用）。
+ *
+ * 给 `HookRegistration.applies` 用——`applies` 只是 handler 开头那几行守卫的**声明版**，
+ * 两边必须判同一件事（见 timing.ts 里 applies 的说明与 docs §5.143）。
+ */
+function damageEvent(ctx: HookContext): { attack?: AttackContext; damage?: number } {
+  return (ctx.payload ?? {}) as { attack?: AttackContext; damage?: number };
+}
+
+/** 声明式：这次伤害点数为正（「受到伤害后」类技能的共同前提） */
+function damagedPositive(ctx: HookContext): boolean {
+  return (damageEvent(ctx).damage ?? 0) > 0;
+}
+
+/** 声明式：有来源、且不是自己打自己（反馈/刚烈/恩怨/忘隙那一族的共同前提） */
+function damagedByOther(ctx: HookContext): boolean {
+  const p = damageEvent(ctx);
+  const srcId = p.attack?.sourceId;
+  if (!p.damage || !srcId || srcId === ctx.player.seatId) return false;
+  const src = getPlayer(ctx.state, srcId);
+  return !!src && src.alive;
 }
 
 /**
