@@ -10158,7 +10158,7 @@ function moveCardBetweenPlayers(
     done();
     return;
   }
-  /** 落点：交给 0 手牌空城诸葛的牌改置于其武将牌上，其余照常进手牌 */
+  /** 落点：交给 0 手牌空城诸葛的牌改置于其武将牌上，其余照常进手牌（**不含收尾**） */
   const land = (): void => {
     if (shouldStashGivenCard(state, to, reason)) {
       to.kongcheng.push(card);
@@ -10168,10 +10168,13 @@ function moveCardBetweenPlayers(
         `【空城】：${to.name} 没有手牌，${from.name} 交给他的【${cardLabel(card)}】置于其武将牌上。`,
         { seat: to.seatId },
       );
-      done();
       return;
     }
     to.hand.push(card);
+  };
+  /** 落地 + 收尾（牌先落到新主人那里，再跑调用方的续接） */
+  const landAndDone = (): void => {
+    land();
     done();
   };
   const eq = from.equipment;
@@ -10183,11 +10186,11 @@ function moveCardBetweenPlayers(
         return;
       }
       eq[slot] = null;
-      // 失去装备要触发枭姬那类技能，所以不能直接 splice
-      const landEquip = (): void => {
-        land();
-      };
-      fireEquipLost(state, from, card, landEquip);
+      // 失去装备要触发枭姬那类技能，所以不能直接 splice。
+      // ⚠️ 顺序与改之前一致：**先把牌放到新主人那里**（可能进空城暂存区），再跑「失去装备」，
+      //    最后才收尾——避免钩子里读到「牌凭空不在任何区域」的中间态。
+      land();
+      fireEquipLost(state, from, card, done);
       return;
     }
   }
@@ -10199,7 +10202,7 @@ function moveCardBetweenPlayers(
   if (ji >= 0) {
     from.judgment.splice(ji, 1);
     if (reason === 'give') {
-      land();
+      landAndDone();
       return;
     }
     to.hand.push(card);
@@ -10215,7 +10218,7 @@ function moveCardBetweenPlayers(
   const ti = from.tian.findIndex((c) => c.id === card.id);
   if (ti >= 0) {
     from.tian.splice(ti, 1);
-    land();
+    landAndDone();
     return;
   }
   // ⚠️ 询问是**跨步**的：选牌时这张牌还在，回答时可能已被别的效果搬走/弃掉。
@@ -10225,7 +10228,7 @@ function moveCardBetweenPlayers(
     done();
     return;
   }
-  land();
+  landAndDone();
 }
 
 /**
