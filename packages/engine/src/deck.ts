@@ -1,5 +1,6 @@
 import type { Card, CardType, GameMode, Suit } from '@sgs/protocol';
 import type { GameState } from './model';
+import { pushLog } from './model';
 
 /**
  * 构建牌堆。**国战与其它模式的牌堆不一样**。
@@ -374,6 +375,22 @@ export function seededRng(seed: number): () => number {
   };
 }
 
+/**
+ * 【势力锦囊】四张（不臣篇）——开局**不进摸牌堆**，放在 `GameState.pendingFactionTricks` 里，
+ * **第一次重洗**时随新摸牌堆一起洗入；使用/弃置后**移出游戏**（不进弃牌堆循环）。
+ *
+ * 牌面（用户给定）：魏 ♠Q【号令天下】、蜀 ♦A【克复中原】、吴 ♥A【固国安邦】、群 ♣Q【文和乱武】。
+ * 效果口径见 docs/guozhan-roster.md §5.136。
+ */
+export function factionTrickCards(): Card[] {
+  return [
+    // ✅ 已实装：【固国安邦】（吴 ♥A）——摸八张 + 至少选六张（非吴弃置；吴可至多 6 张转交同势力）
+    { id: 'faction-guoanjianbang', type: 'guoanjianbang', suit: 'heart', rank: 1 },
+    // ⛔ 尚未实装（效果口径已给，见 docs §5.136；**先不放进牌堆**，免得抽到一张打不出的死牌）：
+    //    魏 ♠Q【号令天下】、蜀 ♦A【克复中原】、群 ♣Q【文和乱武】
+  ];
+}
+
 /** 从牌堆顶抽一张；牌堆空时把弃牌堆洗回 */
 export function drawOne(state: GameState): Card | null {
   if (state.deck.length === 0) {
@@ -382,6 +399,12 @@ export function drawOne(state: GameState): Card | null {
     //    （这种「同一个种子每次局面都不同」的坑踩过两轮，一处都不能漏）
     state.deck = shuffle(state.discard, state.rng);
     state.discard = [];
+    // 【势力锦囊】四张：**第一次重洗**时随新摸牌堆一起洗进来（开局那 160 张里没有它们）
+    if (state.pendingFactionTricks.length > 0) {
+      state.deck = shuffle([...state.deck, ...state.pendingFactionTricks], state.rng);
+      pushLog(state, 'system', '【势力锦囊】四张随第一次洗牌进入摸牌堆。');
+      state.pendingFactionTricks = [];
+    }
   }
   const card = state.deck.pop() ?? null;
   // 「本回合从牌堆获得过牌」的账本（袁术·伪帝）。重洗之后摸到的牌也该算——它们此刻确实

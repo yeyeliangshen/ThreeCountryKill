@@ -1,4 +1,4 @@
-import { CARD_TYPE_NAME, EQUIP_NAME } from '@sgs/protocol';
+import { CARD_TYPE_NAME, EQUIP_NAME, FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type {
   Card,
   CardType,
@@ -823,6 +823,17 @@ export interface GameState {
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];
+  /**
+   * 【势力锦囊】四张（不臣篇）：开局**不在**摸牌堆里，放这儿等着**第一次重洗**时洗入；
+   * 使用/弃置后**移出游戏**（不进弃牌堆循环）。见 `deck.factionTrickCards` 与 §5.136。
+   */
+  pendingFactionTricks: Card[];
+  /**
+   * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：
+   * 势力锦囊用/弃后进这里；君主专属装备「离开装备区即销毁」也进这里。
+   * 单独记一份是为了让「牌不会凭空消失」这类守恒检查能如实核对（模糊测试网要看得到它们）。
+   */
+  exiled: Card[];
   discard: Card[];
   turn: { seatIndex: number; phase: Phase };
   pending: Pending | null;
@@ -1179,6 +1190,12 @@ export function alivePlayers(state: GameState): Player[] {
  */
 export function toDiscard(state: GameState, ...cards: Card[]): void {
   for (const c of cards) {
+    // 势力锦囊（不臣篇）：使用或弃置后**移出游戏**，不进弃牌堆循环（规则集里「府库」那类区域）
+    if (FACTION_TRICK_TYPES.has(c.type)) {
+      state.exiled.push(c);
+      pushLog(state, 'discard', `【${CARD_TYPE_NAME[c.type]}】移出游戏（势力锦囊不进弃牌循环）。`);
+      continue;
+    }
     // 「离开装备区后销毁之」的牌（君主专属装备）：**移出游戏**，不进弃牌堆。
     // 官方文本就写在牌面上（例：【飞龙夺凤】「当此牌离开装备区后，销毁之」）。
     if (c.destroyOnLeave) {

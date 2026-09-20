@@ -63,7 +63,7 @@ import {
   tengjiaNullifiesAoe,
   tryBaguaDodge,
 } from './equip';
-import { buildDeck, drawOne, shuffle } from './deck';
+import { buildDeck, drawOne, factionTrickCards, shuffle } from './deck';
 import {
   addMarker,
   consumeMarker,
@@ -5231,6 +5231,13 @@ function playTrick(
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
     if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
+  } else if (type === 'guoanjianbang') {
+    // 【固国安邦】：对自己使用，无需指定目标
+    if (intent.targetIds.length !== 0) return err('【固国安邦】只对自己使用，无需指定目标');
+  } else if (type === 'haolingtianxia' || type === 'kefuzhongyuan' || type === 'wenheluanwu') {
+    // 这三张势力锦囊**尚未实装**（效果口径已给，见 docs §5.136）——不应出现在牌堆里，
+    // 真被拿到也不允许打出来（宁可报错，也不要打出一张什么都不做的牌）
+    return err('【' + CARD_TYPE_NAME[type] + '】尚未实装');
   } else if (type === 'chiling') {
     // 敕令：目标是规则算出来的（所有**没有势力**的角色），无需玩家指定
     if (intent.targetIds.length !== 0) return err('【敕令】的目标由规则决定，无需指定');
@@ -5690,6 +5697,9 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       return;
     case 'chiling':
       resolveChiling(state, ctx);
+      return;
+    case 'guoanjianbang':
+      resolveGuoAnJianBang(state, ctx);
       return;
     case 'lianjun':
       resolveLianjun(state, ctx);
@@ -6264,6 +6274,119 @@ function huoShaoResolveCurrent(state: GameState, ctx: TrickContext): void {
  * 「没有势力」= 一张武将牌都没明置（未确定势力）。所以**使用者自己也可能在里面**
  * ——只要他自己也没亮将。这与「暗将之间互视为不同势力」是同一条暗置语义。
  */
+/**
+ * 【固国安邦】（吴·势力锦囊 ♥A）——按用户 2026-09 给的**当前移动版实现口径**（docs §5.136）：
+ *
+ * 「对自己使用：摸八张牌，然后选择至少六张手牌。非吴势力角色将选择的牌弃置；吴势力角色可以将其中
+ *   至多六张交给同势力的其他角色（每名角色至多两张），剩余选择的牌弃置。」
+ *
+ * 要点：① **自己用**（不需要目标）；② 先摸 8 再看手牌挑；③ 非吴＝选中的全弃；
+ * ④ 吴＝从选中的牌里**至多 6 张**可转交，**每名同势力角色至多收 2 张**，没转出去的全弃。
+ */
+function resolveGuoAnJianBang(state: GameState, ctx: TrickContext): void {
+  const me = getPlayer(state, ctx.sourceId);
+  if (!me || !me.alive) {
+    endTrickResolution(state, ctx);
+    return;
+  }
+  let got = 0;
+  for (let i = 0; i < 8; i++) {
+    const c = drawOne(state);
+    if (!c) break;
+    me.hand.push(c);
+    got++;
+  }
+  pushLog(state, 'trick', `${me.name} 因【固国安邦】摸了 ${got} 张牌。`, {
+    seat: me.seatId,
+    action: 'draw',
+  });
+  if (me.hand.length === 0) {
+    endTrickResolution(state, ctx);
+    return;
+  }
+  const min = Math.min(6, me.hand.length);
+  askPickCards(
+    state,
+    me.seatId,
+    `【固国安邦】：选择至少 ${min} 张手牌（非吴直接弃置；吴可至多 6 张转交同势力）`,
+    me.hand.slice(),
+    min,
+    me.hand.length,
+    (st, p, chosen) => {
+      const myFaction = effectiveFaction(st, p);
+      const allies =
+        myFaction && myFaction === 'wu'
+          ? st.players.filter(
+              (x) =>
+                x.alive && x.seatId !== p.seatId && effectiveFaction(st, x) === myFaction,
+            )
+          : [];
+      const discardRest = (cards: Card[]): void => {
+        if (cards.length === 0) {
+          endTrickResolution(st, ctx);
+          return;
+        }
+        // 走「一次弃多张」的收口：失去牌的技能（枭姬那类）与「因弃置」的账本照常生效
+        const api = makeSkillApi(st, { actor: p.seatId });
+        api.discardCards(p.seatId, cards, () => endTrickResolution(st, ctx));
+      };
+      if (allies.length === 0) {
+        // 非吴（或场上没有同势力其他人）→ 选中的全弃
+        pushLog(st, 'trick', `${p.name} 因【固国安邦】弃置 ${chosen.length} 张手牌。`, {
+          seat: p.seatId,
+        });
+        discardRest(chosen);
+        return;
+      }
+      // 吴：从选中的牌里至多 6 张可转交（每名同势力角色至多 2 张），没转出去的全弃
+      const giveable = chosen.slice(0, 6);
+      const rest = chosen.slice(6);
+      const received: Record<string, number> = {};
+      const step = (i: number): void => {
+        const card = giveable[i];
+        if (!card) {
+          discardRest(rest);
+          return;
+        }
+        const targets = allies.filter((x) => (received[x.seatId] ?? 0) < 2);
+        const options: { id: string; label: string }[] = targets.map((x) => ({
+          id: x.seatId,
+          label: `交给 ${x.name}（已收 ${received[x.seatId] ?? 0}/2）`,
+        }));
+        options.push({ id: 'discard', label: '不交，弃置这张' });
+        askChoice(
+          st,
+          p.seatId,
+          `【固国安邦】：【${cardLabel(card)}】交给谁？（至多 6 张、每名角色至多 2 张）`,
+          options,
+          (st2, p2, picked) => {
+            if (picked === 'discard') {
+              rest.push(card);
+              step(i + 1);
+              return;
+            }
+            const to = getPlayer(st2, picked);
+            if (!to) {
+              rest.push(card);
+              step(i + 1);
+              return;
+            }
+            received[to.seatId] = (received[to.seatId] ?? 0) + 1;
+            const api2 = makeSkillApi(st2, { actor: p2.seatId });
+            api2.transferCard(p2.seatId, card, to.seatId, () => {
+              pushLog(st2, 'trick', `${p2.name} 因【固国安邦】将一张手牌交给 ${to.name}。`, {
+                seat: to.seatId,
+              });
+              step(i + 1);
+            });
+          },
+        );
+      };
+      step(0);
+    },
+  );
+}
+
 export function chilingTargets(state: GameState): Player[] {
   return state.players.filter((p) => p.alive && effectiveFaction(state, p) === null);
 }
@@ -9874,6 +9997,9 @@ export function createGame(
     seatOrder,
     // 牌堆：基础堆（按模式）→ 各扩展模块追加自己的牌（势备篇 +52）
     deck: shuffle(applyDeckExtensions(buildDeck(mode), ext), opts?.rng),
+    // 势力锦囊四张（不臣篇）：**开局不进摸牌堆**（所以开局还是 160 张），等第一次重洗再洗入
+    pendingFactionTricks: mode === 'guozhan' && ext.buchen !== 'off' ? factionTrickCards() : [],
+    exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
     pending: null,

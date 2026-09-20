@@ -293,6 +293,16 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       } else if (trickType === 'lutong') {
         // 要有大势力才谈得上「所有大势力/小势力角色」
         legal = bigFactions(state).length > 0;
+      } else if (trickType === 'guoanjianbang') {
+        // 【固国安邦】：**只对自己使用**，所以只要活着就打得出（不需要目标、也不看有没有别人）
+        legal = true;
+      } else if (
+        trickType === 'haolingtianxia' ||
+        trickType === 'kefuzhongyuan' ||
+        trickType === 'wenheluanwu'
+      ) {
+        // 这三张**还没实装**（效果口径已给，待实现；见 docs §5.136）→ 不摆出来，免得打出一张没反应的牌
+        legal = false;
       } else if (trickType === 'chiling') {
         // 【敕令】：对所有**没有势力**的角色使用（可能包括你自己）
         legal = chilingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));

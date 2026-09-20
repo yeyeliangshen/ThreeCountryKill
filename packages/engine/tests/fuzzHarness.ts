@@ -87,6 +87,10 @@ export function allCardIds(state: GameState): string[] {
   }
   // 判定阶段「在飞」的那叠牌（判定牌还没归位，只在这个状态里）
   if (state.judgmentInFlight) for (const c of state.judgmentInFlight.cards) push(c);
+  // 势力锦囊四张：开局就**不在任何牌区**（等第一次重洗才洗进摸牌堆），所以守恒检查要认它们；
+  // 移出游戏的牌（势力锦囊用后 / 专属装备销毁）也在 exiled 里，一并算上
+  for (const c of state.pendingFactionTricks) push(c);
+  for (const c of state.exiled) push(c);
   return out;
 }
 
@@ -102,6 +106,8 @@ export function cardLocations(state: GameState, id: string): string[] {
   state.deck.forEach((c, i) => chk(c, `deck[${i}]`));
   state.discard.forEach((c, i) => chk(c, `discard[${i}]`));
   if (state.judgmentInFlight) state.judgmentInFlight.cards.forEach((c, i) => chk(c, `inFlight[${i}]`));
+  state.pendingFactionTricks.forEach((c, i) => chk(c, `factionTrick[${i}]`));
+  state.exiled.forEach((c, i) => chk(c, `exiled[${i}]`));
   for (const p of state.players) {
     p.han.forEach((c, i) => chk(c, `${p.seatId}.han[${i}]`));
     p.yi.forEach((c, i) => chk(c, `${p.seatId}.yi[${i}]`));

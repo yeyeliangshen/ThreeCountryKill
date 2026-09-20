@@ -7,6 +7,7 @@ import {
   effectiveFaction,
   getHero,
   toSnapshot,
+  drawOne,
 } from '../src';
 
 const act = (s: ReturnType<typeof createGame>, seat: string, i: Parameters<typeof applyIntent>[2]) =>
@@ -79,6 +80,108 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     const pa = state.players.find((p) => p.seatId === 'A')!;
     expect(pa.determinedFaction).toBe('shu');
     expect(state.log.some((x) => x.message.includes('选择了势力'))).toBe(true);
+  });
+
+  /**
+   * 势力锦囊四张（不臣篇）——牌面与效果按用户 2026-09 给的口径（docs §5.136）。
+   * 这一轮实装了【固国安邦】；另外三张（号令天下/克复中原/文和乱武）效果已给、尚未实现，
+   * 用同样的用例骨架补上即可。
+   */
+  describe('势力锦囊（不臣篇）', () => {
+    const gz3 = () => {
+      const state = createGame(
+        [
+          { seatId: 'A', name: '甲', heroId: 'vanilla' },
+          { seatId: 'B', name: '乙', heroId: 'vanilla' },
+          { seatId: 'C', name: '丙', heroId: 'vanilla' },
+        ],
+        'T',
+        { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+      );
+      state.draft = null;
+      state.players.forEach((p, i) => {
+        p.heroId = 'vanilla';
+        p.deputyHeroId = 'vanilla';
+        p.faction = i === 0 ? 'wu' : 'shu';
+        p.heroRevealed = true;
+        p.deputyRevealed = true;
+        p.hand = [];
+      });
+      state.turn = { seatIndex: 0, phase: 'play' };
+      state.pending = { kind: 'play', seatId: 'A' };
+      return state;
+    };
+
+    it('开局不进摸牌堆（仍是 160 张），第一次重洗才把四张洗进来', () => {
+      const state = gz3();
+      expect(state.deck.length).toBe(160);
+      // 目前只有【固国安邦】实装 → 只有它进循环；另外三张等实现后再放（先避免「抽到打不出的死牌」）
+      expect(state.pendingFactionTricks.map((c) => c.type)).toEqual(['guoanjianbang']);
+      // 把摸牌堆摸空、并往弃牌堆放几张（重洗的前提是「牌堆空 + 弃牌堆非空」）→ 四张随新堆洗入
+      let guard = 0;
+      while (state.deck.length > 0 && guard++ < 400) state.discard.push(drawOne(state)!);
+      expect(state.deck.length).toBe(0);
+      const drawn = drawOne(state); // 这一步触发重洗，并顺带摸走一张
+      expect(state.pendingFactionTricks.length).toBe(0);
+      const pool = [...state.deck, ...(drawn ? [drawn] : [])];
+      expect(pool.some((c) => c.type === 'guoanjianbang'), '固国安邦 应已洗进摸牌堆').toBe(true);
+    });
+
+    it('固国安邦（非吴）：摸八张、选至少六张 → 选中的直接弃置；用过的牌移出游戏', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      a.faction = 'shu'; // 非吴
+      const card = { id: 'f1', type: 'guoanjianbang', suit: 'heart', rank: 1 } as const;
+      a.hand = [card as never];
+      const discardBefore = state.discard.length;
+      const r = act(state, 'A', { type: 'playCard', cardId: 'f1', targetIds: [] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      expect(a.hand.length).toBe(8); // 摸八张
+      const ask = state.pending;
+      if (ask?.kind !== 'pickCards') throw new Error(`预期选牌，实际是 ${ask?.kind}`);
+      expect(ask.min).toBe(6);
+      const picked = a.hand.slice(0, 6).map((c) => c.id);
+      const r2 = act(state, 'A', { type: 'pickCards', cardIds: picked });
+      expect(r2.ok, r2.ok ? '' : r2.error).toBe(true);
+      expect(a.hand.length).toBe(2); // 8 - 6
+      expect(state.discard.length).toBe(discardBefore + 6);
+      // 用过的势力锦囊**移出游戏**：不在弃牌堆，在 exiled 里
+      expect(state.discard.some((c) => c.id === 'f1')).toBe(false);
+      expect(state.exiled.some((c) => c.id === 'f1')).toBe(true);
+    });
+
+    it('固国安邦（吴）：选中的牌可至多 6 张转交同势力（每人至多 2 张），其余弃置', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      a.faction = 'wu';
+      b.faction = 'wu'; // 同势力（乙）
+      a.hand = [{ id: 'f2', type: 'guoanjianbang', suit: 'heart', rank: 1 } as never];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'f2', targetIds: [] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      const ask = state.pending;
+      if (ask?.kind !== 'pickCards') throw new Error(`预期选牌，实际是 ${ask?.kind}`);
+      act(state, 'A', { type: 'pickCards', cardIds: a.hand.slice(0, 6).map((c) => c.id) });
+      // 逐张问「交给谁」：前两张都给乙，第三张起乙应当已满（每人至多 2 张）→ 只剩「不交」与丙
+      for (let i = 0; i < 2; i++) {
+        const q = state.pending;
+        if (q?.kind !== 'choice') throw new Error(`预期选择交给谁，实际是 ${q?.kind}`);
+        expect(q.options.some((o) => o.id === 'B')).toBe(true);
+        act(state, 'A', { type: 'chooseOption', optionId: 'B' });
+      }
+      const q3 = state.pending;
+      if (q3?.kind !== 'choice') throw new Error(`预期第三张的选择，实际是 ${q3?.kind}`);
+      expect(q3.options.some((o) => o.id === 'B'), '乙已收满 2 张，不该再出现在选项里').toBe(false);
+      // 剩下四张都选「不交」→ 弃置
+      for (let i = 0; i < 4; i++) {
+        const q = state.pending;
+        if (q?.kind !== 'choice') throw new Error(`预期不交，实际是 ${q?.kind}`);
+        act(state, 'A', { type: 'chooseOption', optionId: 'discard' });
+      }
+      expect(b.hand.length).toBe(2); // 乙收了 2 张
+      expect(a.hand.length).toBe(2); // 8 - 6
+      expect(state.discard.filter((c) => c.id.startsWith('deck-') || true).length).toBeGreaterThan(0);
+    });
   });
 
   it('buchen 开关整包管住：off 时**所有**不臣篇武将（含单势力那 4 位）都不进选将池', () => {

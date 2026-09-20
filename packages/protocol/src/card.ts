@@ -30,7 +30,12 @@ export type TrickType =
   | 'yuanjiao' // 远交近攻
   | 'yiyi' // 以逸待劳
   | 'wugu' // 五谷丰登
-  | 'zhibi'; // 知己知彼
+  | 'zhibi' // 知己知彼
+  // —— 势力锦囊（不臣篇；四张各对应对应势力的强化效果）——
+  | 'haolingtianxia' // 魏·号令天下
+  | 'kefuzhongyuan' // 蜀·克复中原
+  | 'guoanjianbang' // 吴·固国安邦
+  | 'wenheluanwu'; // 群·文和乱武
 // —— 延时锦囊 ——
 export type DelayedTrickType = 'lebu' | 'shandian' | 'bingliang';
 
@@ -87,18 +92,39 @@ export const DAMAGE_CARD_TYPES: ReadonlySet<CardType> = new Set<CardType>([
  *
  * 四张分别是：魏【号令天下】/ 蜀【克复中原】/ 吴【固国安邦】/ 群【文和乱武】。
  *
- * ⚠️ **这四张还没进本仓库的牌堆**（属不臣篇，效果文本用户只给了转述版，数值不全），
- *    所以这份名单现在只是**登记**：等实装那四张牌时，把它们的 `Card.type` 填进来即可
- *    （以及给它们加上「使用/弃置后移出游戏」的那条规则）。
+ * 四张的**牌面**（用户给定）：魏 ♠Q【号令天下】、蜀 ♦A【克复中原】、吴 ♥A【固国安邦】、
+ * 群 ♣Q【文和乱武】；**开局不进摸牌堆**（第一次重洗时才洗入，见 `deck.drawOne`），
+ * 使用/弃置后**移出游戏**、不进弃牌堆循环（见 `engine.toDiscard`）。效果口径见 §5.136。
  * ⚠️ 本仓库先前的写法（把挟天子以令诸侯 / 联军盛宴 / 勠力同心当成势力锦囊）是**错的**，
  *    只是按「用不用得出来取决于势力」猜的；用户已给出官方定义，本轮订正。
  */
+/**
+ * 四张**势力锦囊**的牌面说明（用户 2026-09 给的「当前移动版实现口径」，§5.136）。
+ *
+ * 写法统一：先写基础效果，再写**对应势力的强化**——「魏势力锦囊」不等于只有魏国能用。
+ */
+export type FactionTrickType =
+  | 'haolingtianxia'
+  | 'kefuzhongyuan'
+  | 'guoanjianbang'
+  | 'wenheluanwu';
+
+export const CARD_DESC_FACTION_TRICK: Record<FactionTrickType, string> = {
+  haolingtianxia:
+    '出牌阶段，对一名体力值不是最少的角色使用。其余角色各选择一项：①弃一张手牌，视为对其使用普通【杀】；②弃置其一张牌。魏势力角色选①不用弃手牌，选②则改为获得该牌。由此产生的【杀】受次数限制且计入次数。',
+  kefuzhongyuan:
+    '出牌阶段，对至少一名角色使用。目标角色依次选择一项：①视为对你使用普通【杀】；②摸一张牌。蜀势力角色的【杀】基础伤害+1，摸牌改为摸两张。由此产生的【杀】受正常次数限制。',
+  guoanjianbang:
+    '对自己使用：摸八张牌，然后选择至少六张手牌。非吴势力角色将选择的牌弃置；吴势力角色可以将其中至多六张交给同势力的其他角色（每名角色至多两张），剩余选择的牌弃置。',
+  wenheluanwu:
+    '对所有角色使用。目标角色依次展示全部手牌，你选择一项：①若其可弃置的手牌类别不全相同，弃置两张类别不同的手牌；若全同类则弃置一张；②观看并弃置其一张手牌。群势力角色结算后若没有手牌，将手牌补至当前体力值。',
+};
+
 export const FACTION_TRICK_TYPES: ReadonlySet<string> = new Set<string>([
-  // 不臣篇四张（尚未实装，先把 id 占好）
-  'haolingtianxia', // 魏·号令天下
-  'kefuzhongyuan', // 蜀·克复中原
-  'guoanjianbang', // 吴·固国安邦
-  'wenheluanwu', // 群·文和乱武
+  'haolingtianxia', // 魏·号令天下 ♠Q
+  'kefuzhongyuan', // 蜀·克复中原 ♦A
+  'guoanjianbang', // 吴·固国安邦 ♥A
+  'wenheluanwu', // 群·文和乱武 ♣Q
 ]);
 
 export function isRecastable(card: Card): boolean {
@@ -236,6 +262,10 @@ export const CARD_TYPE_NAME: Record<CardType, string> = {
   lutong: '勠力同心',
   xietianzi: '挟天子以令诸侯',
   huoshao: '火烧连营',
+  haolingtianxia: '号令天下',
+  kefuzhongyuan: '克复中原',
+  guoanjianbang: '固国安邦',
+  wenheluanwu: '文和乱武',
   chiling: '敕令',
   lianjun: '联军盛宴',
   yuanjiao: '远交近攻',
@@ -357,6 +387,8 @@ export const CARD_DESC: Record<CardType, string> = {
     '出牌阶段，对所有的大势力角色或所有的小势力角色使用。若目标角色不处于连环状态，则其横置；若目标角色处于连环状态，则其摸一张牌。',
   chiling:
     '出牌阶段，对所有没有势力的角色使用。目标角色各选择一项：1.明置一张武将牌，摸一张牌；2.弃置一张装备牌；3.失去 1 点体力。',
+  // 势力锦囊（不臣篇）四张的说明在 CARD_DESC_FACTION_TRICK 里，spread 进来保证 Record 完整
+  ...CARD_DESC_FACTION_TRICK,
   lianjun:
     '出牌阶段，你选择一个其他势力，对你和该势力的所有角色使用。你选择一项：1.回复 X 点体力；2.摸 X 张牌（X 为该势力的存活角色数）。然后该势力的其他目标角色各摸一张牌且重置其武将牌。',
   wuxieguo:
@@ -468,6 +500,9 @@ export function cardDescription(card: Card, mode?: GameMode): string {
       return desc + note;
     }
   }
+  // 势力锦囊：说明单独一张表（先写基础效果、再写对应势力的强化）
+  const factionTrick = CARD_DESC_FACTION_TRICK[card.type as FactionTrickType];
+  if (factionTrick) return factionTrick;
   return CARD_DESC[card.type] ?? '';
 }
 
@@ -504,6 +539,11 @@ const TRICK_SET: ReadonlySet<TrickType> = new Set([
   'chiling',
   'lianjun',
   'wuxieguo',
+  // 势力锦囊四张（不臣篇）：本身也是**普通非延时锦囊**，只是叠加了「按势力强化」这层分类
+  'haolingtianxia',
+  'kefuzhongyuan',
+  'guoanjianbang',
+  'wenheluanwu',
 ]);
 const DELAYED_SET: ReadonlySet<DelayedTrickType> = new Set(['lebu', 'shandian', 'bingliang']);
 
