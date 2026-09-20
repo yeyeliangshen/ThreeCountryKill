@@ -605,13 +605,11 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       act(state, 'A', { type: 'chooseOption', optionId: 'yes' });
       expect(a.heroRevealed, '暴露后主将明置').toBe(true);
       expect(a.determinedFaction, '身份/势力转为野心家').toBe('ambitionist');
-      // 「随后可以进入建立新势力流程」
-      const q2 = state.pending;
-      if (q2?.kind !== 'choice') throw new Error(`预期建国询问，实际是 ${q2?.kind}`);
-      act(state, 'A', { type: 'chooseOption', optionId: 'yes' });
+      // ⚠️ 暴露之后**直接进建国流程**——2023 公告是「当野心家暴露野心，建立新势力时……」一句，
+      //    不再多问一句「是否建立新势力」（用户 2026-09-18 明确：拆成两个窗口依据不足）。
       const forceId = a.forceId;
-      expect(forceId, '建国生成独立 forceId').toBeTruthy();
-      // 邀请其他存活玩家：乙、丙（丁已阵亡）
+      expect(forceId, '暴露即建国，生成独立 forceId').toBeTruthy();
+      // 邀请其他存活玩家：乙、丙（丁已阵亡）——顺序＝以当前回合角色为基准按座次
       const q3 = state.pending;
       if (q3?.kind !== 'choice') throw new Error(`预期邀请乙，实际是 ${q3?.kind}`);
       expect(q3.seatId).toBe('B');
@@ -633,6 +631,105 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       // 结构变了 → 重新判：甲+乙的新势力 2 人 > 半数（3 人局）→ 新势力胜
       expect(state.gameOver).toBe(true);
       expect(state.winner).toBe(forceId);
+    });
+
+    it('一次建国总流程里最多加入一个新势力：已加入者不再被别的野心家邀请（发起者也不算可拉拢）', () => {
+      // 甲与丙**都是暗着主将的野心家武将**；乙、丁是普通角色。
+      // 乙阵亡后「魏」过半（丙按副将算魏）→ 先处理暴露 → 甲建国 → 之后轮到丙建国。
+      const state = createGame(
+        [
+          { seatId: 'A', name: '甲', heroId: 'sunchen' },
+          { seatId: 'B', name: '乙', heroId: 'vanilla' },
+          { seatId: 'C', name: '丙', heroId: 'sp_simazhao' },
+          { seatId: 'D', name: '丁', heroId: 'vanilla' },
+        ],
+        'T',
+        { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+      );
+      state.draft = null;
+      for (const p of state.players) {
+        p.hand = [];
+        p.hp = 4;
+        p.maxHp = 4;
+      }
+      const a = state.players[0]!;
+      const b = state.players[1]!;
+      const c = state.players[2]!;
+      const d = state.players[3]!;
+      a.heroId = 'sunchen';
+      a.deputyHeroId = 'guanyu';
+      a.faction = 'ambitionist';
+      a.determinedFaction = 'shu'; // 暂时按副将（关羽）算蜀
+      a.deputyRevealed = true;
+      for (const p of [b]) {
+        p.heroId = 'vanilla';
+        p.deputyHeroId = 'vanilla';
+        p.faction = 'shu';
+        p.heroRevealed = true;
+        p.deputyRevealed = true;
+      }
+      c.heroId = 'sp_simazhao';
+      c.deputyHeroId = 'simayi';
+      c.faction = 'ambitionist';
+      c.determinedFaction = 'wei'; // 暂时按副将（司马懿）算魏
+      c.deputyRevealed = true;
+      d.heroId = 'vanilla';
+      d.deputyHeroId = 'vanilla';
+      d.faction = 'wei';
+      d.heroRevealed = true;
+      d.deputyRevealed = true;
+      state.turn = { seatIndex: 0, phase: 'play' };
+      state.pending = { kind: 'play', seatId: 'A' };
+      // 甲杀乙 → 乙阵亡 → 魏 2/3 过半 → 但甲、丙的主将都没明置 → 先处理暴露
+      b.hp = 1;
+      a.hand = [{ id: 'a-sha', type: 'sha', suit: 'spade', rank: 7 } as never];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'a-sha', targetIds: ['B'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      let guard = 0;
+      while (state.pending && state.pending.kind === 'respondSha' && guard++ < 5) {
+        act(state, 'B', { type: 'pass' });
+      }
+      guard = 0;
+      while (state.pending?.kind === 'respondDeath' && guard++ < 10) {
+        const asked = state.pending.askQueue[state.pending.askIndex]!;
+        act(state, asked, { type: 'pass' });
+      }
+      // ① 甲先暴露（暴露即建国）→ 邀请丙、丁
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期甲暴露野心，实际是 ${q1?.kind}`);
+      expect(q1.seatId).toBe('A');
+      act(state, 'A', { type: 'chooseOption', optionId: 'yes' });
+      const force1 = a.forceId!;
+      expect(force1, '甲暴露即建国').toBeTruthy();
+      // 丙不加入、丁加入甲的新势力
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期邀请丙，实际是 ${q2?.kind}`);
+      expect(q2.seatId).toBe('C');
+      act(state, 'C', { type: 'chooseOption', optionId: 'no' });
+      const q2b = state.pending;
+      if (q2b?.kind !== 'choice') throw new Error(`预期补偿询问（丙），实际是 ${q2b?.kind}`);
+      act(state, 'C', { type: 'chooseOption', optionId: 'no' }); // 补偿是可选的，这里不领
+      const q3 = state.pending;
+      if (q3?.kind !== 'choice') throw new Error(`预期邀请丁，实际是 ${q3?.kind}`);
+      expect(q3.seatId).toBe('D');
+      act(state, 'D', { type: 'chooseOption', optionId: 'yes' });
+      expect(d.forceId, '丁加入了甲的新势力').toBe(force1);
+      // ② 结构变了、但丙还是没暴露的野心家武将 → 继续处理丙
+      const q4 = state.pending;
+      if (q4?.kind !== 'choice') throw new Error(`预期丙暴露野心，实际是 ${q4?.kind}`);
+      expect(q4.seatId).toBe('C');
+      act(state, 'C', { type: 'chooseOption', optionId: 'yes' });
+      const force2 = c.forceId!;
+      expect(force2, '丙建国拿到**自己的** forceId').not.toBe(force1);
+      // ③ 丙的邀请名单里**不该有**甲（建国发起者）与丁（已加入甲的新势力）→ 没有人可问，直接收口
+      expect(
+        !!state.pending && state.pending.kind === 'choice' && state.pending.title.includes('是否加入'),
+        '已加入/已建国的人不再被别的野心家邀请',
+      ).toBe(false);
+      expect(d.forceId, '丁没有被丙拉走').toBe(force1);
+      // ④ 收口后重判胜负：甲 + 丁 的新势力 2/3 过半 → 甲那个势力赢
+      expect(state.gameOver).toBe(true);
+      expect(state.winner).toBe(force1);
     });
 
     it('选择不暴露 → 照原样结算胜利（该势力胜）', () => {

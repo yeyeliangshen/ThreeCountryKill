@@ -4421,7 +4421,10 @@ function guozhanWinner(state: GameState): string | null {
   if (alive.length === 1) return alive[0]!.faction ?? alive[0]!.seatId;
   const counts = new Map<string, number>();
   for (const p of alive) {
-    const key = p.forceId ?? p.faction ?? 'neutral';
+    // `determinedFaction` 在**双势力**与**野心家武将**身上是「对外确定下来的那个势力」：
+    // 后者正是口径里那句「主将暗置期间**暂时按照副将确定势力**」——不读它的话，
+    // 野心家武将会被当成 'ambitionist' 从胜负统计里漏掉（他们此刻本该算副将那一方的人）。
+    const key = p.forceId ?? p.determinedFaction ?? p.faction ?? 'neutral';
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const half = Math.floor(alive.length / 2);
@@ -4446,6 +4449,25 @@ function unexposedAmbitionistCaptains(state: GameState): Player[] {
       !!p.deputyRevealed &&
       getHeroForMode(p.heroId, state.mode)?.faction === 'ambitionist',
   );
+}
+
+/**
+ * 以**当前回合角色**为基准、按座次顺序给这些座位排序（「多名野心家」与「拉拢邀请」共用）。
+ *
+ * ⚠️ 这是**旧移动版实测行为**的沿用，不是 2023 公告写明的规则：旧实机里同时存在多名暗主野心家时，
+ * 会先全部暴露、再以**当前回合角色**为基准按座次依次建国，之后的拉拢也按同一顺序处理。
+ * 2023-08-30 公告只改了三件事（不足 3 人也能建国、所有存活玩家都能选择加入、不加入者有补偿），
+ * **没有**声明改排序；所以先沿用旧口径，标「新版实机待校正」（docs §5.141 第 7 点）。
+ */
+function orderFromTurnPlayer(state: GameState, seats: string[]): string[] {
+  const n = state.seatOrder.length;
+  if (n === 0) return seats.slice();
+  const anchor = ((state.turn.seatIndex % n) + n) % n;
+  const rank = (sid: string): number => {
+    const i = state.seatOrder.indexOf(sid);
+    return i < 0 ? Number.MAX_SAFE_INTEGER : (i - anchor + n) % n;
+  };
+  return seats.slice().sort((a, b) => rank(a) - rank(b));
 }
 
 /** 势力数变化（只在跨越 0 时才派发）——会盟那类监听「某势力首次出现/消失」的技能靠它 */
@@ -4482,13 +4504,17 @@ function interceptVictoryForAmbition(state: GameState, resume?: () => void): boo
   const verdict = guozhanWinner(state);
   if (!verdict) {
     state.ambitionAsked = []; // 这一轮没有胜利条件了 → 下次重新给机会
+    state.ambitionJoined = [];
     return false;
   }
-  const captains = unexposedAmbitionistCaptains(state).filter(
-    (p) => !state.ambitionAsked.includes(p.seatId),
+  const captains = orderFromTurnPlayer(
+    state,
+    unexposedAmbitionistCaptains(state)
+      .filter((p) => !state.ambitionAsked.includes(p.seatId))
+      .map((p) => p.seatId),
   );
   if (captains.length === 0) return false;
-  const cur = captains[0]!;
+  const cur = getPlayer(state, captains[0]!)!;
   state.ambitionAsked.push(cur.seatId);
   pushLog(
     state,
@@ -4509,7 +4535,9 @@ function interceptVictoryForAmbition(state: GameState, resume?: () => void): boo
         settleAfterAmbition(st, resume);
         return;
       }
-      exposeAmbition(st, p, () => askBuildForce(st, p, resume));
+      // 2023 公告写的是「当野心家暴露野心，建立新势力时……」——一句话，**不拆成两个窗口**
+      // （用户 2026-09-18 明确：多问一句「是否建国」依据不足，先按一条流程做）
+      exposeAmbition(st, p, () => buildForce(st, p, resume));
     },
   );
   return true;
@@ -4524,6 +4552,7 @@ function settleAfterAmbition(state: GameState, resume?: () => void): void {
     return;
   }
   state.ambitionAsked = [];
+  state.ambitionJoined = [];
   (resume ?? (() => {}))();
 }
 
@@ -4544,41 +4573,28 @@ function exposeAmbition(state: GameState, p: Player, after: () => void): void {
   after();
 }
 
-/** 「随后可以进入建立新势力流程」——官方用「可」，所以问一句 */
-function askBuildForce(state: GameState, p: Player, resume?: () => void): void {
-  askChoice(
-    state,
-    p.seatId,
-    '【建立新势力】：建立属于你的新势力？',
-    [
-      { id: 'yes', label: '建立新势力' },
-      { id: 'no', label: '暂不建立' },
-    ],
-    (st, p2, picked) => {
-      if (picked !== 'yes') {
-        settleAfterAmbition(st, resume);
-        return;
-      }
-      buildForce(st, p2, resume);
-    },
-  );
-}
-
 /** 建国 + 逐个邀请其他存活玩家（顺序：发起者的下家起、按座次） */
 function buildForce(state: GameState, p: Player, resume?: () => void): void {
   p.forceId = p.forceId ?? `force:${++state.forceSeq}`;
+  // 发起者本人也算「本次已经有了新势力」：他不会被别的野心家的邀请名单收进来
+  // （否则建国者会被邀请去加入别人的势力——那不是「加入」，是倒戈）
+  if (!state.ambitionJoined.includes(p.seatId)) state.ambitionJoined.push(p.seatId);
   pushLog(state, 'faction', `${p.name} 建立新势力，其他存活角色可选择是否加入。`, {
     seat: p.seatId,
   });
   fireFactionCountChange(state, 'ambitionist', 0, 1, () => {
-    const n = state.seatOrder.length;
-    const idx = state.seatOrder.indexOf(p.seatId);
-    const others: string[] = [];
-    for (let k = 1; k < n; k++) {
-      const sid = state.seatOrder[(idx + k) % n]!;
-      if (sid === p.seatId) continue;
-      if (getPlayer(state, sid)?.alive) others.push(sid);
-    }
+    // 顺序与「多名野心家」同一套：**以当前回合角色为基准、按座次**（旧移动版实测口径）。
+    // 名单里**排除本次已经加入过新势力的人**——一名角色在这一次建国总流程里最多加入一个新势力
+    // （用户 2026-09-18 明确：不许「先加入甲、再改投乙」；2023 公告只放开了「一个建国者可以接纳多人」）。
+    const others = orderFromTurnPlayer(
+      state,
+      state.players
+        .filter(
+          (x) =>
+            x.alive && x.seatId !== p.seatId && !state.ambitionJoined.includes(x.seatId),
+        )
+        .map((x) => x.seatId),
+    );
     const step = (i: number): void => {
       const cur = i < others.length ? getPlayer(state, others[i]!) : undefined;
       if (!cur || !cur.alive) {
@@ -4643,6 +4659,7 @@ function joinForce(state: GameState, joiner: Player, initiator: Player, after: (
   joiner.faction = 'ambitionist';
   joiner.determinedFaction = 'ambitionist';
   joiner.forceId = initiator.forceId;
+  if (!state.ambitionJoined.includes(joiner.seatId)) state.ambitionJoined.push(joiner.seatId);
   pushLog(state, 'faction', `${joiner.name} 加入 ${initiator.name} 建立的新势力。`, {
     seat: joiner.seatId,
   });
@@ -10915,6 +10932,7 @@ export function createGame(
     pendingFactionTricks: mode === 'guozhan' && ext.buchen !== 'off' ? factionTrickCards() : [],
     forceSeq: 0,
     ambitionAsked: [],
+    ambitionJoined: [],
     exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
