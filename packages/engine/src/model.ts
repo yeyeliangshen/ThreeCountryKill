@@ -1190,7 +1190,7 @@ export function alivePlayers(state: GameState): Player[] {
  */
 export function toDiscard(state: GameState, ...cards: Card[]): void {
   for (const c of cards) {
-    // 势力锦囊（不臣篇）：使用或弃置后**移出游戏**，不进弃牌堆循环（规则集里「府库」那类区域）
+    // 势力锦囊（不臣篇）：**要进弃牌堆时改为销毁**（＝移出游戏）——移动版口径，不建「府库」区
     if (FACTION_TRICK_TYPES.has(c.type)) {
       state.exiled.push(c);
       pushLog(state, 'discard', `【${CARD_TYPE_NAME[c.type]}】移出游戏（势力锦囊不进弃牌循环）。`);
