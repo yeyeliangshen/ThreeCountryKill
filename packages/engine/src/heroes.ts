@@ -2625,14 +2625,18 @@ export function sameKnownFaction(state: GameState, a: Player, b: Player): boolea
  * （出处见 docs §5.137）。所以两个野心家**不能**算同势力——而 `effectiveFaction` 对他们
  * 都返回 `'ambitionist'`，直接相比会判成同势力（= 同势力奖惩、同势力技能全都会误触发）。
  *
- * 键：未确定势力 → `null`；野心家 → `ambitionist:<座号>`（各自一种势力）；
- * 其余 → 势力本身。将来实装 2023「暴露野心 → 建立新势力」时，**同一次建立**的势力
- * 会共享同一个 `forceId`（口径见 §5.137 最后一行），届时把这个键换成 `forceId` 即可。
+ * 键：未确定势力 → `null`；有 `Player.forceId` → 直接用它（**同一次「建立新势力」的人共享**，
+ * 不同野心家各建的不合并）；其余 → 势力本身。见 §5.137。
  */
 export function factionGroupKey(state: GameState, p: Player): string | null {
   const f = effectiveFaction(state, p);
   if (!f) return null;
-  if (f === 'ambitionist') return `ambitionist:${p.seatId}`;
+  // 归属势力的 id：每一次「建立新势力」一个（加入者共享）、野心家各自一个（用户 2026-09 口径）
+  if (p.forceId) return p.forceId;
+  if (f === 'ambitionist') {
+    // 兜底：还没发 id 的野心家（正常路径在「明置确定势力」时就发了）——按座号算，**不与他人合并**
+    return `ambitionist:${p.seatId}`;
+  }
   return f;
 }
 

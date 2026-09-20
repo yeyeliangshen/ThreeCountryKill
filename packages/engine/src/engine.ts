@@ -1152,6 +1152,19 @@ function runHooksFrom(
   //    重复登记会让账本里同一张牌出现多次。
   if (from === 0) markCardUsed(state, timing, player, payload);
   for (let k = from; k < hooks.length; k++) {
+    /**
+     * ⚠️ **「同层内让拥有者自选次序」在这一版里做不了**（用户 2026-09 的裁定本身没问题，
+     * 是这个引擎的形状不支持）——试过、量过、回退，如实记：
+     *
+     * 这里按「剩下的钩子 ≥2 个」就问一句「先结算哪一个」，结果是**每一处会有多个钩子注册的
+     * 时机都多出一问**（19 条用例变红、冒烟 40 局直接卡在 5000 步不结束）。原因是本引擎的钩子
+     * 模型是「**注册即触发、要不要发动由 handler 自己决定**」——派发前根本不知道哪几个**真的会
+     * 发动**，而官方那条口径说的是「多个技能**同时想发动**时由该角色决定次序」。
+     *
+     * 要做它必须先**把「可选触发」统一成声明式**（每个钩子在派发前就能回答「我这次要不要发动」——
+     * 例如统一走一次「是否发动【X】」的询问，引擎据此得到「本次会发动的技能清单」，再对清单问顺序）。
+     * 那是单独一块改造，动手前先在 docs §5.137.3 里看当时的量测结论。
+     */
     const res = hooks[k]!.handler({
       state,
       player,
@@ -8816,6 +8829,9 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
       if (knownFactionCount(state, joinFaction) > total / 2) {
         const from = joinFaction;
         player.faction = 'ambitionist';
+        // 野心家**各自是一种势力**（用户 2026-09 的官方口径）：给他一个独立的归属势力 id。
+        // 「暴露野心 → 建立新势力」实装后，加入者会沿用发起者的 forceId（见 §5.137）。
+        player.forceId = `force:${++state.forceSeq}`;
         pushLog(
           state,
           'faction',
@@ -10011,6 +10027,7 @@ export function createGame(
     deck: shuffle(applyDeckExtensions(buildDeck(mode), ext), opts?.rng),
     // 势力锦囊四张（不臣篇）：**开局不进摸牌堆**（所以开局还是 160 张），等第一次重洗再洗入
     pendingFactionTricks: mode === 'guozhan' && ext.buchen !== 'off' ? factionTrickCards() : [],
+    forceSeq: 0,
     exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },

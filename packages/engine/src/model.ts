@@ -491,6 +491,18 @@ export interface Player {
 
   determinedFaction?: Faction | null;
 
+  /**
+   * **归属势力的 id**（用户 2026-09 给的 2023 口径：**每一次「建立新势力」生成一个独立的
+   * `forceId`，加入该势力的人共享它**；不同野心家各建的势力**不会**因为原势力同为魏/蜀/吴/群
+   * 而合并）。
+   *
+   * 本仓库当前只用到「野心家各自一种势力」这一半：因人数超编**转成野心家**、以及**野心家武将
+   * 本体**，在明置确定势力那一刻各拿一个独立 `forceId`（`force:<序号>`）。
+   * 「暴露野心 → 建立新势力」实装后，加入者应当**沿用发起者那个 `forceId`**（见 §5.137）。
+   * 一切「是不是同势力」的判断都走 `heroes.factionGroupKey`（它优先读这个字段）。
+   */
+  forceId?: string;
+
   lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
 }
 
@@ -827,6 +839,8 @@ export interface GameState {
    * 【势力锦囊】四张（不臣篇）：开局**不在**摸牌堆里，放这儿等着**第一次重洗**时洗入；
    * 使用/弃置后**移出游戏**（不进弃牌堆循环）。见 `deck.factionTrickCards` 与 §5.136。
    */
+  /** 归属势力 id 的自增号（`Player.forceId` 用它生成，见那里的说明） */
+  forceSeq: number;
   pendingFactionTricks: Card[];
   /**
    * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：

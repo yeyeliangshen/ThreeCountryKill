@@ -2134,6 +2134,11 @@ describe('国战进阶（Step 7）', () => {
     ok(act(state, 'C', { type: 'revealHero', heroId: 'huangzhong' }));
     expect(p('C').faction).toBe('ambitionist');
     expect(p('D').faction).toBe('wei'); // 魏不受影响
+    // 转成野心家的那一刻拿到**独立的归属势力 id**（用户 2026-09 口径：每一次「建立新势力」
+    // 一个 forceId、加入者共享；野心家各自一种势力）——将来「暴露野心 → 建立新势力」的加入者
+    // 会沿用发起者那个 id，见 §5.137
+    expect(p('C').forceId).toBeTruthy();
+    expect(p('A').forceId, '留在原势力的人没有 forceId').toBeUndefined();
   });
 
   // 3. 鏖战桃当杀
