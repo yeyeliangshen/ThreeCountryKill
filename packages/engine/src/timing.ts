@@ -595,6 +595,11 @@ export interface SkillApi {
        * 再叫这里带上 `countTowardLimit: true`。
        */
       countTowardLimit?: boolean;
+      /**
+       * 这张【杀】的**基础伤害**（默认 1）。蜀【克复中原】的「蜀势力角色的【杀】基础伤害 +1」
+       * 用它（不改实体牌，只改这一次使用的基础值）。
+       */
+      damage?: number;
     },
   ) => void;
   /**

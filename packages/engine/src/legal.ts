@@ -300,9 +300,12 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       } else if (trickType === 'haolingtianxia') {
         // 【号令天下】：要有「体力值不是最少」的角色可指（目标可以包括自己）
         legal = haolingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));
-      } else if (trickType === 'kefuzhongyuan' || trickType === 'wenheluanwu') {
-        // 这两张**还没实装**（效果口径已给，待实现；见 docs §5.136）→ 不摆出来，免得打出一张没反应的牌
-        legal = false;
+      } else if (trickType === 'kefuzhongyuan') {
+        // 【克复中原】：至少一名角色（可以指自己），只要场上有人就能用
+        legal = state.players.some((p) => p.alive && !heroBlocksBeingTarget(state, p, card, player));
+      } else if (trickType === 'wenheluanwu') {
+        // 【文和乱武】：对所有角色（含自己）——场上有人就能用
+        legal = state.players.some((p) => p.alive);
       } else if (trickType === 'chiling') {
         // 【敕令】：对所有**没有势力**的角色使用（可能包括你自己）
         legal = chilingTargets(state).some((p) => !heroBlocksBeingTarget(state, p, card, player));

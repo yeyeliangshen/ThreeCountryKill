@@ -5283,10 +5283,19 @@ function playTrick(
     if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
     if (!haolingTargets(state).some((x) => x.seatId === tid))
       return err('【号令天下】的目标须是体力值不是最少的角色');
-  } else if (type === 'kefuzhongyuan' || type === 'wenheluanwu') {
-    // 这两张势力锦囊**尚未实装**（效果口径已给，见 docs §5.136）——不应出现在牌堆里，
-    // 真被拿到也不允许打出来（宁可报错，也不要打出一张什么都不做的牌）
-    return err('【' + CARD_TYPE_NAME[type] + '】尚未实装');
+  } else if (type === 'kefuzhongyuan') {
+    // 【克复中原】：**至少一名**角色（没有上限；牌面写「一名角色」没有「其他」，所以可以指自己）
+    if (intent.targetIds.length < 1) return err('【克复中原】需指定至少 1 名目标');
+    if (new Set(intent.targetIds).size !== intent.targetIds.length) return err('目标不能重复');
+    for (const tid of intent.targetIds) {
+      const t = getPlayer(state, tid);
+      if (!t || !t.alive) return err('目标无效');
+      if (heroBlocksBeingTarget(state, t, card, player)) return err('该角色不能成为此牌的目标');
+    }
+  } else if (type === 'wenheluanwu') {
+    // 【文和乱武】：对所有角色使用（含使用者本人），目标由规则决定、无需玩家指定
+    if (intent.targetIds.length !== 0) return err('【文和乱武】的目标由规则决定，无需指定');
+    if (!state.players.some((p) => p.alive)) return err('场上没有角色');
   } else if (type === 'chiling') {
     // 敕令：目标是规则算出来的（所有**没有势力**的角色），无需玩家指定
     if (intent.targetIds.length !== 0) return err('【敕令】的目标由规则决定，无需指定');
@@ -5752,6 +5761,12 @@ function resolveTrick(state: GameState, ctx: TrickContext): void {
       return;
     case 'haolingtianxia':
       resolveHaoLingTianXia(state, ctx);
+      return;
+    case 'kefuzhongyuan':
+      resolveKeFuZhongYuan(state, ctx);
+      return;
+    case 'wenheluanwu':
+      resolveWenHeLuanWu(state, ctx);
       return;
     case 'lianjun':
       resolveLianjun(state, ctx);
@@ -6648,6 +6663,321 @@ function resolveHaoLingTianXia(state: GameState, ctx: TrickContext): void {
           return;
         }
         next();
+      },
+    );
+  };
+  step(0);
+}
+
+/**
+ * 某角色此刻**能对哪些角色使用【杀】**（正常流程那一套：攻击范围 + 「不能成为【杀】目标」的锁定技）。
+ *
+ * 【克复中原】要用：选①的角色**自己**成为那张虚拟【杀】的使用者，得按正常规则挑合法目标，
+ * 所以「谁是合法目标」这件事不能另写一套（帷幕/空城那类锁定技也要照常拦）。
+ */
+function legalShaTargetsOf(state: GameState, source: Player, card: Card): Player[] {
+  const range = attackRange(state, source);
+  return state.players.filter(
+    (p) =>
+      p.alive &&
+      p.seatId !== source.seatId &&
+      distance(state, source.seatId, p.seatId) <= range &&
+      !heroBlocksBeingTarget(state, p, card, source),
+  );
+}
+
+/**
+ * 【克复中原】（蜀·势力锦囊 ♦A）——用户 2026-09 给定口径（docs §5.136/§5.136.3）：
+ * 「出牌阶段，对至少一名角色使用。每名目标选择：①视为使用普通【杀】；②摸一张。
+ *   蜀势力角色的【杀】基础伤害 +1、摸牌改为摸 2；产生的【杀】受正常次数限制。」
+ *
+ * ⚠️ 2026-09-18 用户明确：选①的那名角色**自己成为这张虚拟【杀】的使用者**，按正常【杀】流程
+ * **自行选择合法目标**（不是固定打【克复中原】的使用者，也不是其他指定角色）。
+ *
+ * 结算顺序：按座次（引擎对多目标锦囊的既定约定，`sortTargetsBySeat`）；
+ * 每个人选完一项才轮到下一个（闭包链，中途有人进濒死能挂起再续）。
+ */
+function resolveKeFuZhongYuan(state: GameState, ctx: TrickContext): void {
+  const me = getPlayer(state, ctx.sourceId);
+  if (!me || !me.alive) {
+    endTrickResolution(state, ctx);
+    return;
+  }
+  const queue = sortTargetsBySeat(state, me.seatId, ctx.targetIds ?? []).filter((sid) => {
+    const p = getPlayer(state, sid);
+    return !!p?.alive;
+  });
+  pushLog(
+    state,
+    'trick',
+    `【克复中原】对${queue.length > 0 ? queue.map((s) => getPlayer(state, s)!.name).join('、') : '（无人）'}生效。`,
+    { seat: me.seatId },
+  );
+  const step = (i: number): void => {
+    const cur = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+    if (!cur || !cur.alive) {
+      if (i < queue.length) step(i + 1);
+      else endTrickResolution(state, ctx);
+      return;
+    }
+    const next = (): void => step(i + 1);
+    const isShu = effectiveFaction(state, cur) === 'shu';
+    // ①的资格：次数没满 + 真有合法目标可指（没有合法目标就没法「使用【杀】」）
+    const probe: Card = {
+      id: `virtual-sha-kfzy-${state.logSeq}`,
+      type: 'sha',
+      suit: 'diamond',
+      rank: 1,
+    };
+    const shaTargets = legalShaTargetsOf(state, cur, probe);
+    const canSha = canUseAnotherSha(state, cur) && shaTargets.length > 0;
+    const options: { id: string; label: string }[] = [];
+    if (canSha) {
+      options.push({
+        id: 'sha',
+        label: isShu ? '视为使用普通【杀】（蜀：基础伤害 +1）' : '视为使用普通【杀】',
+      });
+    }
+    options.push({ id: 'draw', label: isShu ? '摸两张牌（蜀）' : '摸一张牌' });
+    askChoice(
+      state,
+      cur.seatId,
+      `【克复中原】（${me.name}）：选择一项`,
+      options,
+      (st, p, picked) => {
+        if (picked === 'sha' && canSha) {
+          const useOn = (targetSeatId: string): void => {
+            const victim = getPlayer(st, targetSeatId);
+            if (!victim) {
+              next();
+              return;
+            }
+            pushLog(
+              st,
+              'trick',
+              `${p.name} 因【克复中原】视为对 ${victim.name} 使用普通【杀】。`,
+              { seat: p.seatId },
+            );
+            makeSkillApi(st, { actor: p.seatId }).castVirtualSha(p.seatId, targetSeatId, {
+              logKind: 'trick',
+              countTowardLimit: true, // 「产生的【杀】受正常次数限制」→ 计入次数
+              ...(isShu ? { damage: 2 } : {}), // 蜀：基础伤害 +1
+              after: next,
+            });
+          };
+          if (shaTargets.length === 1) {
+            useOn(shaTargets[0]!.seatId);
+            return;
+          }
+          askChoice(
+            st,
+            p.seatId,
+            '【克复中原】：选择这张【杀】的目标',
+            shaTargets.map((t) => ({ id: t.seatId, label: t.name })),
+            (_st, _p, tid) => useOn(tid),
+          );
+          return;
+        }
+        // ②摸牌（蜀摸 2）——与【固国安邦】一样直接摸（不是「获得牌」那种要过钩子的搬运）
+        const n = isShu ? 2 : 1;
+        let got = 0;
+        for (let k = 0; k < n; k++) {
+          const c = drawOne(st);
+          if (!c) break;
+          p.hand.push(c);
+          got++;
+        }
+        pushLog(st, 'trick', `${p.name} 因【克复中原】摸了 ${got} 张牌。`, {
+          seat: p.seatId,
+          action: 'draw',
+        });
+        next();
+      },
+    );
+  };
+  step(0);
+}
+
+/** 牌的「类别」三档（文和乱武判「类别不全相同」用；与 useCard 账本同一套分法） */
+function cardCategoryOf(c: Card): 'basic' | 'trick' | 'equip' {
+  return isEquipCard(c) ? 'equip' : isBasicCard(c) ? 'basic' : 'trick';
+}
+
+/**
+ * 【文和乱武】（群·势力锦囊 ♣Q）——用户 2026-09 给定口径（docs §5.136 表 + §5.136.3）：
+ * 「对所有角色使用。目标依次展示全部手牌，**你**选择：①若其可弃置的手牌类别不全相同，弃置两张
+ *   类别不同的手牌；若全同类则弃置一张；②观看并弃置其一张手牌。**群势力角色**结算后若没有手牌，
+ *   将手牌补至当前体力值。」
+ *
+ * 三条实现口径（按用户给的读法，别再自己改）：
+ * - **由使用者**（「你」）来挑牌：①由使用者挑两张不同类别的（全同类时一张），②使用者观看后挑一张；
+ * - 「类别」＝基本/锦囊/装备三档（`cardCategoryOf`）；
+ * - 「群势力角色结算后若没有手牌」＝**该目标**是群势力（已确定势力）且结算完手牌为空 → 补到其当前体力值。
+ *
+ * 「展示全部手牌」与怀异/昭心同一套做法：公开日志（这是公开信息）。
+ */
+function resolveWenHeLuanWu(state: GameState, ctx: TrickContext): void {
+  const me = getPlayer(state, ctx.sourceId);
+  if (!me || !me.alive) {
+    endTrickResolution(state, ctx);
+    return;
+  }
+  // 「所有角色」**含使用者本人**；顺序同其余多目标牌：从使用者的下家起按座次环绕
+  const n = state.seatOrder.length;
+  const idx = state.seatOrder.indexOf(me.seatId);
+  const queue: string[] = [];
+  for (let k = 1; k <= n; k++) {
+    const sid = state.seatOrder[(idx + k) % n]!;
+    if (getPlayer(state, sid)?.alive) queue.push(sid);
+  }
+  pushLog(state, 'trick', `${me.name} 使用【文和乱武】，所有角色依次展示手牌。`, {
+    seat: me.seatId,
+  });
+
+  /** 群势力目标：结算完手牌为空 → 补至当前体力值 */
+  const qunRefill = (st: GameState, target: Player, after: () => void): void => {
+    if (effectiveFaction(st, target) !== 'qun') {
+      after();
+      return;
+    }
+    const need = Math.max(0, target.hp - target.hand.length);
+    if (need === 0) {
+      after();
+      return;
+    }
+    let got = 0;
+    for (let k = 0; k < need; k++) {
+      const c = drawOne(st);
+      if (!c) break;
+      target.hand.push(c);
+      got++;
+    }
+    pushLog(
+      st,
+      'trick',
+      `${target.name} 是群势力且已无手牌，因【文和乱武】将手牌补至 ${target.hp} 张（摸 ${got} 张）。`,
+      { seat: target.seatId, action: 'draw' },
+    );
+    after();
+  };
+
+  const step = (i: number): void => {
+    const done = (): void => endTrickResolution(state, ctx);
+    const cur = i < queue.length ? getPlayer(state, queue[i]!) : undefined;
+    if (!cur || !cur.alive) {
+      if (i < queue.length) step(i + 1);
+      else done();
+      return;
+    }
+    const next = (): void => step(i + 1);
+    // ① 依次展示全部手牌（公开日志）
+    pushLog(
+      state,
+      'trick',
+      `${cur.name} 因【文和乱武】展示全部手牌：${
+        cur.hand.length > 0 ? cur.hand.map((c) => `【${cardLabel(c)}】`).join('、') : '（无）'
+      }。`,
+      { seat: cur.seatId },
+    );
+    const hand = cur.hand.slice();
+    if (hand.length === 0) {
+      qunRefill(state, cur, next);
+      return;
+    }
+    const allSame = new Set(hand.map(cardCategoryOf)).size === 1;
+    /** 弃置目标手牌里的这些牌（执行者＝使用者，走「因弃置」的收口） */
+    const discardFrom = (st: GameState, cards: Card[], after: () => void): void => {
+      const api = makeSkillApi(st, { actor: me.seatId });
+      const one = (k: number): void => {
+        const c = cards[k];
+        if (!c) {
+          after();
+          return;
+        }
+        api.discardTargetCard(cur.seatId, c.id, () => one(k + 1));
+      };
+      one(0);
+    };
+    askChoice(
+      state,
+      me.seatId,
+      `【文和乱武】（${cur.name} 的手牌已展示）：选择一项`,
+      [
+        {
+          id: 'two',
+          label: allSame
+            ? '①弃置其一张手牌（其手牌类别全同）'
+            : '①弃置其两张**类别不同**的手牌',
+        },
+        { id: 'one', label: '②观看并弃置其一张手牌' },
+      ],
+      (st, p, picked) => {
+        const settle = (st2: GameState, cards: Card[]): void => {
+          if (cards.length > 0) {
+            pushLog(
+              st2,
+              'trick',
+              `${p.name} 因【文和乱武】弃置了 ${cur.name} 的 ${cards.length} 张手牌。`,
+              { seat: cur.seatId },
+            );
+          }
+          qunRefill(st2, cur, next);
+        };
+        if (picked === 'two' && !allSame) {
+          // ①两张不同类别：先挑第一张，再从**别的类别**里挑第二张（这样天然满足「不同类别」）
+          askPickCards(
+            st,
+            p.seatId,
+            '【文和乱武】：弃置其第一张手牌',
+            hand.slice(),
+            1,
+            1,
+            (st2, _p2, chosen) => {
+              const first = chosen[0];
+              if (!first) {
+                settle(st2, []);
+                return;
+              }
+              const cat = cardCategoryOf(first);
+              const others = hand.filter((c) => c.id !== first.id && cardCategoryOf(c) !== cat);
+              if (others.length === 0) {
+                discardFrom(st2, [first], () => settle(st2, [first]));
+                return;
+              }
+              askPickCards(
+                st2,
+                p.seatId,
+                '【文和乱武】：再弃其一张**不同类别**的手牌',
+                others,
+                1,
+                1,
+                (st3, _p3, chosen2) => {
+                  const second = chosen2[0];
+                  const cards = second ? [first, second] : [first];
+                  discardFrom(st3, cards, () => settle(st3, cards));
+                },
+              );
+            },
+          );
+          return;
+        }
+        // ①（全同类只弃一张）或 ②：都是「挑一张弃」
+        askPickCards(
+          st,
+          p.seatId,
+          '【文和乱武】：弃置其一张手牌',
+          hand.slice(),
+          1,
+          1,
+          (st2, _p2, chosen) => {
+            const card = chosen[0];
+            if (!card) {
+              settle(st2, []);
+              return;
+            }
+            discardFrom(st2, [card], () => settle(st2, [card]));
+          },
+        );
       },
     );
   };
@@ -7633,6 +7963,11 @@ function resolvePlayedSha(
     skillId?: string;
     /** 目标级「不能响应」判定（真则把该目标写进 unrespondableTargets） */
     unrespondableTo?: (st: GameState, target: Player) => boolean;
+    /**
+     * 这张【杀】的**基础伤害**（默认 1）。蜀【克复中原】的「蜀势力角色的【杀】基础伤害 +1」
+     * 就是靠它——不动实体牌，只改这一次使用的基础值（同糜芳·锋势那条口径）。
+     */
+    baseDamage?: number;
   },
 ): void {
   const target = getPlayer(state, targetId);
@@ -7650,7 +7985,7 @@ function resolvePlayedSha(
     declaredTargets: [targetId],
     ...(card.generatedBy ? { generatedBy: card.generatedBy } : {}),
     ...(opts?.unrespondableTo?.(state, target) ? { unrespondableTargets: [targetId] } : {}),
-    damage: 1,
+    damage: opts?.baseDamage ?? 1,
     dodged: false,
     attribute: card.attribute,
     cardColor: colorSeenAs(state, source, card),
@@ -9690,6 +10025,7 @@ function makeSkillApi(
       }, opts?.after, {
         // 目标级的「不能响应」判定（黄祖·袭射：目标体力值小于黄祖时不能出闪）
         unrespondableTo: opts?.unrespondableTo,
+        baseDamage: opts?.damage,
       });
     },
     // 军令：两条入口共用上面那一个 `runArmyOrder`，这里只做「单人 / 名单」的适配

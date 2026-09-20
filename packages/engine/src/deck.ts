@@ -384,6 +384,7 @@ export function seededRng(seed: number): () => number {
  *
  * ⚠️ 没实装的那几张**不要放进来**：它们没有 effect handler，玩家抽到就是一张**无法结算的死牌**
  * （用户 2026-09-18 的说法）。**每张写完结算逻辑、过了测试，才加进这个列表。**
+ * 四张现已全部实装（2026-09-18）。
  */
 export function factionTrickCards(): Card[] {
   return [
@@ -391,7 +392,10 @@ export function factionTrickCards(): Card[] {
     { id: 'faction-guoanjianbang', type: 'guoanjianbang', suit: 'heart', rank: 1 },
     // ✅ 已实装：【号令天下】（魏 ♠Q）——除目标外的所有角色（**含使用者本人**）依次二选一
     { id: 'faction-haolingtianxia', type: 'haolingtianxia', suit: 'spade', rank: 12 },
-    // ⛔ 尚未实装（效果口径已定，见 docs §5.136/§5.136.3）：蜀 ♦A【克复中原】、群 ♣Q【文和乱武】
+    // ✅ 已实装：【克复中原】（蜀 ♦A）——至少一名目标，各自「视为使用普通【杀】」或摸牌（蜀摸 2 / 伤害 +1）
+    { id: 'faction-kefuzhongyuan', type: 'kefuzhongyuan', suit: 'diamond', rank: 1 },
+    // ✅ 已实装：【文和乱武】（群 ♣Q）——所有角色依次展示手牌，使用者挑牌弃置；群势力空手补至体力值
+    { id: 'faction-wenheluanwu', type: 'wenheluanwu', suit: 'club', rank: 12 },
   ];
 }
 

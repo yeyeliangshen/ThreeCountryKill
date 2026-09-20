@@ -116,11 +116,13 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     it('开局不进摸牌堆（仍是 160 张），第一次重洗才把已实装的几张洗进来', () => {
       const state = gz3();
       expect(state.deck.length).toBe(160);
-      // 已实装的是【固国安邦】与【号令天下】→ 只有它们进循环；另外两张等实现后再放
-      // （没实装就放进去 = 抽到一张打不出的死牌）
+      // 四张**全部已实装** → 都在待洗区（这条断言同时守着「别把没实现的牌塞进牌堆」——
+      // 没有 effect handler 的牌抽到就是一张打不出的死牌）
       expect(state.pendingFactionTricks.map((c) => c.type)).toEqual([
         'guoanjianbang',
         'haolingtianxia',
+        'kefuzhongyuan',
+        'wenheluanwu',
       ]);
       // 把摸牌堆摸空、并往弃牌堆放几张（重洗的前提是「牌堆空 + 弃牌堆非空」）→ 四张随新堆洗入
       let guard = 0;
@@ -131,6 +133,8 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       const pool = [...state.deck, ...(drawn ? [drawn] : [])];
       expect(pool.some((c) => c.type === 'guoanjianbang'), '固国安邦 应已洗进摸牌堆').toBe(true);
       expect(pool.some((c) => c.type === 'haolingtianxia'), '号令天下 应已洗进摸牌堆').toBe(true);
+      expect(pool.some((c) => c.type === 'kefuzhongyuan'), '克复中原 应已洗进摸牌堆').toBe(true);
+      expect(pool.some((c) => c.type === 'wenheluanwu'), '文和乱武 应已洗进摸牌堆').toBe(true);
     });
 
     it('固国安邦（非吴）：摸八张、选至少六张 → 选中的直接弃置；用过的牌移出游戏', () => {
@@ -320,6 +324,204 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
       expect(q1.seatId).toBe('C');
       expect(q1.options.some((o) => o.id === 'sha'), '次数已用完，①不该出现').toBe(false);
       expect(q1.options.some((o) => o.id === 'card')).toBe(true);
+    });
+
+    /**
+     * 【克复中原】（蜀 ♦A）——口径见 docs §5.136/§5.136.3：
+     * 「对至少一名角色使用，每名目标 ①视为使用普通【杀】或 ②摸一张；蜀势力角色的【杀】基础伤害 +1、
+     *   摸牌改为摸 2；产生的【杀】受正常次数限制。」
+     * ⚠️ 2026-09-18 明确：选①的角色**自己**是那张虚拟【杀】的使用者、**自行挑合法目标**。
+     */
+    const kfzy = () => ({ id: 'k1', type: 'kefuzhongyuan', suit: 'diamond', rank: 1 }) as never;
+
+    it('克复中原：每名目标各自二选一；蜀势力摸 2、非蜀摸 1（可多名目标）', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'shu';
+      b.faction = 'shu'; // 蜀 → 摸 2
+      c.faction = 'wei'; // 非蜀 → 摸 1
+      a.hp = 4;
+      b.hp = 4;
+      c.hp = 4;
+      a.hand = [kfzy()];
+      b.hand = [];
+      c.hand = [];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'k1', targetIds: ['B', 'C'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      // 按座次：先是乙（甲的下家）
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.seatId).toBe('B');
+      act(state, 'B', { type: 'chooseOption', optionId: 'draw' });
+      expect(b.hand.length, '蜀势力摸两张').toBe(2);
+      // 再是丙
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q2?.kind}`);
+      expect(q2.seatId).toBe('C');
+      act(state, 'C', { type: 'chooseOption', optionId: 'draw' });
+      expect(c.hand.length, '非蜀摸一张').toBe(1);
+      expect(state.pending?.kind).toBe('play');
+    });
+
+    it('克复中原①：选择者**自己**成为虚拟【杀】的使用者、自行挑目标；蜀的基础伤害 +1 且计入次数', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'shu'; // 选①的这一个是蜀 → 伤害 +1
+      c.faction = 'wei';
+      a.hp = 4;
+      b.hp = 4;
+      c.hp = 4;
+      a.hand = [kfzy()];
+      b.hand = [];
+      c.hand = [];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'k1', targetIds: ['B'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.options.some((o) => o.id === 'sha')).toBe(true);
+      act(state, 'B', { type: 'chooseOption', optionId: 'sha' });
+      // 乙自己挑目标：合法目标里**没有他自己**，只有甲、丙
+      const q2 = state.pending;
+      if (q2?.kind !== 'choice') throw new Error(`预期选杀的目标，实际是 ${q2?.kind}`);
+      expect(q2.seatId).toBe('B');
+      expect(q2.options.map((o) => o.id).sort()).toEqual(['A', 'C']);
+      act(state, 'B', { type: 'chooseOption', optionId: 'C' });
+      const q3 = state.pending;
+      if (q3?.kind !== 'respondSha') throw new Error(`预期求闪，实际是 ${q3?.kind}`);
+      expect(q3.responderId).toBe('C');
+      act(state, 'C', { type: 'pass' });
+      expect(c.hp, '蜀势力的【杀】基础伤害 1+1').toBe(2);
+      expect(b.flags.shaCountThisTurn, '产生的【杀】计入次数').toBe(1);
+      expect(state.pending?.kind).toBe('play');
+    });
+
+    it('克复中原①：受**正常次数限制**——本回合出杀已用完就不给这一项', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'wei';
+      c.faction = 'wei';
+      a.hp = 4;
+      b.hp = 4;
+      c.hp = 4;
+      b.flags.shaCountThisTurn = 1; // 本回合已经出过杀了（上限 1）
+      a.hand = [kfzy()];
+      b.hand = [];
+      c.hand = [];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'k1', targetIds: ['B'] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.options.some((o) => o.id === 'sha'), '次数已用完，①不该出现').toBe(false);
+      expect(q1.options.some((o) => o.id === 'draw')).toBe(true);
+    });
+
+    /**
+     * 【文和乱武】（群 ♣Q）——口径见 docs §5.136 表 + §5.136.3：
+     * 「对所有角色使用。目标依次展示全部手牌，**你**选择：①若其可弃置的手牌类别不全相同，弃置两张
+     *   类别不同的手牌；若全同类则弃置一张；②观看并弃置其一张手牌。**群势力角色**结算后若没有手牌，
+     *   将手牌补至当前体力值。」
+     */
+    const whlw = () => ({ id: 'w1', type: 'wenheluanwu', suit: 'club', rank: 12 }) as never;
+
+    it('文和乱武：对**所有角色**（含使用者）依次结算；由使用者挑牌，类别不同时弃两张', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei'; // 使用者本人也在目标里；非群，避免补牌干扰断言
+      b.faction = 'wei';
+      c.faction = 'wei';
+      a.hp = 4;
+      b.hp = 4;
+      c.hp = 4;
+      a.hand = [whlw()];
+      // 乙：两张**不同类别**（基本 + 锦囊）→ ①要弃两张不同类别的
+      b.hand = [
+        { id: 'b-sha', type: 'sha', suit: 'spade', rank: 7 } as never,
+        { id: 'b-guohe', type: 'guohe', suit: 'club', rank: 3 } as never,
+      ];
+      c.hand = [];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'w1', targetIds: [] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      // 第一问给乙（甲的下家），且是**问甲**（由使用者挑牌）
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.seatId).toBe('A');
+      expect(q1.options.some((o) => o.label.includes('两张'))).toBe(true);
+      act(state, 'A', { type: 'chooseOption', optionId: 'two' });
+      // 第一张：随便挑（基本牌）
+      const p1 = state.pending;
+      if (p1?.kind !== 'pickCards') throw new Error(`预期挑第一张，实际是 ${p1?.kind}`);
+      expect(p1.seatId).toBe('A');
+      act(state, 'A', { type: 'pickCards', cardIds: ['b-sha'] });
+      // 第二张只能在**别的类别**里挑 → 选项里只有那张锦囊
+      const p2 = state.pending;
+      if (p2?.kind !== 'pickCards') throw new Error(`预期挑第二张，实际是 ${p2?.kind}`);
+      expect(p2.cards.map((x) => x.id)).toEqual(['b-guohe']);
+      act(state, 'A', { type: 'pickCards', cardIds: ['b-guohe'] });
+      expect(b.hand.length, '乙被弃置两张').toBe(0);
+      // 丙空手 → 不问；然后轮到甲自己（手牌已空）→ 整张牌结算完
+      expect(state.pending?.kind).toBe('play');
+    });
+
+    it('文和乱武：目标手牌**类别全同**时只弃一张；②可任挑一张', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'wei';
+      c.faction = 'wei';
+      a.hp = 4;
+      b.hp = 4;
+      c.hp = 4;
+      a.hand = [whlw()];
+      b.hand = [
+        { id: 'b-sha', type: 'sha', suit: 'spade', rank: 7 } as never,
+        { id: 'b-tao', type: 'tao', suit: 'heart', rank: 4 } as never,
+      ];
+      c.hand = [];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'w1', targetIds: [] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      const q1 = state.pending;
+      if (q1?.kind !== 'choice') throw new Error(`预期选择，实际是 ${q1?.kind}`);
+      expect(q1.options.some((o) => o.label.includes('类别全同'))).toBe(true);
+      act(state, 'A', { type: 'chooseOption', optionId: 'one' }); // ②观看并弃置一张
+      const p1 = state.pending;
+      if (p1?.kind !== 'pickCards') throw new Error(`预期挑牌，实际是 ${p1?.kind}`);
+      expect(p1.cards.length).toBe(2); // 两张都能挑
+      act(state, 'A', { type: 'pickCards', cardIds: ['b-tao'] });
+      expect(b.hand.map((x) => x.id)).toEqual(['b-sha']);
+    });
+
+    it('文和乱武：群势力目标结算后没手牌 → 补至其当前体力值（非群不补）', () => {
+      const state = gz3();
+      const a = state.players.find((p) => p.seatId === 'A')!;
+      const b = state.players.find((p) => p.seatId === 'B')!;
+      const c = state.players.find((p) => p.seatId === 'C')!;
+      a.faction = 'wei';
+      b.faction = 'qun'; // 群、空手、3 血 → 补 3 张
+      c.faction = 'wei'; // 非群：不补
+      a.hp = 4;
+      b.hp = 3;
+      b.maxHp = 3;
+      c.hp = 4;
+      a.hand = [whlw()];
+      b.hand = [];
+      c.hand = [];
+      const r = act(state, 'A', { type: 'playCard', cardId: 'w1', targetIds: [] });
+      expect(r.ok, r.ok ? '' : r.error).toBe(true);
+      expect(b.hand.length, '群势力空手 → 补到当前体力值 3 张').toBe(3);
+      expect(c.hand.length, '非群不补').toBe(0);
+      expect(a.hand.length, '甲也是非群，不补').toBe(0);
     });
   });
 
