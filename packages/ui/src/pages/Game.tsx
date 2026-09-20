@@ -37,6 +37,7 @@ import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { useHoverTip } from '../components/HoverTip';
+import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -399,6 +400,18 @@ export function Game() {
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
+  /**
+   * 「生效前的确认」（用户 2026-09-18 要求）：**主动发起的效果**——【杀】【酒】、装装备、武将技能——
+   * 真正发出去之前先摆一句「它到底干什么」，确认了才发。
+   *
+   * 为什么要它：这几类点一下就生效，而牌面说明平时只有**悬停**才看得到（触屏上根本没有悬停）；
+   * 装装备尤其疼（点错就把装备丢进装备区、还顶掉原来那件）。
+   */
+  const [confirmUse, setConfirmUse] = useState<{
+    title: string;
+    desc: string;
+    ok: () => void;
+  } | null>(null);
   // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
   // 武将技能用的是同一套，见 components/HoverTip.tsx
   const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
@@ -485,13 +498,22 @@ export function Game() {
   function beginPlay(card: Card, as?: CardType, asAttribute?: DamageAttribute) {
     const range = targetRange(card, as, shaMaxTargetsFor(card));
     if (range.max === 0) {
-      sendIntent({
-        type: 'playCard',
-        cardId: card.id,
-        ...(as ? { as } : {}),
-        ...(asAttribute ? { asAttribute } : {}),
-        targetIds: [],
-      });
+      const fire = (): void => {
+        sendIntent({
+          type: 'playCard',
+          cardId: card.id,
+          ...(as ? { as } : {}),
+          ...(asAttribute ? { asAttribute } : {}),
+          targetIds: [],
+        });
+      };
+      // 【酒】/装装备这类「不需要目标」的牌原先点一下就发——现在先生效前确认（§5.144）
+      if (needsEffectConfirm(card, as)) {
+        const info = effectConfirmFor(card, as, snapshot?.mode);
+        setConfirmUse({ title: info.title, desc: info.desc, ok: () => { setConfirmUse(null); fire(); } });
+        return;
+      }
+      fire();
       return;
     }
     setSelected({
@@ -606,6 +628,17 @@ export function Game() {
       .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
       .join('、');
     return `确认：对 ${who} 使用【${name}】`;
+  }
+
+  /**
+   * 「选完目标、点确认之前」把效果写出来（用户 2026-09-18 要求）。
+   * 只有【杀】【酒】、装装备这几类显示——其余牌维持在目标上就够清楚了，不打扰。
+   */
+  function selectedEffectDesc(): string {
+    if (!selected) return '';
+    const card = myUsableCards.find((c) => c.id === selected.cardId);
+    if (!card || !needsEffectConfirm(card, selected.as)) return '';
+    return effectConfirmFor(card, selected.as, snapshot?.mode).desc;
   }
 
   /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去 */
@@ -1401,7 +1434,7 @@ export function Game() {
               )}
 
               {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
-              {prompt.kind === 'play' && !skillMode && !selected && (
+              {prompt.kind === 'play' && !skillMode && !selected && !confirmUse && (
                 <>
                   <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
                     结束出牌
@@ -1430,6 +1463,9 @@ export function Game() {
                       skillMode.targetIds.length < skillMode.skill.minTargets &&
                       ' · 请点角色'}
                   </span>
+                  {skillMode.skill.desc && (
+                    <span className="use-effect-desc">{skillMode.skill.desc}</span>
+                  )}
                   <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
                     确认技能
                   </button>
@@ -1501,10 +1537,29 @@ export function Game() {
                 </>
               )}
 
+              {/* 生效前的确认：主动发起的效果先说明再发（【杀】【酒】/装装备，见 effectConfirm.ts） */}
+              {confirmUse && prompt.kind === 'play' && (
+                <div className="use-confirm">
+                  <div className="use-confirm-title">{confirmUse.title}</div>
+                  <div className="use-confirm-desc">{confirmUse.desc}</div>
+                  <div className="use-confirm-actions">
+                    <button className="primary" onClick={confirmUse.ok}>
+                      确认使用
+                    </button>
+                    <button className="ghost" onClick={() => setConfirmUse(null)}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* 选目标提示 */}
               {selected && prompt.kind === 'play' && (
                 <>
                   <span className="hint">{selectedHint()}</span>
+                  {selectedEffectDesc() && (
+                    <span className="use-effect-desc">{selectedEffectDesc()}</span>
+                  )}
                   <button
                     className="primary"
                     disabled={!selectedCanConfirm()}

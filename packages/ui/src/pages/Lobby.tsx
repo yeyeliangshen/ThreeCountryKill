@@ -142,14 +142,14 @@ export function Lobby() {
             </label>
             <label
               className="buchen"
-              title="不臣篇：野心家武将、双势力武将、暴露野心/建立新势力、势力锦囊（牌与机制尚未实装，先占位）"
+              title="不臣篇：野心家武将、双势力武将、暴露野心/建立新势力、势力锦囊四张（均已实装）"
             >
               <input
                 type="checkbox"
                 checked={lobby.config.extensions.buchen === 'current'}
                 onChange={(e) => setExtension('buchen', e.target.checked ? 'current' : 'off')}
               />
-              不臣篇（占位）
+              不臣篇（野心家 / 双势力 / 势力锦囊）
             </label>
             <label
               className="junlintianxia"
