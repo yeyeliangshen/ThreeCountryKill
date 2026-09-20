@@ -3953,7 +3953,16 @@ const JUN_CAOCAO: Hero = lordHero(
     ],
     hooks: [
       { timing: 'afterDamageDealt', skillId: '雄驰', handler: (ctx) => askXiongchi(ctx) },
-      { timing: 'afterDamage', skillId: '征戎', handler: (ctx) => askZhengrong(ctx) },
+      {
+      timing: 'afterDamage',
+      skillId: '征戎',
+      applies: (ctx) =>
+        damagedPositive(ctx) &&
+        ctx.state.deck.some((c) => c.type === 'sha') &&
+        Math.min(Math.max(1, ctx.player.maxHp - ctx.player.hp), ctx.state.deck.filter((c) => c.type === 'sha').length) > 0 &&
+        ctx.state.players.some((p) => p.alive && p.hand.length > 0),
+      handler: (ctx) => askZhengrong(ctx),
+    },
     ],
   },
 );
@@ -4612,7 +4621,14 @@ const ZHANGLU: Hero = {
   gender: 'male',
   modes: ['guozhan'],
   hooks: [
-    { timing: 'afterDamage', skillId: '布施', handler: askBushiSelf },
+    {
+      timing: 'afterDamage',
+      skillId: '布施',
+      applies: (ctx) =>
+        damagedPositive(ctx) &&
+        factionMatesOf(ctx.state, effectiveFaction(ctx.state, ctx.player)).length > 0,
+      handler: askBushiSelf,
+    },
     { timing: 'afterDamageDealt', skillId: '布施', handler: askBushiDealt },
     // ⚠️ 米道要看到**别人**的使用：`useCard` 只派给使用者本人（实测：只挂它的话，队友用牌时
     //    张鲁根本收不到询问）。改挂 `othersUseCard`——「其他角色使用牌时」派给全场、**可挂起**
@@ -7598,6 +7614,7 @@ const ZHANGXIU: Hero = {
     {
       timing: 'afterDamage',
       skillId: '附敌',
+      applies: damagedByOther,
       handler: (ctx) => {
         const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
         const sourceId = payload?.attack?.sourceId;
@@ -9439,6 +9456,8 @@ const ZANGBA: Hero = {
     {
       timing: 'afterDamage',
       skillId: '横江',
+      applies: (ctx) =>
+        damagedPositive(ctx) && !!getPlayer(ctx.state, ctx.state.seatOrder[ctx.state.turn.seatIndex]!),
       handler: (ctx) => hengjiangAsk(ctx),
     },
     {
@@ -13490,7 +13509,14 @@ const TANGZI: Hero = {
   // 第 3 档：**动态**手牌上限（每次查询现算，不落成 buff）
   handLimit: (state, player) => player.hp + (woundedFactionCount(state) >= 3 ? 4 : 0),
   hooks: [
-    { timing: 'afterDamage', skillId: '兴棹', locked: true, handler: askXingzhaoHands },
+    {
+      timing: 'afterDamage',
+      skillId: '兴棹',
+      locked: true,
+      applies: (ctx) =>
+        damagedByOther(ctx) && woundedFactionCount(ctx.state) >= 2,
+      handler: askXingzhaoHands,
+    },
     { timing: 'equipLost', skillId: '兴棹', locked: true, handler: askXingzhaoEquip },
     // 【恂恂】是兴棹第 1 档**动态提供**的衍生技能：钩子常挂，档位条件在handler 里现算
     { timing: 'drawPhase', skillId: '恂恂', handler: askXunxun },
@@ -14561,7 +14587,7 @@ const SP_SIMAZHAO: Hero = {
   skillFields: { 夙智: ['damageDelta'] },
   damageDelta: (state, me, atk) => suzhiDamageDelta(state, me, atk),
   hooks: [
-    { timing: 'afterDamage', skillId: '昭心', handler: askZhaoxin },
+    { timing: 'afterDamage', skillId: '昭心', applies: damagedPositive, handler: askZhaoxin },
     { timing: 'afterDamageDealt', skillId: '夙智', locked: true, handler: suzhiOnDealt },
     { timing: 'useCard', skillId: '夙智', locked: true, handler: suzhiOnTrick },
     { timing: 'anyCardDiscarded', skillId: '夙智', locked: true, handler: suzhiOnDiscarded },
@@ -16166,7 +16192,12 @@ const JIE_ZHONGHUI: Hero = {
   hooks: [
     // ①「受到伤害后」（按伤害事件，不按点数）与 ②「使用仅指定一个目标的牌造成伤害后」
     // 两个时机分别派发，但都汇进同一个判据 + 同一个询问
-    { timing: 'afterDamage', skillId: '权计', handler: askQuanji },
+    {
+      timing: 'afterDamage',
+      skillId: '权计',
+      applies: (ctx) => quanjiTrigger((damageEvent(ctx).attack ?? undefined), ctx.player),
+      handler: askQuanji,
+    },
     { timing: 'afterDamageDealt', skillId: '权计', handler: askQuanji },
   ],
   activeSkills: [PAIYI_SKILL],

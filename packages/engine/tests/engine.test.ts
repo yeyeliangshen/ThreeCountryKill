@@ -19133,7 +19133,12 @@ describe('国战 · SP司马昭（昭心 / 夙智）', () => {
     a.grantedSkills = [{ heroId: 'simayi', skillName: '反馈' }]; // 手动模拟上一回合欠发下来的
     ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
     ok(act(state, A, { type: 'pass' }));
-    // 昭心与反馈都可选：先答昭心（不发动），再看反馈
+    // ⚠️ 甲的【昭心】与（夙智欠发下来的）临时【反馈】同时想发动 → 引擎先问「先结算哪一个」（§5.143）。
+    //    这里选【昭心】先、并且不发动，再看【反馈】。
+    if (state.pending?.kind === 'choice' && state.pending.title.includes('先结算哪一个')) {
+      const zhaoxin = state.pending.options.find((o) => o.label.includes('昭心'));
+      ok(act(state, A, { type: 'chooseOption', optionId: zhaoxin!.id }));
+    }
     if (state.pending?.kind === 'choice' && state.pending.title.includes('昭心')) {
       ok(act(state, A, { type: 'chooseOption', optionId: 'no' }));
     }
@@ -20429,15 +20434,24 @@ describe('国战 · 技能判定接入改判时机', () => {
     });
 
     it('同层里有钩子没填 applies（预判不了）→ 退回固定排序，也不问', () => {
+      // 乙＝李典（忘隙，已声明）+ SP司马昭（夙智，**没填 applies**）：乙造成伤害后两条钩子都在
+      // afterDamageDealt 上，其中一条预判不了 → 不做自选次序（退回按 priority 固定排）
       const state = gz(
         [
-          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [sha('a1')] },
-          // 乙＝郭嘉（遗计，已声明）+ 张鲁（布施，**没填 applies**）
-          { seatId: B, name: '乙', heroId: 'guojia', deputyHeroId: 'zhanglu', faction: 'wei', hand: [] },
+          { seatId: A, name: '甲', heroId: 'vanilla', faction: 'shu', hand: [] },
+          {
+            seatId: B,
+            name: '乙',
+            heroId: 'lidian',
+            deputyHeroId: 'sp_simazhao',
+            faction: 'wei',
+            hand: [sha('b1')],
+          },
         ],
-        A,
+        B,
       );
-      hit(state);
+      ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+      ok(act(state, A, { type: 'pass' })); // 甲不出闪 → 乙造成了伤害 → afterDamageDealt 那两条
       expect(
         !!state.pending && state.pending.kind === 'choice' && state.pending.title.includes('先结算哪一个'),
         '有预判不了的钩子 → 不做自选次序',
