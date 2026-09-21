@@ -60,10 +60,54 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     // 单势力之间：同势力合法、不同势力不合法
     expect(canPairHeroes(h('guanyu'), h('zhangfei'))).toBe(true);
     expect(canPairHeroes(h('guanyu'), h('sunquan'))).toBe(false);
-    // 野心家武将：只能在主将位；在主将位时配任意副将都合法
+    // 野心家武将：只能在主将位；在主将位时配任意**非野心家**副将都合法
     const sunchen = h('sunchen');
     expect(canPairHeroes(sunchen, h('guanyu'))).toBe(true);
     expect(canPairHeroes(h('guanyu'), sunchen)).toBe(false);
+    // ⚠️ 野 + 野 **不可以**（用户 2026-09-21 明确：官方只放开了「双势力可主/副将」与
+    //    「双势力遇野心家手动选自身势力」，没有开放野心家 × 野心家）
+    expect(canPairHeroes(h('sp_simazhao'), h('jie_zhonghui'))).toBe(false);
+    expect(canPairHeroes(h('jie_zhonghui'), h('sp_simazhao'))).toBe(false);
+  });
+
+  /**
+   * 野心家武将的**身份**：与野心家武将组合后，整名角色**按野心家处理**——
+   * 主将（野心家）明置之前只明置副将时，暂时按副将的势力算（用户 2026-09-18 口径）；
+   * **主将一明置，身份就是野心家**，不再跟随副将变成魏/蜀/吴/群（用户 2026-09-21 口径）。
+   */
+  it('野心家主将明置前后：临时按副将势力 → 转为野心家', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'vanilla' },
+        { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        { seatId: 'C', name: '丙', heroId: 'vanilla' },
+      ],
+      'T',
+      { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+    );
+    state.draft = null;
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    a.heroId = 'sunchen'; // 野心家主将
+    a.deputyHeroId = 'guanyu'; // 蜀副将
+    a.faction = 'ambitionist';
+    a.determinedFaction = 'shu'; // 抓将时按「只明置副将期间暂时按副将确定势力」写下的
+    for (const p of state.players) {
+      if (p.seatId === 'A') continue;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.faction = 'wei';
+    }
+    // ① 只明置副将（主将暗置）→ 暂时按副将的蜀算
+    a.heroRevealed = false;
+    a.deputyRevealed = true;
+    expect(effectiveFaction(state, a)).toBe('shu');
+    // ② 主将（野心家）明置 → 身份就是野心家
+    a.heroRevealed = true;
+    expect(effectiveFaction(state, a)).toBe('ambitionist');
+    // ③ 两将都暗置 → 未确定势力
+    a.heroRevealed = false;
+    a.deputyRevealed = false;
+    expect(effectiveFaction(state, a)).toBeNull();
   });
 
   it('确定过的势力优先于「明置即确定」：会盟/同势力判断都读它', () => {

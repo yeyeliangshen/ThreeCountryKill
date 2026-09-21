@@ -11848,7 +11848,11 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
       askChoice(
         state,
         seatId,
-        `【选势力】：请为【${mainHero.name}】与【${deputyHero.name}】选择势力`,
+        // 措辞分开：与**野心家武将**组合时，选的是那双势力牌**自己**本局的势力，
+        // 整名角色仍然按野心家算（用户 2026-09-21 口径）——不能写成「给这一对选势力」。
+        mainHero.faction === 'ambitionist'
+          ? `【选势力】：${mainHero.name} 是野心家；请选择【${deputyHero.name}】本局的势力`
+          : `【选势力】：请为【${mainHero.name}】与【${deputyHero.name}】选择势力`,
         options.map((f) => ({ id: f, label: FACTION_NAME[f] ?? f })),
         (st, pl, picked) => {
           pl.determinedFaction = picked as Faction;

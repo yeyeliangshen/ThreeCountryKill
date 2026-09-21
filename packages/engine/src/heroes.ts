@@ -16581,6 +16581,13 @@ export function effectiveFaction(state: GameState, player: Player): Faction | nu
   // （见 determineDualFaction；确定后整局都按这一个势力算，不会因为重新暗置切回另一个），
   // 没填的（单势力武将）等价于 `player.faction`。
   if (!player.heroRevealed && !player.deputyRevealed) return null;
+  // 野心家**主将**一旦明置，这个人的身份就是**野心家**——不再沿用「只明置副将期间·暂时按副将
+  // 确定势力」的那份临时势力（用户 2026-09-21：「与野心家武将组合后**整名角色按野心家处理**，
+  // 而不是跟随另一张武将变成魏/蜀/吴/群」；§5.141-1 的「明置自己的野心家主将 → 自身身份/势力
+  // 转为野心家」是同一条，那条路（暴露野心）本来就会把 determinedFaction 写成 ambitionist，
+  // 这里补的是**主动明置主将**那条路，以前它会一直按副将的势力算）。
+  // 注意顺序：`heroRevealed` 才算「主将明置」——只明置副将时仍按副将的临时势力算。
+  if (player.heroRevealed && player.faction === 'ambitionist') return 'ambitionist';
   return player.determinedFaction ?? player.faction;
 }
 
@@ -16730,8 +16737,10 @@ export function sameHeroBody(a: string, b: string): boolean {
  * 规则只有一句：**两张牌的「可选势力集合」有交集即可**——
  * - 单势力牌的可选势力就是它自己；
  * - **双势力牌两面都算**（孟达 魏/蜀 既能配魏将也能配蜀将，主将/副将位都行）；
- * - 野心家武将在**主将位**时配任意副将都合法（用户 2026-09-18 口径：主将暗置期间暂时按副将
- *   确定势力），野心家**只能在主将位**。
+ * - 野心家武将在**主将位**时与「其他势力」都能配（用户 2026-09-18 口径：主将暗置期间暂时按
+ *   副将确定势力），但 **野心家 + 野心家不行**（用户 2026-09-21：「野 + 野 → 不可以」，
+ *   官方公告只放开了「双势力可主/副将」「双势力遇野心家手动选自身势力」，没有开放野+野）；
+ *   野心家**只能在主将位**。
  *
  * ⚠️ 引擎的 `pickHero` 与界面（`ui/src/draftSlots.ts` 的槽位分配）必须用**同一个**口径，
  *    否则会出现「界面拼不出来、引擎却收」的组合——实测踩过：孟达(魏/蜀) + 关羽(蜀)
@@ -16739,7 +16748,7 @@ export function sameHeroBody(a: string, b: string): boolean {
  */
 export function canPairHeroes(main: Hero | undefined, deputy: Hero | undefined): boolean {
   if (!main || !deputy) return false;
-  if (main.faction === 'ambitionist') return true;
+  if (main.faction === 'ambitionist') return deputy.faction !== 'ambitionist';
   if (deputy.faction === 'ambitionist') return false;
   const factionsOf = (h: Hero): Faction[] =>
     h.secondFaction ? [h.faction, h.secondFaction] : [h.faction];
