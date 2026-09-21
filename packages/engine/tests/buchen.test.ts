@@ -110,6 +110,42 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     expect(effectiveFaction(state, a)).toBeNull();
   });
 
+  /**
+   * 「position」表（用户 2026-09-21 口径）——**野心家武将只能作主将**，普通/双势力武将主副都行：
+   * ```
+   * 野主 + 普通副 ✓   野主 + 双势力副 ✓
+   * 普通主 + 野副 ✗   双势力主 + 野副 ✗   野主 + 野副 ✗
+   * ```
+   * ⚠️ 三条 ✗ 的报错必须是**「野心家武将只能作为主将」**（那条位置限制要排在同阵营校验之前，
+   *    否则会被「国战需选 2 位同阵营武将」盖掉——2026-09-21 修过一次）。
+   */
+  it('pickHero 的 position 表：野心家武将只能作主将（三条 ✗ 都报同一条原因）', () => {
+    const gz = () =>
+      createGame(
+        [
+          { seatId: 'A', name: '甲', heroId: 'vanilla' },
+          { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        ],
+        'T',
+        { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+      );
+    const pick = (state: ReturnType<typeof gz>, main: string, deputy: string) =>
+      act(state, 'A', { type: 'pickHero', heroId: main, deputyHeroId: deputy });
+    // ✓ 野主 + 普通副 / 野主 + 双势力副
+    expect(pick(gz(), 'sp_simazhao', 'zuoci').ok).toBe(true); // 野 + 群
+    expect(pick(gz(), 'sp_simazhao', 'mengda').ok).toBe(true); // 野 + 魏/蜀（引擎再问给孟达选一面）
+    // ✗ 普通主 + 野副 / 双势力主 + 野副 / 野主 + 野副
+    for (const [main, deputy] of [
+      ['guanyu', 'jie_zhonghui'],
+      ['mengda', 'sp_simazhao'],
+      ['jie_zhonghui', 'sp_simazhao'],
+    ] as const) {
+      const res = pick(gz(), main, deputy);
+      expect(res.ok, `${main} + ${deputy} 不该被接受`).toBe(false);
+      if (!res.ok) expect(res.error).toBe('野心家武将只能作为主将');
+    }
+  });
+
   it('确定过的势力优先于「明置即确定」：会盟/同势力判断都读它', () => {
     const state = createGame(
       [

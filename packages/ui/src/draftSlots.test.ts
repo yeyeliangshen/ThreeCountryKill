@@ -37,6 +37,8 @@ describe('国战选将 · 槽位分配（与引擎 pickHero 同口径）', () =>
   it('野心家武将只能在主将位：作副将点击时替换主将', () => {
     expect(clickAll(['sunchen', 'guanyu'])).toEqual({ main: 'sunchen', deputy: 'guanyu' });
     expect(clickAll(['guanyu', 'sunchen'])).toEqual({ main: 'sunchen', deputy: null });
+    // 双势力主 + 野心家副 → 同样只能替换主将（position 表：野心家 MAIN_ONLY）
+    expect(clickAll(['mengda', 'sp_simazhao'])).toEqual({ main: 'sp_simazhao', deputy: null });
     // 野心家 + 双势力 → 可以，副将位照放（双势力的那一面由引擎再问玩家）
     expect(clickAll(['sp_simazhao', 'mengda'])).toEqual({ main: 'sp_simazhao', deputy: 'mengda' });
     // ⚠️ 野心家 + 野心家 → **不可以**（用户 2026-09-21 口径）：第二张只能替换主将

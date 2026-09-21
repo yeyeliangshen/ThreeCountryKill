@@ -11814,14 +11814,15 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     const mainHero = getHero(intent.heroId);
     const deputyHero = getHero(deputyId);
     if (!mainHero || !deputyHero) return err('武将不存在');
-    // 同阵营校验：双势力武将牌有两面，只要**有共同势力**就算同阵营（2023 口径）。
-    // 口径统一收在 `canPairHeroes`（界面选将槽位判断用的也是它，见 heroes.ts 的注释）。
-    // ⚠️ 例外：**野心家武将在主将位时配任意副将都合法**——他是「野」势力，按用户 2026-09-18 的
-    //    口径「只明置副将期间**暂时按照副将确定势力**」（§5.141），硬套同阵营会让他根本选不出来。
-    if (!canPairHeroes(mainHero, deputyHero)) return err('国战需选 2 位同阵营武将');
+    // ⚠️ 顺序要紧：「只能作主将」这类**位置**限制要**排在同阵营校验之前**——
+    //    同阵营校验对「副将是野心家」一律返回 false，先跑它就会用「国战需选 2 位同阵营武将」
+    //    把更准确的原因盖掉（2026-09-21 踩过：那条报错成了永远走不到的死代码）。
     if (deputyHero.faction === 'ambitionist') return err('野心家武将只能作为主将');
     // 君主将只能作主将
     if (deputyHero.isLord) return err('君主将只能作为主将');
+    // 同阵营校验：双势力武将牌有两面，只要**有共同势力**就算同阵营，野心家主将可配任意
+    // **非野心家**副将（2023 口径）。判据统一收在 `canPairHeroes`（界面选将槽位分配用的也是它）。
+    if (!canPairHeroes(mainHero, deputyHero)) return err('国战需选 2 位同阵营武将');
     player.heroId = intent.heroId;
     player.deputyHeroId = deputyId;
     player.faction = mainHero.faction;
