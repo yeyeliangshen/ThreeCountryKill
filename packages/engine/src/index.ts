@@ -17,6 +17,8 @@ export {
   isCompletedPending,
   /** 施工方案 Step 3b：被围栏挡住且没有 waiter 可去时抛出（`SGS_FENCE_ENFORCE=1` 才生效） */
   FenceBlockedError,
+  /** 施工方案 Step 4.7：还没被唤醒的等待者数量（`blockedContinuationNeverResumed` 的探测器） */
+  pendingWaiterCount,
   type SeatSetup,
   type ApplyResult,
 } from './engine';

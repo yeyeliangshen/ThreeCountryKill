@@ -899,8 +899,18 @@ export interface TakeoverRecord {
     answered: boolean;
     completed: boolean;
   } | null;
-  /** 收尾要安装的那一格（目前都是出牌阶段的占位） */
+  /**
+   * 收尾**原本打算**安装的那一格（目前都是出牌阶段的占位）。
+   * ⚠️ Step 4 之后它不再真的被覆盖：被挡的收尾改成「登记等待」，所以看 `outcome` 更准。
+   */
   newPendingKind: string;
+  /**
+   * 这一步的**处置**：
+   * - `'overwritten'`：照旧覆盖（Step 4 之前的老行为；`SGS_FENCE_ENFORCE=1` 时不会出现）
+   * - `'deferred'`：登记等待，等挡住它的那条询问走完再回来（Step 4 起的默认行为）
+   * - `'threw'`：当场 fail-fast（`SGS_FENCE_ENFORCE=1`，Step 3b 的诊断模式）
+   */
+  outcome?: 'overwritten' | 'deferred' | 'threw';
   checkpoint: { requestId: number | null; slotVersion: number; useId?: number | null } | null;
   currentSeq: number;
   inDying: boolean;
@@ -1123,6 +1133,13 @@ export interface GameState {
    * 接 waiter 的输入：每一条拒绝将来都要变成「登记等待」而不是「什么都不做」。
    */
   refusedReleases: { id: number; kind: string }[];
+  /**
+   * 施工方案 Step 4（4.2 幂等）：已经登记等待的续接 id 集合——同一条续接只登记一次，
+   * 不许因为多个唤醒点重复注册而在询问走完后跑两遍（那正是「多执行」类的失败）。
+   */
+  deferredContinuations: Set<string>;
+  /** 施工方案 Step 4.4：嵌套 drain 的次数（诊断用；正常应该很小） */
+  pendingDrainReentry: number;
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

@@ -225,18 +225,48 @@ export function takeOverPendingIfUnchanged(
   return true;
 }
 
-function waitPendingResolved(state: GameState, requestId: number, waiter: () => void): void {
+function waitPendingResolved(
+  state: GameState,
+  requestId: number,
+  waiter: () => void,
+  /** 幂等键（施工方案 Step 4.2）：同一条续接只登记一次 */
+  key?: string,
+): void {
+  if (key && state.deferredContinuations.has(key)) return;
+  if (key) state.deferredContinuations.add(key);
   const list = state.pendingWaiters.get(requestId) ?? [];
   list.push(waiter);
   state.pendingWaiters.set(requestId, list);
 }
 
-/** 某条询问（requestId）处理完了：唤醒在等它的那些待办（**唯一**唤醒点） */
+/** 正在跑 waiter 的深度（施工方案 Step 4.4 的重入守卫：同一时刻只有一个 drain 拥有者） */
+let drainingWaiters = 0;
+
+/**
+ * 某条询问（requestId）处理完了：唤醒在等它的那些待办。
+ *
+ * ⚠️ 顺序是方案 §4.3 定的：**先消费、再执行**（`delete` 在前）——continuation 内部可能同步
+ * 又完成一条询问、重入到这里，先删掉才不会被自己再唤醒一遍。
+ * 嵌套 drain 是允许的（守卫只用来计数，不拦），因为每一层的列表都已经被消费掉了，必然收敛。
+ */
 function completePendingRequest(state: GameState, requestId: number): void {
   const waiters = state.pendingWaiters.get(requestId);
   if (!waiters) return;
   state.pendingWaiters.delete(requestId);
-  for (const run of waiters) runResume(run);
+  if (drainingWaiters > 0) state.pendingDrainReentry++;
+  drainingWaiters++;
+  try {
+    for (const run of waiters) runResume(run);
+  } finally {
+    drainingWaiters--;
+  }
+}
+
+/** 还没被唤醒的等待者数量（施工方案 Step 4.7：`blockedContinuationNeverResumed` 用的探测器） */
+export function pendingWaiterCount(state: GameState): number {
+  let n = 0;
+  for (const list of state.pendingWaiters.values()) n += list.length;
+  return n;
 }
 
 /** 「请求回到出牌阶段」的参数（带世代，迟到即弃） */
@@ -286,10 +316,14 @@ function fenceOf(pending: GameState['pending']): PendingCheckpoint | undefined {
 }
 
 export function setPending(state: GameState, next: GameState['pending']): void {
+  const prev = state.pending;
   state.pending = next;
   state.pendingSeq++;
   // 装上这一格＝这条流程开始拥有控制权：把此刻的槽快照记在它身上
   if (next) pendingFences.set(next, capturePendingCheckpoint(state));
+  // 施工方案 Step 4.5/4.6：**所有**「询问生命周期推进」（被换掉 / 被释放成空）都在这里收口——
+  // 唤醒在等旧那一格的收尾（窗口自动推进、advanceTrick、endTurn、doDeath、release 全覆盖）。
+  if (prev && prev !== next) completePendingRequest(state, pendingIdOf(prev));
 }
 
 export function askChoice(
@@ -2695,8 +2729,31 @@ function resumePlay(
     }
     if (FENCE_ENFORCE) {
       // Step 3b：真生效 —— 不许 silent drop、也不许照旧覆盖。带上调用栈方便当场定位。
-      throw new FenceBlockedError({ ...rec, caller: topStackFrame() });
+      throw new FenceBlockedError({ ...rec, outcome: 'threw', caller: topStackFrame() });
     }
+    /**
+     * 施工方案 Step 4（4.1）：**既不覆盖、也不丢弃**，改为**登记等待**——
+     * 等挡住我的那条询问走完（`completePendingRequest` 由 `setPending` 统一唤醒），
+     * 再重新请求「回出牌阶段」。`requestResumePlay` 自带回合世代围栏：等太久、回合已经交出去的
+     * 那一次请求**直接作废**（不许抢未来回合的控制权）。
+     */
+    const key = `${sourceId}:${since.slotVersion}:${since.useId ?? '-'}`;
+    const rid = state.pending ? pendingIdOf(state.pending) : null;
+    if (rid === null) {
+      setPending(state, { kind: 'play', seatId: sourceId });
+      return;
+    }
+    if (key) (rec as { outcome?: string }).outcome = 'deferred';
+    waitPendingResolved(
+      state,
+      rid,
+      () => {
+        state.deferredContinuations.delete(key);
+        requestResumePlay(state, { sourceId, turnSeq: state.turnSeq });
+      },
+      key,
+    );
+    return; // ← 不再往下走「照旧覆盖」：这一格归挡住我的那条询问所有
     /**
      * **让路**（本轮的实质改动）：既然挡住我的是一条「不是我的」询问（实测全是嵌套使用的
      * `wuxieQueue` / `respondTrick` 窗口，`sameUse=false`），就别抢槽——交给
@@ -10044,6 +10101,11 @@ function onRespondFactionCall(
     return err(`只能打出【${CARD_TYPE_NAME[pending.needType]}】`);
   revealForConversion(state, helper, card, pending.needType);
   consumeCard(state, helper, card);
+  // 施工方案 Step 1 同款：这一问**答完了**（有人代打成功）——先标完成、release-if-mine，
+  // 再交回场景继续（`onCard` 会走 `resolveFactionCard`，那条流程的收尾才有槽可回）。
+  // ⚠️ 这里原来既不推进队列也不释放，于是这一格会一直占着槽：Step 4 的等待者挂在它身上、
+  //    永远等不到唤醒（护驾用例实测卡在这里）。
+  releaseIfMine(state, pending);
   pending.onCard(state, helper, card);
   return { ok: true };
 }
@@ -11708,6 +11770,8 @@ export function createGame(
     continuationRuns: new Map<string, number>(),
     pendingCompletions: new Map<number, number>(),
     refusedReleases: [],
+    deferredContinuations: new Set<string>(),
+    pendingDrainReentry: 0,
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],

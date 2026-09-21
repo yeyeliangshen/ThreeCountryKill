@@ -413,3 +413,46 @@ Step 3b 的数据指出：107 条被挡里 **101 条是求闪询问（`respondSh
 **结论**：整个 takeover 面现在只剩**一类**——「收尾时槽里躺着一条**还活着**的弃牌询问」，
 20 次 / 200 局。按方案这正是 **Step 4（waiter）** 的验收场景：被挡的收尾不再覆盖也不丢弃，
 而是**登记等待**，等那条询问走完再由 `drain` 唤醒。三跳仍未删（Step 5）。
+
+### 4.10 Step 4（接通 waiter：被挡的收尾登记等待）—— ✅ 已完成
+
+按方案 §4.1–4.7 接线（此前 `requestResumePlay` / `waitPendingResolved` / `completePendingRequest`
+三件套都在、但**没有任何调用者**）：
+
+- **4.1 默认行为翻转**：`resumePlay` 被围栏挡住时——**既不覆盖、也不丢弃**，改为
+  **登记等待**：等挡住它的那条询问走完（`completePendingRequest`）再重新请求「回出牌阶段」；
+  `requestResumePlay` 自带**回合世代围栏**（等太久、回合已交出去的请求直接作废，不抢未来回合）。
+  `SGS_FENCE_ENFORCE=1` 仍保留为 §3b 的诊断模式（当场 throw）；
+- **4.2 幂等**：`waitPendingResolved` 增加幂等键 + `state.deferredContinuations`——
+  同一条续接只登记一次（多唤醒点重复注册会让它在询问走完后跑两遍 = 「多执行」）；
+- **4.3 先消费再执行**：`completePendingRequest` 保持 `delete` 在前（continuation 内部可能同步
+  又完成一条询问、重入到这里；先删掉才不会把自己再唤醒一遍）；
+- **4.4 重入守卫**：`drainingWaiters` 深度（嵌套 drain 允许但不拦，因为每层列表都已消费、必然收敛）
+  + `state.pendingDrainReentry` 计数器；
+- **4.5/4.6 统一唤醒点**：**所有**「询问生命周期推进」都收口到 `setPending`——
+  旧那一格被换掉 / 被释放成空时唤醒它的等待者。这一条覆盖了窗口自动推进、`advanceTrick`、
+  `endTurn`、`doDeath`、`releaseIfMine` 等**内部推进**（方案 §4.6 的 Case B，即历史失败所在）；
+  原有的 3 个「回答路径」唤醒点保留；
+- **4.7 指标**：新增 `pendingWaiterCount(state)`（导出）→ 测量脚本输出
+  `blockedContinuationNeverResumed`。
+
+**顺带查出一个生命周期缺口（Step 4 逼出来的）**：势力技代打成功时
+（`onRespondFactionCall`）**既不推进队列也不释放那一格**——它会一直占着槽，
+于是 Step 4 的等待者挂在它身上、永远等不到唤醒（护驾用例当场抓到）。
+已按 Step 1 同款补 `releaseIfMine`。
+
+**Step 4 验收（200 局，同命令同局数）**：
+
+| 指标 | Step 3b 后 | Step 4 后 |
+| --- | --- | --- |
+| 指标 5 `blockedContinuationNeverResumed` | n/a | **0** ✅（目标 0） |
+| 未结束局数 | 0 | **0** ✅（200 局全部正常分出胜负） |
+| 指标 1 takeover 记录 | 20 | 21（全部 `outcome: 'deferred'`，即**改成等待**而不是覆盖） |
+| ↳ 那一格 | `discard`（没答过） | 同左（**这是唯一剩下的类**：收尾时槽里躺着一条还活着的弃牌询问） |
+| 指标 2 / 指标 3 / 不变量 B / 不变量 D | 0 | 0 / 0 / 0 / 0 |
+| 全量测试 | 1022+34+46 | 与 Step 4 前一致（含 fuzz 历史种子、smoke 40 局） |
+
+**结论**：控制权**可以等待**了，而且等得到（指标 5 = 0）——方案的核心契约
+「谁创建谁拥有、完成后释放自己、恢复时若遇到更新一代则等待」已经成立。
+还剩 **Step 5**（动态核查后逐支删掉 `resumePlay` 的三跳旧机制）与 **Step 6**（架构收口 +
+清 `activeSkill` 死代码）。

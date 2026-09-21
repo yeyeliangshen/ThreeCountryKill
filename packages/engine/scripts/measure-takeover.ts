@@ -17,7 +17,7 @@
  * ⚠️ 只读、不改行为：探针本身只记不改（见 engine.ts 的 takeoverRecord / runContinuation）。
  */
 import { riskyGame, step, rng, checkDuplicate, allCardIds, makeCardWatch } from '../tests/fuzzHarness';
-import { isCompletedPending } from '../src';
+import { isCompletedPending, pendingWaiterCount } from '../src';
 
 const games = Number(process.argv[2] ?? 200);
 const TOP = 12;
@@ -36,7 +36,9 @@ const byClass = new Map<string, { n: number; firstSeed: number; lastSeed: number
 let totalRecs = 0;
 let leftoverSlot = 0;
 let leftoverSamples: string[] = [];
-let notFinished: number[] = [];
+const notFinished: number[] = [];
+let neverResumed = 0;
+const neverResumedSamples: string[] = [];
 const seedsByKind = new Map<string, number[]>();
 
 for (let seed = 1; seed <= games; seed++) {
@@ -62,6 +64,12 @@ for (let seed = 1; seed <= games; seed++) {
     }
   }
   if (!state.gameOver) notFinished.push(seed);
+  // 指标 5（Step 4）：曾被挡住并登记 waiter、但到终态都没恢复的续接（目标 0）
+  const waiters = pendingWaiterCount(state);
+  if (waiters > 0) {
+    neverResumed += waiters;
+    if (neverResumedSamples.length < 5) neverResumedSamples.push(`${seed}:waiters=${waiters}`);
+  }
 
   for (const r of state.blockedTakeovers as unknown as Rec[]) {
     totalRecs++;
@@ -150,7 +158,9 @@ const refusedKinds = new Map<string, number>();
 // ── 指标 4/5 ─────────────────────────────────────────────────────────────
 const fence = [...byClass.keys()].filter((k) => k.startsWith('fence')).reduce((s, k) => s + (byClass.get(k)?.n ?? 0), 0);
 console.log(`\n【指标 4】fenceBlockCount = ${fence}（Step 3a 起才有意义）`);
-console.log(`【指标 5】blockedContinuationNeverResumed = n/a（Step 4 接 waiter 之前不适用）`);
+console.log(
+  `【指标 5】blockedContinuationNeverResumed = ${neverResumed}${neverResumedSamples.length ? `  ${neverResumedSamples.join(' ')}` : ''}（目标 0）`,
+);
 
 // ── 分类里出现的「非设计如此」种类，单独点出来 ────────────────────────────
 const odd = [...byClass.entries()].filter(
