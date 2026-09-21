@@ -1542,22 +1542,28 @@ const ZHOUYU: Hero = {
                 api.loseHp(p, 1);
                 return;
               }
-              // 展示手牌并弃置同花色
+              // 展示手牌，然后弃置**与此牌花色相同的所有牌**——手牌 **＋装备区**。
+              // ⚠️ 装备牌**是有花色的**（deck.ts 的 mk() 每张都带 suit，牌面也印着，
+              //    例如 ♠5 青龙偃月刀），所以「掉不了装备」不是数据问题、是这里漏了：
+              //    原来只 `p.hand.filter(...)`。文本对比也支持：前一句写「展示所有**手牌**」，
+              //    这一句写「弃置与此牌花色相同的**所有牌**」（没有「手牌」二字）。
               pushLog(
                 st,
                 'skill',
                 `${p.name} 展示手牌：${p.hand.map((c) => cardLabel(c)).join('、') || '（无）'}。`,
               );
-              const same = p.hand.filter((c) => c.suit === card.suit);
-              for (const c of same) {
-                removeCard(p.hand, c.id);
-                toDiscard(st, c);
-              }
+              const equipped = EQUIP_SLOTS.map((slot) => p.equipment[slot]).filter(
+                (c): c is Card => c !== null,
+              );
+              const same = [...p.hand, ...equipped].filter((c) => c.suit === card.suit);
               pushLog(
                 st,
                 'skill',
                 `弃置了 ${same.length} 张与【${cardLabel(card)}】花色相同的牌。`,
               );
+              // 走引擎统一的弃置入口：装备牌会照常触发「失去装备」（枭姬那类），
+              // 也进「因弃置」的收口（礼让/定澜夜明珠），不是自己 removeCard + toDiscard
+              if (same.length > 0) api.discardCards(p.seatId, same);
             },
             // 选完回到周瑜的出牌阶段，否则这一局就卡住了
             player.seatId,

@@ -3653,6 +3653,37 @@ describe('新增技能（含国战版差异）', () => {
     expect(b.hand.every((c) => c.suit !== 'heart')).toBe(true);
     expect(state.log.some((e) => e.message.includes('花色相同'))).toBe(true);
   });
+
+  it('国战版反间：同花色的**装备牌**也要弃掉（文本是「所有牌」，不是「所有手牌」）', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'zhouyu', hand: [mk('f1', 'tao', 'heart', 5)], hp: 3 },
+        {
+          seatId: B,
+          name: '乙',
+          heroId: 'vanilla',
+          // 手牌：红桃（弃）+ 黑桃（留）；装备：红桃武器（弃）+ 黑桃防具（留）
+          hand: [mk('d1', 'shan', 'heart', 1), mk('d2', 'sha', 'spade', 2)],
+        },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.heroRevealed = true;
+    b.equipment.weapon = mk('w_heart', 'weapon', 'heart', 3); // 红桃武器 → 应当被弃
+    b.equipment.armor = mk('ar_spade', 'armor', 'spade', 2); // 黑桃防具 → 保留
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'useSkill', skillId: 'fanjian', cardIds: ['f1'], targetIds: [B] }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'discard' }));
+    // 红桃的手牌与**装备**都进弃牌堆；黑桃的留着
+    expect(state.discard.some((c) => c.id === 'd1')).toBe(true);
+    expect(state.discard.some((c) => c.id === 'w_heart'), '同花色装备牌也要弃').toBe(true);
+    expect(b.equipment.weapon).toBeNull();
+    expect(b.equipment.armor?.id).toBe('ar_spade');
+    // 手里只剩那张黑桃——反间给的那张（红桃桃）花色相同，也一起被弃掉
+    expect(b.hand.map((c) => c.id)).toEqual(['d2']);
+  });
 });
 
 // ——————————————————————————————————————————
