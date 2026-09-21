@@ -122,7 +122,6 @@ export type PromptKind =
   | 'pickHero'
   | 'respondTrick'
   | 'wuxieQueue'
-  | 'activeSkill'
   | 'choice' // 通用「选择一项」
   | 'pickCards' // 从一组牌里选若干张
   | 'pickSeats' // 一次选多名角色（多选座位原语）

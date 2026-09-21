@@ -167,10 +167,6 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
     case 'wuxieQueue':
       if (pending.askQueue[pending.askIndex] !== seatId) return null;
       return buildWuxiePrompt(state, seatId, pending.ctx);
-
-    case 'activeSkill':
-      // 多步技能交互的提示由具体技能构建（Step 6 实现）
-      return null;
   }
   return null;
 }

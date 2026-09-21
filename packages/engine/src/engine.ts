@@ -292,13 +292,6 @@ export function requestResumePlay(state: GameState, req: ResumePlayRequest): voi
 }
 
 /**
- * **写输入槽的唯一入口**：赋值 + 推进版本号（`pendingSeq`）。
- *
- * 以后不要直接 `state.pending = ...`——版本号是「收尾所有权围栏」的另一半
- * （见 capturePendingCheckpoint / canTakeOverPending 与 docs §5.124），
- * 直接写会让围栏误判成「这个槽没人碰过」。
- */
-/**
  * 拼点流程的起点快照（链会被鹰扬之类的询问挂起，收尾时要用）。
  */
 let pindianSince: PendingCheckpoint | null = null;
@@ -311,6 +304,13 @@ function fenceOf(pending: GameState['pending']): PendingCheckpoint | undefined {
   return pending ? pendingFences.get(pending) : undefined;
 }
 
+/**
+ * **写输入槽的唯一入口**：赋值 + 推进版本号（`pendingSeq`）。
+ *
+ * 以后不要直接 `state.pending = ...`——版本号是「收尾所有权围栏」的另一半
+ * （见 capturePendingCheckpoint / canTakeOverPending 与 docs §5.124），
+ * 直接写会让围栏误判成「这个槽没人碰过」。
+ */
 export function setPending(state: GameState, next: GameState['pending']): void {
   const prev = state.pending;
   state.pending = next;
@@ -2741,29 +2741,9 @@ function resumePlay(
       key,
     );
     return; // ← 不再往下走「照旧覆盖」：这一格归挡住我的那条询问所有
-    /**
-     * **让路**（本轮的实质改动）：既然挡住我的是一条「不是我的」询问（实测全是嵌套使用的
-     * `wuxieQueue` / `respondTrick` 窗口，`sameUse=false`），就别抢槽——交给
-     * `requestResumePlay` 去等：它「槽空才取、有人问就继续登记等待」，而且带**回合世代**
-     * 判断（等太久、回合已经交出去的那次请求直接作废，不许抢未来回合的控制权）。
-     *
-     * 为什么现在才敢这么改：这条路径历史上试过七到九次都被冒烟否掉，那时候
-     * ① 濒死链自己会 resumePlay（提交 B 才收成 continuation）、② 钩子链遇到询问不挂起
-     * （提交 C 之后才认全）、③ 等待者只能按「槽变空」唤醒（提交 A 才改成按 requestId 完成唤醒）。
-     * 这三样齐了之后，让路才是「等那一条问完再来」而不是「永远醒不过来」。
-     */
-    // ⚠️ **这里试过「让路」（改成登记等待，2026-09）——两处都站不住，已回退**，如实记：
-    //    ① 让路对象常常是**已经问完的轮询窗口**（`wuxieQueue` 问过最后一家、`askIndex` 越界
-    //       却还挂在槽里等后续流程替换）——它**不会再被回答**，登记等待＝整局挂死
-    //       （探针表现：下一家取 prompt 时 `unknown seat undefined`）；
-    //    ② 就算排除掉①，南蛮那类「依次响应」的推进也依赖这次抢槽：抢槽把窗口换掉、
-    //       续接队列里的推进才能接着跑（实测「南蛮入侵：依次出杀或受伤」停在第二个响应窗口上）。
-    //    量到的口径（60 局随机、163 次被挡）：**全部**是 `wuxieQueue` / `respondTrick` 且
-    //    `sameUse=false`——即「嵌套使用的窗口」，本来就该由收尾抢回槽来推进，没有一例是
-    //    「同一个结算里抢早了」。所以「让路」在本引擎里**没有可安全应用的场合**；
-    //    真要做它，得先把「窗口推进」从「依赖这次抢槽」改成窗口自己显式设置下一格
-    //    （见 docs §5.134）。设施（`pendingWaiters` / `waitPendingResolved` /
-    //    `completePendingRequest` / `requestResumePlay`）保留：唤醒点已经收口到 applyIntent 一处。
+    // （历史：2026-09 早期试过一次「让路」，当时三件前置没齐 —— 濒死链自己会 resumePlay、
+    //   钩子链遇询问不挂起、等待者只按「槽变空」唤醒 —— 结果全量变红已回退。那三条现在都补齐了
+    //   （提交 A/B/C + Step 1），当年的失败机理记在 docs §5.134。）
   }
   setPending(state, { kind: 'play', seatId: sourceId });
 }

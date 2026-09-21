@@ -163,8 +163,23 @@ console.log(
 );
 
 // ── 分类里出现的「非设计如此」种类，单独点出来 ────────────────────────────
-const odd = [...byClass.entries()].filter(
-  ([k]) => !k.includes('old=wuxieQueue') && !k.includes('old=respondTrick'),
+/**
+ * 已经**裁定过**的两类（有测量证据，见 docs/pending-ownership.md）：
+ *   · `wuxieQueue` / `respondTrick` 的残留窗口 —— Step 1 起应恒为 0（窗口自己离场）；
+ *   · `discard(answered=false)` —— Step 6 裁定为**设计如此**：收尾请求在「还没答完的弃牌询问」
+ *     前排队（登记等待），不是抢槽。§4.12 的 6.2 有调用栈与逐帧证据。这 21 条是**回归基线**，
+ *     数量或形状变了才是信号。
+ * 剩下没被这两条覆盖的记录才是「待观察」——**不要**为了让这一行好看而扩大白名单。
+ */
+const ADJUDICATED_PREFIXES = ['old=wuxieQueue', 'old=respondTrick', 'old=discard'];
+const adjudicated = [...byClass.entries()].filter(([k]) =>
+  ADJUDICATED_PREFIXES.some((p) => k.includes(p)),
 );
-console.log(`\n【待观察】不属于「设计如此」两类的记录：${odd.length} 类`);
+const odd = [...byClass.entries()].filter(
+  ([k]) => !ADJUDICATED_PREFIXES.some((p) => k.includes(p)),
+);
+console.log(
+  `\n【已裁定·设计如此】${adjudicated.map(([k, v]) => `${k.match(/old=([a-zA-Z]+)/)?.[1] ?? '?'}=${v.n}`).join('  ') || '（无）'}`,
+);
+console.log(`【待观察】不属于上述已裁定形状的记录：${odd.length} 类`);
 for (const [k, v] of odd) console.log(`  ${v.n}  ${k} ${nameOf(k.match(/old=([a-zA-Z]+)/)?.[1] ?? '')}`);

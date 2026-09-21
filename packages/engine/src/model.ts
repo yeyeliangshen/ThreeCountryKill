@@ -758,8 +758,6 @@ export type Pending =
       askIndex: number;
       onDone?: () => void;
     }
-  // 主动技能：出牌阶段使用主动技能（多步交互时暂停）
-  | { kind: 'activeSkill'; seatId: string; skillId: string }
   /**
    * 通用「选择一项」：某角色在若干选项里选一个。
    * resolve 是选完之后怎么继续——引擎的 GameState 常驻内存、不做序列化

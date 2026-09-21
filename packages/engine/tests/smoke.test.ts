@@ -156,8 +156,6 @@ function step(state: GameState, rand: () => number): string {
     case 'factionCall':
       applyIntent(state, p.askQueue[p.askIndex]!, { type: 'pass' });
       return 'factionCall';
-    case 'activeSkill':
-      throw new Error('activeSkill pending 没有驱动方式——这个原语还没接完');
   }
 }
 

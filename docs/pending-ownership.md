@@ -34,6 +34,12 @@
 
 ## 2. 仍然存在的问题（按严重程度）
 
+> **§2 的现状（2026-09-21，Step 0–6 施工完之后）**：下面 ①–⑤ 都已解决（①窗口自完成 = Step 1、
+> ②围栏覆盖 19/19 = Step 3a、③`requestResumePlay` 接线 = Step 4、④唤醒点收口 = Step 4.5/4.6、
+> ⑤三跳删除 = Step 5）；⑥ 由 `releaseIfMine` + 不变量 B/D 兜住（约定仍在，但有了探测器）；
+> ⑦ 仍在（诊断设施的成本**故意**保留）。各条的原文按原样留着，作为「当时的问题陈述」——
+> **不要**把它们当成当前状态读。收口结论见 §4.11 / §4.12。
+
 ### 问题 ①（结构性的、最关键）：**窗口推进依赖「收尾抢槽」**
 
 **症状**：不能把收尾改成「让路」（槽里有别人的询问就先等着）——一改，整局停在半路。
@@ -267,7 +273,7 @@ continuation 推进后续流程；如果 continuation 恢复时存在更新一�
 | `pickSeats` | 被问的人 | 1 处（`askPickSeats`） | `pickSeats` | 同上 | 是 | 是 | ✅ |
 | `factionCall` | 轮询队列（势力技代打） | 3 处 | `respondCard` / `pass` | 势力技链 | 是 | 是 | ✅ |
 | `viewCards` | 观看者 | 3 处 | `ack` | 观看流程 | 是 | 是 | ✅ |
-| `activeSkill` | —— | **0 处（没有任何创建点）** | —— | —— | —— | —— | ❌ **死代码**（Step 6 清） |
+| `activeSkill` | —— | ~~0 处~~ | —— | —— | —— | —— | ✅ **已删除**（Step 6：没有任何创建点，连同 `legal.ts` 的空 case、`PromptKind` 里的同名项、smoke 的兜底分支一起清掉） |
 
 ### 4.3 Step 2.2 identity / epoch（身份与世代）
 
@@ -518,3 +524,84 @@ Step 3b 的数据指出：107 条被挡里 **101 条是求闪询问（`respondSh
 **结论**：`resumePlay` 顶部不再有任何「替别人补跑」的跳转——控制权交接只剩一条路：
 **显式 continuation + 围栏 + waiter**。剩下的是 **Step 6**（架构收口 + 清 `activeSkill`
 死代码 + 指标 1 那一类的归属裁定）。
+
+### 4.12 Step 6（收口：清死代码 + 指标 1 归属裁定 + 最终统计）—— ✅ 已完成
+
+**6.1 清死代码：`activeSkill`**
+
+`Pending` 里那个 `{ kind: 'activeSkill'; seatId; skillId }` **没有任何创建点**（Step 2.1 的
+inventory 就标了「❌ 死代码（Step 6 清）」）。本轮连同它的三处陪衬一起删：
+
+| 位置 | 处理 |
+| --- | --- |
+| `model.ts` 的 `Pending` 联合 | 删掉该变体（多步主动技能真正用到时，走的是 `choice` / `pickCards` / `pickSeats` 通用原语） |
+| `legal.ts` 的 `case 'activeSkill'`（恒返回 `null` 的空分支） | 删掉 |
+| `protocol/views.ts` 的 `PromptKind` 里的 `'activeSkill'` | 删掉（引擎永远不会产生这种 prompt；UI 侧本来也没有处理分支） |
+| `smoke.test.ts` 的兜底 `case 'activeSkill': throw` | 删掉（它守的就是「这个原语还没接完」，现在原语不存在了） |
+
+**6.2 指标 1 那一类（21 条）的归属裁定：设计如此**
+
+Step 5 之后指标 1 只剩一类：`fence | resumePlay | old=discard(answered=false) | new=play`
+（200 局 21 条，全部 `outcome: 'deferred'`）。按纪律先**测量**再裁定，证据如下：
+
+- **把被挡时的调用栈打出来**（`SGS_FENCE_ENFORCE=1` 会在被挡处当场 throw，
+  异常里带 `caller: topStackFrame()`）：200 局里撞见 18 次「首次被挡」，按调用点分是
+  15× 攻击结算尾（`afterAttackSettledTail`）、2× 锦囊结算收尾（`endTrickResolution` /
+  `huoShaoStep`）、1× 钩子链；**按被挡的那一格分：18/18 全是 `discard(answered=false)`**。
+- **被挡的那一格是什么**：`discard` pending 只有 `beginDiscard` 一个创建点（弃牌阶段 / 弃牌
+  复查），所以被挡的永远是「**某人还欠着一次弃牌、询问挂在槽里、还没回答**」。
+- **让路的后果**：Step 4 之前这类收尾会**直接把那条弃牌询问覆盖掉**（= 欠的弃牌被静默跳过，
+  是**漏效果**的真 bug）；Step 4 起改成登记等待，等弃牌答完再由 `requestResumePlay` 决定还要不要
+  回出牌阶段——它有**回合世代围栏**：如果这一等把回合等过去了（弃牌答完通常就结束回合了），
+  那次请求**直接作废**，不会去抢下一个回合。
+- **数据核对**：指标 2 = 0（没有「已完成还占槽」）、指标 5 = 0（没有「登记了没人醒」）、
+  200/200 局正常分出胜负、全量测试全绿 ⇒ **等待都等到了、也没有卡死**。
+- **逐帧核对一次**（seed 21，把 `setPending` / `resumePlay` 的轨迹打出来）：
+  `[setPending] → discard | phase=discard` → `[resumePlay→play] 原来是 phase=discard
+  pending=discard` → 玩家答完弃牌 → 回合正常交给下家（期间**没有**出现「给旧回合玩家重开
+  出牌阶段」的杂散 pending）。
+
+⇒ 裁定：**这一类属于「设计如此」**（收尾请求在一条还没答完的弃牌询问前排队），
+保留 21 条记录当**回归基线**，不再当异常看。
+
+**6.3 测量中顺带查出的一处瑕疵（如实记，本轮**没改**）**
+
+上面逐帧核对时看到：`resumePlay` 里 `state.turn.phase = 'play'` 这一句写在**围栏判断之前**，
+所以**即使这次收尾最终被挡住（只是登记等待、没有拿走槽）**，`turn.phase` 也已经被改成 `'play'`。
+实测轨迹（seed 21）：正在**弃牌阶段**、槽里挂着弃牌询问，phase 却被这行改成了 `'play'`。
+
+- **为什么这是瑕疵**：`turn.phase` 是「流程自己在哪一段」的权威字段，被一条**没拿到控制权**的
+  收尾改写，就出现了「phase=play 但槽里是弃牌询问」的自相矛盾状态。
+- **为什么暂时不改**：200 局 + 全量测试都**没有可观测症状**（回合推进靠各流程自己的
+  continuation，不读这个字段；弃牌阶段能不能用某个技能看的是 pending 种类，不是 phase）。
+  理论上的两个受影响点记在这里：①严白虎·寄篱那种用 `座位:阶段` 当「本阶段第几次伤害」账本键的
+  技能会在这一小段窗口里重置账本；②`applyIntent` 末尾的兜底（`pending === null && phase ===
+  'discard'` → 重新 `beginDiscard`）在这一小段窗口里会走 `play` 那一支。
+- **修法（下一轮第一刀）**：把 `state.turn.phase = 'play'` 移到**确定要拿走槽之后**
+  （即围栏 / 让路分支之后），或者干脆由「装上 `play` 占用 pending」的地方（`setPending` 的两处
+  `{kind:'play'}`）来写 phase。要动这一句必须**先量**：同命令同局数跑 200 局对比指标块
+  （尤其指标 2/5 与不变量 B/D），再跑全量——它属于「控制流收尾」最敏感的那几行。
+
+**6.4 最终统计（Step 0 → Step 6，同命令同局数 200 局）**
+
+| 指标（§十二 固定指标块） | Step 0 基线 | Step 6 终局 |
+| --- | --- | --- |
+| 未结束局数 | 0 | **0** |
+| 指标 1 takeover 记录 | 459 | **21**（唯一一类：`discard` 未答 → 见 6.2，全部 `deferred`） |
+| ↳ `wuxieQueue` / `respondTrick` 残留 | 242 / 214 | **0 / 0** ✅ |
+| ↳ `respondSha`（已答仍占槽） | 1 | **0** ✅ |
+| ↳ `discard`（未答） | 2 | 21 —— ⚠️ **不是变多了**：Step 3a.1 把 fence 铺到 18/19 个收尾点之后，「本来会被覆盖的」才**看得见**（与 §4.7 的 3 → 257 同一个原因），行为没变 |
+| 指标 2 `completedPendingStillOccupyingSlot` | 0 | **0** |
+| 指标 3 `continuationExecutedTwice` | 0 | **0**（续接共执行 3523 次） |
+| 指标 4 `fenceBlockCount` | 459 | 21（= 指标 1 那 21 条，全部 defer） |
+| 指标 5 `blockedContinuationNeverResumed` | n/a | **0** ✅ |
+| 不变量 B 重复完成 / 不变量 D 释放被拒 | 0 / 0 | **0 / 0** |
+| 硬停线（新 takeover 类型 / 新不结束 seed / 异常 return） | — | **一条都没碰**（三跳是「测到无语义依赖」后按方案删的，不是靠放宽断言过测试） |
+| 全量测试 | 1022 + 34 + 46 | **1024 + 34 + 46**（新增 2 条敕令用例） |
+
+**结论（Step 6 收口后的状态）**：
+① `Pending` 的 11 个变体里不再有死代码；
+② 控制权交接只有一条路：**显式 continuation + 围栏 + waiter**；
+③ 「谁抢了谁的槽」这件事有完整的打点与不变量（指标 2/3、不变量 B/D）在网上；
+④ 指标 1 那 21 条有**证据充分的归属裁定**（设计如此，留作回归基线）；
+⑤ 6.3 那处 phase 写入时机是**已知、已测量、未修**的唯一遗留项，修法已写明。
