@@ -23,6 +23,7 @@ import {
   type PlayerView,
 } from '@sgs/protocol';
 import { EquipChip } from './EquipChip';
+import { equipSkillButtonOf } from '../equipSkill';
 import { heroArt } from './heroArt';
 import { useHoverTip } from './HoverTip';
 
@@ -61,6 +62,15 @@ export interface HeroPanelProps {
     /** 已经选中的牌 id（高亮用） */
     selectedIds: string[];
     onPick: (cardId: string) => void;
+  };
+  /**
+   * 装备牌**自带可用主动技**时（目前只有【木牛流马】）：点这张装备牌＝发动那个技能。
+   * 缺口背景见 `equipSkillButtonOf` 的注释（用户 2026-09-22：装了木牛流马点它没反应）。
+   */
+  equipUse?: {
+    /** 服务端下发的可用技能 id 列表（`prompt.legalSkillIds`） */
+    skillIds: readonly string[];
+    onUse: (skillId: string) => void;
   };
 }
 
@@ -109,6 +119,7 @@ export function HeroPanel({
   targetable,
   picked,
   equipPick,
+  equipUse,
 }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
@@ -224,6 +235,22 @@ export function HeroPanel({
           {(me.equipment.length > 0 || me.judgment.length > 0) && (
             <span className="hero-zones">
               {me.equipment.map((c: Card) => {
+                // 「自带可用主动技」的装备牌（木牛流马）：点它＝发动那个技能
+                const useSkillId = equipUse
+                  ? equipSkillButtonOf(c.equipName, equipUse.skillIds)
+                  : null;
+                if (useSkillId && !equipPick?.selectable) {
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="equip-slot-use"
+                      onClick={() => equipUse!.onUse(useSkillId)}
+                    >
+                      <EquipChip card={c} mode={mode} bind={bind} />
+                    </button>
+                  );
+                }
                 if (!equipPick?.selectable) {
                   return <EquipChip key={c.id} card={c} mode={mode} bind={bind} />;
                 }

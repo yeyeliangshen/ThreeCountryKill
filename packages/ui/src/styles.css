@@ -1580,6 +1580,22 @@ button:disabled {
   }
 }
 
+/*
+ * 装备牌**自带可用主动技**时的装备槽（目前只有【木牛流马】）：点它＝发动那个技能。
+ * 与「选代价」那种虚线不同，这里用实线金边表示「这是一次可发动的动作」。
+ */
+.equip-slot-use {
+  background: transparent;
+  padding: 0;
+  border: 1px solid var(--gold);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(214, 178, 106, 0.2);
+}
+.equip-slot-use:hover {
+  box-shadow: 0 0 0 2px rgba(214, 178, 106, 0.45);
+}
+
 /* 对手那边的标记行（国战标记是公开信息，用户 2026-09-21 要求显示） */
 .p-markers {
   display: flex;

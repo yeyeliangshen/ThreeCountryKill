@@ -1843,6 +1843,11 @@ export function Game() {
             targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
             picked={!!selected?.picked.includes(me.seatId)}
             onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
+            // 装备牌自带可用主动技（木牛流马）→ 点这张装备牌＝发动它（用户 2026-09-22 报的缺口）
+            equipUse={{
+              skillIds: skillIds,
+              onUse: (id) => enterSkillMode(id),
+            }}
             // 「弃置一张**牌**」的技能（costFrom: 'handEquip'）→ 自己装备区里的牌也可点当代价
             equipPick={
               skillMode && skillMode.skill.needsCards && skillMode.skill.costFrom === 'handEquip'
