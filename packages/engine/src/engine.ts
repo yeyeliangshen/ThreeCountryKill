@@ -268,9 +268,28 @@ export function requestResumePlay(state: GameState, req: ResumePlayRequest): voi
  * （见 capturePendingCheckpoint / canTakeOverPending 与 docs §5.124），
  * 直接写会让围栏误判成「这个槽没人碰过」。
  */
+/**
+ * 铁索连环蔓延链的起点快照。链会被濒死**打断**（`ongoingChain` 挂着等），之后由 resumePlay
+ * 接着跑，所以要跨调用存着（施工方案 Step 3a.1 的「流程起点」）。
+ */
+let chainSince: PendingCheckpoint | null = null;
+
+/** 拼点流程的起点快照（同 chainSince：拼点链会被鹰扬的询问挂起，收尾时要用）。 */
+let pindianSince: PendingCheckpoint | null = null;
+
+/** 每条 pending 被装上时的「流程起点快照」（施工方案 Step 3a.1：checkpoint 记在流程真正拿到控制权的那一刻） */
+const pendingFences = new WeakMap<object, PendingCheckpoint>();
+
+/** 这条询问所属流程的起点快照——收尾时交给 `resumePlay` 当围栏（没有就是「这条流程没有起点快照」，别现编） */
+function fenceOf(pending: GameState['pending']): PendingCheckpoint | undefined {
+  return pending ? pendingFences.get(pending) : undefined;
+}
+
 export function setPending(state: GameState, next: GameState['pending']): void {
   state.pending = next;
   state.pendingSeq++;
+  // 装上这一格＝这条流程开始拥有控制权：把此刻的槽快照记在它身上
+  if (next) pendingFences.set(next, capturePendingCheckpoint(state));
 }
 
 export function askChoice(
@@ -2533,7 +2552,7 @@ function resumePlay(
   }
   // 铁索连环蔓延被濒死打断 → 先把剩下的人打完
   if (state.ongoingChain) {
-    runChainSpread(state, () => resumePlay(state, sourceId));
+    runChainSpread(state, () => resumePlay(state, sourceId, chainSince ?? undefined));
     return;
   }
   // AOE 锦囊被濒死中断后，恢复时继续推进锦囊
@@ -2684,8 +2703,8 @@ function resumePlay(
  * 流程自己知道下一步该干什么的（某条锦囊的下一个目标、判定阶段接着往下走…）时，
  * 应该传那个下一步而不是本函数——后续提交逐个换掉。
  */
-function resumeTurnPlay(state: GameState): void {
-  resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+function resumeTurnPlay(state: GameState, since?: PendingCheckpoint): void {
+  resumePlay(state, state.seatOrder[state.turn.seatIndex]!, since);
 }
 
 // ——————————————————————————————————————————
@@ -2935,6 +2954,8 @@ function startAttack(
     cardId: card.id,
     // 技能新造的虚拟牌（寄篱）把来源标记带进来：技能侧靠它防止「再生的牌又触发自己」
     ...(card.generatedBy ? { generatedBy: card.generatedBy } : {}),
+    // 施工方案 Step 3a.1：这次攻击流程的起点快照（收尾时交给 resumePlay 当围栏）
+    pendingFence: capturePendingCheckpoint(state),
     asType,
     targetId,
     damage,
@@ -3415,6 +3436,8 @@ function queueChainSpread(state: GameState, attack: AttackContext, damage: numbe
   const rest = state.players.filter((p) => p.alive && p.chained).map((p) => p.seatId);
   if (rest.length === 0) return;
   state.ongoingChain = { attack, damage, rest, index: 0 };
+  // 施工方案 Step 3a.1：这条蔓延链的起点快照（被濒死打断后由 resumePlay 接着跑时当围栏）
+  chainSince = capturePendingCheckpoint(state);
 }
 
 /** 跑完横置蔓延再调 after；中途被打断就留在 ongoingChain 里等 resumePlay */
@@ -3622,7 +3645,7 @@ function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
       state,
       'cardResolved',
       { card, cardIds: first.cardIds, userSeatId: attack.sourceId },
-      () => resumePlay(state, state.seatOrder[state.turn.seatIndex]!),
+      () => resumePlay(state, state.seatOrder[state.turn.seatIndex]!, attack.pendingFence),
     );
     return;
   }
@@ -3633,7 +3656,7 @@ function afterAttackSettledTail(state: GameState, attack: AttackContext): void {
     after();
     return;
   }
-  resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+  resumePlay(state, state.seatOrder[state.turn.seatIndex]!, attack.pendingFence);
 }
 
 /**
@@ -4381,7 +4404,10 @@ function askDamageWeaponEffects(
         pushLog(st, 'discard', `${target.name} 的【${cardLabel(c)}】被弃置。`);
       }
       // 伤害被防止 → 没有伤害结算（铁索不蔓延、不进濒死）
-      const finishPrevented = (): void => resumePlay(st, st.seatOrder[st.turn.seatIndex]!);
+      // 施工方案 Step 3a.1：这条流程的起点就是此刻（拿快照当围栏）
+      const tianxiangSince = capturePendingCheckpoint(st);
+      const finishPrevented = (): void =>
+        resumePlay(st, st.seatOrder[st.turn.seatIndex]!, tianxiangSince);
       const lostEquips = victims.filter((c) => isEquipCard(c));
       // 一次动作同时失去多张装备 → **共用同一个 eventId**（旋略只问一次、兴棹只算一批）
       const batchId = lostEquips.length > 1 ? ++st.equipLossSeq : undefined;
@@ -5483,7 +5509,7 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       runResume(() => pending.resolve(state, player, picked.id));
       // 选完若没有产生新的流程（濒死、下一张判定等），把控制权还给发起者
       if (state.pending === null && pending.returnTo) {
-        resumePlay(state, pending.returnTo);
+        resumePlay(state, pending.returnTo, fenceOf(pending));
       }
             // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
       // 这条询问处理完了：唤醒在等它的那些待办（`Map<requestId, waiter[]>`，见 requestResumePlay）。
@@ -5527,7 +5553,7 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       setPending(state, null);
       // 技能发起的查看：接着跑技能的下一步；否则把控制权还给发起方
       if (p.after) p.after();
-      else if (p.returnTo) resumePlay(state, p.returnTo);
+      else if (p.returnTo) resumePlay(state, p.returnTo, fenceOf(p));
       // 输入槽空了 → 唤醒被挡住的收尾待办，再排空续接队列。
       // ⚠️ 这两句以前只写在 `if (p.after)` 分支里（我加唤醒语义时的疏漏）→ 走 returnTo 的那条
       //    分支不会立刻唤醒，被挡住的续接要拖到下一次询问/意图结束才醒（不是死锁，但会延迟）。
@@ -5569,7 +5595,7 @@ function onPickCards(
   runResume(() => pending.resolve(state, player, picked));
   // 选完若没有产生新的流程（濒死等），把控制权还给发起者
   if (state.pending === null && pending.returnTo) {
-    resumePlay(state, pending.returnTo);
+    resumePlay(state, pending.returnTo, fenceOf(pending));
   }
         // 输入槽空了 → 先唤醒「等这条询问」的收尾待办（订阅式），再排空续接队列
       // 这条询问处理完了：唤醒在等它的那些待办（`Map<requestId, waiter[]>`，见 requestResumePlay）。
@@ -5607,7 +5633,7 @@ function onPickSeats(
   );
   runResume(() => pending.resolve(state, player, ids));
   if (state.pending === null && pending.returnTo) {
-    resumePlay(state, pending.returnTo);
+    resumePlay(state, pending.returnTo, fenceOf(pending));
   }
   return { ok: true };
 }
@@ -8811,10 +8837,12 @@ function resolvePlayedSha(
     baseDamage?: number;
   },
 ): void {
+  // 施工方案 Step 3a.1：这条【杀】流程的起点快照（早退的收尾与 AttackContext 共用它）
+  const pendingFence = capturePendingCheckpoint(state);
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) {
     if (after) after();
-    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!, pendingFence);
     return;
   }
   // 「成为目标时取消之」（空城那类）：目标照常指定，这里取消 → 这次【杀】没有效果
@@ -8825,7 +8853,7 @@ function resolvePlayedSha(
       action: 'shield',
     });
     if (after) after();
-    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!);
+    else resumePlay(state, state.seatOrder[state.turn.seatIndex]!, pendingFence);
     return;
   }
   const attack: AttackContext = {
@@ -8846,6 +8874,7 @@ function resolvePlayedSha(
     ...(opts?.ignoreArmor ? { ignoreArmor: true } : {}),
     ...(opts?.skillId ? { skillId: opts.skillId } : {}),
     afterSettled: after,
+    pendingFence,
   };
   pushLog(state, log.kind, log.text);
   // 同 startAttack：旁观者的「其他角色使用牌时」要在链外先派（嵌套会挤掉询问）
@@ -9762,9 +9791,11 @@ function runArmyOrder(
   // 整条链走完的收口：先让技能结算自己的收益，再把控制权还回去。
   // 技能在出牌阶段发起时 resumeTo 就是技能使用者——不还的话 pending 会停在 null，
   // 出牌方再也动不了（和 pindian 是同一个坑）。
+  // 施工方案 Step 3a.1：这条军令链的起点快照
+  const armySince = capturePendingCheckpoint(state);
   const finish = (st: GameState, executed: string[]): void => {
     done(st, executed);
-    if (st.pending === null && resumeTo) resumePlay(st, resumeTo);
+    if (st.pending === null && resumeTo) resumePlay(st, resumeTo, armySince);
   };
   if (!initiator || named.length === 0) {
     finish(state, []);
@@ -9883,7 +9914,8 @@ function resolveFactionCard(
     case 'forced-sha': {
       const target = getPlayer(state, scene.ctx.shaTargetId ?? '');
       if (!target || !target.alive) {
-        resumePlay(state, scene.ctx.sourceId);
+        // 携带这一手牌所用锦囊的起点快照（Step 3a.1：场景的 ctx 就是那条流程）
+        resumePlay(state, scene.ctx.sourceId, scene.ctx.pendingFence);
         return;
       }
       resolvePlayedSha(state, caller, target.seatId, card, 'sha', {
@@ -10921,6 +10953,9 @@ function makeSkillApi(
      * 复用 askPickCards 就够（两边都扣好才亮牌，所以中途用 secret 不公布牌名）。
      */
     pindian: (initiatorId, targetId, onResult) => {
+      // 施工方案 Step 3a.1：这条拼点流程的起点快照（鹰扬的询问会把链挂起，
+      // 收尾那支 resumePlay 要用它当围栏；与铁索链同样跨调用存着）
+      pindianSince = capturePendingCheckpoint(state);
       const init = getPlayer(state, initiatorId);
       const tgt = getPlayer(state, targetId);
       if (!init || !tgt || init.hand.length === 0 || tgt.hand.length === 0) {
@@ -10984,7 +11019,7 @@ function makeSkillApi(
                   // 但鹰扬的 ±3 询问会把这条链**挂起**——一挂起那条兜底就不再生效，
                   // 整条链跑完 pending 会是 null（出牌方卡死）。这里显式补一次。
                   if (st2.pending === null && !st2.gameOver) {
-                    resumePlay(st2, st2.seatOrder[st2.turn.seatIndex]!);
+                    resumePlay(st2, st2.seatOrder[st2.turn.seatIndex]!, pindianSince ?? undefined);
                   }
                 },
               );
@@ -11229,6 +11264,8 @@ function makeSkillApi(
     giveCard: (fromSeatId, card, toSeatId, after) =>
       moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'give', opts?.actor),
     dealDamage: (target, damage, sourceId, attribute, after) => {
+      // 施工方案 Step 3a.1：这条伤害流程的起点快照（收尾还回出牌阶段时当围栏）
+      const dmgSince = capturePendingCheckpoint(state);
       const attack: AttackContext = {
         sourceId,
         cardId: '',
@@ -11248,7 +11285,7 @@ function makeSkillApi(
         }
         if (prevented) {
           after?.();
-          if (resumeTo) resumePlay(state, resumeTo);
+          if (resumeTo) resumePlay(state, resumeTo, dmgSince);
           return;
         }
         // 扣血 → 濒死/死亡 → 伤害后 → 技能自己的后续（after）→ 按需还回出牌阶段
@@ -11257,7 +11294,7 @@ function makeSkillApi(
           // 否则 after 里的询问会被 resumePlay 直接覆盖掉（凶算就是这样：
           // 它要在伤害结算后问「重置哪个限定技」）。
           after?.();
-          if (state.pending === null && resumeTo) resumePlay(state, resumeTo);
+          if (state.pending === null && resumeTo) resumePlay(state, resumeTo, dmgSince);
         });
       });
     },

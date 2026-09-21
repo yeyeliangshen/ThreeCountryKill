@@ -600,6 +600,11 @@ export interface AttackContext {
    */
   afterSettled?: () => void;
   /**
+   * 这次**攻击流程**的起点快照（施工方案 Step 3a.1）：`startAttack`/`resolvePlayedSha` 刚拿到
+   * 控制权时拍的槽快照，收尾 `resumePlay` 时当围栏用（判「我这段时间里有没有人创建更新一代」）。
+   */
+  pendingFence?: { requestId: number | null; slotVersion: number };
+  /**
    * 这次【杀】摆上槽的那个「求闪询问」（`{kind:'respondSha'}`）对象本身。
    *
    * 用途是「**谁建谁清**」：自动响应（八卦阵/护驾那类代打）会在**同一个 intent 里**

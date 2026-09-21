@@ -317,3 +317,43 @@ Step 2（本节的 inventory / identity / 不变量）已完成；接着按方�
 **Step 3a**（21/21 收尾点接 checkpoint + fence shadow 只观测）→ **Step 3b**（fence 真生效 +
 被挡时 fail-fast，不允许 silent drop）→ **Step 4**（接 `requestResumePlay` / waiter / drain 重入守卫）
 → **Step 5**（动态核查后逐支删三跳）→ **Step 6**（架构收口）。
+
+### 4.7 Step 3a（fence shadow：只观测、不改行为）—— ✅ 已完成
+
+**3a.1 收尾点的 checkpoint 覆盖**
+
+方案里写的是「21/21」；**实测这份代码里 `resumePlay` 的调用点是 19 处**（如实记，不凑数）：
+**18/19 带上了起点快照**，剩下 1 处是**设计上的例外**——
+
+- `returnPlayPhase`（技能 API）：它自带「槽里有询问就不动」的前置判断（`if (state.pending !== null) return`），
+  所以围栏对它是**恒真**的，硬塞一个「收尾前临时拍的快照」违反方案 §3a.1 的原意，故不加、只登记。
+- （静态扫描另有 1 处假阴性：`resumeTurnPlay(state, since?)` 的透传本身，语义上是带围栏的。）
+
+**checkpoint 的两处来源**（方案 §3a.1 的「真正开始拥有控制权的位置」）：
+
+1. **`setPending` 里统一记录**：每条 pending 被装上时，把此刻的槽快照记在它身上
+   （`pendingFences` WeakMap + `fenceOf(pending)`）——这就是「这条询问所属流程的起点」，
+   回答类的收尾（`returnTo` 那几条）直接取它；
+2. **长流程在入口显式拍**：攻击流程（`AttackContext.pendingFence`：`startAttack` / `resolvePlayedSha`）、
+   伤害流程（`dealDamage` 进门时）、天香（伤害被防止那一刻）、铁索连环蔓延链、军令链、拼点链、
+   势力技代打场景（沿用其 ctx 的）。
+
+⚠️ **Step 1 是 3a 的前提**：`canTakeOverPending` 的判据是「槽空 → 可以覆盖」——
+窗口自己离场之后，收尾看到的槽才是空的；否则每一次收尾都会被误判成「被挡」。
+
+**3a.3 影子数据（200 局，`SGS_PROBE_CLOBBER=1`）**：takeover 记录 257 条，两类：
+
+| 被换掉的那一格 | 次数 | 含义 |
+| --- | --- | --- |
+| `respondSha`（answered=true） | 237 | 【杀】的求闪询问**已答**、但流程还没换掉它，收尾把它覆盖掉 —— 与 Step 1 修的两类窗口**同一形状**（下一个该做自完成的窗口） |
+| `discard`（answered=false） | 20 | **没答过**的弃牌询问被收尾顶掉 —— 真·控制权问题，属 Step 3b/4 的范围 |
+
+**模型与事实是否一致（方案的 3a 验收问题）**：一致 —— 这两类都会被围栏判 `wouldBlock=true`
+（从流程起点之后确实有人创建了更新一代 pending），没有出现「没被挡但被换掉」或
+「被挡住但其实无害」的对立情况；新增的记录条数（3 → 257）**全部来自 Instrumentation 覆盖变广**
+（同一条 takeover 之前没有围栏、看不见），**不是行为变化**：这一节零行为改动，全量测试 1022 条与
+Step 1 后完全一致。
+
+**结论与下一步**：fence 的判定模型可以直接进 Step 3b（真生效 + 被挡时 fail-fast）。
+⚠️ 3b 按方案会**故意让一批对局失败**（被挡的 continuation 不许 silent drop），需要你点头再动。
+Step 3a 后的固定指标：指标 1 = 257（影子视角）、指标 2/3 = 0、不变量 B/D = 0、未结束 0。
