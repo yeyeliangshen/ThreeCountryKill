@@ -1140,6 +1140,11 @@ export interface GameState {
   deferredContinuations: Set<string>;
   /** 施工方案 Step 4.4：嵌套 drain 的次数（诊断用；正常应该很小） */
   pendingDrainReentry: number;
+  /**
+   * 施工方案 Step 5.1：`resumePlay` 开头那三跳旧机制（ongoingSkillChain / ongoingChain /
+   * ongoingTrick）各被命中过几次——动态核查用（能不能删要看「关掉之后全绿」，不能只看这个数）。
+   */
+  ongoingBranchHits: { skillChain: number; chain: number; trick: number };
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

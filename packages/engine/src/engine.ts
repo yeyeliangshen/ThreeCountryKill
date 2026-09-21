@@ -2437,6 +2437,24 @@ const FENCE_ENFORCE = (() => {
   return !!env?.SGS_FENCE_ENFORCE;
 })();
 
+/**
+ * 施工方案 Step 5.1：`resumePlay` 开头那三跳旧机制（`ongoingSkillChain` / `ongoingChain` /
+ * `ongoingTrick`）的**临时禁用开关**——`SGS_NO_ONGOING=skillChain,chain,trick`（逗号分隔，可只写一个）。
+ *
+ * 为什么要开关而不是直接读代码：方案要求「实际语义依赖 == 0」才允许删，而这个「依赖」只能靠
+ * **把某一支关掉、跑全量（含模糊/冒烟/历史种子）**来验（关掉之后全绿 = 这一支没有语义依赖）。
+ * 命中次数只是参考——命中 0 不等于可以删，没命中也可能只是 200 局没走到。
+ */
+const ONGOING_DISABLED = new Set(
+  (
+    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+      ?.SGS_NO_ONGOING ?? ''
+  )
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean),
+);
+
 /** 被围栏挡住、且还没有 waiter 机制可去 → 当场抛出（方案 §3b.1 的 FenceBlockedWithoutWaiter） */
 export class FenceBlockedError extends Error {
   readonly record: unknown;
@@ -2605,18 +2623,24 @@ function resumePlay(
   // 被濒死打断的多步链（军令逐个问、决绝逐个结算、钩子链里打出的濒死…）：先接着跑它们，
   // 别急着把出牌阶段占位 pending 摆回去（摆回去这些链就再也醒不过来了）。
   // 按**挂上的先后**醒（先挂的是更外层的等待者，它跑完自己会再调 resumePlay）。
-  if (state.ongoingSkillChain.length > 0) {
-    const run = state.ongoingSkillChain.shift()!;
-    run();
-    return;
-  }
+  // 施工方案 Step 5.2：`ongoingSkillChain` 的这一跳**已删除**（第一支）。
+  // 动态核查（200 局命中 0）＋「关掉它跑全量（1022 测试 + 200 局 + 冒烟）」全绿 ⇒ 无语义依赖。
+  // ⚠️ 注意：这个字段本身还活着——`drainResume` 的排空循环（applyIntent 收尾）在用它，
+  //    那是「钩子链里打出的濒死」那条必需机制（docs §5.130），**不属于三跳**，不能一起删。
   // 铁索连环蔓延被濒死打断 → 先把剩下的人打完
   if (state.ongoingChain) {
-    runChainSpread(state, () => resumePlay(state, sourceId, chainSince ?? undefined));
-    return;
+    state.ongoingBranchHits.chain++;
+    if (!ONGOING_DISABLED.has('chain')) {
+      runChainSpread(state, () => resumePlay(state, sourceId, chainSince ?? undefined));
+      return;
+    }
   }
   // AOE 锦囊被濒死中断后，恢复时继续推进锦囊
   if (state.ongoingTrick) {
+    state.ongoingBranchHits.trick++;
+    if (ONGOING_DISABLED.has('trick')) {
+      // 临时禁用（Step 5.1 的对照实验）：不动它、落到后面的正常路径
+    } else {
     const ctx = state.ongoingTrick;
     state.ongoingTrick = null;
     const source = getPlayer(state, ctx.sourceId);
@@ -2636,6 +2660,7 @@ function resumePlay(
     }
     advanceTrick(state, ctx);
     return;
+    }
   }
   const source = getPlayer(state, sourceId);
   if (!source || !source.alive) {
@@ -11772,6 +11797,7 @@ export function createGame(
     refusedReleases: [],
     deferredContinuations: new Set<string>(),
     pendingDrainReentry: 0,
+    ongoingBranchHits: { skillChain: 0, chain: 0, trick: 0 },
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],
