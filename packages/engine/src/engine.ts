@@ -6199,6 +6199,8 @@ function startTrickResolution(
   card: Card,
   targetIds: string[],
   targetCardId: string | undefined,
+  /** 结算完把控制权还给谁（缺省＝`player`）——见 `TrickContext.resumeSeatId` */
+  resumeSeatId?: string,
 ): void {
   const type = card.type as TrickType;
 
@@ -6213,6 +6215,7 @@ function startTrickResolution(
   // 构建 TrickContext
   const ctx: TrickContext = {
     sourceId: player.seatId,
+    ...(resumeSeatId ? { resumeSeatId } : {}),
     card,
     // 本次「使用牌」的编号（许攸·成略要把它造成的伤害绑回这一次使用）
     cardUseId: ++state.cardUseSeq,
@@ -6494,7 +6497,7 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
       );
     if (!needed) {
       runContinuation(state, `${ctx.cardUseId}:trick-end`, () =>
-        resumePlay(state, ctx.sourceId, ctx.pendingFence),
+        resumePlay(state, ctx.resumeSeatId ?? ctx.sourceId, ctx.pendingFence),
       );
       return;
     }
@@ -8615,8 +8618,6 @@ function onRespondTrick(
   intent: Extract<Intent, { type: 'respondCard' }>,
   ctx: TrickContext,
 ): ApplyResult {
-  // 离间虚拟锦囊
-  if (ctx.skillId === 'lilian') return respondLilianSha(state, seatId, intent, ctx);
   const type = ctx.card.type as TrickType;
   switch (type) {
     case 'juedou':
@@ -8636,8 +8637,6 @@ function onRespondTrick(
 
 /** passTrick → 按 trick 类型分发 */
 function onPassTrick(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
-  // 离间虚拟锦囊
-  if (ctx.skillId === 'lilian') return passLilian(state, seatId, ctx);
   const type = ctx.card.type as TrickType;
   switch (type) {
     case 'juedou':
@@ -8672,7 +8671,7 @@ function takeRespondedSha(
   const card = resolved.card;
   if (card.type !== 'sha' && !canUseAsCard(state, responder, card, 'sha')) return '需打出【杀】';
   // 用转化技就得明置提供它的武将。这条以前只在「被【杀】指定后出闪」那条路上做了，
-  // 于是南蛮/决斗/借刀/离间里用武圣、龙胆打出的【杀】不会亮将。
+  // 于是南蛮/决斗/借刀里用武圣、龙胆打出的【杀】不会亮将。
   revealForConversion(state, responder, card, 'sha');
   consumeCard(state, responder, card);
   return card;
@@ -8884,13 +8883,13 @@ function declaredTargetsOf(ctx: TrickContext): string[] | undefined {
 }
 
 /**
- * 一张**已经打出**的【杀】进入结算（借刀杀人 / 离间的强制出杀、以及势力技代打）。
+ * 一张**已经打出**的【杀】进入结算（借刀杀人的强制出杀、以及势力技代打）。
  *
  * 与 startAttack 的区别：牌不是从 source 手里拿的（可能由别人代打），也不计入出杀次数。
  *
  * 这几条路以前只跑了 becomeTarget + 不可闪避，**漏了防具与八卦阵**；
  * 现在统一走 becomeTargetFor → afterShaBecomeTarget，顺带修掉那个漏判
- * （也让大乔·流离能对借刀/离间的杀生效）。
+ * （也让大乔·流离能对借刀那张杀生效）。
  */
 function resolvePlayedSha(
   state: GameState,
@@ -8936,7 +8935,7 @@ function resolvePlayedSha(
     cardId: card.id,
     asType,
     targetId,
-    // 这条路（借刀/离间/视为使用一张杀）每次只结算一个目标
+    // 这条路（借刀 / 视为使用一张杀）每次只结算一个目标
     declaredTargets: [targetId],
     ...(card.generatedBy ? { generatedBy: card.generatedBy } : {}),
     ...(opts?.unrespondableTo?.(state, target) ? { unrespondableTargets: [targetId] } : {}),
@@ -8999,63 +8998,6 @@ function passJiedao(state: GameState, seatId: string, ctx: TrickContext): ApplyR
   }
   // 交出武器 = 失去装备区的一张牌（枭姬）
   fireEquipLost(state, holder, weapon, () => endTrickResolution(state, ctx));
-  return { ok: true };
-}
-
-// —— 离间（貂蝉主动技能：虚拟锦囊）——
-
-/** 离间响应：A 对 B 出杀 */
-function respondLilianSha(
-  state: GameState,
-  seatId: string,
-  intent: Extract<Intent, { type: 'respondCard' }>,
-  ctx: TrickContext,
-): ApplyResult {
-  const responder = getPlayerOrThrow(state, seatId);
-  const card = takeRespondedSha(state, responder, intent);
-  if (typeof card === 'string') return err(card);
-  const shaTargetId = ctx.shaTargetId!;
-  const shaTarget = getPlayer(state, shaTargetId);
-  if (!shaTarget || !shaTarget.alive) return err('出杀目标无效');
-  resolvePlayedSha(state, responder, shaTargetId, card, 'sha', {
-    kind: 'skill',
-    text: `${responder.name} 对 ${shaTarget.name} 使用了【杀】。`,
-  });
-  return { ok: true };
-}
-
-/** 离间弃权：A 不出杀 → 受 1 点伤害 */
-function passLilian(state: GameState, seatId: string, ctx: TrickContext): ApplyResult {
-  const victim = getPlayerOrThrow(state, seatId);
-  pushLog(state, 'skill', `${victim.name} 弃权，受到 1 点伤害。`);
-  const attack: AttackContext = {
-    sourceId: ctx.sourceId,
-    cardId: ctx.card.id,
-    asType: 'sha',
-    targetId: victim.seatId,
-    cardUseId: ctx.cardUseId,
-    declaredTargets: declaredTargetsOf(ctx),
-    damage: 1,
-    dodged: false,
-  };
-  damageStep(state, victim, attack, 1, (dmg, prevented) => {
-    if (!prevented) {
-      pushLog(
-        state,
-        'damage',
-        `${victim.name} 受到 ${dmg} 点伤害，剩余 ${Math.max(0, victim.hp)} 体力。`,
-      );
-    }
-    const tail = (): void => {
-      endTrickResolution(state, ctx);
-    };
-    if (prevented) {
-      endTrickResolution(state, ctx);
-      return;
-    }
-    // 扣血 → 濒死/死亡 → 伤害后 → 推进这张锦囊
-    afterDamageSettled(state, victim, attack, dmg, tail);
-  });
   return { ok: true };
 }
 
@@ -9267,20 +9209,21 @@ function applyWuxie(state: GameState, ctx: TrickContext, seatId: string, guo: bo
   }
   let scope: string[] = [seatId];
   if (guo) {
+    // ⚠️ 国无懈的**势力范围以「基准目标」当时的已确定势力为准**（不是使用者的势力）——
+    //    用户 2026-09-21 口径 §三/§五：`seatId` 就是被选中要抵消的那个目标。
+    // ⚠️ **基准未确定势力（暗将）时不是「不生效」**：国无懈照样抵消**基准本人**这次的效果，
+    //    只是没有「与其同势力、尚未结算的角色」可以一并扩散（§四）。
+    //    以前这里直接 `return` 并记一条「未能抵消任何效果」，等于把单体抵消也吞掉了。
     const faction = effectiveFaction(state, player);
-    if (faction === null) {
-      pushLog(state, 'trick', `${player.name} 尚未确定势力，【无懈可击·国】未能抵消任何效果。`, {
-        seat: player.seatId,
-        action: 'wuxie',
-      });
-      return;
-    }
-    const hit = wuxieScopeCandidates(state, ctx).filter((sid) => {
-      const p = getPlayer(state, sid);
-      return !!p && effectiveFaction(state, p) === faction;
-    });
-    if (hit.length === 0) hit.push(seatId);
-    scope = hit;
+    const spread =
+      faction === null
+        ? []
+        : wuxieScopeCandidates(state, ctx).filter((sid) => {
+            const p = getPlayer(state, sid);
+            return !!p && effectiveFaction(state, p) === faction;
+          });
+    // 基准本人**一定**在范围内（扩散列表是按「尚未结算的候选」算的，可能不含他）
+    scope = [...new Set([seatId, ...spread])];
   }
   ctx.wuxieChain = { scope, count: 1 };
   const names = scope.map((s) => getPlayer(state, s)?.name ?? '?').join('、');
@@ -9288,7 +9231,7 @@ function applyWuxie(state: GameState, ctx: TrickContext, seatId: string, guo: bo
     state,
     'trick',
     `${player.name} 使用了【${guo ? '无懈可击·国' : '无懈可击'}】，抵消了【${trickName}】对 ${names} 的效果${
-      guo ? '（同一势力尚未结算的角色一并抵消）' : ''
+      guo && scope.length > 1 ? '（同一势力尚未结算的角色一并抵消）' : ''
     }。`,
     { seat: player.seatId, action: 'wuxie' },
   );
@@ -9950,10 +9893,6 @@ function factionCallScene(seatId: string, pending: Pending): FactionScene | null
   }
   if (pending.kind !== 'respondTrick' || pending.responderId !== seatId) return null;
   const ctx = pending.ctx;
-  // 离间是技能造的虚拟锦囊，也要一张【杀】
-  if (ctx.skillId === 'lilian') {
-    return { kind: 'forced-sha', needType: 'sha', ctx, logKind: 'skill' };
-  }
   switch (ctx.card.type) {
     case 'wanjian':
       return { kind: 'wanjian', needType: 'shan', ctx };
@@ -10018,7 +9957,7 @@ function restoreFactionScene(state: GameState, seatId: string, scene: FactionSce
  * 势力技（曹操·护驾 / 刘备·激将）：需要打出一张牌时，令同势力角色代打。
  *
  * 覆盖的场景见 factionCallScene：需要【闪】的被杀指定与万箭齐发、
- * 需要【杀】的决斗/南蛮/借刀/离间。
+ * 需要【杀】的决斗/南蛮/借刀。
  */
 function onFactionCall(
   state: GameState,
@@ -11348,6 +11287,13 @@ function makeSkillApi(
       moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'gain', opts?.actor),
     giveCard: (fromSeatId, card, toSeatId, after) =>
       moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'give', opts?.actor),
+    // 「视为使用一张锦囊」（貂蝉·离间的虚拟【决斗】）：走正常锦囊流程，
+    // 所以它**能被无懈**、也能被「成为目标时」的技能响应（用户 2026-09-21 口径）。
+    useVirtualTrick: (sourceSeatId, card, targetIds, resumeSeatId) => {
+      const src = getPlayer(state, sourceSeatId);
+      if (!src) return;
+      startTrickResolution(state, src, card, targetIds, undefined, resumeSeatId);
+    },
     dealDamage: (target, damage, sourceId, attribute, after) => {
       // 施工方案 Step 3a.1：这条伤害流程的起点快照（收尾还回出牌阶段时当围栏）
       const dmgSince = capturePendingCheckpoint(state);

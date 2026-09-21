@@ -2049,25 +2049,29 @@ describe('武将技能（Step 6）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
-  // 10. 貂蝉·离间：令男性 A 对男性 B 出杀
-  it('貂蝉·离间：令关羽对张飞出杀，张飞不出 → 受伤害', () => {
+  // 10. 貂蝉·离间：令男性 A **视为对男性 B 使用一张【决斗】**（用户 2026-09-21 给的现行文本）
+  //
+  // ⚠️ 口径替换记录：旧实现是「令 A 对 B 出【杀】，A 不出则受 1 伤害」的**简化版**，
+  //    手搓了一个 respondTrick 假 pending —— 于是这张虚拟锦囊**绕过了无懈窗口**
+  //    （而它本身就是一张锦囊，应当可被无懈）。旧口径与来源见 docs §5.179。
+  it('貂蝉·离间：令关羽视为对张飞使用【决斗】，张飞不出杀 → 受伤', () => {
     const state = makeGame([
       { seatId: A, name: '貂蝉', heroId: 'diaochan', hand: [sha('a1')] },
       { seatId: B, name: '关羽', heroId: 'guanyu', hand: [sha('b1')] },
       { seatId: C, name: '张飞', heroId: 'zhangfei', hand: [] },
     ]);
-    // 貂蝉弃 1 牌，选 B（关羽）对 C（张飞）出杀
+    // 貂蝉弃 1 牌，选 B（关羽）对 C（张飞）使用【决斗】
     ok(act(state, A, { type: 'useSkill', skillId: 'lilian', cardIds: ['a1'], targetIds: [B, C] }));
-    // B 被要求出杀 → B 出杀
+    // 这张虚拟【决斗】走**正常锦囊流程**：只要场上有【无懈可击】（含国/看破那类转化），
+    // 就会先开无懈窗口——这条在本局没有无懈，所以窗口不存在，直接进响应
+    // （「带无懈时会开窗、且这张决斗可被抵消」见 tests/wuxie.test.ts 的 ⑪）。
     expect(state.pending?.kind).toBe('respondTrick');
-    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
-    // C 被要求出闪 → C 弃权 → 受伤害
-    expect(state.pending?.kind).toBe('respondSha');
+    // 轮到决斗的目标 C（张飞）出杀 → 弃权 → 受 1 点伤害
+    expect(state.pending?.kind).toBe('respondTrick');
     ok(act(state, C, { type: 'pass' }));
     const c = state.players.find((p) => p.seatId === C)!;
-    const b = state.players.find((p) => p.seatId === B)!;
     expect(c.hp).toBe(3);
-    expect(b.hand).toHaveLength(0);
+    expect(state.log.some((e) => e.message.includes('令 关羽 视为对 张飞 使用【决斗】'))).toBe(true);
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
@@ -10188,7 +10192,11 @@ describe('势备篇 · 无懈可击·国（势力范围）', () => {
     }
   });
 
-  it('基准角色尚未确定势力时，什么也抵消不掉', () => {
+  /**
+   * ⚠️ **口径已反转**（用户 2026-09-21）：未确定势力只意味着「不能以他为基准扩散到同势力角色」，
+   * **不影响对他本人的单体抵消**。这条用例以前写成「什么也抵消不掉」（把 bug 当成了期望）。
+   */
+  it('基准角色尚未确定势力：单体抵消照常成立，只是不能按势力扩散', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [nanman('a1')] },
       {
@@ -10207,12 +10215,14 @@ describe('势备篇 · 无懈可击·国（势力范围）', () => {
     while (state.pending?.kind === 'wuxieQueue') {
       ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
     }
-    // 没抵消掉 → 乙自己照常第一个响应（南蛮从下家开始）
+    // 乙未确定势力，但**国无懈的单体模式照样抵消他**这次的效果（只是不能扩散）
+    expect(state.log.some((e) => e.message.includes('未能抵消任何效果'))).toBe(false);
+    expect(state.log.some((e) => e.message.includes('抵消了【南蛮入侵】对 乙 的效果'))).toBe(true);
+    // 乙被抵消 → 跳过；轮到丙响应南蛮
     expect(state.pending?.kind).toBe('respondTrick');
     if (state.pending?.kind === 'respondTrick') {
-      expect(state.pending.responderId).toBe(B);
+      expect(state.pending.responderId).toBe(C);
     }
-    expect(state.log.some((e) => e.message.includes('未能抵消任何效果'))).toBe(true);
   });
 
   it('单目标锦囊被抵消 = 整张没了效果', () => {

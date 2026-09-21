@@ -821,7 +821,7 @@ const DIAOCHAN: Hero = {
         );
         return males.length >= 2;
       },
-      execute: (state, player, intent, _api) => {
+      execute: (state, player, intent, api) => {
         const ids = intent.cardIds ?? [];
         if (ids.length === 0) return '请选择一张牌弃置';
         const card = removeCard(player.hand, ids[0]!);
@@ -837,21 +837,22 @@ const DIAOCHAN: Hero = {
         pushLog(
           state,
           'skill',
-          `${player.name} 发动【离间】，令 ${a.name} 对 ${b.name} 使用【杀】。`,
+          `${player.name} 发动【离间】，令 ${a.name} 视为对 ${b.name} 使用【决斗】。`,
         );
-        // 创建虚拟锦囊：A 须对 B 出杀，否则受1伤害
-        state.pending = {
-          kind: 'respondTrick',
-          responderId: aId,
-          ctx: {
-            sourceId: player.seatId,
-            card: { id: `lilian-${aId}-${bId}`, type: 'sha', suit: 'heart', rank: 0 },
-            responders: [aId],
-            responderIndex: 0,
-            shaTargetId: bId,
-            skillId: 'lilian',
-          },
-        };
+        // 生成一张**虚拟【决斗】**，由 A 对 B 使用（用户 2026-09-21 给的现行文本：
+        // 「令一名男性角色视为对另一名男性角色使用一张【决斗】」）。
+        //
+        // ⚠️ 必须走**正常锦囊流程**（`api.useVirtualTrick`）而不是手搓 pending：
+        //    这张【决斗】**本身可以被无懈**（离间这个技能不能），也要能被「成为目标时」
+        //    的技能响应。旧实现（手搓一个 需出【杀】的 respondTrick）把这两样都绕过去了，
+        //    而且文本本身也是简化版（docs §5.179）。
+        api.useVirtualTrick(
+          aId,
+          { id: `lilian-${aId}-${bId}`, type: 'juedou', suit: 'heart', rank: 0, virtual: true },
+          [bId],
+          // ⚠️ 控制权还给**貂蝉**：这张【决斗】的“使用者”虽是关羽，但回合仍是貂蝉的出牌阶段
+          player.seatId,
+        );
       },
     },
   ],

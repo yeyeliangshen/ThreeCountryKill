@@ -631,6 +631,14 @@ export interface AttackContext {
 // 即时锦囊结算上下文（贯穿：打出→无懈可击询问→结算→响应）
 export interface TrickContext {
   sourceId: string;
+  /**
+   * **结算完把控制权还给谁**——缺省＝`sourceId`（谁用的牌就还给谁）。
+   *
+   * 只有「**在别人的回合里，替别人造一张牌**」那种技能才需要它：貂蝉·离间是貂蝉出牌阶段
+   * 发动的，虚拟【决斗】的“使用者”是关羽（他要跟张飞决斗），但**回合还是貂蝉的**——
+   * 收尾必须还给出牌阶段的貂蝉，不能把控制权交给关羽（用户 2026-09-21 口径）。
+   */
+  resumeSeatId?: string;
   card: Card;
   // 过河拆桥/顺手牵羊：目标与指定的明牌区牌
   targetId?: string;
