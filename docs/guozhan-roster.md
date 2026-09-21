@@ -7138,3 +7138,64 @@ npx tsx <脚本>   # 跑 1..200 局，命中即打印 seed/步/owner/count/当�
 把它摸上来，然后：点装备牌 → 应进入「选择一张手牌扣置」的询问 → 确认后牌扣到装备牌下
 （装备槽显示 `·辎1`）。同一局顺带把 §5.186 的**暗将**那条也点一遍（点暗将的技能条按钮 →
 应自动明置该武将）。
+
+### 5.188 「从未知手牌中选牌」需要一套**通用盲选**机制（用户 2026-09-22 报，含设计契约）
+
+用户口径的核心：**规则层负责决定「可以操作谁的哪些牌」，UI 层负责按当前玩家的可见权限决定
+「显示牌面还是牌背」**；不许每个技能（例如张辽【突袭】）各写一套选牌 UI。
+
+#### 一、测量：现在确实会**泄露牌面**
+
+`heroes.ts` 的 `tuxiTakeCards`（突袭拿牌那一步）：
+
+```ts
+api.askPickCards(state, player.seatId, `【${skillName}】：选择获得 ${t.name} 的一张手牌`,
+                 t.hand.slice(), 1, 1, (st, p, chosen) => { … api.transferCard(…) });
+```
+
+把**整份牌面**（`Card` 对象含 `type/suit/rank/equipName`）交出去 → `pickCards` 提示直接下发这些字段
+→ 界面上就是「把对方手牌画出来给选择者看」✗（协议 `views.ts` 里那句
+「给的是**完整牌面**而不是 id」正是这个坑）。同类的还有其它 `askPickCards` 调用点
+（技能里共 **N 处**，其中候选来自「别人的手牌」的那些都属于本缺陷）。
+
+#### 二、设计契约（下一轮照这个施工）
+
+**引擎/协议**：`pickCards` 提示增加「这批候选对**选择者**是否隐藏」的表达，并**在服务端就不下发牌面**：
+
+```ts
+// PromptView 新增（仅 pickCards 有）
+pickHidden?: boolean;          // 候选对选择者隐藏 → 只给 id，界面必须画牌背
+pickCards?: Card[];            // 隐藏时：只填 { id }，type/suit/rank 一律不填（服务端不泄露）
+pickOwnerSeatId?: string;      // 这些牌属于谁（界面用来标「张辽 要看 曹操 的手牌」）
+pickVisibleIds?: string[];     // 其中**已经因其他效果公开**的那几张（可见性由规则层给，UI 不猜）
+```
+
+- 规则层（技能/牌）只调用一个原语，例如 `api.askBlindPickCards({ owner, chooser, title, min, max }, cb)`
+  —— 它内部把「可见性」算好（默认：手牌对别人隐藏；已经公开的那几张进 `pickVisibleIds`）；
+- **`pickHidden` 只影响下发的字段**，选择与后续操作（获得/弃置/展示/移到别的区）仍由
+  `chooseOption`/`pickCards` + 各自的 API（`transferCard` / `discardCards` / `viewCards`…）执行 ✓；
+- 「被选中的牌在规则要求公开之前**不得翻开**」：即 `pickCards` 回传只给 id，
+  牌面在**结算效果**里按各自口径公开（火攻的「展示」、知己知彼的私密观看都已有各自通道）。
+
+**UI**（一个通用组件，`ui/src/components/BlindHandPick.tsx`）：
+
+| 输入 | 说明 |
+| --- | --- |
+| `ownerName` / `ownerSeatId` | 这一组牌背是谁的手牌（多目标时**每组一块**，用布局分区，不加文字标签） |
+| `count` | 牌背张数（＝可选择位置数） |
+| `visibleCards` | `pickVisibleIds` 命中的那几张 → **画牌面**（已公开的不能假装看不见） |
+| `min` / `max` | 单选/多选（多选时给出「已选 k / 至多 n」的反馈） |
+| `selectedIds` | 已选反馈（牌背高亮 + 序号） |
+| `onPick(id)` | 点牌背 → 按 id 选择（**不翻开**） |
+
+#### 三、下一步（下一轮按顺序做，别跳）
+
+1. 协议 + 引擎：加 `pickHidden/pickOwnerSeatId/pickVisibleIds` 与 `api.askBlindPickCards`；
+   把**候选来自别人手牌**的那几处 `askPickCards` 改过去（突袭 / 巧变等，逐个点名）；
+2. 用例：① 断言**服务端不下发牌面**（隐藏时 `pickCards[i]` 只有 id）；② 断言「已公开的那几张」
+   仍在 `pickVisibleIds` 里；③ 突袭端到端：选牌背 → 牌进张辽手里、且选择过程中不泄露牌面；
+3. UI：`BlindHandPick` 组件 + 静态守门（与 `skillPhase`/`draftSlots` 同一套做法）；
+4. 真机：**手机 + 桌面各一遍**（摸到突袭 → 看牌背、点一张、看它进手牌）。
+
+⚠️ **本轮只提交测量与设计**：额度用尽，**没有**动代码——理由是不想交「引擎开始隐藏、界面还没适配」
+的半成品（那会把隐藏手牌渲染成空牌，比现状更糟）。
