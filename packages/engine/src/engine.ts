@@ -2268,6 +2268,13 @@ function disposeJudgeCard(state: GameState, judgeCard: Card, gainer: Player | un
 function endTurn(state: GameState): void {
   if (state.gameOver) return;
   const cur = getPlayerOrThrow(state, state.seatOrder[state.turn.seatIndex]!);
+  // 「谁建谁清」：回合结束时把它那条**弃牌询问**清掉。
+  // ⚠️ 不清的话它会一直占着槽，直到「下家回合第一次 setPending」才被换掉——而回合交接
+  //    （endTurn → 下家摸牌 → enterPlayPhase）中间没有 setPending，于是出现
+  //    「phase=play 却挂着上家已答完的 discard 询问」的自相矛盾状态（模糊网的不变量抓到的
+  //    就是这个，seed 43 第 239 步；陆逊换版改了随机轨迹才把它撞出来，是**既有隐患**）。
+  //    弃牌阶段到这一步必然已经结束，所以槽里那条 discard 一定是旧的、可以安全释放。
+  if (state.pending?.kind === 'discard') releaseIfMine(state, state.pending);
   // 结束阶段的钩子也可能挂起（闭月的「可以」）
   runHooksPausable(state, 'turnEnd', cur, undefined, () => {
     // 「其他角色的结束阶段」（乐进·骁果）：依次问其余存活玩家
