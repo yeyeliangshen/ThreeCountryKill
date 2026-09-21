@@ -10,7 +10,7 @@ import type {
 } from '@sgs/protocol';
 import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
 import { applyDeckExtensions, applyPoolExtensions } from './extensions';
-import { canPairHeroes, determineDualFaction, wenjiMarked } from './heroes';
+import { canPairHeroes, determineDualFaction, grantsCareeristMark, wenjiMarked } from './heroes';
 
 import {
   CARD_TYPE_NAME,
@@ -10398,16 +10398,20 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
       }
     }
     onHeroRevealed(state, player);
-    // ㈡ 「野心家」**标记**：首次明置**主将**牌后获得一枚，可以当作【阴阳鱼】【珠联璧合】
-    //     【先驱】中任意一种使用（用户核对后的当前规则：这枚标记**不等于**野心家身份，
-    //     不是野心家的人照样能拿到）。
-    //     例外：主将因人数超限而转成野心家**身份**的人不发（那是名字撞车的另一个东西）。
-    if (!wasMainRevealed && player.heroRevealed && player.faction !== 'ambitionist') {
+    // ㈡ 「野心家」**标记**（2026-09-21 口径更新，见 docs §5.176）：
+    //    · **只有牌面是「野」的天生野心家武将**（钟会/孙綝/公孙渊…）**首次明置主将**时获得，
+    //      可以当作【阴阳鱼】【珠联璧合】【先驱】中任意一种使用；
+    //    · 普通身份（魏蜀吴群）的主将亮明**不发**——旧口径「不是野心家的人照样能拿到」作废；
+    //    · **因人数超限转化**成野心家**身份**的人不发（他只是身份变野，武将牌本来并不是野）；
+    //    · 版本例外：**SP司马昭** 不发（官方标记说明单独把他排除，见 `grantsCareeristMark`）。
+    //    ⚠️ 判据**不能**写成 `player.faction !== 'ambitionist'`（旧写法）——那样会把「天生野心家」
+    //       排除掉、却给普通武将发，正好反了；两套概念要分开（`CareeristFaction` / `CareeristMark`）。
+    if (!wasMainRevealed && player.heroRevealed && grantsCareeristMark(hero)) {
       addMarker(player, 'ambitionist');
       pushLog(
         state,
         'marker',
-        `${player.name} 首次明置主将，获得【野心家】标记（可当作阴阳鱼 / 珠联璧合 / 先驱使用）。`,
+        `${player.name} 首次明置野心家主将，获得【野心家】标记（可当作阴阳鱼 / 珠联璧合 / 先驱使用）。`,
         { seat: player.seatId },
       );
     }

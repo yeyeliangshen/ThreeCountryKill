@@ -272,6 +272,19 @@ export interface Hero {
    */
   secondFaction?: Faction;
   /**
+   * **首次明置这张主将牌时，是否获得「野心家」标记**（不臣篇）。
+   *
+   * 默认＝牌面是野心家武将（`faction === 'ambitionist'`，钟会 / 孙綝 / 公孙渊…）；
+   * 显式写出来是给**版本例外**留位置——目前只有 **SP司马昭**：官方标记说明里
+   * 「若此武将牌不为超出势力角色数转化的野心家角色**或 SP司马昭**，你获得一个『野心家』标记」
+   * 把他单独排除在外（用户 2026-09-21 给的口径 + 同页原文，见 docs §5.176），所以他是 `false`。
+   *
+   * ⚠️ 这枚**标记**与「是不是野心家**身份**」是两套概念，绝不能用
+   * `player.faction === 'ambitionist'` 去发（那会把**因人数超限转化**来的野心家也发一个——
+   * 他们只是身份变野，武将牌本来并不是野）。
+   */
+  careeristMarkOnReveal?: boolean;
+  /**
    * 「这个武将给**同势力角色**授予一个出牌阶段技能」——值是那条技能的 id（目前只有君孙权的督授）。
    * 与 `lordBanner` 同一类：引擎按它去场上找提供者（见 `factionGrantedActiveSkills`）。
    */
@@ -14729,6 +14742,9 @@ const SP_SIMAZHAO: Hero = {
   name: 'SP司马昭',
   pack: 'buchen',
   faction: 'ambitionist', // **野心家武将本体**（野势力），不是人数超限转化出来的那种
+  // ⚠️ 版本例外：官方标记说明把 SP司马昭 单独排除在「首次明置主将得『野心家』标记」之外
+  // （docs §5.176）；其余三位野心家武将（公孙渊/孙綝/界钟会）走默认 = 发。
+  careeristMarkOnReveal: false,
   maxHp: 3,
   gender: 'male',
   modes: ['guozhan'],
@@ -16746,6 +16762,30 @@ export function sameHeroBody(a: string, b: string): boolean {
  *    否则会出现「界面拼不出来、引擎却收」的组合——实测踩过：孟达(魏/蜀) + 关羽(蜀)
  *    在选将界面上永远落不到副将位（界面只比 `faction`，魏 ≠ 蜀），玩家根本选不出这个合法组合。
  */
+/**
+ * 首次明置这张主将牌时，**要不要发「野心家」标记**（不臣篇；用户 2026-09-21 口径，见 docs §5.176）。
+ *
+ * 官方标记说明：**「当你首次明置主将牌后，若此武将牌不为超出势力角色数转化的野心家角色或
+ * SP司马昭，你获得一个『野心家』标记」**……本仓库按用户口径实现为「**牌面是野心家武将**的
+ * 主将（钟会 / 孙綝 / 公孙渊…）才发」，即：
+ * - 天生野心家武将亮出野心家主将 → 发（`careeristMarkOnReveal` 默认 true）；
+ * - **SP司马昭**：官方单独排除 → 显式 `careeristMarkOnReveal: false`；
+ * - 普通武将（魏蜀吴群）的主将亮明 → **不发**；
+ * - **因人数超限转化**成野心家身份的角色 → 不发（他只是身份变野，武将牌本来并不是野）。
+ *
+ * ⚠️ 这枚**标记**（`CareeristMark`）与「是不是野心家**身份**」（`CareeristFaction`）是两套概念，
+ *    判断条件绝不能合并——用 `player.faction === 'ambitionist'` 发标记就会把超编转化的人也算进去。
+ *
+ * ⚠️ **待确认的口径冲突（如实记）**：上面那句官方原文的字面读法是「只要首次明置主将、且不是
+ *    超编转化/SP司马昭，就发」——那样**普通武将也会拿到**这枚标记；而用户 2026-09-21 明确
+ *    「普通身份即魏蜀吴群的主将亮明身份时**不**获得」。本仓库按**用户口径**实现（更严的那一侧），
+ *    并且把判断收成字段 + 这一个函数：若日后确认普通武将也该发，只需把这里的默认值放开。
+ */
+export function grantsCareeristMark(hero: Hero | undefined): boolean {
+  if (!hero) return false;
+  return hero.careeristMarkOnReveal ?? hero.faction === 'ambitionist';
+}
+
 export function canPairHeroes(main: Hero | undefined, deputy: Hero | undefined): boolean {
   if (!main || !deputy) return false;
   if (main.faction === 'ambitionist') return deputy.faction !== 'ambitionist';

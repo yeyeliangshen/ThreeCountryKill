@@ -57,6 +57,7 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
   type SeatSetup,
   determineDualFaction,  turnDiscardCountBy,  markerCount,  addMarker,  takeOverPendingIfUnchanged,  canTakeOverPending,  notePendingSlotWrite,  capturePendingCheckpoint,  type Pending,  seededRng,
   sameKnownFaction,
+  configFromPreset,
 } from '../src';
 import {
   capturePendingCheckpoint,
@@ -23091,34 +23092,89 @@ describe('国战 · 君主将（特性）', () => {
     expect(state.log.filter((l) => l.message.includes('额外结算一次')).length).toBe(1);
   });
 
-  it('「野心家」标记：首次明置主将后获得，能当阴阳鱼/珠联璧合/先驱用（≠野心家身份）', () => {
-    const state = createGame(
-      [
-        { seatId: 'A', name: '甲', heroId: 'guanyu' },
-        { seatId: 'B', name: '乙', heroId: 'xuchu' },
-        { seatId: 'C', name: '丙', heroId: 'lvbu' },
-      ],
-      'TEST',
-      { mode: 'guozhan', freePick: true },
-    );
-    ok(act(state, 'A', { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'zhangfei' }));
-    ok(act(state, 'B', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
-    ok(act(state, 'C', { type: 'pickHero', heroId: 'lvbu', deputyHeroId: 'diaochan' }));
-    const a = state.players.find((x) => x.seatId === 'A')!;
-    // 明置**主将**（关羽）→ 拿到「野心家」标记；身份仍是蜀（这俩只是名字撞车）
-    state.turn = { seatIndex: 0, phase: 'prepare' };
-    state.pending = {
-      kind: 'choice',
-      seatId: 'A',
-      title: '准备阶段：是否明置武将牌？',
-      options: [{ id: 'all', label: '全部明置' }],
-      resolve: () => {},
+  it('「野心家」标记：**只有天生野心家武将**亮出野心家主将才发，能当阴阳鱼/珠联璧合/先驱用', () => {
+    // 用户 2026-09-21 口径（docs §5.176）：这枚**标记** ≠ 野心家**身份**，两套概念分开判——
+    //   · 普通武将（魏蜀吴群）主将亮明 → **不发**（旧口径「不是野心家也能拿」作废）；
+    //   · 天生野心家武将（牌面野）亮出野心家主将 → **发**；
+    //   · 因人数超限转化成的野心家身份 → **不发**；
+    //   · 版本例外：SP司马昭 不发（官方标记说明单独排除）。
+    const gz = () => {
+      const state = createGame(
+        [
+          { seatId: 'A', name: '甲', heroId: 'guanyu' },
+          { seatId: 'B', name: '乙', heroId: 'xuchu' },
+          { seatId: 'C', name: '丙', heroId: 'lvbu' },
+          { seatId: 'D', name: '丁', heroId: 'zhenji' },
+        ],
+        'TEST',
+        { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+      );
+      // 其他三家先选完（选将阶段不结束的话，buildPrompt 不给对局提示，验不了标记技能）
+      ok(act(state, 'B', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
+      ok(act(state, 'C', { type: 'pickHero', heroId: 'lvbu', deputyHeroId: 'diaochan' }));
+      ok(act(state, 'D', { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'zhouyu' }));
+      state.turn = { seatIndex: 0, phase: 'prepare' };
+      state.pending = {
+        kind: 'choice',
+        seatId: 'A',
+        title: '准备阶段：是否明置武将牌？',
+        options: [{ id: 'all', label: '全部明置' }],
+        resolve: () => {},
+      };
+      return state;
     };
-    ok(act(state, 'A', { type: 'revealHero', heroId: 'guanyu' }));
-    expect(a.faction).toBe('shu');
-    expect(a.markers.ambitionist).toBe(1);
+    const revealA = (state: ReturnType<typeof gz>, heroId: string, deputy?: string) => {
+      ok(act(state, 'A', { type: 'pickHero', heroId, deputyHeroId: deputy ?? 'zhangfei' }));
+      const a = state.players.find((x) => x.seatId === 'A')!;
+      ok(act(state, 'A', { type: 'revealHero', heroId }));
+      return a;
+    };
+    // ① 普通武将（关羽，蜀）亮主将 → 身份蜀、**没有**标记
+    const s1 = gz();
+    const a1 = revealA(s1, 'guanyu');
+    expect(a1.faction).toBe('shu');
+    expect(a1.markers.ambitionist).toBeUndefined();
+    // ② 天生野心家武将（界钟会）亮出野心家主将 → 身份野心家 + **拿到**标记
+    const s2 = gz();
+    const a2 = revealA(s2, 'jie_zhonghui', 'zuoci');
+    expect(a2.faction).toBe('ambitionist');
+    expect(a2.markers.ambitionist).toBe(1);
+    // ③ 只亮**副将**（野心家主将仍暗置）→ 还没拿到标记（亮主将才发）
+    const s3 = gz();
+    ok(act(s3, 'A', { type: 'pickHero', heroId: 'jie_zhonghui', deputyHeroId: 'zuoci' }));
+    const a3 = s3.players.find((x) => x.seatId === 'A')!;
+    ok(act(s3, 'A', { type: 'revealHero', heroId: 'zuoci' }));
+    expect(a3.deputyRevealed).toBe(true);
+    expect(a3.markers.ambitionist).toBeUndefined();
+    // ④ 版本例外：SP司马昭 亮野心家主将 → 也**不发**标记
+    const s4 = gz();
+    const a4 = revealA(s4, 'sp_simazhao', 'zuoci');
+    expect(a4.faction).toBe('ambitionist');
+    expect(a4.markers.ambitionist).toBeUndefined();
+    // ⑤ 因人数超限**转化**成野心家身份 → 只有身份变野，**不发**标记
+    //    （4 人局：已确定魏的人数 > 2 才会转化；让 B/C 先明置定魏，A 再明置魏将）
+    const s5 = gz();
+    for (const p of s5.players) {
+      p.heroId = 'vanilla';
+      p.deputyHeroId = 'vanilla';
+      p.faction = 'wei';
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    const a5 = s5.players.find((x) => x.seatId === 'A')!;
+    a5.heroId = 'caocao';
+    a5.deputyHeroId = 'xuchu';
+    a5.faction = 'wei';
+    a5.heroRevealed = false;
+    a5.deputyRevealed = false;
+    a5.markers = {} as typeof a5.markers;
+    ok(act(s5, 'A', { type: 'revealHero', heroId: 'caocao' }));
+    expect(a5.faction).toBe('ambitionist'); // 魏已有 3 人 > 4/2 → 转化
+    expect(a5.markers.ambitionist).toBeUndefined(); // 但**没有**标记
 
-    // 把它当【阴阳鱼】使用：摸一张，并按「实际当成的那一种」记账（章武照它复现）
+    // 标记的三种用法：以 ② 的界钟会为例，把它当【阴阳鱼】用 → 摸一张并记账（章武照它复现）
+    const state = s2;
+    const a = a2;
     state.turn = { seatIndex: 0, phase: 'play' };
     state.pending = { kind: 'play', seatId: 'A' };
     state.log = [];
