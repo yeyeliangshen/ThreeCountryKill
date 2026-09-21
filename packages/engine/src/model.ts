@@ -872,6 +872,40 @@ export interface ChainPending {
   index: number;
 }
 
+/**
+ * takeover 打点记录（施工方案 Step 0.1：**所有** takeover 都记完整上下文）。
+ *
+ * 「takeover」＝一次收尾把**别人的**询问从槽里换掉。两种来源：
+ * - `probe: 'fence'`：带 checkpoint 的收尾（围栏判「本来会挡住」）——一直开着，成本只是一次入队；
+ * - `probe: 'clobber'`：把**还没人回答**的询问顶掉（更严重，只在 `SGS_PROBE_CLOBBER=1` 时记，
+ *   因为要抓调用栈）。
+ */
+export interface TakeoverRecord {
+  probe: 'fence' | 'clobber';
+  /** 收尾点（clobber 用调用栈顶帧） */
+  site: string;
+  phase: string;
+  turnSeat: string | null;
+  /** 被换掉的那一格（fence 下是「当前槽」；clobber 下是「被顶掉的未答询问」） */
+  oldPending: {
+    kind: string;
+    owner: string | null;
+    seq: number;
+    answered: boolean;
+    completed: boolean;
+  } | null;
+  /** 收尾要安装的那一格（目前都是出牌阶段的占位） */
+  newPendingKind: string;
+  checkpoint: { requestId: number | null; slotVersion: number; useId?: number | null } | null;
+  currentSeq: number;
+  inDying: boolean;
+  /** 老机制三跳的当时状态（Step 5 要靠数据判断能不能删） */
+  ongoing: { skillChain: number; chain: boolean; trick: boolean };
+  resumeQueue: number;
+  sameUse: string;
+  caller?: string;
+}
+
 export interface GameState {
   roomCode: string;
   mode: GameMode; // 当前对局模式
@@ -1065,17 +1099,13 @@ export interface GameState {
    * 聚类（是「恢复交互入口」还是「提交不可延迟的状态迁移」），而不是按函数名猜。
    * 只记不改行为（当前仍照旧强制覆盖），所以开着它不会有任何行为变化。
    */
-  blockedTakeovers: {
-    finalizer: string;
-    checkpointSeq: number;
-    currentSeq: number;
-    checkpointKind: string | null;
-    currentKind: string | null;
-    phase: string;
-    turnSeat: string | null;
-    inDying: boolean;
-    resumeQueueLength: number;
-  }[];
+  blockedTakeovers: TakeoverRecord[];
+  /**
+   * 续接执行计数（施工方案 Step 1.4）：`continuationId` → 执行次数。
+   * **同一个 id 被执行超过一次**就是「多执行」类失败（窗口自己推进了一次、旧的三跳又推一次），
+   * 必须停下来查——所以它不是普通统计，是硬指标（目标：不允许出现 > 1 的条目）。
+   */
+  continuationRuns: Map<string, number>;
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

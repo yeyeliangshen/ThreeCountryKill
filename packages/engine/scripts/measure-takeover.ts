@@ -1,35 +1,102 @@
 /**
- * 「先测量」：跑 N 局随机对局，把 `resumePlay` **覆盖掉没答过的询问**的那些场合聚类打印。
+ * 施工方案（Pending 控制流结构性重构）§十二「全过程固定指标」的采集脚本。
  *
- * 为什么要有它：docs/pending-ownership.md 的「建议顺序 ②」要求先把 `blockedTakeovers` 的
- * 数据补全（原来只有带围栏的两处锦囊收尾会记），再做一次聚类测量。这只探针
- * （`SGS_PROBE_CLOBBER=1`）覆盖全部 19 个 `resumePlay` 调用点，本脚本负责跑量 + 聚类。
+ * 用法：
+ *   SGS_PROBE_CLOBBER=1 npx tsx scripts/measure-takeover.ts [局数，默认 200]
  *
- * 用法（在 packages/engine 下）：
- *   SGS_PROBE_CLOBBER=1 npx tsx scripts/measure-takeover.ts [局数]
+ * 每一步施工前后都用**同一条命令、同一个局数**跑，把输出的指标块贴进报告对比。
  *
- * ⚠️ 这是**测量**脚本，不进测试套件：它只读、不改行为（探针本身也只记不改），
- *    结论写回 docs/guozhan-roster.md。
+ * 覆盖的指标：
+ *   1. takeover 分类（probe | site | 被换掉的类型 | sameUse → 次数 / 首末 seed）
+ *   2. completedPendingStillOccupyingSlot（稳定观察点上「已走完还占着槽」的格子数）
+ *   3. continuationExecutedTwice（同一个 continuationId 执行 > 1 次的条目数）
+ *   4. fenceBlockCount（围栏判「本来会挡住」的次数；Step 3a 起才有意义）
+ *   5. blockedContinuationNeverResumed —— Step 4（waiter）之前不适用
+ *   6-9. regression fixture / smoke / fuzz / 全量测试：由 `pnpm test` 那三条给，不在这里
+ *
+ * ⚠️ 只读、不改行为：探针本身只记不改（见 engine.ts 的 takeoverRecord / runContinuation）。
  */
-import { riskyGame, step, rng, checkDuplicate } from '../tests/fuzzHarness';
+import { riskyGame, step, rng, checkDuplicate, allCardIds, makeCardWatch } from '../tests/fuzzHarness';
+import { isCompletedPending } from '../src';
 
-const games = Number(process.argv[2] ?? 60);
+const games = Number(process.argv[2] ?? 200);
+const TOP = 12;
 
 interface Rec {
-  finalizer: string;
-  currentKind: string | null;
-  phase: string;
-  inDying: boolean;
+  probe: string;
+  site: string;
+  oldPending: { kind: string; owner: string | null; answered: boolean; completed: boolean } | null;
+  newPendingKind: string;
+  sameUse: string;
+  ongoing: { skillChain: number; chain: boolean; trick: boolean };
   caller?: string;
 }
 
-const byKind = new Map<string, number>();
-const byCaller = new Map<string, number>();
-const byPair = new Map<string, number>();
-let total = 0;
-let finished = 0;
-let stuck = 0;
+const byClass = new Map<string, { n: number; firstSeed: number; lastSeed: number }>();
+let totalRecs = 0;
+let leftoverSlot = 0;
+let leftoverSamples: string[] = [];
+let notFinished: number[] = [];
+const seedsByKind = new Map<string, number[]>();
 
+for (let seed = 1; seed <= games; seed++) {
+  const state = riskyGame(seed);
+  const rand = rng(seed * 977);
+  const watch = makeCardWatch(allCardIds(state));
+  let steps = 0;
+  while (!state.gameOver && steps < 4000) {
+    step(state, rand);
+    steps++;
+    const dup = checkDuplicate(state);
+    if (dup) throw new Error(`seed=${seed} ${dup}`);
+    if (state.pending && (state.pending.kind === 'play' || state.pending.kind === 'discard')) {
+      watch.observe(state);
+    }
+    // 稳定观察点＝两次 applyIntent 之间：这时候还挂着「已答完/已走完」的格子，
+    // 说明这个窗口没有自己离场、要靠后面某次收尾抢槽（Step 1.5 指标，按方案口径包含 answered-final）
+    if (isCompletedPending(state.pending)) {
+      leftoverSlot++;
+      if (leftoverSamples.length < 5) {
+        leftoverSamples.push(`${seed}#${steps}:${state.pending?.kind}`);
+      }
+    }
+  }
+  if (!state.gameOver) notFinished.push(seed);
+
+  for (const r of state.blockedTakeovers as unknown as Rec[]) {
+    totalRecs++;
+    const key = `${r.probe} | ${r.site} | old=${r.oldPending?.kind ?? 'null'}(answered=${r.oldPending?.answered ?? '-'},completed=${r.oldPending?.completed ?? '-'}) | new=${r.newPendingKind} | sameUse=${r.sameUse}`;
+    const cur = byClass.get(key) ?? { n: 0, firstSeed: seed, lastSeed: seed };
+    cur.n++;
+    cur.lastSeed = seed;
+    byClass.set(key, cur);
+    const k = r.oldPending?.kind ?? 'null';
+    const arr = seedsByKind.get(k) ?? [];
+    if (arr.length < 8) arr.push(seed);
+    seedsByKind.set(k, arr);
+  }
+}
+
+const nameOf = (id: string): string =>
+  (() => {
+    const kinds = seedsByKind.get(id);
+    return kinds ? `（出现于 seed: ${kinds.join(',')}）` : '';
+  })();
+
+// ── 指标 1：takeover 分类 ────────────────────────────────────────────────
+console.log(`\n=== 局数 ${games}｜未结束 ${notFinished.length}${notFinished.length ? ': ' + notFinished.slice(0, 10).join(',') : ''} ===`);
+console.log(`\n【指标 1】takeover 分类（共 ${totalRecs} 条）`);
+for (const [k, v] of [...byClass.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, TOP)) {
+  console.log(`  ${String(v.n).padStart(5)}  seed ${v.firstSeed}..${v.lastSeed}  ${k}`);
+}
+
+// ── 指标 2：完成后仍占着槽 ───────────────────────────────────────────────
+console.log(`\n【指标 2】completedPendingStillOccupyingSlot = ${leftoverSlot}${leftoverSamples.length ? `  ${leftoverSamples.join(' ')}` : ''}`);
+
+// ── 指标 3：续接重复执行 ─────────────────────────────────────────────────
+let twice = 0;
+let runs = 0;
+const twiceIds: string[] = [];
 for (let seed = 1; seed <= games; seed++) {
   const state = riskyGame(seed);
   const rand = rng(seed * 977);
@@ -37,31 +104,25 @@ for (let seed = 1; seed <= games; seed++) {
   while (!state.gameOver && steps < 4000) {
     step(state, rand);
     steps++;
-    const dup = checkDuplicate(state);
-    if (dup) throw new Error(`seed=${seed} ${dup}`);
   }
-  if (state.gameOver) finished++;
-  else stuck++;
-  for (const r of state.blockedTakeovers as unknown as Rec[]) {
-    if (r.finalizer !== 'resumePlay(clobber)') continue;
-    total++;
-    const k = `${r.currentKind ?? 'null'}${r.inDying ? '(濒死)' : ''}`;
-    byKind.set(k, (byKind.get(k) ?? 0) + 1);
-    const caller = (r.caller ?? 'unknown').replace(/^resumePlay$/, 'resumePlay(递归)');
-    byCaller.set(caller, (byCaller.get(caller) ?? 0) + 1);
-    const pair = `${k} ← ${caller}`;
-    byPair.set(pair, (byPair.get(pair) ?? 0) + 1);
+  for (const [id, n] of state.continuationRuns) {
+    runs += n;
+    if (n > 1) {
+      twice++;
+      if (twiceIds.length < 8) twiceIds.push(`${id}×${n}`);
+    }
   }
 }
+console.log(`\n【指标 3】continuationExecutedTwice = ${twice}${twiceIds.length ? `  ${twiceIds.join(' ')}` : ''}（续接共执行 ${runs} 次）`);
 
-const top = (m: Map<string, number>, n: number): string =>
-  [...m.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, n)
-    .map(([k, v]) => `${v}\t${k}`)
-    .join('\n');
+// ── 指标 4/5 ─────────────────────────────────────────────────────────────
+const fence = [...byClass.keys()].filter((k) => k.startsWith('fence')).reduce((s, k) => s + (byClass.get(k)?.n ?? 0), 0);
+console.log(`\n【指标 4】fenceBlockCount = ${fence}（Step 3a 起才有意义）`);
+console.log(`【指标 5】blockedContinuationNeverResumed = n/a（Step 4 接 waiter 之前不适用）`);
 
-console.log(`局数 ${games}｜跑完 ${finished}｜未结束 ${stuck}｜「收尾抢了没答过的询问」共 ${total} 次`);
-console.log(`\n—— 被抢的槽（按 kind）——\n${top(byKind, 12)}`);
-console.log(`\n—— 动手的收尾（按调用点）——\n${top(byCaller, 12)}`);
-console.log(`\n—— 组合 TOP20 ——\n${top(byPair, 20)}`);
+// ── 分类里出现的「非设计如此」种类，单独点出来 ────────────────────────────
+const odd = [...byClass.entries()].filter(
+  ([k]) => !k.includes('old=wuxieQueue') && !k.includes('old=respondTrick'),
+);
+console.log(`\n【待观察】不属于「设计如此」两类的记录：${odd.length} 类`);
+for (const [k, v] of odd) console.log(`  ${v.n}  ${k} ${nameOf(k.match(/old=([a-zA-Z]+)/)?.[1] ?? '')}`);

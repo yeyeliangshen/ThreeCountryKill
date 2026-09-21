@@ -149,6 +149,41 @@ describe('随机对局不变式：曾经出过问题的种子（回归）', () =
    * 四条都已修（min 兜底 / 答话时重查手牌 / `takeAndDiscard` 取不到就不弃 /
    * 判定在飞台账 `GameState.judgmentInFlight`），这里钉住。
    */
+  /**
+   * 另三个种子来自「Pending 控制流重构」Step 0 的 takeover 分类实测（2026-09-21）：
+   * 它们是目前**仅有的**「收尾把一条**还没答过**的询问换掉」的现场——
+   * - seed=9 / seed=84：被换掉的是【弃牌阶段】的弃牌询问（`discard`，未答）；
+   * - seed=86：被换掉的是【杀】的求闪询问（`respondSha`，已答但流程还没换掉它）。
+   * ⚠️ 现在**只钉不变式**（不重复 / 不长期缺席 / 能分出胜负），不断言 takeover 次数——
+   *    Step 1（窗口自完成）之后这几处的 takeover 形式本来就会变，断言次数会假红。
+   *    真正要盯的次数在 `scripts/measure-takeover.ts` 的指标块里逐 step 对比。
+   */
+  it('9 / 84 / 86 跑满 6000 步：不重复、不长期缺席、能分出胜负（takeover 实测现场）', () => {
+    const problems: string[] = [];
+    for (const seed of [9, 84, 86]) {
+      const rand = rng(seed * 977);
+      const state = riskyGame(seed);
+      const watch = makeCardWatch(allCardIds(state));
+      let steps = 0;
+      while (!state.gameOver && steps < 6000) {
+        step(state, rand);
+        steps++;
+        if (!state.pending && !state.gameOver) {
+          problems.push(`seed=${seed} 第 ${steps} 步：控制权丢了`);
+          break;
+        }
+        if (state.pending?.kind !== 'play' && state.pending?.kind !== 'discard') continue;
+        const bad = checkDuplicate(state) ?? watch.observe(state);
+        if (bad) {
+          problems.push(`seed=${seed} 第 ${steps} 步：${bad}`);
+          break;
+        }
+      }
+      if (!state.gameOver) problems.push(`seed=${seed} 跑了 ${steps} 步还没结束（卡死了？）`);
+    }
+    expect(problems).toEqual([]);
+  });
+
   it('1145 / 1313 / 1329 / 425 / 1405 / 1999 跑满 6000 步：不重复、不长期缺席、能分出胜负', () => {
     const problems: string[] = [];
     for (const seed of [1145, 1313, 1329, 425, 1405, 1999]) {

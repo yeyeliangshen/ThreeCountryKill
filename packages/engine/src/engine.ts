@@ -46,6 +46,7 @@ import {
   type GameState,
   type Pending,
   type Player,
+  type TakeoverRecord,
   type TrickContext,
 } from './model';
 import { attackRange, canTarget, distance } from './distance';
@@ -1057,6 +1058,15 @@ function isPlaceholderPending(pending: GameState['pending']): boolean {
  * 打标记的地方是 `applyIntent`：那是「玩家回答了一条询问」的唯一入口。
  */
 const answeredPendings = new WeakSet<object>();
+
+/**
+ * 「这一格已经**走完了**」（施工方案 Step 1.3 用的标记）：窗口自己确认完成、准备离场时打上。
+ *
+ * 与 `answeredPendings` 的区别：那个是「玩家答过」，这个是「流程走完了」——两者都可能出现
+ * 「已经在槽里没人再看它」的状态，但只有后者能回答「完成后是否仍然占着槽」
+ * （Step 1.5 的指标 `completedPendingStillOccupyingSlot` 就是查这个）。
+ */
+const completedPendings = new WeakSet<object>();
 
 /**
  * 排空续接队列。只在**每个 intent 处理完之后**调用一处，别散着调——
@@ -2374,6 +2384,95 @@ const PROBE_CLOBBER = (() => {
   return !!env?.SGS_PROBE_CLOBBER;
 })();
 
+/**
+ * 把「输入槽里的那一格」压成一条打点用的摘要（施工方案 Step 0.1）。
+ * owner 取 pending 上的 seatId/responderId/askQueue 当前那一位——聚类时能看出「换掉的是谁的格」。
+ */
+function pendingSummary(
+  state: GameState,
+  pending: GameState['pending'],
+): TakeoverRecord['oldPending'] {
+  if (!pending) return null;
+  const p = pending as {
+    kind: string;
+    seatId?: string;
+    responderId?: string;
+    askQueue?: string[];
+    askIndex?: number;
+  };
+  const owner =
+    p.seatId ?? p.responderId ?? (p.askQueue ? (p.askQueue[p.askIndex ?? 0] ?? null) : null) ?? null;
+  return {
+    kind: p.kind,
+    owner,
+    seq: state.pendingSeq,
+    answered: answeredPendings.has(pending),
+    completed: completedPendings.has(pending),
+  };
+}
+
+/** 统一构造一条 takeover 记录（Step 0.1） */
+function takeoverRecord(
+  state: GameState,
+  probe: TakeoverRecord['probe'],
+  site: string,
+  oldPendingPending: GameState['pending'],
+  checkpoint: TakeoverRecord['checkpoint'],
+  sameUse: string,
+  caller?: string,
+): TakeoverRecord {
+  const old = pendingSummary(state, oldPendingPending);
+  return {
+    probe,
+    site,
+    phase: String(state.turn.phase),
+    turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
+    oldPending: old,
+    newPendingKind: 'play',
+    checkpoint,
+    currentSeq: state.pendingSeq,
+    inDying: oldPendingPending?.kind === 'respondDeath',
+    ongoing: {
+      skillChain: state.ongoingSkillChain.length,
+      chain: !!state.ongoingChain,
+      trick: !!state.ongoingTrick,
+    },
+    resumeQueue: state.resumeQueue.length,
+    sameUse,
+    ...(caller ? { caller } : {}),
+  };
+}
+
+/**
+ * 续接执行计数（施工方案 Step 1.4）：**同一个 continuationId 执行超过一次**就是「多执行」类失败
+ * （窗口自己推进了一次、旧的三跳又推一次），硬指标 `continuationExecutedTwice` 就是它的
+ * 「有没有 > 1 的条目」。`id` 用「本次卡片使用 + 环节」拼（每次使用天然唯一）。
+ *
+ * 只统计、不改行为：计数写进 `state.continuationRuns`，由测量脚本读取。
+ */
+function runContinuation<T>(state: GameState, id: string, fn: () => T): T {
+  state.continuationRuns.set(id, (state.continuationRuns.get(id) ?? 0) + 1);
+  return fn();
+}
+
+/**
+ * 这一格是不是「已经走完、却还占着槽」（施工方案 Step 1.5 的指标探测器用）。
+ *
+ * 口径按方案的原文：**已 completed / answered-final** 的 pending 仍然挂在 `state.pending` 上。
+ * 稳定观察点（两次 applyIntent 之间）如果它为 true，说明这个窗口的生命周期没闭合——
+ * 它是靠后面某次收尾抢槽才离场的。
+ */
+export function isCompletedPending(pending: GameState['pending']): boolean {
+  if (!pending) return false;
+  if (completedPendings.has(pending)) return true;
+  if (!answeredPendings.has(pending)) return false;
+  // ⚠️ 轮询队列（求桃 respondDeath / 无懈 wuxieQueue / 势力技 factionCall…）是**一条 pending
+  //    问很多人**：答过一位之后它还活着，只是「还没问完」。只有**问完最后一位**才算走完。
+  const q = pending as { askQueue?: string[]; askIndex?: number };
+  if (q.askQueue && q.askIndex !== undefined) return q.askIndex >= q.askQueue.length;
+  return true;
+}
+
 /** 取调用栈里第一帧「引擎内部」的位置（探针用；关着的时候根本不会调到） */
 function topStackFrame(): string {
   const stack = (new Error().stack ?? '').split(String.fromCharCode(10));
@@ -2485,19 +2584,9 @@ function resumePlay(
       );
     }
     if (cur && !isPlaceholderPending(cur) && !answeredPendings.has(cur)) {
-      state.blockedTakeovers.push({
-        finalizer: 'resumePlay(clobber)',
-        checkpointSeq: -1,
-        currentSeq: state.pendingSeq,
-        checkpointKind: null,
-        currentKind: cur.kind,
-        phase: String(state.turn.phase),
-        turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
-        inDying: cur.kind === 'respondDeath',
-        resumeQueueLength: state.resumeQueue.length,
-        sameUse: 'n/a',
-        caller: topStackFrame(),
-      } as unknown as (typeof state.blockedTakeovers)[number]);
+      state.blockedTakeovers.push(
+        takeoverRecord(state, 'clobber', 'resumePlay', cur, null, 'n/a', topStackFrame()),
+      );
     }
   }
   // **打点（只记不改）**：围栏「本来会挡住」的场合记一条结构化记录，用于把被挡的 takeover
@@ -2509,20 +2598,14 @@ function resumePlay(
     // 不同次 → 是嵌套使用（借刀里的杀、无懈链…）→ 让路是对的。
     const cur = state.pending as { ctx?: { cardUseId?: number } } | null;
     const curUse = cur && typeof cur === 'object' && 'ctx' in cur ? cur.ctx?.cardUseId : undefined;
-    const rec = {
-      finalizer: 'resumePlay',
-      checkpointSeq: since.slotVersion,
-      currentSeq: state.pendingSeq,
-      checkpointKind: null as string | null,
-      currentKind: state.pending ? state.pending.kind : null,
-      phase: String(state.turn.phase),
-      turnSeat: state.seatOrder[state.turn.seatIndex] ?? null,
-      inDying: state.pending?.kind === 'respondDeath',
-      resumeQueueLength: state.resumeQueue.length,
-      sameUse: curUse !== undefined ? String(curUse === since.useId) : 'n/a',
-      blockedUse: String(curUse ?? 'n/a'),
-      myUse: String(since.useId ?? 'n/a'),
-    };
+    const rec = takeoverRecord(
+      state,
+      'fence',
+      'resumePlay',
+      state.pending,
+      { requestId: since.requestId, slotVersion: since.slotVersion, useId: since.useId ?? null },
+      curUse !== undefined ? String(curUse === since.useId) : 'n/a',
+    );
     state.blockedTakeovers.push(rec);
     // 用 globalThis 取 process（client 包没有 Node 类型，直接写 process 会编译不过）
     const env = (
@@ -6272,7 +6355,9 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
         (p) => p.alive && collectTimingHooks(state, p, 'cardUseEnded', false).length > 0,
       );
     if (!needed) {
-      resumePlay(state, ctx.sourceId, ctx.pendingFence);
+      runContinuation(state, `${ctx.cardUseId}:trick-end`, () =>
+        resumePlay(state, ctx.sourceId, ctx.pendingFence),
+      );
       return;
     }
     runAllPlayersHooks(
@@ -6283,7 +6368,10 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
         sourceId: ctx.sourceId,
         targetIds: ctx.targetIds ?? (ctx.targetId ? [ctx.targetId] : []),
       },
-      () => resumePlay(state, ctx.sourceId, ctx.pendingFence),
+      () =>
+        runContinuation(state, `${ctx.cardUseId}:trick-end`, () =>
+          resumePlay(state, ctx.sourceId, ctx.pendingFence),
+        ),
     );
   };
   const first = state.firstDamageCard;
@@ -11499,6 +11587,7 @@ export function createGame(
     pendingWaiters: new Map(),
     turnSeq: 0,
     blockedTakeovers: [],
+    continuationRuns: new Map<string, number>(),
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],
