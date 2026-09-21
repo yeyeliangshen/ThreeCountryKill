@@ -6009,3 +6009,47 @@ attack、新的对象，照样能被抓到）。
 `ongoingSkillChain`）与「窗口推进依赖收尾抢槽」那两条（`pending-ownership.md` 的问题①/⑤），
 它们**不是**靠这次探针能测出来的东西，需要按 ①→④ 的顺序做（先让窗口自己显式设置下一格）。
 ③本节修的那条「谁建谁清」没有单独的单元测试（只能靠探针观测），由测量脚本 + 全量冒烟共同验证。
+
+### 5.160 修「手机选将时切屏回来黑屏」：Game 里的 hook 排在提前 return 之后（用户 2026-09-21）
+
+**症状**：手机上选将阶段切屏（应用切到后台）再回来，界面全黑——不是布局错，是**整棵 React 树被卸载**，
+而 `body` 是深色底（`#070a0d`），所以看上去就是一块黑屏。
+
+**定位过程（先复现，再改）**：本地起服务端 + 前端，用**手机尺寸视口**（390×844）进国战选将，
+然后模拟手机上最常见的那条路——**页面被系统回收后重新载入**（`tab.reload()`）。复现结果：
+`#root.innerHTML.length === 0`（页面全空），控制台抓到：
+
+```
+Warning: React has detected a change in the order of Hooks called by Game
+Uncaught Error: Rendered more hooks than during the previous render.
+    at Game (packages/ui/src/pages/Game.tsx)
+```
+
+**根因**：`Game.tsx` 里一个 `useEffect`（多选座位那一轮变化时清空已选座位）**排在
+`if (!snapshot) return <div className="game loading">加载中…</div>` 之后**。重连 / 刷新 /
+切屏回来时必然会走这条路：
+
+1. 服务端先发 `lobby`（`started: true`）→ 客户端把 screen 切到 `game`，但**快照还没到** →
+   `Game` 渲染「加载中…」那一帧 → **少调一个 hook**；
+2. 紧接着 `snapshot` 到达 → 同一组件再渲染 → 这次**多调一个 hook** →
+   React 抛「渲染的 hook 数变了」→ **整棵树卸载** → 黑屏。
+
+平时不触发是因为正常流程里 `snapshot` 与 `screen` 同时被设置（`Game` 挂载时快照已就位），
+只有「重连/刷新/切屏」会出现「先 game 后 snapshot」这一帧。选将阶段最容易撞上——那正是
+「要等你想」的阶段，切屏回来一定还在选将。
+
+**改了什么**
+
+- `Game.tsx`：把那个 hook 移到提前 return **之前**（顺手加了注释说明为什么必须在上边）；
+- 新增 `components/ErrorBoundary.tsx` 并在 `App` 里包一层：**任何**渲染异常不再变成看不见信息的
+  黑屏，而是显示「界面出错了 + 错误信息 + 重新加载」按钮（座位由服务端保留，重载即接回）；
+- 新增 `ui/src/hooksOrder.test.ts`（静态守门，12 条）：扫描 `src/**/*.tsx`，
+  同一个函数里一旦出现过顶格 `return <…>`/`return (…)`，后面就不许再出现顶格 `useXxx(` ——
+  这类「hook 排在提前 return 之后」的写法**运行期没有 linter 兜着**，就用这条静态测试兜住
+  （已知误报已排除：store 动作 `useSkill`、内部组件各自的函数作用域）。
+
+**验证（实测，如实记）**：改前 reload → `#root` 空、报 hook 顺序错；改后同一路径 → 选将界面正常
+渲染（`#root` 4200+ 字符、无异常），并且「选两位蜀将 → 确认 → 进入出牌阶段」整条流转正常。
+⚠️ 局限：是在**桌面浏览器的手机尺寸视口**里做的（每次切屏 = reload 那条路），
+没有真机；「socket 静默断开但页面没重载」那条路没有单独复现（那条路上快照还在内存里，
+不会走「加载中」那一帧）。

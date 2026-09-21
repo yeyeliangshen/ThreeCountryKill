@@ -454,6 +454,21 @@ export function Game() {
     if (box) box.scrollTop = box.scrollHeight;
   }, [snapshot?.log]);
 
+  // 多选座位的提示换了一轮（候选变了）→ 清空上一轮点亮的。
+  //
+  // ⚠️ **这个 hook 必须放在下面那条 `if (!snapshot) return …` 之前**——那是一条**提前 return**：
+  //    「已开局但快照还没到」时会先渲染一帧「加载中…」（重连 / 刷新 / 手机切屏回来必经这一帧），
+  //    随后快照到达再渲染一次。hook 要是排在那条 return 后面，第二帧就会**多调用一个 hook** →
+  //    React 抛 "Rendered more hooks than during the previous render" → 整棵树被卸载 →
+  //    界面全空。在深色底（body #070a0d）上就是用户看到的**黑屏**（2026-09-21 实测复现）。
+  const seatPickKey =
+    snapshot?.prompt?.kind === 'pickSeats'
+      ? (snapshot.prompt.seatCandidates ?? []).join(',') + '|' + snapshot.prompt.pickMax
+      : '';
+  useEffect(() => {
+    setSeatPick([]);
+  }, [seatPickKey]);
+
   if (!snapshot) return <div className="game loading">加载中…</div>;
 
   const me = snapshot.players.find((p) => p.seatId === snapshot.seatId)!;
@@ -462,12 +477,6 @@ export function Game() {
   const myDeputyHero = getHeroForMode(me.deputyHeroId, snapshot.mode);
   const others = snapshot.players.filter((p) => p.seatId !== snapshot.seatId);
   const prompt = snapshot.prompt;
-  // 多选座位的提示换了一轮（候选变了）→ 清空上一轮点亮的
-  const seatPickKey =
-    prompt?.kind === 'pickSeats' ? (prompt.seatCandidates ?? []).join(',') + '|' + prompt.pickMax : '';
-  useEffect(() => {
-    setSeatPick([]);
-  }, [seatPickKey]);
   const legalSet = new Set(prompt?.legalCardIds ?? []);
   const targetSet = new Set(prompt?.legalTargetIds ?? []);
   const myTurn = snapshot.turn.seatId === snapshot.seatId;
