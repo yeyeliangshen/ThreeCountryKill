@@ -37,6 +37,7 @@ import {
 import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { specialZoneChips } from '../specialZones';
+import { cardUses, useActionOf, type CardUse } from '../cardUses';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
 import { targetNeedsHandCards } from '../targetRules';
@@ -170,16 +171,6 @@ function targetRange(
   return { min: 1, max: 1, self: false }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
 }
 
-/** 这张牌能否在出牌阶段直接使用（无需转化） */
-function isDirectlyPlayable(card: Card): boolean {
-  if (card.type === 'sha' || card.type === 'tao' || card.type === 'jiu') return true;
-  if (isEquipCard(card)) return true;
-  if (isDelayedTrick(card)) return true;
-  // 无懈可击（含国战版）只能在响应时打出，出牌阶段点不动
-  if (isInstantTrick(card) && !isWuxieLike(card)) return true;
-  return false;
-}
-
 /** 从快照获取当前玩家的活跃武将（国战：已亮将；其他：主将） */
 function getMyActiveHeroes(me: PlayerView, mode: GameMode): Hero[] {
   const isGuozhan = mode === 'guozhan';
@@ -210,90 +201,6 @@ function isAoyuMode(snapshot: Snapshot): boolean {
     alive.map((p) => p.faction).filter((f): f is Faction => !!f && f !== 'ambitionist'),
   );
   return factions.size === 2;
-}
-
-/** 转化技可能出现的所有目标类型，顺序即优先级 */
-const CONVERSION_TYPES: CardType[] = [
-  'sha',
-  'guohe',
-  'tao',
-  'shan',
-  'lebu',
-  'bingliang',
-  'huogong',
-  'tiesuo',
-];
-
-/** 能靠转化技把别的牌变成可重铸牌型的技能目标（庞统·连环 →【铁索连环】） */
-const RECAST_VIA_TYPES: CardType[] = ['tiesuo', 'zhibi'];
-
-/** 一种用法：`as` 为空表示「按牌面本身使用」 */
-interface CardUse {
-  as?: CardType;
-  /** 转化后的伤害属性（朱雀羽扇：普通【杀】当火【杀】） */
-  asAttribute?: DamageAttribute;
-  /** 重铸：不指定目标，把牌弃掉再摸一张（不是「使用」） */
-  recast?: boolean;
-  /** 连横（势备篇）：把手牌交给一名势力不同或未确定势力的角色 */
-  lianheng?: boolean;
-  /** 【丈八蛇矛】：这张牌当【杀】的**第一张**，还要再点一张手牌凑成两张 */
-  zhangba?: boolean;
-  label: string;
-}
-
-/**
- * 列出这张牌在出牌阶段有哪几种用法。
- *
- * 以前这里只返回**一个**转化类型，而且**牌面能直接用就不给转化**——
- * 于是徐晃拿黑色【杀】时没法选择「当兵粮寸断用」（甘宁·奇袭、大乔·国色同样受影响）。
- * 现在把「牌面本身」和各种转化都列出来，多于一种时由玩家选。
- */
-function cardUses(
-  card: Card,
-  heroes: Hero[],
-  aoyu: boolean,
-  hasZhuque: boolean,
-  lianhengTargets: string[],
-  zhangbaOk: boolean,
-  shuangxiongColor: 'red' | 'black' | null,
-): CardUse[] {
-  const uses: CardUse[] = [];
-  if (isDirectlyPlayable(card)) {
-    uses.push({ label: `按【${cardShortName(card)}】使用` });
-  }
-  for (const type of CONVERSION_TYPES) {
-    if (heroes.some((h) => heroCanUseAs(h, card, type))) {
-      uses.push({ as: type, label: `当【${CARD_TYPE_NAME[type]}】使用` });
-    }
-  }
-  if (aoyu && card.type === 'tao' && !uses.some((u) => u.as === 'sha')) {
-    uses.push({ as: 'sha', label: '当【杀】使用（鏖战）' });
-  }
-  // 连横（势备篇）：带标记的手牌可以交出去——「交给谁」的合法性由服务端算好
-  if (card.lianheng && lianhengTargets.length > 0) {
-    uses.push({ lianheng: true, label: '连横（交给一名势力不同或未确定势力的角色）' });
-  }
-  // 朱雀羽扇：普通【杀】可以当火【杀】使用（同一张牌换属性，不是换牌型）
-  if (hasZhuque && card.type === 'sha' && !card.attribute) {
-    uses.push({ asAttribute: 'fire', label: '当火【杀】使用（朱雀羽扇）' });
-  }
-  // 颜良文丑·双雄：本回合可以把与判定牌**颜色不同**的手牌当【决斗】使用
-  if (shuangxiongColor && (isRed(card) ? 'red' : 'black') !== shuangxiongColor) {
-    uses.push({ as: 'juedou', label: '当【决斗】使用（双雄）' });
-  }
-  // 【丈八蛇矛】：两张手牌当【杀】。这里只是「第一张」，点完还要再选一张
-  if (zhangbaOk && !uses.some((u) => u.zhangba)) {
-    uses.push({ zhangba: true, label: '两张手牌当【杀】使用（丈八蛇矛）' });
-  }
-  // 可重铸的牌（铁索连环 / 知己知彼）多一条「重铸」用法；
-  // 庞统·连环那种「梅花牌当【铁索连环】使用**或重铸**」也要给这一条
-  if (
-    isRecastable(card) ||
-    RECAST_VIA_TYPES.some((t) => card.type !== t && heroes.some((h) => heroCanUseAs(h, card, t)))
-  ) {
-    uses.push({ recast: true, label: '重铸（弃置此牌，摸一张）' });
-  }
-  return uses;
 }
 
 /** 从武将列表中查找技能定义 */
@@ -1602,9 +1509,23 @@ export function Game() {
                         const card = myUsableCards.find((c) => c.id === usePick.cardId);
                         setUsePick(null);
                         if (!card) return;
-                        if (u.recast) beginRecast(card);
-                        else if (u.zhangba) beginZhangba(card);
-                        else beginPlay(card, u.as);
+                        // 四种用法各有各的去处——⚠️ 连横以前**没有这一支**：
+                        // 它掉进 play（`u.as` 是 undefined）⇒ 把牌当「使用」打出去了，
+                        // 于是「连横」永远进不去（用户 2026-09-23 报的正是这个）。
+                        switch (useActionOf(u)) {
+                          case 'recast':
+                            beginRecast(card);
+                            break;
+                          case 'zhangba':
+                            beginZhangba(card);
+                            break;
+                          case 'lianheng':
+                            setLianhengCard(card.id);
+                            setLianhengPick(null);
+                            break;
+                          default:
+                            beginPlay(card, u.as);
+                        }
                       }}
                     >
                       {u.label}
@@ -1692,7 +1613,7 @@ export function Game() {
               {lianhengCard && prompt.kind === 'play' && (
                 <>
                   <span className="hint">
-                    连横：点一名同势力角色
+                    连横：点一名**势力不同或未确定势力**的角色
                     {lianhengPick
                       ? `（已选 ${snapshot?.players.find((p) => p.seatId === lianhengPick)?.name ?? '?'}）`
                       : ''}
