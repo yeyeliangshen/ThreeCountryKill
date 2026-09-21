@@ -307,6 +307,10 @@ export const EQUIP_NAME: Record<string, string> = {
   renwang: '仁王盾',
   tengjia: '藤甲',
   bailong: '白银狮子',
+  // 势备篇的两张防具（用户 2026-09-23 报：这两张在界面上显示成「防具」——
+  // 牌堆里用了 equipName 而这张表没有 ⇒ `cardShortName` 回落到通用槽位名）
+  mingguang: '明光铠',
+  huxinjing: '护心镜',
   // +1马（防御马）
   dilu: '的卢',
   jueying: '绝影',
@@ -315,6 +319,8 @@ export const EQUIP_NAME: Record<string, string> = {
   chitu: '赤兔',
   zizong: '紫骍',
   dawanma: '大宛马',
+  // 势备篇的进攻马（同上：以前显示成「−1马」）
+  jingfan: '惊帆',
   // 宝物（势备篇）
   yuxi: '玉玺',
   muniu: '木牛流马',
