@@ -125,5 +125,18 @@ export function toSnapshot(state: GameState, seatId: string): Snapshot {
     // 拼点区（公开信息，两边一样）：进行中只有「谁扣好了」，双方扣好之后才有牌面/点数/胜负——
     // 牌面**由服务端把关**（`pindianView` 里 revealed 之前压根不写 card 字段）
     pindian: state.pindianView ?? null,
+    // 牌桌上公开摆着的牌池（【五谷丰登】）：整份公开，但「我能不能点」按**观看者**算——
+    // 规则层决定「谁现在可以操作」，界面不猜（与盲选同一条分工）。
+    // ⚠️ 判据是「**这一格现在真的握着那张选牌询问**」，不是「轮到我了」：轮到某人时他可能还在
+    //    处理自己的无懈窗口（那会儿点牌是无效操作）。所以这里直接看 pending。
+    publicPool: state.publicPool
+      ? {
+          ...state.publicPool,
+          interactive:
+            state.pending?.kind === 'pickCards' &&
+            state.pending.fromPool === true &&
+            state.pending.seatId === seatId,
+        }
+      : null,
   };
 }

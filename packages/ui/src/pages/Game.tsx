@@ -38,6 +38,7 @@ import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { specialZoneChips } from '../specialZones';
 import { PindianTable } from '../components/PindianTable';
+import { PublicPoolTable } from '../components/PublicPoolTable';
 import { targetNeedsHandCards } from '../targetRules';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
@@ -1362,6 +1363,17 @@ export function Game() {
           })}
         </div>
 
+        {/* 牌桌上公开摆着的牌池（【五谷丰登】，用户 2026-09-23）：固定顺序平铺、依次点牌拿走、
+            拿走的留在原位标上「谁拿走」。所有人都看得到；能不能点由快照的 interactive 说了算。 */}
+        {snapshot.publicPool && (
+          <PublicPoolTable
+            pool={snapshot.publicPool}
+            players={snapshot.players}
+            onPick={(cardId) => sendPickCards([cardId])}
+            bindTip={bindTip}
+          />
+        )}
+
         {/* 拼点区（**牌桌中央**，用户 2026-09-23）：等待扣置 → 牌背入场 → 双方翻牌 → 点数与胜负。
             放在主列（对手行与手牌之间）——那是牌桌正中；右侧日志栏只是记录，不是中央。
             数据由服务端把关：双方扣好之前连牌面字段都没有（见 PindianView）。 */}
@@ -1449,7 +1461,9 @@ export function Game() {
 
               {/* 从一组牌里选若干张（观星看牌堆顶、刚烈弃两张、仁德送牌…）。
               候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
-              {prompt.kind === 'pickCards' && prompt.pickCards && (
+              {/* ⚠️ `pickFromPool`（五谷那类「从牌桌上那排牌里拿」）不画这个通用框——
+                  牌桌中央的牌池那排牌**就是**选择界面，避免同一个选择出现两套 UI */}
+              {prompt.kind === 'pickCards' && prompt.pickCards && !prompt.pickFromPool && (
                 <div className="pick-cards">
                   {/*
                     **盲选**（`pickHidden`，用户 2026-09-22 的通用机制）：候选来自其他角色的

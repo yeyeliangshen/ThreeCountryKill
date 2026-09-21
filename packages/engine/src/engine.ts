@@ -7306,6 +7306,15 @@ function resolveWugu(state: GameState, ctx: TrickContext): void {
     `${source.name} 使用了【五谷丰登】，亮出 ${pool.length} 张牌，由 ${source.name} 起依次选取。`,
     { seat: source.seatId, action: 'wugu' },
   );
+  // **牌桌中央摆出这一排牌**（用户 2026-09-23）：固定顺序（摸出来的顺序）、公开给所有人、
+  // 拿走的留在原位并标上「谁拿走了」——所以后面每一步只更新 slots，不重排。
+  state.publicPool = {
+    slots: pool.map((card) => ({ card })),
+    currentSeatId: pickers[0],
+    queue: pickers.slice(),
+    source: 'wugu',
+    interactive: false, // 每个座位那一份快照里会按「是不是轮到你」重算（见 snapshot）
+  };
   wuguStep(state, ctx, pool);
 }
 
@@ -7320,6 +7329,8 @@ function wuguStep(
       toDiscard(state, ...remaining.slice());
       remaining.length = 0;
     }
+    // 结算完 ⇒ 牌桌上的牌池收走（余牌也离开展示区；上面已经记过日志）
+    state.publicPool = null;
     endTrickResolution(state, ctx);
     return;
   }
@@ -7328,6 +7339,13 @@ function wuguStep(
     ctx.responderIndex++;
     wuguStep(state, ctx, remaining);
     return;
+  }
+  // 「轮到谁选」在**推进到他**的时候就更新（他现在要过自己的无懈窗口、然后选牌）——
+  // 这样牌桌上的标签不会在他还在处理无懈时还写着上一个人的名字。
+  // ⚠️ 但「能不能点」不看这个标签：只有真的握着那张选牌询问时才可点（见 snapshot）。
+  if (state.publicPool) {
+    state.publicPool.currentSeatId = p.seatId;
+    state.publicPool.queue = ctx.responders.slice(ctx.responderIndex);
   }
   // 每人拿牌之前先给他开一次无懈窗口（后面的选牌能看到前面拿了什么，
   // 所以这个时机是真的有意义——「等看清池子里还剩什么再决定无懈谁」）
@@ -7353,10 +7371,15 @@ function wuguResolveCurrent(
     cards: remaining.slice(),
     min: 1,
     max: 1,
+    // 这一手是「从牌桌上那排牌里拿」⇒ 界面画牌池、直接点牌，不画通用选牌框
+    fromPool: true,
     resolve: (st, player, picked) => {
       const card = picked[0]!;
       const at = remaining.indexOf(card);
       if (at >= 0) remaining.splice(at, 1);
+      // 牌桌上那一格**留在原位**并标上谁拿走了（牌被拿走 = 从展示区消失，但位置留痕）
+      const slot = st.publicPool?.slots.find((sl) => sl.card.id === card.id);
+      if (slot) slot.takenBySeatId = player.seatId;
       player.hand.push(card);
       pushLog(st, 'trick', `${player.name} 因【五谷丰登】获得了【${cardLabel(card)}】。`, {
         seat: player.seatId,

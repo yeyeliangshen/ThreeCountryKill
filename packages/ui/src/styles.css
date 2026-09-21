@@ -2088,6 +2088,109 @@ select:focus-visible,
   }
 }
 
+/* —— 牌桌上公开摆着的牌池（【五谷丰登】）——
+   固定顺序平铺；被拿走的**留在原位**、压暗并标「谁拿走」；轮到我时那张牌可点（金框 + 呼吸）。
+   与拼点区同一处（牌桌主列中部），所以两块区域的视觉语言保持一致：深色面板 + 金边。 */
+.pool-table {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(24, 18, 12, 0.94) 0%, rgba(38, 28, 16, 0.94) 100%);
+  border: 1px solid var(--gold);
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 24px rgba(212, 168, 75, 0.12);
+}
+.pool-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--gold);
+}
+.pool-title .pool-progress {
+  font-weight: 400;
+  color: #cdbf9a;
+}
+.pool-title .pool-turn {
+  font-weight: 400;
+  color: #ffe6a8;
+}
+.pool-title .pool-turn.done {
+  color: #cdbf9a;
+}
+.pool-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+/* 一张亮出的牌：牌面朝上（五谷亮出来的本来就是明牌） */
+.pool-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 58px;
+  height: 84px;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid #8a7048;
+  background: linear-gradient(158deg, #fffdf6 0%, #f3ead5 100%);
+  color: #2b2620;
+  font-weight: 700;
+}
+.pool-card .pc-name {
+  writing-mode: vertical-rl;
+  font-size: 12px;
+  max-height: 66px;
+  overflow: hidden;
+}
+.pool-card .pc-taken {
+  font-size: 9px;
+  line-height: 1;
+  color: #6d5736;
+}
+.pool-card.red {
+  color: #b3352a;
+}
+/* 被我拿走不了（不是我的轮次）或已被拿走的：安静一点 */
+.pool-card.taken {
+  opacity: 0.42;
+  filter: grayscale(0.7);
+}
+/* 轮到我、且这张还没被拿走：金框 + 轻微呼吸，明确「点它就拿走」 */
+.pool-card.clickable {
+  cursor: pointer;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(212, 168, 75, 0.45);
+  animation: pool-hint 1.5s ease-in-out infinite;
+}
+.pool-card.clickable:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+@keyframes pool-hint {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(212, 168, 75, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(212, 168, 75, 0.22);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pool-card.clickable {
+    animation: none !important;
+  }
+}
+
 /* —— 拼点区（牌桌中央，用户 2026-09-23）——
    「等待选择 → 牌背入场 → 双方翻牌 → 比较点数 → 展示胜负」这一条流程全靠下面几段演：
    状态由服务端下发（PindianView），这里只负责过渡与落位。

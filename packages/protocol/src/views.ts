@@ -225,6 +225,11 @@ export interface PromptView {
   pickMin?: number;
   pickMax?: number;
   /**
+   * 这一手选牌是**从牌桌上公开摆着的牌池里拿**（【五谷丰登】）：
+   * 界面不要再画通用的选牌框，改为让玩家**直接点牌桌中央那张牌**（点完立即拿走）。
+   */
+  pickFromPool?: boolean;
+  /**
    * 私密查看（知己知彼）的标题 / 内容。
    * 内容只有发起者本人的快照里有——其他座位即使是同一个 pending 也拿不到。
    */
@@ -307,6 +312,29 @@ export interface PindianSideView {
   point?: number;
 }
 
+/**
+ * **牌桌上公开摆着的牌池**（【五谷丰登】这类「亮出若干张、按顺序依次拿」的牌）——
+ * 用户 2026-09-23 的规格：平铺在**牌桌中央**，谁都能看到，按正常顺序依次点牌拿走，
+ * 拿走的那张**立刻从展示区消失**（位置保留成「被谁拿走」的痕迹），剩余牌实时更新。
+ *
+ * 公开信息（亮出来的牌本来就是明的），所以整份快照都能下发。
+ */
+export interface PublicPoolView {
+  /**
+   * 固定顺序的**位置**：被拿走的牌**留在原位**并标上 `takenBySeatId`，
+   * 这样「第几张被谁拿走了」一眼看得出（就是牌桌上摆一排牌的感觉）。
+   */
+  slots: { card: Card; takenBySeatId?: string }[];
+  /** 现在轮到谁选（全拿完就没有这个字段了） */
+  currentSeatId?: string;
+  /** 还要按顺序选的人（含当前这位） */
+  queue: string[];
+  /** 池子是哪张牌亮出来的（界面用来画标题，如【五谷丰登】） */
+  source: CardType;
+  /** **本人**现在能不能点牌（规则层算好，界面不用猜） */
+  interactive: boolean;
+}
+
 /** 拼点（当前/最近一次）的完整状态：牌桌中央那块区域就靠它渲染 */
 export interface PindianView {
   sides: PindianSideView[];
@@ -334,4 +362,9 @@ export interface Snapshot {
    * 结算完不会立刻消失——下一次有人行动（任何 intent）时清空，让玩家有时间看清结果。
    */
   pindian?: PindianView | null;
+  /**
+   * 牌桌上公开摆着的牌池（【五谷丰登】）：牌桌中央平铺、按顺序依次拿走、拿走的立刻消失。
+   * 同样是公开信息（亮出来的牌本来就是明的）——**所有人都看得到整池与谁轮到了**。
+   */
+  publicPool?: PublicPoolView | null;
 }

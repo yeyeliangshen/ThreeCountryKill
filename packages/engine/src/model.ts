@@ -4,6 +4,7 @@ import type {
   CardType,
   DamageAttribute,
   PindianView,
+  PublicPoolView,
   Faction,
   GameMode,
   LogEntry,
@@ -815,6 +816,11 @@ export type Pending =
        * 为 true 时下发给选择者的快照里**只留 id**（见 legal 的 buildPrompt）——牌面不出服务端。
        */
       hidden?: boolean;
+      /**
+       * 这一手选牌是**从牌桌上公开摆着的牌池里拿**（【五谷丰登】）：界面不画通用选牌框，
+       * 改为直接点牌桌中央那张牌（点完立即拿走）。见 `GameState.publicPool`。
+       */
+      fromPool?: boolean;
       /** 这些牌属于谁（盲选时界面标注「在看谁的手牌」） */
       ownerSeatId?: string;
       /** 其中已因其他效果公开的牌 id（由规则层给，界面照它画牌面） */
@@ -965,6 +971,12 @@ export interface GameState {
    * 结算完不立刻清：下一次**任何 intent**（谁行动都行）时清空，让玩家看清点数与胜负。
    */
   pindianView?: PindianView | null;
+  /**
+   * **牌桌上公开摆着的牌池**（【五谷丰登】）：亮出的牌平铺在牌桌中央，按座次依次点牌拿走，
+   * 拿走的立刻从展示区消失（位置留痕 + 谁拿的）。公开信息 ⇒ 整份下发。
+   * 与拼点不同，它**跨多个 intent 存活**（每人一次选牌），所以不能在 applyIntent 里清。
+   */
+  publicPool?: PublicPoolView | null;
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];

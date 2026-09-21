@@ -147,6 +147,8 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
             )
           : pending.cards.slice(),
         ...(pending.hidden ? { pickHidden: true } : {}),
+        // 「从牌桌上公开摆着的牌池里拿」（五谷）：界面画牌池、直接点牌，不画通用选牌框
+        ...(pending.fromPool ? { pickFromPool: true } : {}),
         ...(pending.ownerSeatId ? { pickOwnerSeatId: pending.ownerSeatId } : {}),
         ...(pending.visibleIds?.length ? { pickVisibleIds: pending.visibleIds.slice() } : {}),
         pickMin: pending.min,
