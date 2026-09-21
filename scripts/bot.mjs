@@ -11,6 +11,8 @@
  *   ROOM=4831 SEAT=1 node scripts/bot.mjs       # 接替某个座位（重连已开局的陪练）
  *   SGS_URL=ws://192.168.1.5:8080 node scripts/bot.mjs
  *   NAME=陪练 HERO=zhangfei node scripts/bot.mjs
+ *   REVEAL=1 node scripts/bot.mjs                 # 准备阶段选择「全部明置」（看别人面板的
+ *                                                # 「明置武将 + 技能提示」时用；默认保持暗将）
  *
  * 只用到 Node 自带的 WebSocket（Node 22+），不需要额外装包。
  * 房号/座位号在服务端日志或大厅里能看到；接替座位用的是「离线座位可以认回」那条规则。
@@ -160,9 +162,16 @@ ws.addEventListener('message', (ev) => {
     const isSummon = (prompt.message ?? '').includes('阵法召唤');
     // 阵法召唤有两问：①「是否响应」→ 要 **yes**；②「明置哪一张武将牌」→ 没有 yes，
     // 取第一个（＝明置主将）。以前第二问也去找 yes，找不到就整局不动了（实测）。
+    // REVEAL=1：准备阶段的「是否明置武将牌」一律选「全部明置」——
+    // 默认策略是保持暗将（配合「能不发动就不发动」），但要看**别人面板上的明置武将/技能提示**
+    // 时得先让陪练亮出来。
+    const isRevealAsk = (prompt.message ?? '').includes('明置武将牌');
+    const wantReveal = process.env.REVEAL === '1' && isRevealAsk;
     const opt = isSummon
       ? (opts.find((o) => o.id === 'yes') ?? opts[0])
-      : (opts.find((o) => o.id === 'no' || o.id === 'none') ?? opts[0]);
+      : wantReveal
+        ? (opts.find((o) => o.label?.includes('全部明置')) ?? opts.find((o) => o.label?.includes('明置主将')) ?? opts[0])
+        : (opts.find((o) => o.id === 'no' || o.id === 'none') ?? opts[0]);
     if (!opt) {
       log('choice 没有可选项，弃权兜底：', prompt.message ?? '');
       send({ type: 'intent', intent: { type: 'pass' } });

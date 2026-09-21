@@ -1822,6 +1822,9 @@ select:focus-visible,
 }
 .hover-tip-desc {
   color: #d8d0c0;
+  /* 技能/说明是一条一行拼出来的，要保留换行（原来只写一行时无所谓） */
+  white-space: pre-line;
+  line-height: 1.45;
 }
 
 /* 声音开关（固定右上角，各界面都在） */
@@ -2016,4 +2019,25 @@ select:focus-visible,
   font-size: 12px;
   color: var(--muted);
   line-height: 1.6;
+}
+
+/* —— 对手的武将小卡（国战两张：主将 / 副将）—— */
+.p-heroes {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+/* 长按出提示的元素：别让系统弹出「选择文字/复制」菜单抢走长按 */
+.p-heroes .portrait,
+.p-equip .equip-icon,
+.p-judge .judge-icon,
+.hand .card {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* 小卡上的「主将/副将」角标：编号小一点，别盖住立绘的脸 */
+.p-heroes .portrait-tag {
+  font-size: 8px;
+  padding: 0 3px;
 }

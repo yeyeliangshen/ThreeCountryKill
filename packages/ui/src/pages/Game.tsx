@@ -34,6 +34,7 @@ import {
   type ActiveSkill,
 } from '@sgs/engine';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
+import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { cardBack } from '../components/cardBack';
@@ -50,19 +51,6 @@ const PHASE_NAME: Record<string, string> = {
   gameOver: '游戏结束',
   draft: '选将',
 };
-
-/** 国战：武将显示——亮将后显示名，未亮显示「暗将」 */
-function heroDisplay(p: PlayerView, mode: GameMode): string {
-  if (mode === 'guozhan') {
-    const main = p.heroRevealed && p.heroId ? getHero(p.heroId)?.name : null;
-    const deputy = p.deputyRevealed && p.deputyHeroId ? getHero(p.deputyHeroId)?.name : null;
-    if (main && deputy) return `${main} / ${deputy}`;
-    if (main) return `${main} · 暗将`;
-    if (deputy) return `暗将 · ${deputy}`;
-    return '暗将';
-  }
-  return getHero(p.heroId)?.name ?? '?';
-}
 
 /** 把服务端 winner 字符串转成人类可读的胜方文案 */
 function winnerText(mode: GameMode, winner: string, players: PlayerView[]): string {
@@ -1227,7 +1215,6 @@ export function Game() {
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
-            const art = heroArt(p.heroId);
             return (
               <button
                 key={p.seatId}
@@ -1236,15 +1223,9 @@ export function Game() {
                 disabled={!isTarget}
               >
                 <div className="p-top">
-                  {/* 画像占位框，和我自己的武将面板同一套视觉 */}
-                  {/* 小头像：对手原画（没原画时回退成武将名） */}
-                  <span className={`portrait small ${factionClass}`}>
-                    {art ? (
-                      <img className="portrait-photo" src={art} alt="" />
-                    ) : (
-                      <span className="portrait-name">{heroDisplay(p, snapshot.mode)}</span>
-                    )}
-                  </span>
+                  {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
+                      悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
+                  <HeroChips chips={heroChipsOf(p, snapshot.mode)} />
                   <span className="p-info">
                     <span className="p-name">
                       {p.name}
@@ -1274,9 +1255,13 @@ export function Game() {
                       <span
                         key={c.id}
                         className={`equip-icon equip-${c.type}`}
-                        title={`${cardShortName(c)}\n${cardDescription(c, snapshot.mode)}${
-                          c.cargoCount ? `（下有扣置的牌 ${c.cargoCount} 张）` : ''
-                        }`}
+                        // 原生 title 在触摸屏上不显示，统一走 hover/长按提示
+                        {...bindTip(
+                          cardShortName(c),
+                          `${cardDescription(c, snapshot.mode)}${
+                            c.cargoCount ? `（下有扣置的牌 ${c.cargoCount} 张）` : ''
+                          }`,
+                        )}
                       >
                         {cardShortName(c)}
                         {c.cargoCount ? `·辎${c.cargoCount}` : ''}
@@ -1291,7 +1276,7 @@ export function Game() {
                       <span
                         key={c.id}
                         className="judge-icon"
-                        title={`${cardShortName(c)}\n${cardDescription(c, snapshot.mode)}`}
+                        {...bindTip(cardShortName(c), cardDescription(c, snapshot.mode))}
                       >
                         {cardShortName(c)}
                       </span>
