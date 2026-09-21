@@ -116,6 +116,17 @@ describe('随机对局不变式：牌不会同时挂在两处、也不会被流�
           }
           // 只在**稳定时刻**查牌张（见文件头 ⚠️）
           if (state.pending.kind !== 'play' && state.pending.kind !== 'discard') continue;
+          // Step 6.3 的不变量：`discard`（弃牌）询问只可能在**弃牌阶段**出现——它唯一的创建点
+          // `beginDiscard` 只在弃牌阶段被调用。所以「phase=play 却挂着 discard 询问」一定是
+          // 有谁把阶段字段改写错了：旧实现是 `resumePlay` 在**围栏判断之前**就写
+          // `turn.phase = 'play'`，于是「被挡住、只是登记等待」的收尾也会改坏它
+          // （2026-09-21 实测 200 局 21 次，改成 `takePlayPhase` 后归零）。
+          if (state.turn.phase === 'play' && state.pending.kind === 'discard') {
+            problems.push(
+              `seed=${seed} 第 ${steps} 步：阶段/槽不一致（phase=play 却挂着 discard 询问）`,
+            );
+            break;
+          }
           const bad = checkDuplicate(state) ?? watch.observe(state);
           if (bad) {
             problems.push(`seed=${seed} 第 ${steps} 步：${bad}`);

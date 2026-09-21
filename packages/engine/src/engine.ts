@@ -276,6 +276,18 @@ export interface ResumePlayRequest {
 }
 
 /**
+ * 真正**占住出牌阶段**：改阶段字段 + 装上 `play` 占用 pending —— 这两件事必须**一起**做。
+ *
+ * ⚠️ 阶段字段不能在「收尾刚进门」时就改（Step 6.3 的教训）：收尾可能被围栏挡住——
+ * 那时只是**登记等待**、压根没拿到控制权，改 `turn.phase` 会留下「phase=play 却挂着
+ * 别人一条还没答的询问」的自相矛盾状态（测量脚本的**指标 6** 抓的就是它）。
+ */
+function takePlayPhase(state: GameState, seatId: string): void {
+  state.turn.phase = 'play';
+  setPending(state, { kind: 'play', seatId });
+}
+
+/**
  * **请求**回到出牌阶段（「请求 / 提交」拆分里的请求半边）：过期放弃 / 槽空就取 / 有人等回答就**只登记等待**。
  * 不可延迟的控制迁移（gameOver / endTurn / 强制死亡结算）才走 takeOverPendingIfUnchanged 那种强制路径。
  */
@@ -285,7 +297,7 @@ export function requestResumePlay(state: GameState, req: ResumePlayRequest): voi
   if (state.seatOrder[state.turn.seatIndex] !== req.sourceId) return;
   const checkpoint = capturePendingCheckpoint(state);
   if (checkpoint.requestId === null) {
-    setPending(state, { kind: 'play', seatId: req.sourceId });
+    takePlayPhase(state, req.sourceId);
     return;
   }
   waitPendingResolved(state, checkpoint.requestId, () => requestResumePlay(state, req));
@@ -2640,7 +2652,9 @@ function resumePlay(
     continueTurnAfterJudgment(state, source);
     return;
   }
-  state.turn.phase = 'play';
+  // ⚠️ 阶段字段**不在这里**改（Step 6.3）：下面可能被围栏挡住、只是登记等待，那时压根没拿到
+  //    控制权，改 `turn.phase` 会留下「phase=play 却挂着别人没答完的询问」（指标 6 抓的就是它）。
+  //    真正的改写统一收在 `takePlayPhase`（= 装上 play 占用 pending 的那一刻）。
   // **「先测量」探针（只记不改，默认关）**：把「收尾覆盖掉一条**还没人回答**的询问」这件事
   // 全部记下来——围栏那半边只覆盖锦囊收尾（带 since 的两处），这只探针覆盖全部 19 个
   // `resumePlay` 调用点，能给出「谁在抢谁的槽」的完整地图（docs §5.134 建议顺序 ②）。
@@ -2727,7 +2741,8 @@ function resumePlay(
     const key = `${sourceId}:${since.slotVersion}:${since.useId ?? '-'}`;
     const rid = state.pending ? pendingIdOf(state.pending) : null;
     if (rid === null) {
-      setPending(state, { kind: 'play', seatId: sourceId });
+      // 槽在这期间已经空出来了（挡住我的那条自己走完了）→ 这一格可以拿：占住出牌阶段
+      takePlayPhase(state, sourceId);
       return;
     }
     if (key) (rec as { outcome?: string }).outcome = 'deferred';
@@ -2745,7 +2760,8 @@ function resumePlay(
     //   钩子链遇询问不挂起、等待者只按「槽变空」唤醒 —— 结果全量变红已回退。那三条现在都补齐了
     //   （提交 A/B/C + Step 1），当年的失败机理记在 docs §5.134。）
   }
-  setPending(state, { kind: 'play', seatId: sourceId });
+  // 到这里才真正拿到控制权：改阶段 + 装 play 占用（两件事必须一起，见 takePlayPhase）
+  takePlayPhase(state, sourceId);
 }
 
 /**

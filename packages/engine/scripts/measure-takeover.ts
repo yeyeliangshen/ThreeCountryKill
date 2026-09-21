@@ -40,6 +40,16 @@ const notFinished: number[] = [];
 let neverResumed = 0;
 const neverResumedSamples: string[] = [];
 const seedsByKind = new Map<string, number[]>();
+/**
+ * 指标 6（Step 6.3 的瑕疵）：**阶段字段与槽里那条不一致**——
+ * `turn.phase === 'play'` 却挂着一条 `discard`（弃牌）询问。
+ *
+ * `discard` pending 只有 `beginDiscard` 一个创建点、且只在弃牌阶段创建，所以这个组合
+ * 正常应当是 0；它出现就说明有「**没拿到控制权**的收尾」改写了 `turn.phase`
+ * （旧实现里 `resumePlay` 把 `state.turn.phase = 'play'` 写在围栏判断之前）。
+ */
+let phaseSlotMismatch = 0;
+const mismatchSamples: string[] = [];
 
 for (let seed = 1; seed <= games; seed++) {
   const state = riskyGame(seed);
@@ -60,6 +70,13 @@ for (let seed = 1; seed <= games; seed++) {
       leftoverSlot++;
       if (leftoverSamples.length < 5) {
         leftoverSamples.push(`${seed}#${steps}:${state.pending?.kind}`);
+      }
+    }
+    // 指标 6：阶段字段与槽里那条不一致（见上面的定义）
+    if (state.turn.phase === 'play' && state.pending?.kind === 'discard') {
+      phaseSlotMismatch++;
+      if (mismatchSamples.length < 5) {
+        mismatchSamples.push(`${seed}#${steps}:phase=play,pending=discard`);
       }
     }
   }
@@ -160,6 +177,9 @@ const fence = [...byClass.keys()].filter((k) => k.startsWith('fence')).reduce((s
 console.log(`\n【指标 4】fenceBlockCount = ${fence}（Step 3a 起才有意义）`);
 console.log(
   `【指标 5】blockedContinuationNeverResumed = ${neverResumed}${neverResumedSamples.length ? `  ${neverResumedSamples.join(' ')}` : ''}（目标 0）`,
+);
+console.log(
+  `【指标 6】阶段/槽不一致（phase=play 却挂着 discard）= ${phaseSlotMismatch}${mismatchSamples.length ? `  ${mismatchSamples.join(' ')}` : ''}（目标 0，见 §4.12 6.3）`,
 );
 
 // ── 分类里出现的「非设计如此」种类，单独点出来 ────────────────────────────
