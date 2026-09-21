@@ -115,6 +115,38 @@ for (let seed = 1; seed <= games; seed++) {
 }
 console.log(`\n【指标 3】continuationExecutedTwice = ${twice}${twiceIds.length ? `  ${twiceIds.join(' ')}` : ''}（续接共执行 ${runs} 次）`);
 
+// ── 不变量 B/D（施工方案 Step 2.3）────────────────────────────────────────
+let dupCompletions = 0;
+let refused = 0;
+const refusedKinds = new Map<string, number>();
+{
+  const state2 = { pendingCompletions: new Map<number, number>(), refusedReleases: [] as { id: number; kind: string }[] };
+  const dupIds: string[] = [];
+  for (let seed = 1; seed <= games; seed++) {
+    const st = riskyGame(seed);
+    const rand = rng(seed * 977);
+    let steps = 0;
+    while (!st.gameOver && steps < 4000) {
+      step(st, rand);
+      steps++;
+    }
+    for (const [pid, n] of st.pendingCompletions) {
+      if (n > 1) {
+        dupCompletions++;
+        if (dupIds.length < 8) dupIds.push(`${pid}×${n}`);
+      }
+    }
+    refused += st.refusedReleases.length;
+    for (const r of st.refusedReleases) refusedKinds.set(r.kind, (refusedKinds.get(r.kind) ?? 0) + 1);
+  }
+  void state2;
+  console.log(`
+【不变量 B】同一 pending 重复完成 = ${dupCompletions}${dupIds.length ? `  ${dupIds.join(' ')}` : ''}`);
+  console.log(
+    `【不变量 D】release-if-mine 因「槽已换人」被拒 = ${refused}${refused ? `  ${[...refusedKinds].map(([k, v]) => `${k}:${v}`).join(' ')}（Step 4 要逐条改成登记等待）` : ''}`,
+  );
+}
+
 // ── 指标 4/5 ─────────────────────────────────────────────────────────────
 const fence = [...byClass.keys()].filter((k) => k.startsWith('fence')).reduce((s, k) => s + (byClass.get(k)?.n ?? 0), 0);
 console.log(`\n【指标 4】fenceBlockCount = ${fence}（Step 3a 起才有意义）`);

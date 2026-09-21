@@ -227,3 +227,93 @@ pickCards / ack / respondCard / pass / discard…）。但引擎里还有一批*
    问题⑤），让「控制权交接」只有一条路：**显式 continuation + 围栏**。
 
 每一步都遵守同一条纪律（用户定的）：**先测量 → 只改一处 → 全量（含模糊）**。
+
+---
+
+## 4. 施工进度（按用户 2026-09-21 给的《Pending 控制流结构性重构方案》）
+
+方案的核心契约：**谁创建 pending，谁拥有其生命周期；pending 完成后显式释放自身，再通过
+continuation 推进后续流程；如果 continuation 恢复时存在更新一代 pending，则等待，而不是覆盖或丢失。**
+纪律：先测量 → 一次只改一处 → 每步完整回归 → 数据符合预期再进下一步；
+测量工具 `packages/engine/scripts/measure-takeover.ts`（每步前后同命令同局数对比）。
+
+### 4.1 Step 0（观测基线，零行为变化）—— ✅ 已完成
+
+- takeover 记录统一成 `TakeoverRecord`（probe/site/phase/turnSeat/`oldPending{kind,owner,seq,
+  answered,completed}`/newPendingKind/checkpoint/currentSeq/inDying/`ongoing{skillChain,chain,trick}`/
+  resumeQueue/sameUse/caller）；`probe:'fence'`（带 checkpoint 的收尾）与 `probe:'clobber'`
+  （顶掉没答过的询问）同一构造。
+- 指标先行：`runContinuation` + `state.continuationRuns`（同一 id 执行 >1 次＝多执行）；
+  `isCompletedPending()`（口径＝已 completed / **answered-final**，轮询队列「还没问完」不算）。
+- 现场固定为回归用例：fuzz 的 `seed 9 / 84 / 86`（目前仅有的三处「收尾换掉一条没答过的询问」）。
+- baseline（200 局）：takeover 459；指标 2/3 = 0；未结束 0。
+
+### 4.2 Step 2.1 pending inventory（本轮施工范围）
+
+`Pending` 的全量变体（`model.ts`）与各自的归属。**范围先定死，不在施工中改「问答型 pending」的定义**：
+
+| pending 类型 | owner（谁拥有） | 创建点 | 完成源 | 谁 release | 可同步创建下一格 | 可嵌套 | 本轮 epoch |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `play` | 当前回合玩家（**占位**，不是询问） | 5 处（回合交接 / 收尾） | 出牌 / 结束 | 收尾 `resumePlay` 覆盖 | 是 | — | ❌ 占位不参与 |
+| `respondSha` | 被问的那名角色（攻击流程） | 3 处 | `respondCard` / `pass` | 攻击流程收尾 | 是 | 是（借刀 / 寄篱） | ✅ |
+| `respondDeath` | 求桃队列当前那一位 | 1 处（`enterDeathQueue`） | `respondCard` / `pass` | **自带 `release`（谁建谁清）** | 是 | 是 | ✅ |
+| `discard` | 回合玩家 | 1 处（`beginDiscard`） | `discard` 意图 | 弃牌链收尾 | 是（复查可再摆） | 否 | ✅ |
+| `respondTrick` | 当前响应者 | 8 处 | `respondCard` / `pass` | **Step 1 起自己离场**（`endTrickResolution` 顶部） | 是 | 是 | ✅ |
+| `wuxieQueue` | 轮询队列（逐家问） | 4 处 | `respondCard` / `pass` | **Step 1 起自己离场**（`finishWuxieWindow`） | 是 | 是 | ✅ |
+| `choice` | 被问的人 | 1 处（`askChoice`，全场通用） | `chooseOption` | 各流程自己（`returnTo` / 续接） | 是 | 是 | ✅ |
+| `pickCards` | 被问的人 | 3 处 | `pickCards` | 同上 | 是 | 是 | ✅ |
+| `pickSeats` | 被问的人 | 1 处（`askPickSeats`） | `pickSeats` | 同上 | 是 | 是 | ✅ |
+| `factionCall` | 轮询队列（势力技代打） | 3 处 | `respondCard` / `pass` | 势力技链 | 是 | 是 | ✅ |
+| `viewCards` | 观看者 | 3 处 | `ack` | 观看流程 | 是 | 是 | ✅ |
+| `activeSkill` | —— | **0 处（没有任何创建点）** | —— | —— | —— | —— | ❌ **死代码**（Step 6 清） |
+
+### 4.3 Step 2.2 identity / epoch（身份与世代）
+
+- **世代**：`state.pendingSeq` 每次 `setPending` 递增（＝「这一格是第几代」）；
+  长流程在**真正拿到控制权的那一刻**拍 `capturePendingCheckpoint(state)`（记下 requestId +
+  slotVersion + useId），收尾时用 `canTakeOverPending` 判「期间有没有人创建更新一代」。
+- **身份**：`pendingIdOf(pending)`（WeakMap，一对象一号）用来回答「还是不是我自己那一格」；
+  `releaseIfMine(state, mine)` 是唯一的释放原语：标完成 → **只在槽里还是我自己那格时才清**。
+- 规则：**每个流程只能释放自己创建的那一格**；释放别人（更新一代）的格子＝takeover，不是释放。
+
+### 4.4 Step 2.3 生命周期不变量与探测器
+
+| 不变量 | 含义 | 探测器 | 现状 |
+| --- | --- | --- | --- |
+| **A** | completed pending 不能继续占据 `state.pending` | `isCompletedPending()` 在稳定观察点（两次 `applyIntent` 之间）采样 | `completedPendingStillOccupyingSlot = 0` ✅ |
+| **B** | pending 最多完成一次 | `state.pendingCompletions`（`releaseIfMine` 里计数） | 重复完成 = 0 ✅ |
+| **C** | 只能由自己的 owner / 完成契约释放 | 「收尾顶掉一条**没答过**的询问」记录（一直开着；栈只在探针开关打开时抓） | 目前 3 条（见 4.5） |
+| **D** | 旧 generation 不得修改新 generation 的 pending | `releaseIfMine` 的拒绝计数 `state.refusedReleases`（拒绝＝正确行为，但 Step 4 要逐条改成登记等待） | 拒绝 = 0 ✅ |
+
+### 4.5 Step 1（窗口自完成）—— ✅ 已完成
+
+- `finishWuxieWindow`：无懈窗口问完 → 先 `releaseIfMine` → 再跑 `onDone`/结算；
+- `endTrickResolution` 顶部：槽里还挂着**同一 ctx** 的 `respondTrick` → 先让它离场
+  （只认 `respondTrick`：`wuxieQueue` 可能是同一个 ctx，但归 `finishWuxieWindow` 管）；
+- 续接计数 id 带**窗口身份**（同一个牌用会开多次无懈窗口，它们是各自独立的续接）。
+  ⚠️ 踩坑：第一版只用 `${cardUseId}:wuxie-done`，量到 `continuationExecutedTwice = 215`
+  （同一 id 跑到 ×5）→ 触发方案 §十三 硬停线 3；按纪律先停下来查**指标本身**，加窗口身份后归零。
+
+**Step 1 前后（200 局，同命令）**：
+
+| 指标 | baseline | Step 1 后 |
+| --- | --- | --- |
+| takeover 总数 | 459 | 3 |
+| ↳ `wuxieQueue` 残留 | 242 | **0** |
+| ↳ `respondTrick` 残留 | 214 | **0** |
+| ↳ `discard`（未答）/ `respondSha`（已答） | 2 / 1 | 2 / 1（**未处理**） |
+| 指标 2 完成后占槽 | 0 | 0 |
+| 指标 3 续接重复执行 | 0 | 0（续接共执行 3502 次） |
+| 指标 4 fenceBlockCount | 459 | 3 |
+| 未结束局数 | 0 | 0 |
+
+**仍未解决（不得写成「已清零」）**：剩下 3 条 takeover —— `seed 9/84` 的**未答**弃牌询问被换掉、
+`seed 86` 的已答求闪询问被换掉；它们不在 Step 1 范围（方案 §十五 只点名两类窗口），
+按方案应在 Step 3a 铺完 fence 后用 `wouldBlock` 数据决定归属。三跳仍在（Step 5 才删）。
+
+### 4.6 下一步
+
+Step 2（本节的 inventory / identity / 不变量）已完成；接着按方案的顺序：
+**Step 3a**（21/21 收尾点接 checkpoint + fence shadow 只观测）→ **Step 3b**（fence 真生效 +
+被挡时 fail-fast，不允许 silent drop）→ **Step 4**（接 `requestResumePlay` / waiter / drain 重入守卫）
+→ **Step 5**（动态核查后逐支删三跳）→ **Step 6**（架构收口）。

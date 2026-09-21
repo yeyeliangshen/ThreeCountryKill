@@ -2453,8 +2453,15 @@ function takeoverRecord(
  *   反过来（先跑 onDone 再 release）会在 onDone 里创建了新 pending 之后把**新的那格**清掉。
  */
 function releaseIfMine(state: GameState, mine: NonNullable<GameState['pending']>): boolean {
+  // 不变量 B：一条 pending 最多完成一次（重复完成＝有流程把同一格收了两遍）
+  const id = pendingIdOf(mine);
+  state.pendingCompletions.set(id, (state.pendingCompletions.get(id) ?? 0) + 1);
   completedPendings.add(mine);
-  if (state.pending !== mine) return false;
+  if (state.pending !== mine) {
+    // 不变量 D：槽里已经是**更新一代**的询问 → 拒绝释放（正确行为），但记一笔给 Step 4 用
+    state.refusedReleases.push({ id, kind: (mine as { kind: string }).kind });
+    return false;
+  }
   setPending(state, null);
   return true;
 }
@@ -2572,9 +2579,12 @@ function resumePlay(
   // 全部记下来——围栏那半边只覆盖锦囊收尾（带 since 的两处），这只探针覆盖全部 19 个
   // `resumePlay` 调用点，能给出「谁在抢谁的槽」的完整地图（docs §5.134 建议顺序 ②）。
   // 开关是模块级常量，关着时零成本。
-  if (PROBE_CLOBBER && !since) {
+  // 不变量 C（施工方案 Step 2.3）：**一条询问只能由它自己的 owner / 完成契约释放**——
+  // 「收尾把一条还没人回答的询问顶掉」就是它的可观测违反。这段记录**一直开着**（只是入队，
+  // 成本可忽略）；调用栈只在探针开关打开时抓（那个贵）。
+  if (!since) {
     const cur = state.pending;
-    if (cur && cur.kind === 'respondSha' && !answeredPendings.has(cur)) {
+    if (PROBE_CLOBBER && cur && cur.kind === 'respondSha' && !answeredPendings.has(cur)) {
       const atk = (cur as unknown as { attack?: { sourceId?: string; targetId?: string; cardId?: string } })
         .attack;
       console.log(
@@ -2601,7 +2611,15 @@ function resumePlay(
     }
     if (cur && !isPlaceholderPending(cur) && !answeredPendings.has(cur)) {
       state.blockedTakeovers.push(
-        takeoverRecord(state, 'clobber', 'resumePlay', cur, null, 'n/a', topStackFrame()),
+        takeoverRecord(
+          state,
+          'clobber',
+          'resumePlay',
+          cur,
+          null,
+          'n/a',
+          PROBE_CLOBBER ? topStackFrame() : undefined,
+        ),
       );
     }
   }
@@ -11621,6 +11639,8 @@ export function createGame(
     turnSeq: 0,
     blockedTakeovers: [],
     continuationRuns: new Map<string, number>(),
+    pendingCompletions: new Map<number, number>(),
+    refusedReleases: [],
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],

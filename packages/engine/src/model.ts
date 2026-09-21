@@ -1106,6 +1106,18 @@ export interface GameState {
    * 必须停下来查——所以它不是普通统计，是硬指标（目标：不允许出现 > 1 的条目）。
    */
   continuationRuns: Map<string, number>;
+  /**
+   * 不变量 B（施工方案 Step 2.3）：**一条 pending 最多完成一次**。
+   * key = `pendingIdOf(pending)`，value = 它被「确认完成」过几次；出现 > 1 就是重复完成。
+   */
+  pendingCompletions: Map<number, number>;
+  /**
+   * 不变量 D（施工方案 Step 2.3）：`releaseIfMine` 因为「槽里已经是更新一代」而**拒绝释放**的次数。
+   *
+   * 拒绝本身是**正确行为**（说明有流程收尾晚了、控制权已经交出去），但这个数字是 Step 4
+   * 接 waiter 的输入：每一条拒绝将来都要变成「登记等待」而不是「什么都不做」。
+   */
+  refusedReleases: { id: number; kind: string }[];
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**
