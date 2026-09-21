@@ -874,9 +874,10 @@ describe('国战模式', () => {
         // 野心家武将（野势力）只能作主将、也不能和另一个野武将配成一副将 → 这一档跳过
         if (factionOf(deals[i]!) === 'ambitionist') continue;
         if (factionOf(deals[i]!) !== factionOf(deals[j]!)) continue;
-        // 两张都是双势力、且有两个共同势力时，引擎会要求玩家**自己选势力**（选势力界面还没做，
-        // pickHero 直接拒绝）。发将是随机的，随到这种组合测试就会莫名失败——这里按引擎的同一
-        // 判定（determineDualFaction）跳过，保证拿到的组合一定能选上。
+        // 两张都是双势力、且有两个共同势力时，引擎会挂一条「选势力」询问让玩家自己选
+        // （界面**支持**这条询问，2026-09-21 真机验证过，见 docs §5.173）。但这里的假人
+        // 只会送一个 pickHero，答不了那条询问 → 按引擎的同一判定（determineDualFaction）跳过，
+        // 保证随机发将拿到的组合一定能选上（纯确定性考虑，不是因为引擎不支持）。
         const dual = determineDualFaction(getHero(deals[i]!), getHero(deals[j]!), mode);
         if (dual?.kind === 'choice') continue;
         const li = isLord(deals[i]!);

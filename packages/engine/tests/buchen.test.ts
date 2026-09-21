@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
+  canPairHeroes,
   configFromPreset,
   createGame,
   determineDualFaction,
@@ -33,6 +34,36 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     });
     // 两张单势力 → 不归它管
     expect(determineDualFaction(guanyu, sunquan, 'guozhan')).toBeNull();
+  });
+
+  /**
+   * 用户 2026-09-21 给的**新版双势力规则**（移动版 2023-08 更新）逐条核对：
+   * 「两张武将至少有一个可兼容势力即可组合；最终势力 = 两张牌可选势力集合的交集，
+   *   1 个自动确定、多个让玩家选」。
+   *
+   * 下面这些就是用户原文里的例子，钉的是**同一条**判据（`canPairHeroes`）——
+   * 引擎的 pickHero 与界面选将槽位分配（ui 的 nextGuozhanSlots）都走它。
+   */
+  it('canPairHeroes：双势力可配任意一个所属势力；组合按「可选势力集合有交集」判', () => {
+    const h = (id: string) => getHero(id)!;
+    // 孟达（魏/蜀）：配魏将、配蜀将都合法
+    expect(canPairHeroes(h('mengda'), h('caocao'))).toBe(true); // 魏
+    expect(canPairHeroes(h('mengda'), h('liubei'))).toBe(true); // 蜀
+    // 双势力放在**副将**位同样合法（2023 起「只能当副将」的旧规则作废）
+    expect(canPairHeroes(h('caocao'), h('mengda'))).toBe(true);
+    // 两张双势力：有唯一共同势力 → 合法
+    expect(canPairHeroes(h('mengda'), h('tangzi'))).toBe(true); // 魏/蜀 × 魏/吴 → 魏
+    // 两张双势力、势力集合完全相同 → 合法（最终势力由玩家选）
+    expect(canPairHeroes(h('mengda'), h('xiahouba'))).toBe(true); // 魏/蜀 × 魏/蜀
+    // 两张双势力、没有任何共同势力 → 不可组合
+    expect(canPairHeroes(h('mengda'), h('shixie'))).toBe(false); // 魏/蜀 × 吴/群
+    // 单势力之间：同势力合法、不同势力不合法
+    expect(canPairHeroes(h('guanyu'), h('zhangfei'))).toBe(true);
+    expect(canPairHeroes(h('guanyu'), h('sunquan'))).toBe(false);
+    // 野心家武将：只能在主将位；在主将位时配任意副将都合法
+    const sunchen = h('sunchen');
+    expect(canPairHeroes(sunchen, h('guanyu'))).toBe(true);
+    expect(canPairHeroes(h('guanyu'), sunchen)).toBe(false);
   });
 
   it('确定过的势力优先于「明置即确定」：会盟/同势力判断都读它', () => {

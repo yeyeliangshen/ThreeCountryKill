@@ -267,7 +267,8 @@ export interface Hero {
    * - 判定规则（2023）：与普通单势力武将组合 → **自动跟随那个势力**；两张双势力只有一个
    *   共同势力 → **自动取共同势力**；有两个共同势力 / 与野心家武将组合 → **玩家自己选**
    *   （后两种要玩家自己选势力：引擎会挂一条 `choice` 询问，**不再拒绝**——见 §5.126 的 ✅ 后续；
-   *     客户端那条询问能不能弹出来还没实测）。
+   *     客户端那条询问**已实测**：2026-09-21 真机跑通，见 docs §5.173）。
+   * - 「能配成双将」的判据统一收在 `canPairHeroes`（界面选将槽位分配也用它）。
    */
   secondFaction?: Faction;
   /**
@@ -16721,6 +16722,29 @@ export function heroCanonicalId(heroId: string | null | undefined): string | und
 export function sameHeroBody(a: string, b: string): boolean {
   const ca = heroCanonicalId(a);
   return !!ca && ca === heroCanonicalId(b);
+}
+
+/**
+ * **两张武将牌能不能组成一个双将**（国战「同阵营」校验，2023 移动版口径，用户 2026-09-21 给定）。
+ *
+ * 规则只有一句：**两张牌的「可选势力集合」有交集即可**——
+ * - 单势力牌的可选势力就是它自己；
+ * - **双势力牌两面都算**（孟达 魏/蜀 既能配魏将也能配蜀将，主将/副将位都行）；
+ * - 野心家武将在**主将位**时配任意副将都合法（用户 2026-09-18 口径：主将暗置期间暂时按副将
+ *   确定势力），野心家**只能在主将位**。
+ *
+ * ⚠️ 引擎的 `pickHero` 与界面（`ui/src/draftSlots.ts` 的槽位分配）必须用**同一个**口径，
+ *    否则会出现「界面拼不出来、引擎却收」的组合——实测踩过：孟达(魏/蜀) + 关羽(蜀)
+ *    在选将界面上永远落不到副将位（界面只比 `faction`，魏 ≠ 蜀），玩家根本选不出这个合法组合。
+ */
+export function canPairHeroes(main: Hero | undefined, deputy: Hero | undefined): boolean {
+  if (!main || !deputy) return false;
+  if (main.faction === 'ambitionist') return true;
+  if (deputy.faction === 'ambitionist') return false;
+  const factionsOf = (h: Hero): Faction[] =>
+    h.secondFaction ? [h.faction, h.secondFaction] : [h.faction];
+  const dep = factionsOf(deputy);
+  return factionsOf(main).some((f) => dep.includes(f));
 }
 
 /**

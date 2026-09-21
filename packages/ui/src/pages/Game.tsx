@@ -40,6 +40,7 @@ import { heroArt } from '../components/heroArt';
 import { cardBack } from '../components/cardBack';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
+import { nextGuozhanSlots } from '../draftSlots';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -774,32 +775,12 @@ export function Game() {
   }
 
   // —— 国战选将：点击武将分配主将/副将槽位 ——
+  // 槽位怎么变是纯函数（`nextGuozhanSlots`，单测在 draftSlots.test.ts）——判定必须与引擎的
+  // `pickHero` 同口径（`canPairHeroes`），否则「界面拼不出来、引擎却收」的组合会再出现。
   function pickGuozhanHero(id: string) {
-    if (id === mainPick) {
-      setMainPick(null);
-      return;
-    } // 取消主将
-    if (id === deputyPick) {
-      setDeputyPick(null);
-      return;
-    } // 取消副将
-    if (!mainPick) {
-      setMainPick(id);
-      return;
-    } // 主将空 → 设主将
-    if (!deputyPick) {
-      // 副将空 → 检查同阵营
-      const mainHero = getHero(mainPick);
-      const h = getHero(id);
-      if (mainHero && h && mainHero.faction === h.faction) {
-        setDeputyPick(id);
-      } else {
-        setMainPick(id); // 不同阵营：替换主将，清空副将
-      }
-      return;
-    }
-    setMainPick(id); // 两槽满 → 替换主将，清空副将
-    setDeputyPick(null);
+    const next = nextGuozhanSlots({ main: mainPick, deputy: deputyPick }, id, (hid) => getHero(hid));
+    setMainPick(next.main);
+    setDeputyPick(next.deputy);
   }
 
   // 判定当前选中牌的目标提示文案

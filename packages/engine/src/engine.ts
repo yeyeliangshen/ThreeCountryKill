@@ -10,7 +10,7 @@ import type {
 } from '@sgs/protocol';
 import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
 import { applyDeckExtensions, applyPoolExtensions } from './extensions';
-import { determineDualFaction, wenjiMarked } from './heroes';
+import { canPairHeroes, determineDualFaction, wenjiMarked } from './heroes';
 
 import {
   CARD_TYPE_NAME,
@@ -11814,15 +11814,11 @@ function onPickHero(state: GameState, seatId: string, intent: Intent): ApplyResu
     const mainHero = getHero(intent.heroId);
     const deputyHero = getHero(deputyId);
     if (!mainHero || !deputyHero) return err('武将不存在');
-    // 同阵营校验：双势力武将牌有两面，只要**有共同势力**就算同阵营（2023 口径）
+    // 同阵营校验：双势力武将牌有两面，只要**有共同势力**就算同阵营（2023 口径）。
+    // 口径统一收在 `canPairHeroes`（界面选将槽位判断用的也是它，见 heroes.ts 的注释）。
     // ⚠️ 例外：**野心家武将在主将位时配任意副将都合法**——他是「野」势力，按用户 2026-09-18 的
     //    口径「只明置副将期间**暂时按照副将确定势力**」（§5.141），硬套同阵营会让他根本选不出来。
-    const pairOk =
-      mainHero.faction === 'ambitionist' ||
-      [mainHero.faction, mainHero.secondFaction]
-        .filter(Boolean)
-        .some((f) => f === deputyHero.faction || f === deputyHero.secondFaction);
-    if (!pairOk) return err('国战需选 2 位同阵营武将');
+    if (!canPairHeroes(mainHero, deputyHero)) return err('国战需选 2 位同阵营武将');
     if (deputyHero.faction === 'ambitionist') return err('野心家武将只能作为主将');
     // 君主将只能作主将
     if (deputyHero.isLord) return err('君主将只能作为主将');
