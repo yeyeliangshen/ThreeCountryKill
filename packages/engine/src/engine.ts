@@ -2434,22 +2434,10 @@ const FENCE_ENFORCE = (() => {
 })();
 
 /**
- * 施工方案 Step 5.1：`resumePlay` 开头那三跳旧机制（`ongoingSkillChain` / `ongoingChain` /
- * `ongoingTrick`）的**临时禁用开关**——`SGS_NO_ONGOING=skillChain,chain,trick`（逗号分隔，可只写一个）。
- *
- * 为什么要开关而不是直接读代码：方案要求「实际语义依赖 == 0」才允许删，而这个「依赖」只能靠
- * **把某一支关掉、跑全量（含模糊/冒烟/历史种子）**来验（关掉之后全绿 = 这一支没有语义依赖）。
- * 命中次数只是参考——命中 0 不等于可以删，没命中也可能只是 200 局没走到。
+ * （施工方案 Step 5.1 的 `SGS_NO_ONGOING` 临时禁用开关与 `ongoingBranchHits` 命中计数
+ * 已在 Step 5.2「三跳全清」时一并删除：三支都不在了，开关与计数再没有作用对象。
+ * 当时的动态核查结论与数据见 docs/pending-ownership.md 的 Step 5 小节。）
  */
-const ONGOING_DISABLED = new Set(
-  (
-    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-      ?.SGS_NO_ONGOING ?? ''
-  )
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean),
-);
 
 /** 被围栏挡住、且还没有 waiter 机制可去 → 当场抛出（方案 §3b.1 的 FenceBlockedWithoutWaiter） */
 export class FenceBlockedError extends Error {
@@ -2528,7 +2516,6 @@ function takeoverRecord(
     ongoing: {
       skillChain: state.ongoingSkillChain.length,
       chain: !!state.ongoingChain,
-      trick: !!state.ongoingTrick,
     },
     resumeQueue: state.resumeQueue.length,
     sameUse,
@@ -2630,33 +2617,13 @@ function resumePlay(
   // 不再需要「resumePlay 看见 ongoingChain 就把剩下的人补打完」这条恢复跳转。
   // 动态核查：200 局命中 0；关掉这一支跑全量（1022 测试 + 200 局 + 冒烟）全绿 ⇒ 无语义依赖。
   // （`state.ongoingChain` 字段与 `runChainSpread` 仍然活着——三个正常调用点直接用它跑蔓延。）
-  // AOE 锦囊被濒死中断后，恢复时继续推进锦囊
-  if (state.ongoingTrick) {
-    state.ongoingBranchHits.trick++;
-    if (ONGOING_DISABLED.has('trick')) {
-      // 临时禁用（Step 5.1 的对照实验）：不动它、落到后面的正常路径
-    } else {
-    const ctx = state.ongoingTrick;
-    state.ongoingTrick = null;
-    const source = getPlayer(state, ctx.sourceId);
-    if (!source || !source.alive) {
-      endTurn(state);
-      return;
-    }
-    // 火烧连营是**伤害链**（不是响应队列），接着往下打
-    if (ctx.skillId === 'huoshao') {
-      huoShaoStep(state, ctx);
-      return;
-    }
-    // 敕令是「依次做选择」的链，接着问下一个人
-    if (ctx.skillId === 'chiling') {
-      chilingStep(state, ctx);
-      return;
-    }
-    advanceTrick(state, ctx);
-    return;
-    }
-  }
+  // 施工方案 Step 5.2：`ongoingTrick` 的这一跳**已删除**（第三支，三跳全清）。
+  // 它的两个来源都已各自把续接搬到「收尾自己续」上：
+  //   · AOE / 火烧连营：目标被打进濒死时，续接记在可挂起钩子链（`runDamagedHooks` →
+  //     `resumeQueue`）与无懈窗口的自完成（Step 1：`finishWuxieWindow` → `runContinuation`）里；
+  //   · 敕令：`chilingAskCurrent` 的「失去 1 点体力」支直接把 `chilingNext` 交给濒死链的收尾回调。
+  // 动态核查：这一支在 200 局里命中 0；单独关掉它跑全量（1022 测试 + 200 局 + 冒烟）全绿。
+  // 字段 `state.ongoingTrick` 随本支一起删除（它已无写入方、也无读取方）。
   const source = getPlayer(state, sourceId);
   if (!source || !source.alive) {
     endTurn(state);
@@ -3528,10 +3495,11 @@ function dealtDamageBonus(state: GameState, attack: AttackContext): number {
 
 /**
  * 属性伤害是否该沿横置角色蔓延；该蔓延就把待办记进 `state.ongoingChain`。
- * **本函数不动控制流**——真正跑蔓延是 runChainSpread，由调用方或 resumePlay 触发。
+ * **本函数不动控制流**——真正跑蔓延是 runChainSpread，由调用方立刻触发。
  *
- * 写成「先记账、后跑」是因为蔓延可能被人打进濒死：那时控制权要交给濒死流程，
- * 剩下的等 resumePlay 再继续（与 AOE 用 ongoingTrick 是同一个套路）。
+ * 写成「先记账、后跑」是因为蔓延可能被人打进濒死：那时续接交给可挂起钩子链
+ * （`runDamagedHooks` → `resumeQueue` → `drainResume`），剩下的自己会接着跑完。
+ * （历史上这里要靠 `resumePlay` 的 `ongoingChain` 跳转来补跑，Step 5.2 已删。）
  * ⚠️ 注意不能用「pending 非空」来判断是否被打断——结算过程中 pending 一直是旧值。
  */
 function queueChainSpread(state: GameState, attack: AttackContext, damage: number): void {
@@ -7249,9 +7217,9 @@ function sameQueue(state: GameState, sourceSeatId: string): string[] {
 /**
  * 【火烧连营】：对**下家和与其处于同一队列**的所有角色各造成 1 点火焰伤害。
  *
- * 多人依次受伤，每个人都会触发护心镜与铁索蔓延、也可能进濒死——所以复用了 AOE 那套
- * `ongoingTrick`：被打进濒死就把剩下的队列留在 ctx 里，等濒死结算完由 resumePlay
- * 接着打（用 `ctx.skillId = 'huoshao'` 与响应队列区分开）。
+ * 多人依次受伤，每个人都会触发护心镜与铁索蔓延、也可能进濒死——续接全部走**可挂起
+ * 钩子链**（`damageStep` → `afterDamageSettled` → `runDamagedHooks` → `resumeQueue`），
+ * 所以这里不需要额外的恢复跳转（旧的 `ongoingTrick` 那一套已在 Step 5.2 删除）。
  */
 function resolveHuoShao(state: GameState, ctx: TrickContext): void {
   const source = getPlayer(state, ctx.sourceId)!;
@@ -7960,8 +7928,9 @@ function resolveWenHeLuanWu(state: GameState, ctx: TrickContext): void {
  * 【敕令】：对所有没有势力的角色使用。每名目标三选一——
  * 1. 明置一张武将牌，摸一张牌；2. 弃置一张装备牌；3. 失去 1 点体力。
  *
- * 多人依次做选择，所以复用 AOE 那套 `ongoingTrick`：谁被打进濒死就把剩下的队列
- * 留在 ctx 里，等濒死结算完由 resumePlay 接着问（用 `ctx.skillId = 'chiling'` 区分）。
+ * 多人依次做选择，所以复用 AOE 那套「把队列留在 ctx 里」的做法：谁被打进濒死，就把
+ * **续接**交给濒死链的收尾回调（`chilingNext`）——见 `chilingAskCurrent` 的「失去 1 点体力」支。
+ * （旧实现是把 ctx 挂到 `state.ongoingTrick` 等 resumePlay 补跑，Step 5.2 已改成直接续接。）
  * 「弃置装备牌」这一项只在该目标装备区里有牌时才给。
  */
 function resolveChiling(state: GameState, ctx: TrickContext): void {
@@ -8080,7 +8049,12 @@ function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
         seat: p.seatId,
       });
       if (p.hp <= 0) {
-        st.ongoingTrick = ctx; // 剩下的目标留在 ctx 里，濒死结算完接着问
+        // 施工方案 Step 5.2：以前这里把 ctx 挂到 `state.ongoingTrick`、靠 resumePlay 的
+        // 「补跑跳转」接着问剩下的人；现在直接把续接交给濒死链的**收尾回调**——
+        // 「自己的收尾自己续」，与求闪/无懈窗口的自完成是同一套做法，不经过 resumePlay。
+        // 注意续的是 `chilingNext`（这个人的选择已经做完了：他选了「失去 1 点体力」），
+        // 而不是旧跳转里的 `chilingStep`（那是从**同一个** index 重新问——被桃救回来的人
+        // 会被问第二遍，见 docs §5.x 的记录）。
         enterNearDeath(st, {
           sourceId: p.seatId, // 失去体力没有来源（与军令的「失去 1 点体力」一致）
           cardId: ctx.card.id,
@@ -8089,7 +8063,7 @@ function chilingAskCurrent(state: GameState, ctx: TrickContext): void {
           cardUseId: ctx.cardUseId,
           damage: 1,
           dodged: false,
-        }, () => resumeTurnPlay(st));
+        }, () => chilingNext(st, ctx));
         return;
       }
       chilingNext(st, ctx);
@@ -9694,8 +9668,9 @@ export const ARMY_ORDERS: { id: string; label: string }[] = [
  *
  * ⚠️ 这两条效果**可能把人打进濒死**：那时 pending 被求桃队列占着（respondDeath），
  * 这时**不能**接着同步问下一个人——`askChoice` 会把求桃询问直接顶掉，被顶的人停在 0 体力
- * 却永远不死。把后续挂到 `state.ongoingSkillChain`，等濒死/阵亡那串走完、`resumePlay`
- * 接管时再继续。没进濒死（pending 是空的）就照旧同步往下走，整条链仍然是同步完成的。
+ * 却永远不死。把后续挂到 `state.ongoingSkillChain`，等濒死/阵亡那串走完，由 `applyIntent`
+ * 收尾的 `drainResume` 排空循环把它醒过来（docs §5.130；这条队列**不属于** Step 5 删掉的
+ * `resumePlay` 三跳，它必须留着）。没进濒死（pending 是空的）就照旧同步往下走。
  */
 function afterArmyOrderInterrupt(state: GameState, after: () => void): void {
   if (state.pending) state.ongoingSkillChain.push(after);
@@ -11758,7 +11733,6 @@ export function createGame(
     winner: null,
     log: [],
     logSeq: 0,
-    ongoingTrick: null,
     ongoingChain: null,
     damagedThisTurn: [],
     killedThisTurn: [],
@@ -11790,7 +11764,6 @@ export function createGame(
     refusedReleases: [],
     deferredContinuations: new Set<string>(),
     pendingDrainReentry: 0,
-    ongoingBranchHits: { skillChain: 0, chain: 0, trick: 0 },
     cardUseSeq: 0,
     useDamages: [],
     handDiscardedInDiscardPhase: [],

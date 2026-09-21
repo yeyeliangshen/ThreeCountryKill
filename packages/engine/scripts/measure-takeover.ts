@@ -28,7 +28,7 @@ interface Rec {
   oldPending: { kind: string; owner: string | null; answered: boolean; completed: boolean } | null;
   newPendingKind: string;
   sameUse: string;
-  ongoing: { skillChain: number; chain: boolean; trick: boolean };
+  ongoing: { skillChain: number; chain: boolean };
   caller?: string;
 }
 

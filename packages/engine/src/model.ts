@@ -866,8 +866,8 @@ export interface DraftState {
 
 /**
  * 铁索连环蔓延的待续状态。
- * 被濒死打断时暂存在 GameState 上，等濒死结算完由 resumePlay 接着跑
- * ——和 AOE 锦囊用 ongoingTrick 是同一个套路。
+ * 被濒死打断时暂存在 GameState 上，等濒死结算完由**可挂起钩子链**（`resumeQueue` /
+ * `drainResume`）接着跑——旧的那条「resumePlay 看见它就补跑」的跳转已在 Step 5.2 删除。
  */
 export interface ChainPending {
   attack: AttackContext;
@@ -914,8 +914,8 @@ export interface TakeoverRecord {
   checkpoint: { requestId: number | null; slotVersion: number; useId?: number | null } | null;
   currentSeq: number;
   inDying: boolean;
-  /** 老机制三跳的当时状态（Step 5 要靠数据判断能不能删） */
-  ongoing: { skillChain: number; chain: boolean; trick: boolean };
+  /** 老机制三跳的当时状态（Step 5 靠数据判断能不能删；三跳已全清，剩这两项的是活着的队列） */
+  ongoing: { skillChain: number; chain: boolean };
   resumeQueue: number;
   sameUse: string;
   caller?: string;
@@ -965,8 +965,6 @@ export interface GameState {
   turn: { seatIndex: number; phase: Phase };
   pending: Pending | null;
   draft: DraftState | null; // 非空表示处于选将阶段
-  // AOE锦囊(南蛮/万箭)被濒死中断时暂存上下文，near-death结算后继续下一个响应者
-  ongoingTrick: TrickContext | null;
   /** 铁索连环蔓延被濒死中断时暂存，濒死结算后继续 */
   ongoingChain: ChainPending | null;
   /**
@@ -1054,8 +1052,9 @@ export interface GameState {
    *    0 体力却永远不死，回合还照常往下走）；
    * ② 也不能只靠 `resumeQueue`——那条队列在「出牌阶段占位 pending」下不会被排空
    *    （见 `isIdlePending` 的注释），链会一直搁在队列里。
-   * 所以挂到 state 上，由 `resumePlay` 在「控制权该还回去的时候」按**挂上的先后**依次惊醒，
-   * 与 `ongoingTrick`（AOE 锦囊）/ `ongoingChain`（铁索蔓延）同一档。
+   * 所以挂到 state 上，由 `resumePlay` 在「控制权该还回去的时候」按**挂上的先后**依次惊醒。
+   * （历史上与它同档的还有 `ongoingTrick`（AOE 锦囊）/ `ongoingChain`（铁索蔓延）两条旧跳转，
+   *   Step 5 已把 `resumePlay` 顶部的三跳全部删除，只剩这一条队列。）
    */
   ongoingSkillChain: (() => void)[];
   /**
@@ -1140,11 +1139,6 @@ export interface GameState {
   deferredContinuations: Set<string>;
   /** 施工方案 Step 4.4：嵌套 drain 的次数（诊断用；正常应该很小） */
   pendingDrainReentry: number;
-  /**
-   * 施工方案 Step 5.1：`resumePlay` 开头那三跳旧机制（ongoingSkillChain / ongoingChain /
-   * ongoingTrick）各被命中过几次——动态核查用（能不能删要看「关掉之后全绿」，不能只看这个数）。
-   */
-  ongoingBranchHits: { skillChain: number; chain: number; trick: number };
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**

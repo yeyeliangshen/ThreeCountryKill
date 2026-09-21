@@ -9917,6 +9917,68 @@ describe('势备篇 · 敕令', () => {
     expect(state.players.find((p) => p.seatId === A)!.hp).toBe(3);
   });
 
+  /**
+   * ⚠️ 施工方案 Step 5.2：敕令的「失去 1 点体力」把人打进濒死时，续接**不再**经过
+   * `resumePlay` 的 `ongoingTrick` 跳转，而是直接交给濒死链的收尾回调（`chilingNext`）。
+   * 这两条用例专门钉住改写后的行为——动态核查里这条路径 200 局命中 **0**，
+   * 也就是说模糊网**兜不住它**，只能靠用例。
+   */
+  it('失去体力打进濒死：被救回来后接着问**下一个人**（不会把被救的人再问一遍）', () => {
+    const state = gz([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        faction: 'shu',
+        hand: [chiling('a1'), tao('a2')],
+      },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei', revealed: false, hp: 1 },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'qun', revealed: false, hp: 4 },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    // 乙选「失去 1 点体力」：1 → 0，进濒死
+    ok(act(state, B, { type: 'chooseOption', optionId: 'hp' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+    // 甲出桃把乙救回来
+    while (state.pending?.kind === 'respondDeath') {
+      const asked = state.pending.askQueue[state.pending.askIndex]!;
+      if (asked === A) ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+      else ok(act(state, asked, { type: 'pass' }));
+    }
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.alive).toBe(true);
+    expect(b.hp).toBe(1);
+    // 关键：接着问的是**丙**——乙的选择已经做完了。旧跳转在这里走的是 `chilingStep`
+    // （还是原来那个 index），被桃救回来的乙会被问第二遍。
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'hp' }));
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+    expect(state.pending?.kind).toBe('play'); // 结算完回到甲的出牌阶段，没有卡死
+  });
+
+  it('失去体力把人判死：剩下的人照样问完，控制权回到出牌阶段', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [chiling('a1')] },
+      { seatId: B, name: '乙', heroId: 'xuchu', faction: 'wei', revealed: false, hp: 1 },
+      { seatId: C, name: '丙', heroId: 'guanyu', faction: 'qun', revealed: false, hp: 4 },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }));
+    passWuxie(state);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'hp' })); // 1 → 0
+    passDeathSaves(state); // 谁都不救 → 乙阵亡
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.alive).toBe(false);
+    // 死了也照样把剩下的人问完
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(C);
+    ok(act(state, C, { type: 'chooseOption', optionId: 'hp' }));
+    expect(state.players.find((p) => p.seatId === C)!.hp).toBe(3);
+    expect(state.pending?.kind).toBe('play');
+    expect(state.gameOver).toBe(false);
+  });
+
   it('选「明置一张武将牌」：明置并摸一张牌', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [chiling('a1')] },
