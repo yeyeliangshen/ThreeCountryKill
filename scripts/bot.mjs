@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 /**
- * 陪练机器人 —— 本地联机自测 / 看界面用。
+ * 陪练机器人 —— 本地联机自测 / 看界面用 / 当规则的真机验收现场。
  *
  * 连上服务端后：建一个混战房间（默认开「选将不限」，方便挑想看的武将）→
- * 有真人进来就开局 → 自己随便选一个将 → 出牌阶段一律结束、需要响应一律弃权。
- * 这样单人就能把界面从选将点到出牌，不用真等第二个玩家。
+ * 有真人进来就开局 → 自己随便选一个将 → **每个出牌阶段挑一张牌打出去**、
+ * 被要求响应时**手里有对应的牌就打、没有才弃权**。
+ *
+ * ⚠️ 为什么不再「一律弃权」（2026-09-22 改）：那样**永远构造不出**需要真机验收的现场——
+ * 无懈窗口（要有人的牌被打进窗口）、无懈反制链、装备栏（要有装备挂在身上）、
+ * 决斗/南蛮的响应。规则改完之后只能靠单测，看不到界面上真的发生。
+ * 现在它每个回合**最多打一张**（装备 > 杀 > 锦囊 > 桃），出牌被服务端拒就直接结束回合，
+ * 所以既热闹又不会把牌打空、也不会卡住。要回旧行为：`PASSIVE=1`。
  *
  * 用法：
  *   node scripts/bot.mjs                        # 建房当房主，等真人进来开局
@@ -13,6 +19,7 @@
  *   NAME=陪练 HERO=zhangfei node scripts/bot.mjs
  *   REVEAL=1 node scripts/bot.mjs                 # 准备阶段选择「全部明置」（看别人面板的
  *                                                # 「明置武将 + 技能提示」时用；默认保持暗将）
+ *   PASSIVE=1 node scripts/bot.mjs                # 退回旧行为：出牌阶段一律结束、响应一律弃权
  *
  * 只用到 Node 自带的 WebSocket（Node 22+），不需要额外装包。
  * 房号/座位号在服务端日志或大厅里能看到；接替座位用的是「离线座位可以认回」那条规则。
@@ -22,6 +29,7 @@ const NAME = process.env.NAME ?? '陪练';
 const ROOM = process.env.ROOM ?? null;
 const SEAT = process.env.SEAT ?? null;
 const HERO = process.env.HERO ?? null;
+const PASSIVE = process.env.PASSIVE === '1';
 let mode = null; // 当前房间模式（国战要选两位同阵营武将）
 let pairs = []; // 国战选将的候选组合（被服务端拒就换下一对）
 let pickAttempt = 0;
@@ -42,9 +50,78 @@ function sendGuozhanPick() {
 }
 
 const log = (...a) => console.log('[bot]', ...a);
+
+/** 需要指定目标的牌（类型 → 需要的目标数）；其余按「不需要目标」发，被拒就结束回合 */
+const NEEDS_TARGET = {
+  sha: 1,
+  juedou: 1,
+  guohe: 1,
+  shunshou: 1,
+  huogong: 1,
+  lebu: 1,
+  shandian: 1,
+  bingliang: 1,
+  jiedao: 2,
+  tiesuo: 1,
+  lianjun: 1,
+  lutong: 1,
+  huoshao: 0, // 目标由规则算（下家那一队）
+  nanman: 0,
+  wanjian: 0,
+  wuzhong: 0,
+  taoyuan: 0,
+  yiyi: 0,
+  chiling: 0,
+};
+const EQUIP_TYPES = new Set(['weapon', 'armor', 'plusMount', 'minusMount', 'treasure']);
+
+/**
+ * 出牌阶段挑**一张**要打的牌（每个回合最多一张，别把牌打空）：
+ * 装备 > 杀 > 有目标的锦囊 > 无目标的锦囊 > 桃（自己受伤时）。
+ *
+ * 目标从 `prompt.legalTargetIds` 里取前 N 个（N 按牌型猜，猜错就被服务端拒、
+ * 我们直接结束回合——不重试不卡住）。牌面（类型/花色/点数）从 `myHand` 里查。
+ */
+function choosePlayCard(snapshot, prompt) {
+  const legal = prompt.legalCardIds ?? [];
+  if (legal.length === 0) return null;
+  const targets = prompt.legalTargetIds ?? [];
+  const hand = new Map();
+  for (const c of snapshot.myHand ?? []) hand.set(c.id, c);
+  const me = (snapshot.players ?? []).find((p) => p.seatId === snapshot.seatId);
+  // 木牛流马扣置的「辎」也算可用牌（本人那一份里能看到内容）
+  for (const e of me?.equipment ?? []) for (const c of e.cargo ?? []) hand.set(c.id, c);
+  const cardOf = (id) => hand.get(id);
+  const label = (id) => {
+    const c = cardOf(id);
+    return c ? `${c.suit ?? ''}${c.rank ?? ''}·${c.type}` : id;
+  };
+  const wounded = !!me && me.hp < me.maxHp;
+  const score = (c) => {
+    if (EQUIP_TYPES.has(c.type)) return 0; // 装备优先（顺手就把对手面板的装备栏填上）
+    if (c.type === 'sha') return targets.length > 0 ? 1 : 9;
+    if (c.type === 'tao') return wounded ? 4 : 9;
+    if (c.type === 'jiu') return 9;
+    // 其余锦囊：需要目标的排在前面（更有戏看）
+    return (NEEDS_TARGET[c.type] ?? 0) > 0 ? 2 : 3;
+  };
+  const pool = legal
+    .map((id) => cardOf(id))
+    .filter((c) => !!c && score(c) < 9)
+    .sort((a, b) => score(a) - score(b));
+  const card = pool[0];
+  if (!card) return null;
+  const need = NEEDS_TARGET[card.type] ?? 0;
+  const targetIds = need > 0 ? targets.slice(0, need) : [];
+  if (need > 0 && targetIds.length < need) return null; // 没有合法目标就不打这张
+  return { cardId: card.id, targetIds, label: label(card.id) };
+}
+
 const ws = new WebSocket(URL);
 const send = (msg) => ws.send(JSON.stringify(msg));
 
+let playedThisTurn = false; // 本回合是否已经打过一张（每个出牌阶段只打一张，别把牌打空）
+let lastTurnSeat = null; // 上一次看到的回合座位（换了人就重置 playedThisTurn）
 let asked = false; // 只在第一次拿到大厅列表时做一次「建房 / 进房」
 let started = false;
 let picked = false;
@@ -99,6 +176,12 @@ ws.addEventListener('message', (ev) => {
   if (msg.type !== 'snapshot') return;
   const prompt = msg.snapshot.prompt;
   if (!prompt) return;
+  // 回合换人了（或又轮到我）→ 本回合的出牌计数清零
+  const turnSeat = msg.snapshot.turn?.seatId ?? null;
+  if (turnSeat !== lastTurnSeat) {
+    lastTurnSeat = turnSeat;
+    playedThisTurn = false;
+  }
   // 诊断：把「我看到什么提示」打出来（排查「陪练不动了」时一眼能看出卡在哪条询问上）
   log('提示：', prompt.kind, '|', (prompt.message ?? '').slice(0, 36));
 
@@ -133,8 +216,50 @@ ws.addEventListener('message', (ev) => {
 
   if (prompt.kind === 'play') {
     picked = true; // 已经进对局了，说明选将已被接受
-    log('出牌阶段 → 结束，把回合让出去');
-    send({ type: 'intent', intent: { type: 'endPhase' } });
+    if (PASSIVE || playedThisTurn) {
+      log(`出牌阶段 → 结束${PASSIVE ? '（PASSIVE=1）' : '（本回合已经打过一张）'}`);
+      send({ type: 'intent', intent: { type: 'endPhase' } });
+      return;
+    }
+    const chosen = choosePlayCard(msg.snapshot, prompt);
+    if (!chosen) {
+      log('出牌阶段 → 没有想打的牌，结束回合');
+      send({ type: 'intent', intent: { type: 'endPhase' } });
+      return;
+    }
+    playedThisTurn = true;
+    log(
+      `出牌阶段 → 打出 ${chosen.label}${chosen.targetIds.length ? ` 指 ${chosen.targetIds.join('、')}` : ''}`,
+    );
+    send({
+      type: 'intent',
+      intent: { type: 'playCard', cardId: chosen.cardId, targetIds: chosen.targetIds },
+    });
+    // 被服务端拒（目标数不对之类）就**放弃这一手、结束回合**——不重试、不卡住
+    return;
+  }
+
+  // 被【杀】指定 / 决斗・南蛮・万箭的响应：手里有对应的牌就打，没有才弃权
+  if (prompt.kind === 'respondSha' || prompt.kind === 'respondTrick') {
+    const legal = prompt.legalCardIds ?? [];
+    if (!PASSIVE && legal.length > 0) {
+      log('响应 →', prompt.kind, '打', legal[0]);
+      send({ type: 'intent', intent: { type: 'respondCard', cardId: legal[0] } });
+      return;
+    }
+    send({ type: 'intent', intent: { type: 'pass' } });
+    return;
+  }
+
+  // 无懈窗口：手里有无懈（或能当无懈用的牌）就打——这样「无懈窗口/反制链」在真机上才走得到
+  if (prompt.kind === 'wuxieQueue') {
+    const legal = prompt.legalCardIds ?? [];
+    if (!PASSIVE && legal.length > 0) {
+      log('无懈窗口 → 打', legal[0]);
+      send({ type: 'intent', intent: { type: 'respondCard', cardId: legal[0] } });
+      return;
+    }
+    send({ type: 'intent', intent: { type: 'pass' } });
     return;
   }
 
