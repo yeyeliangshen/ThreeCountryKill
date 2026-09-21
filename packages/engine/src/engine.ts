@@ -6068,6 +6068,9 @@ function playTrick(
     // 【过河拆桥】/【顺手牵羊】的目标：区域内**至少有一张可操作的牌**（用户 2026-09-18 规格）
     if ((type === 'guohe' || type === 'shunshou') && !hasOperableTargetCard(state, player.seatId, t))
       return err('目标区域里没有可操作的牌');
+    // 【火攻】的目标必须**有手牌**（用户 2026-09-22 报的缺陷）：火攻要他「展示一张手牌」，
+    // 没手牌的人根本没法结算。合法目标列表与这里**同一口径**（界面按玩家的 handCount 过滤）。
+    if (type === 'huogong' && t.hand.length === 0) return err('【火攻】的目标必须有手牌');
   } else if (type === 'jiedao') {
     if (intent.targetIds.length !== 2)
       return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');

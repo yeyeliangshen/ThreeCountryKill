@@ -1056,6 +1056,18 @@ export function Game() {
 
   // 是否处于"选目标"或"技能模式"的交互态
   const targeting = !!selected || !!skillMode || !!lianhengCard || !!zhangbaMode;
+  /**
+   * 当前选中的牌要的「目标门槛」——**必须与引擎的校验同一口径**，否则界面会把
+   * 引擎一定拒绝的目标画成可点（点了才报错）。
+   *
+   * 【火攻】（用户 2026-09-22 报的缺陷）：目标要展示一张手牌，**没有手牌的角色不能被指定**。
+   * 引擎侧在 `resolvePlayedCard` 的校验里同样拦（见那里的注释），两边是同一个判据。
+   */
+  const selectedTargetNeedsHand = (() => {
+    if (!selected) return null;
+    const eff = selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type;
+    return eff === 'huogong' ? true : null;
+  })();
 
   // 判断某对手是否可被点击（选目标 / 技能选目标）
   function canClickTarget(p: PlayerView): boolean {
@@ -1074,6 +1086,8 @@ export function Game() {
     }
     if (selected) {
       if (selected.picked.includes(p.seatId)) return true;
+      // 【火攻】的目标必须有手牌：没手牌的角色**不进可点目标**（与引擎同一口径）
+      if (selectedTargetNeedsHand && (p.handCount ?? 0) === 0) return false;
       return targetSet.has(p.seatId) && selected.picked.length < selected.max;
     }
     return false;
