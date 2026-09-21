@@ -48,6 +48,20 @@ export interface HeroPanelProps {
   onSelect?: () => void;
   targetable?: boolean;
   picked?: boolean;
+  /**
+   * **装备区的牌可以当代价**时（技能声明了 `costFrom: 'handEquip'`，用户 2026-09-21 口径），
+   * 把已装备的牌**点亮成可点按钮**：点一下就是选中它当代价。
+   *
+   * 为什么要单独开一个口：文本写「弃置一张**牌**」的技能，装备区里的那张也是合法选择——
+   * 以前界面只让点手牌，玩家根本不知道装备能用（更别提去点它）。
+   */
+  equipPick?: {
+    /** 现在能不能点（技能正在等着选代价牌） */
+    selectable: boolean;
+    /** 已经选中的牌 id（高亮用） */
+    selectedIds: string[];
+    onPick: (cardId: string) => void;
+  };
 }
 
 function Portrait({
@@ -87,7 +101,15 @@ function Portrait({
   );
 }
 
-export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: HeroPanelProps) {
+export function HeroPanel({
+  me,
+  mode,
+  slots,
+  onSelect,
+  targetable,
+  picked,
+  equipPick,
+}: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
@@ -201,9 +223,22 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
         <div className="hero-info-foot">
           {(me.equipment.length > 0 || me.judgment.length > 0) && (
             <span className="hero-zones">
-              {me.equipment.map((c: Card) => (
-                <EquipChip key={c.id} card={c} mode={mode} bind={bind} />
-              ))}
+              {me.equipment.map((c: Card) => {
+                if (!equipPick?.selectable) {
+                  return <EquipChip key={c.id} card={c} mode={mode} bind={bind} />;
+                }
+                const on = equipPick.selectedIds.includes(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={`equip-slot-pick ${on ? 'picked' : ''}`}
+                    onClick={() => equipPick.onPick(c.id)}
+                  >
+                    <EquipChip card={c} mode={mode} bind={bind} />
+                  </button>
+                );
+              })}
               {me.judgment.map((c: Card) => (
                 <span
                   key={c.id}

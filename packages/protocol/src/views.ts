@@ -178,6 +178,12 @@ export interface PromptView {
     needsCards: boolean;
     minTargets: number;
     maxTargets: number;
+    /**
+     * 代价牌能取自哪个区（**界面必须严格按它放行**，用户 2026-09-21 口径）：
+     * - `'hand'`（缺省）：文本写「手牌」→ 只让点手牌；
+     * - `'handEquip'`：文本写「一张牌」→ 手牌**和**自己装备区的牌都可点。
+     */
+    costFrom?: 'hand' | 'handEquip';
   }[];
 
   // 「选择一项」提示（仅 choice 有）

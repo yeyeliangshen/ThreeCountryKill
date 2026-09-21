@@ -403,6 +403,8 @@ export function Game() {
       minTargets: number;
       maxTargets: number;
       maxCards?: ActiveSkill['maxCards'];
+      /** 代价能取自哪个区（'handEquip' ＝自己装备区的牌也可点；见 protocol 的 legalSkills） */
+      costFrom?: 'hand' | 'handEquip';
     };
     cardIds: string[];
     targetIds: string[];
@@ -1537,7 +1539,7 @@ export function Game() {
                     <b>【{skillMode.skill.name}】</b>
                     {/* 把「要选几张、已经选了几张」写全：只说「请选择手牌」看不出选上没有 */}
                     {skillMode.skill.needsCards &&
-                      ` 手牌 ${skillMode.cardIds.length} 张${
+                      ` 已选 ${skillMode.cardIds.length} 张${
                         skillMode.skill.maxCards
                           ? ` / 至多 ${skillMode.skill.maxCards({ maxHp: me.maxHp, handCount: me.handCount })}`
                           : ''
@@ -1823,6 +1825,16 @@ export function Game() {
             targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
             picked={!!selected?.picked.includes(me.seatId)}
             onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
+            // 「弃置一张**牌**」的技能（costFrom: 'handEquip'）→ 自己装备区里的牌也可点当代价
+            equipPick={
+              skillMode && skillMode.skill.needsCards && skillMode.skill.costFrom === 'handEquip'
+                ? {
+                    selectable: true,
+                    selectedIds: skillMode.cardIds,
+                    onPick: (id) => toggleSkillCard(id),
+                  }
+                : undefined
+            }
           />
         </div>
       </aside>

@@ -11470,11 +11470,17 @@ function onUseSkill(
   // 目标数校验
   if (intent.targetIds.length < skill.minTargets || intent.targetIds.length > skill.maxTargets)
     return err(`目标数量不符（需 ${skill.minTargets}-${skill.maxTargets}）`);
-  // 弃牌校验
+  // 代价牌校验：**手牌**（缺省）或**手牌＋自己装备区**（技能声明了 costFrom: 'handEquip'）。
+  // ⚠️ 口径见 ActiveSkill.costFrom：文本写「手牌」的绝不能拿装备区凑数，「一张牌」的才放开。
   if (skill.needsCards) {
     if (!intent.cardIds || intent.cardIds.length === 0) return err('该技能需要弃牌');
+    const fromEquipOk = skill.costFrom === 'handEquip';
     for (const id of intent.cardIds) {
-      if (!player.hand.some((c) => c.id === id)) return err('弃的牌不在手中');
+      const inHand = player.hand.some((c) => c.id === id);
+      const inEquip = fromEquipOk && EQUIP_SLOTS.some((sl) => player.equipment[sl]?.id === id);
+      if (!inHand && !inEquip) {
+        return err(fromEquipOk ? '这张牌不在你的手牌或装备区' : '弃的牌不在手中');
+      }
     }
   }
   // 标记已使用（执行前标记，防重入）

@@ -630,7 +630,15 @@ function legalSkillView(
   state: GameState,
   player: Player,
   skill: ActiveSkill,
-): { id: string; name: string; desc: string; needsCards: boolean; minTargets: number; maxTargets: number } {
+): {
+  id: string;
+  name: string;
+  desc: string;
+  needsCards: boolean;
+  minTargets: number;
+  maxTargets: number;
+  costFrom?: 'hand' | 'handEquip';
+} {
   return {
     id: skill.id,
     name: skill.name,
@@ -638,6 +646,8 @@ function legalSkillView(
     needsCards: skill.needsCards === true,
     minTargets: skill.minTargets,
     maxTargets: skill.maxTargets,
+    // 代价能取自哪个区（界面据此决定要不要把装备区也点亮）——见 ActiveSkill.costFrom
+    ...(skill.costFrom ? { costFrom: skill.costFrom } : {}),
   };
 }
 

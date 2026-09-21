@@ -1552,6 +1552,34 @@ button:disabled {
   background: #3a1e20;
   color: #d47a6a;
 }
+/*
+ * 「弃置一张**牌**」的技能正在选代价时的装备槽：点亮成可点按钮（用户 2026-09-21 口径——
+ * 文本写「牌」时装备区里的那张也是合法选择，界面必须明确呈现，别让玩家以为只能用手里那几张）。
+ * 选中的那格加金色实线，未选中的用虚线 + 轻微呼吸感提示「这里也能点」。
+ */
+.equip-slot-pick {
+  background: transparent;
+  padding: 0;
+  border: 1px dashed var(--gold);
+  border-radius: 6px;
+  cursor: pointer;
+  animation: equip-slot-hint 1.6s ease-in-out infinite;
+}
+.equip-slot-pick.picked {
+  border-style: solid;
+  animation: none;
+  box-shadow: 0 0 0 2px rgba(214, 178, 106, 0.35);
+}
+@keyframes equip-slot-hint {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
 /* 对手那边的标记行（国战标记是公开信息，用户 2026-09-21 要求显示） */
 .p-markers {
   display: flex;

@@ -108,6 +108,18 @@ export interface ActiveSkill {
   /** 是否需要选择手牌（制衡/苦肉/离间/反间） */
   needsCards?: boolean;
   /**
+   * **代价牌可以从哪个区取**（用户 2026-09-21 口径：「弃置一张**手牌**」只能手牌；
+   * 「弃置一张**牌**」＝手牌＋**自己装备区**；两者不能混为一谈）。
+   *
+   * - 缺省 `'hand'`：文本写「手牌」的一律只能从手牌出（青囊/仁德/结姻/劝进…）；
+   * - `'handEquip'`：文本写「一张牌 / 任意张牌 / 一张**装备牌**」的，装备区里的也能当代价
+   *   （离间/制衡/苦肉/倾城/直谏/调归…）。取装备要**先从装备槽摘下来**并派「失去装备」的钩子
+   *   —— 用 `api.takeOwnCard` 取牌，别自己 `removeCard(player.hand, …)`。
+   *
+   * ⚠️ 主动技的代价永远**不含判定区**（判定区不是「自己可弃的牌」）。
+   */
+  costFrom?: 'hand' | 'handEquip';
+  /**
    * 最多可选几张手牌。不给则由客户端按 99 处理。
    * 做成函数是因为国战·制衡的上限是「你的体力上限」；参数只用两边都有的信息
    * （服务端是 Player，客户端是 PlayerView），这样界面和引擎读同一份规则。
@@ -813,9 +825,11 @@ const DIAOCHAN: Hero = {
       minTargets: 2,
       maxTargets: 2,
       needsCards: true,
+      // 「弃置一张牌」→ 手牌 + **自己装备区**（用户 2026-09-21 口径）
+      costFrom: 'handEquip',
       maxCards: () => 1,
       canUse: (state, player) => {
-        if (player.hand.length === 0) return false;
+        if (handAndEquipOf(player).length === 0) return false;
         const males = state.players.filter(
           (p) => p.alive && p.seatId !== player.seatId && isMalePlayer(state, p),
         );
@@ -824,9 +838,6 @@ const DIAOCHAN: Hero = {
       execute: (state, player, intent, api) => {
         const ids = intent.cardIds ?? [];
         if (ids.length === 0) return '请选择一张牌弃置';
-        const card = removeCard(player.hand, ids[0]!);
-        if (!card) return '找不到手牌';
-        toDiscard(state, card);
         const aId = intent.targetIds[0];
         const bId = intent.targetIds[1];
         if (!aId || !bId) return '请选择两名男性角色';
@@ -834,11 +845,15 @@ const DIAOCHAN: Hero = {
         const b = getPlayer(state, bId);
         if (!a || !b) return '目标不存在';
         if (!isMalePlayer(state, a) || !isMalePlayer(state, b)) return '目标须为男性角色';
-        pushLog(
-          state,
-          'skill',
-          `${player.name} 发动【离间】，令 ${a.name} 视为对 ${b.name} 使用【决斗】。`,
-        );
+        const cost = handAndEquipOf(player).find((x) => x.id === ids[0]!);
+        if (!cost) return '这张牌不在你的手牌或装备区';
+        // 先付代价（弃置一张牌：手牌或装备区都行）→ 再生成虚拟【决斗】
+        api.discardCard(player.seatId, cost, () => {
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 发动【离间】：弃置【${cardLabel(cost)}】，令 ${a.name} 视为对 ${b.name} 使用【决斗】。`,
+          );
         // 生成一张**虚拟【决斗】**，由 A 对 B 使用（用户 2026-09-21 给的现行文本：
         // 「令一名男性角色视为对另一名男性角色使用一张【决斗】」）。
         //
@@ -846,13 +861,14 @@ const DIAOCHAN: Hero = {
         //    这张【决斗】**本身可以被无懈**（离间这个技能不能），也要能被「成为目标时」
         //    的技能响应。旧实现（手搓一个 需出【杀】的 respondTrick）把这两样都绕过去了，
         //    而且文本本身也是简化版（docs §5.179）。
-        api.useVirtualTrick(
-          aId,
-          { id: `lilian-${aId}-${bId}`, type: 'juedou', suit: 'heart', rank: 0, virtual: true },
-          [bId],
-          // ⚠️ 控制权还给**貂蝉**：这张【决斗】的“使用者”虽是关羽，但回合仍是貂蝉的出牌阶段
-          player.seatId,
-        );
+          api.useVirtualTrick(
+            aId,
+            { id: `lilian-${aId}-${bId}`, type: 'juedou', suit: 'heart', rank: 0, virtual: true },
+            [bId],
+            // ⚠️ 控制权还给**貂蝉**：这张【决斗】的“使用者”虽是关羽，但回合仍是貂蝉的出牌阶段
+            player.seatId,
+          );
+        });
       },
     },
   ],
@@ -1389,22 +1405,26 @@ const SUNQUAN: Hero = {
       minTargets: 0,
       maxTargets: 0,
       needsCards: true,
-      canUse: (_state, player) => player.hand.length > 0,
-      execute: (state, player, intent, _api) => {
+      // 「弃置任意张牌」→ 手牌 + **自己装备区**（用户 2026-09-21 口径）
+      costFrom: 'handEquip',
+      canUse: (_state, player) => handAndEquipOf(player).length > 0,
+      execute: (state, player, intent, api) => {
         const ids = intent.cardIds ?? [];
         if (ids.length === 0) return '请选择至少一张牌';
         const discarded: Card[] = [];
         for (const id of ids) {
-          const c = removeCard(player.hand, id);
-          if (!c) return `找不到手牌 ${id}`;
+          const c = handAndEquipOf(player).find((x) => x.id === id);
+          if (!c) return '这张牌不在你的手牌或装备区';
           discarded.push(c);
         }
-        for (const c of discarded) toDiscard(state, c);
-        pushLog(state, 'skill', `${player.name} 发动【制衡】，弃 ${discarded.length} 张牌。`);
-        for (let i = 0; i < discarded.length; i++) {
-          const drawn = drawOne(state);
-          if (drawn) player.hand.push(drawn);
-        }
+        // 交给 discardCards：它自己会从**正确的区**取走（装备先摘、派失去装备钩子）并派「弃牌后」
+        api.discardCards(player.seatId, discarded, () => {
+          pushLog(state, 'skill', `${player.name} 发动【制衡】，弃 ${discarded.length} 张牌。`);
+          for (let i = 0; i < discarded.length; i++) {
+            const drawn = drawOne(state);
+            if (drawn) player.hand.push(drawn);
+          }
+        });
       },
     },
   ],
@@ -1419,25 +1439,28 @@ const SUNQUAN: Hero = {
         minTargets: 0,
         maxTargets: 0,
         needsCards: true,
+        // 「弃置至多 X 张牌」→ 手牌 + **自己装备区**（口径同身份局）
+        costFrom: 'handEquip',
         maxCards: (ctx) => ctx.maxHp,
-        canUse: (_state, player) => player.hand.length > 0,
-        execute: (state, player, intent, _api) => {
+        canUse: (_state, player) => handAndEquipOf(player).length > 0,
+        execute: (state, player, intent, api) => {
           const ids = intent.cardIds ?? [];
           if (ids.length === 0) return '请选择至少一张牌';
           if (ids.length > player.maxHp)
             return `国战【制衡】最多弃置 ${player.maxHp} 张（体力上限）`;
           const discarded: Card[] = [];
           for (const id of ids) {
-            const c = removeCard(player.hand, id);
-            if (!c) return `找不到手牌 ${id}`;
+            const c = handAndEquipOf(player).find((x) => x.id === id);
+            if (!c) return '这张牌不在你的手牌或装备区';
             discarded.push(c);
           }
-          for (const c of discarded) toDiscard(state, c);
-          pushLog(state, 'skill', `${player.name} 发动【制衡】，弃 ${discarded.length} 张牌。`);
-          for (let i = 0; i < discarded.length; i++) {
-            const drawn = drawOne(state);
-            if (drawn) player.hand.push(drawn);
-          }
+          api.discardCards(player.seatId, discarded, () => {
+            pushLog(state, 'skill', `${player.name} 发动【制衡】，弃 ${discarded.length} 张牌。`);
+            for (let i = 0; i < discarded.length; i++) {
+              const drawn = drawOne(state);
+              if (drawn) player.hand.push(drawn);
+            }
+          });
         },
       },
     ],
@@ -1665,14 +1688,15 @@ const HUANGGAI: Hero = {
         minTargets: 0,
         maxTargets: 0,
         needsCards: true,
+        // 「弃置一张牌」→ 手牌 + **自己装备区**（用户 2026-09-21 口径）
+        costFrom: 'handEquip',
         maxCards: () => 1,
-        canUse: (_state, player) => player.hp > 0 && player.hand.length > 0,
+        canUse: (_state, player) => player.hp > 0 && handAndEquipOf(player).length > 0,
         execute: (state, player, intent, api) => {
           const ids = intent.cardIds ?? [];
           if (ids.length !== 1) return '请选择一张牌弃置';
-          const c = removeCard(player.hand, ids[0]!);
-          if (!c) return '找不到手牌';
-          toDiscard(state, c);
+          const c = handAndEquipOf(player).find((x) => x.id === ids[0]!);
+          if (!c) return '这张牌不在你的手牌或装备区';
           pushLog(
             state,
             'skill',
@@ -1682,6 +1706,7 @@ const HUANGGAI: Hero = {
               action: 'selfhurt',
             },
           );
+          api.discardCard(player.seatId, c, () => {
           api.loseHp(player, 1);
           const drawn: Card[] = [];
           for (let i = 0; i < 3; i++) {
@@ -1693,6 +1718,7 @@ const HUANGGAI: Hero = {
           // 本回合可额外使用一张【杀】：上限 +1（同天义那条注释，退已出杀数是错的）
           grantExtraShaQuota(player);
           pushLog(state, 'skill', `本回合可额外使用一张【杀】。`);
+          });
         },
       },
     ],
@@ -3722,22 +3748,25 @@ function junweiSkill(
     name: '君威',
     minTargets: 0,
     maxTargets: 0,
-    needsCards: true, // 弃置一张牌作为代价（点手牌）
-    canUse: (state, player) => !lordEquipOnField(state, equipName) && player.hand.length > 0,
+    needsCards: true, // 「弃置一张牌」作代价 → 手牌或**自己装备区**
+    costFrom: 'handEquip',
+    canUse: (state, player) =>
+      !lordEquipOnField(state, equipName) && handAndEquipOf(player).length > 0,
     execute: (state, player, intent, api) => {
       const ids = intent.cardIds ?? [];
       if (ids.length !== 1) return '请弃置一张牌作为代价';
-      const cost = removeCard(player.hand, ids[0]!);
-      if (!cost) return '这张牌不在你手里';
-      toDiscard(state, cost);
-      pushLog(
-        state,
-        'skill',
-        `${player.name} 发动【君威】：弃置【${cardLabel(cost)}】，从游戏外使用【${equipLabel}】。`,
-      );
-      // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）。
-      // 号从 state 上取：同一个种子重放出来的 id 必须一致（见 GameState.lordEquipSeq）
-      api.giveEquipTo(makeEquip(state.lordEquipSeq++), player.seatId);
+      const cost = handAndEquipOf(player).find((x) => x.id === ids[0]!);
+      if (!cost) return '这张牌不在你的手牌或装备区';
+      api.discardCard(player.seatId, cost, () => {
+        pushLog(
+          state,
+          'skill',
+          `${player.name} 发动【君威】：弃置【${cardLabel(cost)}】，从游戏外使用【${equipLabel}】。`,
+        );
+        // 「从游戏外使用之」＝直接把这张牌放进装备区（替换旧宝物照常触发失去装备）。
+        // 号从 state 上取：同一个种子重放出来的 id 必须一致（见 GameState.lordEquipSeq）
+        api.giveEquipTo(makeEquip(state.lordEquipSeq++), player.seatId);
+      });
     },
   };
 }
@@ -13104,13 +13133,15 @@ const ZOUSHI: Hero = {
       minTargets: 1,
       maxTargets: 1,
       needsCards: true,
+      // 「弃置一张**装备牌**」→ 手牌里的装备牌 + **已经装备在自己装备区**的那些（同一张牌两种位置）
+      costFrom: 'handEquip',
       maxCards: () => 1,
       canUse: (state, player) =>
-        player.hand.some((c) => isEquipCard(c)) &&
+        handAndEquipOf(player).some((c) => isEquipCard(c)) &&
         state.players.some((p) => p.alive && p.seatId !== player.seatId),
       execute: (state, player, intent, api) => {
         const cardId = intent.cardIds?.[0];
-        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
+        const card = cardId ? handAndEquipOf(player).find((c) => c.id === cardId) : undefined;
         if (!card) return '请选择一张要弃置的装备牌';
         if (!isEquipCard(card)) return '【倾城】只能弃置装备牌';
         const targetId = intent.targetIds[0];
