@@ -1562,7 +1562,11 @@ export function Game() {
                       ` · 目标 ${skillMode.targetIds.length} / ${
                         skillMode.skill.maxTargets >= 99 ? '不限' : skillMode.skill.maxTargets
                       }`}
-                    {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请点手牌'}
+                    {skillMode.skill.needsCards &&
+                      skillMode.cardIds.length === 0 &&
+                      (skillMode.skill.costFrom === 'handEquip'
+                        ? ' · 请点手牌或装备区的牌'
+                        : ' · 请点手牌')}
                     {skillMode.skill.minTargets > 0 &&
                       skillMode.targetIds.length < skillMode.skill.minTargets &&
                       ' · 请点角色'}
