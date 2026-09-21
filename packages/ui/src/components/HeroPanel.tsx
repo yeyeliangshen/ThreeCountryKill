@@ -13,7 +13,7 @@
 // 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
-import { ROLE_NAME, FACTION_NAME, MARKER_DESC } from '@sgs/engine';
+import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
 import {
   cardDescription,
   cardShortName,
@@ -22,6 +22,7 @@ import {
   type GameMode,
   type PlayerView,
 } from '@sgs/protocol';
+import { EquipChip } from './EquipChip';
 import { heroArt } from './heroArt';
 import { useHoverTip } from './HoverTip';
 
@@ -171,21 +172,8 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
             <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
           )}
           {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
-          {/* 国战标记（公开信息）：先驱 / 阴阳鱼 / 珠联璧合 */}
-          {me.markers?.map((m) => (
-            <span
-              key={m.id}
-              className={`marker-chip mark-${m.id}`}
-              {...bind(
-                `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
-                MARKER_DESC[m.id] ?? '',
-              )}
-            >
-              {m.label}
-              {m.count > 1 && <span className="marker-count">{m.count}</span>}
-            </span>
-          ))}
-          {/* 武将牌翻面朝上（公开信息）：会跳过下一个回合 */}
+          {/* ⚠️ 国战标记**不在这里放**（用户 2026-09-21）：它们已经和技能一起排在技能条上，
+              在武将框里再放一份是重复信息。这里的「翻/横」是**状态**不是标记，留着。 */}
           {me.flipped && (
             <span
               className="marker-chip mark-flip"
@@ -214,19 +202,13 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
           {(me.equipment.length > 0 || me.judgment.length > 0) && (
             <span className="hero-zones">
               {me.equipment.map((c: Card) => (
-                <span
-                  key={c.id}
-                  className={`equip-icon equip-${c.type}`}
-                  title={`${cardShortName(c)}\n${cardDescription(c, mode)}`}
-                >
-                  {cardShortName(c)}
-                </span>
+                <EquipChip key={c.id} card={c} mode={mode} bind={bind} />
               ))}
               {me.judgment.map((c: Card) => (
                 <span
                   key={c.id}
                   className="judge-icon"
-                  title={`${cardShortName(c)}\n${cardDescription(c, mode)}`}
+                  {...bind(cardShortName(c), cardDescription(c, mode))}
                 >
                   {cardShortName(c)}
                 </span>

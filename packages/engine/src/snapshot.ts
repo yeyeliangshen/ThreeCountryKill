@@ -1,6 +1,6 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
-import { getHeroForMode } from './heroes';
+import { effectiveFaction, getHeroForMode } from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -31,7 +31,11 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     name: p.name,
     heroId: showMain ? p.heroId : null,
     deputyHeroId: showDeputy ? p.deputyHeroId : null,
-    faction: showFaction ? p.faction : null,
+    // 「当前所属势力」（用户 2026-09-21：看别人时要显示他现在属于哪个势力）：
+    // 别人看到的是**已确定势力**——两将全暗 = 未确定（null）、只亮副将的野心家 = 暂时按副将的
+    // 势力、野心家主将明置后 = 野心家（见 effectiveFaction）。本人那一份仍给后台真实势力，
+    // 免得自己的面板在暗置时没有势力可显示（自己知道自己是什么势力，不是泄露）。
+    faction: showFaction ? (isMe ? p.faction : effectiveFaction(state, p)) : null,
     heroRevealed: p.heroRevealed,
     deputyRevealed: p.deputyRevealed,
     // 国战标记是公开信息；只下发持有数量 > 0 的，免得界面渲染一堆 0。

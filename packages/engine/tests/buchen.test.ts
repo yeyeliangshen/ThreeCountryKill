@@ -146,6 +146,47 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     }
   });
 
+  /**
+   * 对手面板要显示的「**当前所属势力**」（用户 2026-09-21）：别人看到的是**已确定势力**——
+   * 两将全暗 = 未确定（null）、只亮副将的野心家 = 暂时按副将的势力、野心家主将明置后 = 野心家。
+   */
+  it('别人快照里的势力：暗置为 null → 只亮副将的野心家按副将算 → 亮主将转野心家', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'vanilla' },
+        { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        { seatId: 'C', name: '丙', heroId: 'vanilla' },
+      ],
+      'T',
+      { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+    );
+    state.draft = null;
+    const [a, b, c] = state.players as [typeof state.players[0], typeof state.players[0], typeof state.players[0]];
+    a.heroId = 'sunchen'; // 野心家主将
+    a.deputyHeroId = 'guanyu'; // 蜀副将
+    a.faction = 'ambitionist';
+    a.determinedFaction = 'shu';
+    for (const p of [b, c]) {
+      p.heroId = 'vanilla';
+      p.faction = 'wei';
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    const viewOfAFromB = () => toSnapshot(state, 'B').players.find((x) => x.seatId === 'A')!;
+    // ① 两将全暗：未确定势力（别人看不到任何势力）
+    a.heroRevealed = false;
+    a.deputyRevealed = false;
+    expect(viewOfAFromB().faction).toBeNull();
+    // ② 只亮副将（关羽）：暂时按副将的蜀算
+    a.deputyRevealed = true;
+    expect(viewOfAFromB().faction).toBe('shu');
+    // ③ 亮出野心家主将：转为野心家
+    a.heroRevealed = true;
+    expect(viewOfAFromB().faction).toBe('ambitionist');
+    // ④ 自己那一份始终拿后台真实势力（自己知道自己是什么势力，不是泄露）
+    expect(toSnapshot(state, 'A').players.find((x) => x.seatId === 'A')!.faction).toBe('ambitionist');
+  });
+
   it('确定过的势力优先于「明置即确定」：会盟/同势力判断都读它', () => {
     const state = createGame(
       [

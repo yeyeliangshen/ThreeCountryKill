@@ -30,9 +30,11 @@ import {
   heroCanUseAs,
   ROLE_NAME,
   FACTION_NAME,
+  MARKER_DESC,
   type Hero,
   type ActiveSkill,
 } from '@sgs/engine';
+import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
@@ -1269,23 +1271,28 @@ export function Game() {
                     <span className="p-hand">手 {p.handCount}</span>
                   </span>
                 </div>
-                {/* 装备区 */}
+                {/* 装备区（花色 + 点数 + 牌名，与自己的面板同一个组件） */}
                 {p.equipment.length > 0 && (
                   <div className="p-equip">
                     {p.equipment.map((c) => (
+                      <EquipChip key={c.id} card={c} mode={snapshot.mode} bind={bindTip} />
+                    ))}
+                  </div>
+                )}
+                {/* 国战标记（公开信息，用户 2026-09-21 要求）：看得到对手手上还有哪些标记 */}
+                {p.markers && p.markers.length > 0 && (
+                  <div className="p-markers">
+                    {p.markers.map((m) => (
                       <span
-                        key={c.id}
-                        className={`equip-icon equip-${c.type}`}
-                        // 原生 title 在触摸屏上不显示，统一走 hover/长按提示
+                        key={m.id}
+                        className={`marker-chip mark-${m.id}`}
                         {...bindTip(
-                          cardShortName(c),
-                          `${cardDescription(c, snapshot.mode)}${
-                            c.cargoCount ? `（下有扣置的牌 ${c.cargoCount} 张）` : ''
-                          }`,
+                          `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
+                          MARKER_DESC[m.id] ?? '',
                         )}
                       >
-                        {cardShortName(c)}
-                        {c.cargoCount ? `·辎${c.cargoCount}` : ''}
+                        {m.label}
+                        {m.count > 1 && <span className="marker-count">{m.count}</span>}
                       </span>
                     ))}
                   </div>

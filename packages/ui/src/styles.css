@@ -649,13 +649,16 @@ button:disabled {
   gap: 6px;
 }
 .hi-name {
-  /* 武将名竖排 */
-  writing-mode: vertical-rl;
+  /* 武将名**横排**（用户 2026-09-21：「名字不要竖着，横过来」）。
+     左列本来就窄，所以允许折行、不写死宽度；两个武将用「 + 」连起来。 */
   color: var(--gold);
   font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 2px;
+  font-size: 14px;
+  line-height: 1.25;
+  letter-spacing: 1px;
   text-align: center;
+  max-width: 100%;
+  word-break: break-all;
 }
 /* 血量：竖排勾玉 */
 .hi-hp {
@@ -1505,13 +1508,33 @@ button:disabled {
   gap: 3px;
   justify-content: center;
 }
+/*
+ * 一个装备槽：**花色 + 点数 + 牌名**（用户 2026-09-21：「显示得再大一点儿，要把装备的
+ * 花色和点数显示出来」）。自己的面板与对手面板共用（见 components/EquipChip.tsx）。
+ */
 .equip-icon {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 2px 7px;
+  border-radius: 4px;
   background: var(--panel-2);
   color: var(--text);
   white-space: nowrap;
+}
+/* 花色点数：单独加粗一点，一眼能读出红黑与大小 */
+.equip-icon .e-rank {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+.equip-icon.suit-red .e-rank {
+  color: #e06a6a;
+}
+.equip-icon.suit-black .e-rank {
+  color: #cfcfd6;
 }
 .equip-weapon {
   background: #3a3020;
@@ -1528,6 +1551,17 @@ button:disabled {
 .equip-minusMount {
   background: #3a1e20;
   color: #d47a6a;
+}
+/* 对手那边的标记行（国战标记是公开信息，用户 2026-09-21 要求显示） */
+.p-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+}
+.p-markers .marker-chip {
+  font-size: 10px;
+  padding: 1px 4px;
 }
 /*
  * 键盘/手柄可达性：所有可交互元素在键盘 tab 时都要看得见焦点。
