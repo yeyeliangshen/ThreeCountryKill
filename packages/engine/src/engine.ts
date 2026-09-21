@@ -299,12 +299,8 @@ export function requestResumePlay(state: GameState, req: ResumePlayRequest): voi
  * 直接写会让围栏误判成「这个槽没人碰过」。
  */
 /**
- * 铁索连环蔓延链的起点快照。链会被濒死**打断**（`ongoingChain` 挂着等），之后由 resumePlay
- * 接着跑，所以要跨调用存着（施工方案 Step 3a.1 的「流程起点」）。
+ * 拼点流程的起点快照（链会被鹰扬之类的询问挂起，收尾时要用）。
  */
-let chainSince: PendingCheckpoint | null = null;
-
-/** 拼点流程的起点快照（同 chainSince：拼点链会被鹰扬的询问挂起，收尾时要用）。 */
 let pindianSince: PendingCheckpoint | null = null;
 
 /** 每条 pending 被装上时的「流程起点快照」（施工方案 Step 3a.1：checkpoint 记在流程真正拿到控制权的那一刻） */
@@ -2627,14 +2623,13 @@ function resumePlay(
   // 动态核查（200 局命中 0）＋「关掉它跑全量（1022 测试 + 200 局 + 冒烟）」全绿 ⇒ 无语义依赖。
   // ⚠️ 注意：这个字段本身还活着——`drainResume` 的排空循环（applyIntent 收尾）在用它，
   //    那是「钩子链里打出的濒死」那条必需机制（docs §5.130），**不属于三跳**，不能一起删。
-  // 铁索连环蔓延被濒死打断 → 先把剩下的人打完
-  if (state.ongoingChain) {
-    state.ongoingBranchHits.chain++;
-    if (!ONGOING_DISABLED.has('chain')) {
-      runChainSpread(state, () => resumePlay(state, sourceId, chainSince ?? undefined));
-      return;
-    }
-  }
+  // 施工方案 Step 5.2：`ongoingChain` 的这一跳**已删除**（第二支）。
+  // 铁索连环的蔓延现在由**可挂起钩子链**自己接着跑：`chainStep` → `afterDamageSettled` →
+  // `runDamagedHooks` 一路都是 pausable 的（`runHooksPausable` / `runAllPlayersHooks`），
+  // 中途被打进濒死时，续接记在 `resumeQueue` 里、由 `drainResume` 的排空循环接着跑完，
+  // 不再需要「resumePlay 看见 ongoingChain 就把剩下的人补打完」这条恢复跳转。
+  // 动态核查：200 局命中 0；关掉这一支跑全量（1022 测试 + 200 局 + 冒烟）全绿 ⇒ 无语义依赖。
+  // （`state.ongoingChain` 字段与 `runChainSpread` 仍然活着——三个正常调用点直接用它跑蔓延。）
   // AOE 锦囊被濒死中断后，恢复时继续推进锦囊
   if (state.ongoingTrick) {
     state.ongoingBranchHits.trick++;
@@ -3548,8 +3543,6 @@ function queueChainSpread(state: GameState, attack: AttackContext, damage: numbe
   const rest = state.players.filter((p) => p.alive && p.chained).map((p) => p.seatId);
   if (rest.length === 0) return;
   state.ongoingChain = { attack, damage, rest, index: 0 };
-  // 施工方案 Step 3a.1：这条蔓延链的起点快照（被濒死打断后由 resumePlay 接着跑时当围栏）
-  chainSince = capturePendingCheckpoint(state);
 }
 
 /** 跑完横置蔓延再调 after；中途被打断就留在 ongoingChain 里等 resumePlay */
