@@ -6264,3 +6264,47 @@ if (!skill) return;                           // ← 直接返回：点了毫无
 **测试**：两条新用例——①甲 4 张手牌上限 2，弃 2 张后【定澜夜明珠】摸 1 张（锁定技、不问），
 复查发现还超 1 张 → **再弃一次**，弃完才进结束阶段；②貂蝉在**结束阶段**闭月摸到的牌
 **不再**触发弃牌。
+
+### 5.168 控制流重构 Step 0 + Step 1（按用户 2026-09-21 给的《Pending 控制流结构性重构方案》施工）
+
+方案要求的施工纪律：**先测量 → 一次只改一处 → 每步完整回归 → 数据符合预期再进下一步**；
+本次只做 **Step 0 + Step 1**（§十五：不接 waiter、不改 fence、不删三跳、不重构全部 pending）。
+
+**Step 0（观测基线，零行为变化）**
+
+- takeover 记录统一成一份形状（`TakeoverRecord`：probe/site/phase/turnSeat/
+  `oldPending{kind,owner,seq,answered,completed}`/newPendingKind/checkpoint/currentSeq/inDying/
+  `ongoing{skillChain,chain,trick}`/resumeQueue/sameUse/caller）；两种来源同一构造：
+  `probe:'fence'`（带 checkpoint 的收尾，一直开着）与 `probe:'clobber'`（把没答过的询问顶掉，
+  `SGS_PROBE_CLOBBER=1` 时记栈）。
+- Step 1.4/1.5 的指标**先行**：`runContinuation(state, id, fn)` + `GameState.continuationRuns`
+  （同一 id 执行 >1 次＝「多执行」失败）+ `isCompletedPending()`
+  （口径＝「已 completed / **answered-final**」，轮询队列里「还没问完」的不算）。
+- `scripts/measure-takeover.ts` 改成方案 §十二 的固定指标块（每步前后同一命令同一局数对比）。
+- Step 0.3：fuzz 新增 seed 9 / 84 / 86 的不变式用例（目前**仅有的**三处「收尾换掉一条没答过的
+  询问」的现场）；只钉不变式，不断言 takeover 次数（Step 1 后形式会变，断言次数会假红）。
+- **baseline（200 局）**：takeover 459 条（respondTrick 214、wuxieQueue 242=212 未答+30 已答、
+  discard 2 未答、respondSha 1 已答）；指标 2/3 = 0；未结束 0；全量测试全绿。
+
+**Step 1（让窗口自己拥有生命周期）**
+
+- 新增 `releaseIfMine(state, mine)`：**标 completed → 只在槽里还是我自己那格时才清**
+  （绝不无条件清槽）；顺序固定为「完成 → 标完成 → release → onDone」（方案 §1.3）。
+- `finishWuxieWindow`：无懈窗口问完 → 先 release-if-mine，再跑 onDone/结算。
+- `endTrickResolution` 顶部：若槽里还挂着**本次使用**（同一 ctx）的 `respondTrick` 响应窗口 →
+  先让它离场。⚠️ 只认 `respondTrick`：`wuxieQueue` 可能是同一个 ctx，但它的生命周期归
+  `finishWuxieWindow` 管，这里不能替它释放（它还要问别人）。
+- 续接计数 id 带**窗口身份**（`pendingIdOf`）：同一个牌用会开多次无懈窗口（每个选取者/目标一次），
+  它们是各自独立的续接 —— 只用 `${cardUseId}:wuxie-done` 会把「N 个窗口各跑一次」误判成
+  「同一个续接跑了 N 次」（**实测踩到：215 次假阳性，触发方案 §十三 硬停线 3**，按纪律先停下来
+  查指标本身，改完 id 归零）。
+
+**Step 1 后（200 局，同一命令）**：takeover **459 → 3**（`wuxieQueue` 242→**0**、
+`respondTrick` 214→**0** ✓ 达标）；指标 2 = 0；指标 3 = 0（续接共执行 3502 次）；
+未结束 0；全量 1022+34+46 全绿；fuzz 的历史种子（含新增 9/84/86）与 smoke 全过。
+
+**仍未解决 / 待后续步骤（不要写成「已清零」）**：剩下 3 条 takeover 是
+① seed 9/84 的**未答**弃牌询问被换掉 ×2、② seed 86 的已答求闪询问被换掉 ×1 ——
+它们**不在 Step 1 的范围内**（§十五只说 wuxieQueue/respondTrick），按方案 0.2 记为
+**「未再复现 / unresolved」之外的第三种状态：已复现、待后续步骤处理**（Step 3a 铺完 fence 后
+用 wouldBlock 数据决定归属）。三跳（`ongoingSkillChain/Chain/Trick`）仍在 —— Step 5 才删。

@@ -2444,6 +2444,22 @@ function takeoverRecord(
 }
 
 /**
+ * **release-if-mine**（施工方案 Step 1.2/1.3）：把「这一格已经走完」标上，并且**只在槽里还是
+ * 我自己那一格**时才清掉它。
+ *
+ * - 绝不做无条件 `setPending(null)`：槽里如果已经是**更新一代**的询问（别人的），动了它就是把
+ *   控制权抢走 —— 那是 takeover，不是释放；
+ * - 调用顺序固定为「完成 → 标 completed → release → onDone/continuation」（方案 §1.3）。
+ *   反过来（先跑 onDone 再 release）会在 onDone 里创建了新 pending 之后把**新的那格**清掉。
+ */
+function releaseIfMine(state: GameState, mine: NonNullable<GameState['pending']>): boolean {
+  completedPendings.add(mine);
+  if (state.pending !== mine) return false;
+  setPending(state, null);
+  return true;
+}
+
+/**
  * 续接执行计数（施工方案 Step 1.4）：**同一个 continuationId 执行超过一次**就是「多执行」类失败
  * （窗口自己推进了一次、旧的三跳又推一次），硬指标 `continuationExecutedTwice` 就是它的
  * 「有没有 > 1 的条目」。`id` 用「本次卡片使用 + 环节」拼（每次使用天然唯一）。
@@ -6312,6 +6328,15 @@ function useVirtualSameNameCard(
  *    它自己不用防递归：虚拟牌是无色的，寄篱的钩子只认红色牌。
  */
 function endTrickResolution(state: GameState, ctx: TrickContext): void {
+  // 施工方案 Step 1：这张牌**问完了**——如果槽里还挂着它自己的响应窗口（respondTrick），
+  // 先让窗口离场（标完成 + release-if-mine），再往下走收尾。
+  // ⚠️ 只认 `respondTrick` 且**同一个 ctx**：① 无懈窗口（wuxieQueue）也可能是同一个 ctx，
+  //    但它的生命周期归 `finishWuxieWindow` 管，这里不能替它释放（它可能还要问别人）；
+  //    ② 嵌套使用是别的 ctx，槽里换成别人时这里不动它。
+  {
+    const resp = state.pending;
+    if (resp && resp.kind === 'respondTrick' && resp.ctx === ctx) releaseIfMine(state, resp);
+  }
   if (ctx.extraResolve && !ctx.extraResolveDone) {
     ctx.extraResolveDone = true;
     const source = getPlayer(state, ctx.sourceId);
@@ -9260,9 +9285,17 @@ function finishWuxieWindow(
   state: GameState,
   pending: Extract<Pending, { kind: 'wuxieQueue' }>,
 ): void {
+  // 施工方案 Step 1：这一轮无懈窗口**问完了**——先标完成、再 release-if-mine（槽里已经是别人的
+  // 就什么都不做），最后才跑 onDone/结算。以前这里不释放自己，靠后面某次收尾的 resumePlay
+  // 把它换掉（实测 200 局里 242 次）。
+  releaseIfMine(state, pending);
   const next = pending.onDone;
-  if (next) next();
-  else resolveTrick(state, pending.ctx);
+  // ⚠️ id 必须带**窗口身份**（`pendingIdOf`）：同一个牌用会开多次无懈窗口（每个选取者/每个目标
+  //    各一次），它们各自是**不同的**续接。只用 `${cardUseId}:wuxie-done` 会把「N 个窗口各跑
+  //    一次」误判成「同一个续接跑了 N 次」——指标自己先错了（实测 215 次假阳性）。
+  const contId = `${pending.ctx.cardUseId}:wuxie-done#${pendingIdOf(pending)}`;
+  if (next) runContinuation(state, contId, next);
+  else runContinuation(state, contId, () => resolveTrick(state, pending.ctx));
 }
 
 function onRespondCard(
