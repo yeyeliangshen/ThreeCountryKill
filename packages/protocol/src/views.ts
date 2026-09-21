@@ -289,6 +289,35 @@ export interface RoomSummary {
 }
 
 // 下发给某个玩家的完整快照
+/**
+ * 拼点区里**一方**的牌位（用户 2026-09-23 要求牌桌中央有一块独立的拼点 UI）。
+ *
+ * ⚠️ 关键约束：**双方都扣好之前，服务端一次都不下发牌面**（只有 `chosen`）。
+ * 所以「先牌背、后翻牌」不是界面演出来的——牌面根本没到客户端（与盲选同一条规矩）。
+ */
+export interface PindianSideView {
+  seatId: string;
+  /** 这一方是否已经扣好牌（扣好后牌位先显示**牌背**） */
+  chosen: boolean;
+  /** 是不是发起者（拼点由一方发起：起点在发起者身上） */
+  isInitiator?: boolean;
+  /** 亮出的那张牌——**只有 `revealed` 为真时才有** */
+  card?: Card;
+  /** 比大小用的点数（鹰扬那类改判之后的值）——**只有 `revealed` 为真时才有** */
+  point?: number;
+}
+
+/** 拼点（当前/最近一次）的完整状态：牌桌中央那块区域就靠它渲染 */
+export interface PindianView {
+  sides: PindianSideView[];
+  /** 双方都扣好了、已经翻开 */
+  revealed: boolean;
+  /** 赢家座位；平点时为 null（`revealed` 为真后才有意义） */
+  winnerSeatId?: string | null;
+  /** 是不是平点（`revealed` 为真后才有意义） */
+  tie?: boolean;
+}
+
 export interface Snapshot {
   seatId: string; // 此快照属于哪个座位
   roomCode: string;
@@ -300,4 +329,9 @@ export interface Snapshot {
   prompt: PromptView | null; // 轮到你行动时非空
   winner: string | null; // 游戏未结束时为 null；结束时为胜方标识
   log: LogEntry[];
+  /**
+   * 拼点区（公开信息：两边都看得到同一块）：进行中给「谁扣好了」，双方扣好后给牌面 + 点数 + 胜负。
+   * 结算完不会立刻消失——下一次有人行动（任何 intent）时清空，让玩家有时间看清结果。
+   */
+  pindian?: PindianView | null;
 }

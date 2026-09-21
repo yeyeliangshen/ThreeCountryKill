@@ -37,6 +37,7 @@ import {
 import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { specialZoneChips } from '../specialZones';
+import { PindianTable } from '../components/PindianTable';
 import { targetNeedsHandCards } from '../targetRules';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
@@ -1360,6 +1361,17 @@ export function Game() {
             );
           })}
         </div>
+
+        {/* 拼点区（**牌桌中央**，用户 2026-09-23）：等待扣置 → 牌背入场 → 双方翻牌 → 点数与胜负。
+            放在主列（对手行与手牌之间）——那是牌桌正中；右侧日志栏只是记录，不是中央。
+            数据由服务端把关：双方扣好之前连牌面字段都没有（见 PindianView）。 */}
+        {snapshot.pindian && (
+          <PindianTable
+            pindian={snapshot.pindian}
+            players={snapshot.players}
+            meSeatId={snapshot.seatId}
+          />
+        )}
 
         {/* 操作区 + 手牌绑成一块（.dock）：窄屏时整块吸附在屏幕底部，
             按钮与自己的牌永远在眼前；宽屏时靠 CSS 把它压到牌桌底部 */}

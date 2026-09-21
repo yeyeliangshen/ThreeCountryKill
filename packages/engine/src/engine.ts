@@ -5662,6 +5662,10 @@ function checkHandEmptied(state: GameState, handBefore: number[]): void {
 
 function applyIntentInner(state: GameState, seatId: string, intent: Intent): ApplyResult {
   if (state.gameOver) return err('游戏已结束');
+  // 拼点区（牌桌中央那块）**谁一行动就收起来**：结果摆在这里是为了让玩家看清点数与胜负，
+  // 下一次有人做事（任何 intent）就该让位了。拼点自己的「扣牌」也是 intent，
+  // 所以下面那条流程会在扣完之后**重新**把视图写回来（顺序：先清、后写）。
+  state.pindianView = null;
   // 选将阶段优先处理（并发：所有未选将的座位同时可行动）
   // ⚠️ 选将期间只有**选将本身**的意图归 onPickHero；否则选将阶段里挂起的询问
   //    （例如双势力的「选势力」）永远答不了——任何意图都会被塞进 onPickHero 然后被它拒绝。
@@ -11163,9 +11167,20 @@ function makeSkillApi(
       const init = getPlayer(state, initiatorId);
       const tgt = getPlayer(state, targetId);
       if (!init || !tgt || init.hand.length === 0 || tgt.hand.length === 0) {
+        state.pindianView = null;
         onResult(state, null);
         return;
       }
+      // 牌桌中央那块拼点区（用户 2026-09-23）：开局两个**空牌位**，
+      // 每一方扣好牌就把自己那格标成 chosen（**不带牌面**——服务端不下发），
+      // 双方都扣好才写 card/point/winner（＝界面翻牌那一刻）。
+      state.pindianView = {
+        sides: [
+          { seatId: initiatorId, chosen: false, isInitiator: true },
+          { seatId: targetId, chosen: false },
+        ],
+        revealed: false,
+      };
       askPickCards(
         state,
         initiatorId,
@@ -11176,9 +11191,20 @@ function makeSkillApi(
         (st, _p1, first) => {
           const c1 = first[0];
           if (!c1) {
+            st.pindianView = null;
             onResult(st, null);
             return;
           }
+          // 他扣好了：这一格先亮**牌背**（界面按 chosen 画背面）——牌面仍然不下发。
+          // ⚠️ 这里**重建**整个视图而不是改字段：每次 intent 开头都会把拼点区清空
+          //    （谁一行动就收起），扣牌本身也是一次 intent ⇒ 改字段会改到 null 上（踩过）。
+          st.pindianView = {
+            sides: [
+              { seatId: initiatorId, chosen: true, isInitiator: true },
+              { seatId: targetId, chosen: false },
+            ],
+            revealed: false,
+          };
           askPickCards(
             st,
             targetId,
@@ -11189,9 +11215,11 @@ function makeSkillApi(
             (st2, _p2, second) => {
               const c2 = second[0];
               if (!c2) {
+                st2.pindianView = null;
                 onResult(st2, null);
                 return;
               }
+
               removeCard(init.hand, c1.id);
               removeCard(tgt.hand, c2.id);
               toDiscard(st2, c1, c2);
@@ -11211,6 +11239,17 @@ function makeSkillApi(
                   let winner: string | null = null;
                   if (r1! > r2!) winner = initiatorId;
                   else if (r2! > r1!) winner = targetId;
+                  // 双方都扣好了 → **翻牌**：这一刻才把牌面与比大小的点数写进拼点区
+                  // （鹰扬±3 已经在 r1/r2 里，所以界面上显示的就是真正用来比的点数）
+                  st2.pindianView = {
+                    sides: [
+                      { seatId: initiatorId, chosen: true, isInitiator: true, card: c1, point: r1! },
+                      { seatId: targetId, chosen: true, card: c2, point: r2! },
+                    ],
+                    revealed: true,
+                    winnerSeatId: winner,
+                    tie: winner === null,
+                  };
                   pushLog(
                     st2,
                     'skill',

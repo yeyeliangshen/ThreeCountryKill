@@ -2088,6 +2088,224 @@ select:focus-visible,
   }
 }
 
+/* —— 拼点区（牌桌中央，用户 2026-09-23）——
+   「等待选择 → 牌背入场 → 双方翻牌 → 比较点数 → 展示胜负」这一条流程全靠下面几段演：
+   状态由服务端下发（PindianView），这里只负责过渡与落位。
+   布局用**容器 + 居中**（不写绝对坐标），窄屏/桌面同一套。 */
+.pindian-table {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  /* 压在羊皮纸桌布上：用深色面板把它「端出来」，一眼看出这是牌桌中央的一次事件 */
+  background: linear-gradient(180deg, rgba(24, 18, 12, 0.94) 0%, rgba(38, 28, 16, 0.94) 100%);
+  border: 1px solid var(--gold);
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 24px rgba(212, 168, 75, 0.12);
+}
+.pd-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--gold);
+}
+.pd-title .pd-progress {
+  font-weight: 400;
+  color: #cdbf9a;
+}
+.pd-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.pd-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.pd-name {
+  font-size: 12px;
+  color: #e8dcc0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pd-side.mine .pd-name {
+  color: #ffe6a8;
+}
+.pd-tag {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--gold);
+  color: #1a1208;
+}
+/* 牌位：空位是虚线框，扣置后solid并放卡背 */
+.pd-slot {
+  width: 62px;
+  height: 88px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.pd-slot.empty {
+  border: 1px dashed rgba(212, 168, 75, 0.5);
+  background: rgba(255, 255, 255, 0.03);
+}
+.pd-wait {
+  font-size: 11px;
+  color: #b9a97f;
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+}
+/* 牌背入场：从「立着」翻进来（rotateY 90° → 0），末段轻微回弹（game-feel：动效要有缓动） */
+.pd-slot.filled {
+  border: 1px solid var(--gold);
+  background: #2c2013;
+  animation: pd-back-in 0.28s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+.pd-back,
+.pd-back-img {
+  display: block;
+  width: 58px;
+  height: 84px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.pd-back {
+  font-size: 34px;
+  line-height: 84px;
+  text-align: center;
+  color: #e8d9b0;
+}
+@keyframes pd-back-in {
+  from {
+    transform: perspective(600px) rotateY(88deg) translateY(-6px);
+    opacity: 0.2;
+  }
+  to {
+    transform: perspective(600px) rotateY(0deg) translateY(0);
+    opacity: 1;
+  }
+}
+/* 翻牌：两张同时（同一个 class、同一个 delay）翻到正面 + 一次金色闪光 */
+.pd-slot.filled .pd-face {
+  animation: pd-flip 0.42s ease-out both;
+}
+@keyframes pd-flip {
+  0% {
+    transform: perspective(700px) rotateY(88deg);
+    filter: brightness(1.6);
+  }
+  55% {
+    filter: brightness(1.25);
+  }
+  100% {
+    transform: perspective(700px) rotateY(0deg);
+    filter: brightness(1);
+  }
+}
+.pd-face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 58px;
+  height: 84px;
+  border-radius: 5px;
+  background: linear-gradient(158deg, #fffdf6 0%, #f3ead5 100%);
+  color: #2b2620;
+  border: 1px solid #8a7048;
+}
+.pd-card-name {
+  font-size: 11px;
+  font-weight: 700;
+  writing-mode: vertical-rl;
+  max-height: 60px;
+  overflow: hidden;
+}
+/* 点数：拼点比的数，放大、描金，一眼看得出谁大 */
+.pd-point {
+  font-size: 20px;
+  font-weight: 800;
+  color: #8a5a12;
+}
+/* 比大小符号：翻牌后出现，落在两张牌中间 */
+.pd-vs {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--gold);
+  animation: pd-vs-in 0.3s ease-out 0.34s both;
+}
+@keyframes pd-vs-in {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+/* 结果条：压在翻牌之后出现（delay 比翻牌稍晚），一次轻微「弹一下」 */
+.pd-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  animation: pd-result-in 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) 0.42s both;
+}
+.pd-result.decided {
+  background: rgba(212, 168, 75, 0.18);
+  border: 1px solid var(--gold);
+}
+.pd-result.tie {
+  background: rgba(180, 180, 180, 0.14);
+  border: 1px solid #9a9a9a;
+}
+.pd-points {
+  font-size: 18px;
+  font-weight: 800;
+  color: #ffe6a8;
+  letter-spacing: 1px;
+}
+.pd-result.tie .pd-points {
+  color: #dedede;
+}
+.pd-verdict {
+  font-size: 13px;
+  color: #f0e6cd;
+}
+@keyframes pd-result-in {
+  from {
+    transform: scale(0.86);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 无障碍（game-feel 的「必须能关掉」）：系统开了「减少动态效果」时，所有拼点动画只保留结果 */
+@media (prefers-reduced-motion: reduce) {
+  .pd-slot.filled,
+  .pd-slot.filled .pd-face,
+  .pd-vs,
+  .pd-result {
+    animation: none !important;
+  }
+}
+
 /* 特殊牌区（权 / 异 / 函 / 戮）：紧挨武将名的一条小徽章行 */
 .special-zones {
   display: flex;

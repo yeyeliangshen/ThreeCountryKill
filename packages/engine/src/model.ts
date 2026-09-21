@@ -3,6 +3,7 @@ import type {
   Card,
   CardType,
   DamageAttribute,
+  PindianView,
   Faction,
   GameMode,
   LogEntry,
@@ -954,6 +955,16 @@ export interface TakeoverRecord {
 export interface GameState {
   roomCode: string;
   mode: GameMode; // 当前对局模式
+  /**
+   * **拼点区**（用户 2026-09-23 要求牌桌中央有一块独立的拼点 UI）。
+   *
+   * 只放**公开信息**：双方都扣好之前，`sides[].card` / `point` 连**字段都不写**——
+   * 「扣好了先显示牌背、双方都扣好才翻牌」这条不是界面演出来的，是服务端就**没给**牌面
+   * （与盲选 `Pending.pickCards.hidden` 同一条规矩）。
+   *
+   * 结算完不立刻清：下一次**任何 intent**（谁行动都行）时清空，让玩家看清点数与胜负。
+   */
+  pindianView?: PindianView | null;
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];

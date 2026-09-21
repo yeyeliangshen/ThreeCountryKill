@@ -122,5 +122,8 @@ export function toSnapshot(state: GameState, seatId: string): Snapshot {
     prompt: buildPrompt(state, seatId),
     winner: state.winner,
     log: state.log.slice(-50),
+    // 拼点区（公开信息，两边一样）：进行中只有「谁扣好了」，双方扣好之后才有牌面/点数/胜负——
+    // 牌面**由服务端把关**（`pindianView` 里 revealed 之前压根不写 card 字段）
+    pindian: state.pindianView ?? null,
   };
 }
