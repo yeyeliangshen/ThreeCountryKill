@@ -25688,14 +25688,15 @@ describe('国战标记【阴阳鱼】的两个入口（出牌阶段 / 弃牌阶�
     expect(markerCount(a, 'yinyangyu')).toBe(0);
   });
 
-  it('弃牌阶段：同样下发（这是「手牌上限 +2」那条用法唯一的入口），发动后上限 +2', () => {
+  it('弃牌阶段：同样下发（这是「手牌上限 +2」那条用法唯一的入口），发动后**要求重算**', () => {
+    // ① 用完仍超上限 → 这一格的张数按**新上限**重算（不是继续按旧要求弃）
     const { state, a } = gzYinYangYu();
-    a.hand = [mk('h1', 'sha', 'spade', 1), mk('h2', 'sha', 'spade', 2), mk('h3', 'sha', 'spade', 3)];
-    a.hp = 2;
+    a.hand = ['h1', 'h2', 'h3', 'h4', 'h5'].map((id, i) => mk(id, 'sha', 'spade', i + 1));
+    a.hp = 2; // 上限 2 → 超 3 张
     // 真实的弃牌阶段会把 turn.phase 设成 'discard'（见 engine 的 beginDiscardPhasePart）——
     // 阴阳鱼的两条用法就是按这个阶段分流的
     state.turn.phase = 'discard';
-    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    state.pending = { kind: 'discard', seatId: A, count: 3 };
     const prompt = toSnapshot(state, A).prompt!;
     expect(prompt.kind).toBe('discard');
     const sk = prompt.legalSkills?.find((x) => x.name === '阴阳鱼');
@@ -25703,8 +25704,21 @@ describe('国战标记【阴阳鱼】的两个入口（出牌阶段 / 弃牌阶�
     ok(act(state, A, { type: 'useSkill', skillId: sk!.id, cardIds: [], targetIds: [] }));
     expect(a.flags.handLimitBonus).toBe(2);
     expect(markerCount(a, 'yinyangyu')).toBe(0);
-    // 弃牌阶段本身还在（用完标记仍要弃牌）
+    // 上限 2 → 4：超的张数从 3 变 1（同一格只改张数，弃牌阶段继续）
     expect(state.pending?.kind).toBe('discard');
+    if (state.pending?.kind === 'discard') expect(state.pending.count).toBe(1);
+  });
+
+  it('弃牌阶段：上限涨过手牌数 → 不用再弃，直接进收尾（结束弃牌阶段）', () => {
+    const { state, a } = gzYinYangYu();
+    a.hand = ['h1', 'h2', 'h3'].map((id, i) => mk(id, 'sha', 'spade', i + 1));
+    a.hp = 2; // 上限 2 → 超 1 张
+    state.turn.phase = 'discard';
+    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    ok(act(state, A, { type: 'useSkill', skillId: 'mark_yinyangyu', cardIds: [], targetIds: [] }));
+    expect(a.flags.handLimitBonus).toBe(2);
+    // 上限 2 → 4 ≥ 手牌 3 → 没得弃了：不再停在弃牌询问上（回合继续往下走）
+    expect(state.pending?.kind).not.toBe('discard');
   });
 });
 

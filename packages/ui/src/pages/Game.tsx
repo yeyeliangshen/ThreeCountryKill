@@ -41,6 +41,7 @@ import { cardBack } from '../components/cardBack';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { nextGuozhanSlots } from '../draftSlots';
+import { skillEntryShown } from '../skillPhase';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
@@ -487,7 +488,12 @@ export function Game() {
   const isGuozhan = snapshot.mode === 'guozhan';
   const aoyu = isAoyuMode(snapshot);
   const myHeroes = getMyActiveHeroes(me, snapshot.mode);
-  const skillIds = prompt?.kind === 'play' ? (prompt.legalSkillIds ?? []) : [];
+  // ⚠️ **出牌阶段与弃牌阶段都要读**：国战标记技能不属于任何武将，只能靠服务端下发的
+  // `legalSkillIds` / `legalSkills` 补出来；而【阴阳鱼】在弃牌阶段是「弃置 → 手牌上限 +2」
+  // 这一支（引擎的 `buildDiscardPrompt` 会把这几个标记一起下发）。以前这里写死
+  // `kind === 'play'`，于是**弃牌阶段那几枚标记按钮根本不渲染**（用户报的「点了没用」里
+  // 最典型的一种）——详见 docs §5.177。
+  const skillIds = skillEntryShown(prompt?.kind) ? (prompt!.legalSkillIds ?? []) : [];
   // 【木牛流马】下扣置的牌「如手牌般使用或打出」，所以自己的可用牌 = 手牌 + 辎。
   // 对手的那一份快照里只有 `cargoCount`（扣置是暗信息），拿到的 cargo 是空的。
   // 【丈八蛇矛】：这一轮能不能「两张手牌当【杀】」完全由服务端算（zhangbaOk）
@@ -1154,7 +1160,8 @@ export function Game() {
   // - 主动技：点一下就等于「明置该武将并发动」（引擎会先明置）；
   // - 锁定技 / 转化技（马术、咆哮、武圣…）：只能靠亮将，这里显示成不可点。
   // 「哪些技能可预亮」由服务端下发（prompt.prelitableSkills），界面不自己判断。
-  const legalSkills = prompt?.kind === 'play' ? (prompt.legalSkills ?? []) : [];
+  // 出牌阶段 / 弃牌阶段的服务端技能定义（含不属于任何武将的**国战标记**，见上面 skillIds 的注释）
+  const legalSkills = skillEntryShown(prompt?.kind) ? (prompt!.legalSkills ?? []) : [];
   // 可预亮的名单在快照上（随时可预亮，不必等自己的出牌阶段）
   const prelitable = new Set(me.prelitableSkills ?? []);
   const prelit = new Set(me.prelitSkills ?? []);
@@ -1514,8 +1521,10 @@ export function Game() {
                 </>
               )}
 
-              {/* 技能交互模式 */}
-              {prompt.kind === 'play' && skillMode && (
+              {/* 技能交互模式。⚠️ 弃牌阶段也要渲染：【阴阳鱼】在那儿是「弃置 → 手牌上限 +2」
+                  那一支（引擎的 useSkill 对 `alsoUsableInDiscardPhase` 的技能放行弃牌阶段），
+                  只判 'play' 的话点了没反应——见 docs §5.177 */}
+              {skillEntryShown(prompt.kind) && skillMode && (
                 <div className="skill-mode">
                   <span className="hint">
                     <b>【{skillMode.skill.name}】</b>

@@ -11554,10 +11554,32 @@ function onUseSkill(
   // 兜底：技能跑完如果什么 pending 都没留下（比如「这一项做不到，就此结束」那种分支），
   // 就把出牌阶段还给他——不然 pending 会一直是 null，界面直接卡住。
   // 正常情况（留下询问、或询问里传了 returnTo）这里不会触发。
-  if (state.pending === null && !state.gameOver) {
+  // ⚠️ 弃牌阶段不还出牌阶段（inDiscard）——那一格归弃牌流程管，见下面的重算。
+  if (state.pending === null && !state.gameOver && !inDiscard) {
     setPending(state, { kind: 'play', seatId: player.seatId });
   }
+  // 弃牌阶段里用了「改手牌上限」的技能（典型：【阴阳鱼】弃牌那一支，上限 +2）之后，
+  // 那一格要求的张数是按**旧上限**算出来的 ⇒ 重算一次（与「弃完再查一次」同一套口径：
+  // 还超上限就改小要求，不超了就直接结束弃牌阶段）。
+  if (inDiscard && !state.gameOver) syncDiscardRequirement(state, player);
   return { ok: true };
+}
+
+/**
+ * 弃牌阶段里**手牌上限变了**之后，把「请弃 N 张」重算一次。
+ *
+ * 只改**同一格**的 `count`（不换槽、不动 `pendingSeq`），围栏/所有权判断不受影响；
+ * 已经不超上限了就直接进弃牌阶段的收尾（`runDiscardPhaseEnd`，与 `beginDiscard` 的空支同一条路）。
+ */
+function syncDiscardRequirement(state: GameState, player: Player): void {
+  const pending = state.pending;
+  if (!pending || pending.kind !== 'discard' || pending.seatId !== player.seatId) return;
+  const over = player.hand.length - handLimit(state, player);
+  if (over > 0) {
+    pending.count = over;
+    return;
+  }
+  runDiscardPhaseEnd(state, player, pending.thrown ?? []);
 }
 
 // ——————————————————————————————————————————
