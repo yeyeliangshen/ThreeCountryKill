@@ -1835,13 +1835,41 @@ function afterDiscardPhaseHooks(state: GameState, player: Player): void {
 }
 
 /** 建立弃牌 pending；手牌没超上限就直接结束回合 */
-function beginDiscard(state: GameState, player: Player): void {
+function beginDiscard(state: GameState, player: Player, alreadyThrown: Card[] = []): void {
   const over = player.hand.length - handLimit(state, player);
   if (over > 0) {
-    setPending(state, { kind: 'discard', seatId: player.seatId, count: over });
+    setPending(state, {
+      kind: 'discard',
+      seatId: player.seatId,
+      count: over,
+      // 只有真的有账本时才挂这个字段（空数组会让 pending 的形状多一项，测试里到处 toEqual）
+      ...(alreadyThrown.length > 0 ? { thrown: alreadyThrown } : {}),
+    });
   } else {
-    runDiscardPhaseEnd(state, player);
+    runDiscardPhaseEnd(state, player, alreadyThrown);
   }
+}
+
+/**
+ * 一轮弃牌走完之后的**复查**（用户 2026-09-21 口径）：
+ * 「**弃牌阶段里拿到的牌也要弃**」——典型是弃掉牌之后触发的摸牌（【定澜夜明珠】的
+ * 「每回合首次弃置牌后摸一张」、陆逊·连营、礼让那类），手牌又会超上限，所以要**再弃一次**，
+ * 直到不超为止。
+ *
+ * ⚠️ 反面（不用再弃）：**结束阶段**才拿到的牌（貂蝉·闭月那种）——那时弃牌阶段已经结束了，
+ *    自然不在此列（这条不需要特判：本函数只在弃牌阶段里被调用）。
+ * ⚠️ 每次复查都会重新算 `handLimit`（技能可能中途改上限），所以不能只在开始时算一次。
+ */
+function afterDiscardRound(state: GameState, player: Player, all: Card[]): void {
+  // 被「跳过弃牌阶段」的效果救掉 → 直接收尾
+  if (player.flags.skipDiscard) {
+    runDiscardPhaseEnd(state, player, all);
+    return;
+  }
+  // ⚠️ 这里**不要**加「中途阵亡就直接 return」的早退（试过）：弃牌过程中阵亡时，
+  //    死亡流程的续接不是这条弃牌链，return 等于**没人再推进回合** —— 冒烟里 seed=1 直接卡死
+  //    （实测：加 guard 后 5000 步不结束，去掉就恢复）。死人的回合交给 `endTurn` 自己判就行。
+  beginDiscard(state, player, all);
 }
 
 /**
@@ -9977,8 +10005,9 @@ function onDiscard(
   // 挟天子以令诸侯要看「弃牌阶段是否真弃过牌」
   if (intent.cardIds.length > 0) player.flags.discardedInDiscardPhase = true;
   pushLog(state, 'discard', `${player.name} 弃了 ${intent.cardIds.length} 张牌。`);
-  // 礼让这类「你的牌因弃置而进弃牌堆」的时机；之后再推进弃牌阶段结束
-  fireCardDiscarded(state, player, thrown, () => runDiscardPhaseEnd(state, player, thrown));
+  // 礼让这类「你的牌因弃置而进弃牌堆」的时机；之后再**复查一次**（本阶段的账本跨轮累加）
+  const all = [...(pending.thrown ?? []), ...thrown];
+  fireCardDiscarded(state, player, thrown, () => afterDiscardRound(state, player, all));
   return { ok: true };
 }
 

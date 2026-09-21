@@ -728,8 +728,14 @@ export type Pending =
        */
       done: () => void;
     }
-  // 弃牌阶段：弃到上限
-  | { kind: 'discard'; seatId: string; count: number }
+  /**
+   * 弃牌阶段：弃到上限。
+   *
+   * `thrown`＝**本阶段到此刻为止已经弃掉的牌**（跨轮累加）：弃牌阶段里被技能塞回来的牌
+   * 也要接着弃（用户 2026-09-21 口径），所以这一格可能被摆上多次；账本给
+   * `othersDiscardPhaseEnd` 的 payload 用（「该角色此阶段弃置的牌」）。
+   */
+  | { kind: 'discard'; seatId: string; count: number; thrown?: Card[] }
   // 锦囊响应：出杀(南蛮/决斗/借刀)/出闪(万箭)/展示牌(火攻)/弃牌(火攻)
   | { kind: 'respondTrick'; responderId: string; ctx: TrickContext }
   /**

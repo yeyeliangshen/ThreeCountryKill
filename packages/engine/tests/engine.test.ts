@@ -25747,3 +25747,65 @@ describe('回合阶段：准备阶段独立于判定阶段', () => {
     expect(bingliang, '后放的【兵粮寸断】应当**先**判定').toBeLessThan(lebu);
   });
 });
+
+/**
+ * 弃牌阶段的**复查**（用户 2026-09-21 口径）：
+ * 「弃牌阶段里拿到的牌需要弃置，除非是像貂蝉那样在**结束阶段**拿到的牌」。
+ * 典型触发源：弃牌后摸牌的【定澜夜明珠】（本回合首次弃置牌后摸一张，锁定技、不问）。
+ */
+describe('弃牌阶段：弃完再查一次（阶段内拿到的牌也要弃）', () => {
+  function dinglan(c: Card): Card {
+    return { ...c, equipName: c.equipName ?? 'dinglan' };
+  }
+
+  it('弃牌阶段弃完又摸到牌（定澜夜明珠）→ 还要再弃一次，直到不超上限', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [], hp: 2 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 4 张手牌、体力 2 → 上限 2 → 要弃 2；弃完定澜夜明珠摸 1 → 手牌 3 > 2 → 再弃 1
+    a.hand = [
+      mk('h1', 'sha', 'spade', 1),
+      mk('h2', 'sha', 'spade', 2),
+      mk('h3', 'sha', 'spade', 3),
+      mk('h4', 'sha', 'spade', 4),
+    ];
+    a.equipment.treasure = dinglan(mk('dl', 'treasure', 'heart', 5));
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'discard' };
+    state.pending = { kind: 'discard', seatId: A, count: 2 };
+    state.log = [];
+    ok(act(state, A, { type: 'discard', cardIds: ['h1', 'h2'] }));
+    // 定澜夜明珠摸了一张 → 手牌 3 张、上限 2 → 复查发现还超 1 张
+    expect(state.pending?.kind, '阶段内摸到的牌还要弃').toBe('discard');
+    if (state.pending?.kind === 'discard') expect(state.pending.count).toBe(1);
+    expect(a.hand.map((c) => c.id).sort()).toEqual(['d1', 'h3', 'h4']);
+    // 再弃那 1 张 → 这次真的结束（进结束阶段）
+    ok(act(state, A, { type: 'discard', cardIds: ['d1'] }));
+    expect(a.hand).toHaveLength(2);
+    expect(state.turn.phase).not.toBe('discard');
+  });
+
+  it('结束阶段拿到的牌（貂蝉·闭月）不用再弃——那时弃牌阶段已经过去了', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'diaochan', hand: [], hp: 1 },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 2 张手牌、体力 1 → 上限 1 → 弃 1；随后结束阶段闭月摸牌，**不再**要求弃
+    a.hand = [mk('h1', 'sha', 'spade', 1), mk('h2', 'sha', 'spade', 2)];
+    state.deck = [mk('d1', 'sha', 'club', 9)];
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'discard' };
+    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    state.log = [];
+    ok(act(state, A, { type: 'discard', cardIds: ['h1'] }));
+    // 弃牌阶段结束 → 结束阶段：闭月的询问（是否摸一张）
+    let guard = 0;
+    while (state.pending && state.pending.kind === 'choice' && guard++ < 3) {
+      ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    }
+    expect(a.hand.length, '结束阶段摸的牌不再触发弃牌').toBe(2);
+    expect(state.pending?.kind).not.toBe('discard');
+  });
+});
