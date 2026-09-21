@@ -15,6 +15,8 @@ export {
   prelitableSkills,
   /** 探针用：这一格是不是「已走完却还占着槽」（施工方案 Step 1.5 的指标探测器） */
   isCompletedPending,
+  /** 施工方案 Step 3b：被围栏挡住且没有 waiter 可去时抛出（`SGS_FENCE_ENFORCE=1` 才生效） */
+  FenceBlockedError,
   type SeatSetup,
   type ApplyResult,
 } from './engine';

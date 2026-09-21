@@ -2388,6 +2388,32 @@ function dispatchRoundEnd(state: GameState, after: () => void): void {
 }
 
 /**
+ * 施工方案 Step 3b：**fence 真生效**的开关（`SGS_FENCE_ENFORCE=1` 打开，默认关）。
+ *
+ * 打开后，被围栏挡住的收尾**不再照旧覆盖**，而是抛出 `FenceBlockedError` ——
+ * 方案 §3b.1 的硬要求：**绝不允许 silent drop**（`if (blocked) return` 会让 continuation
+ * 永久消失），被挡必须变成「当场可定位的显式阻断」，而不是几千步之后的 watchdog 超时。
+ *
+ * ⚠️ 这一步**故意让一批对局失败**：它的验收不是「全绿」，而是「每一次被挡都能立刻定位」。
+ * Step 4 接上 waiter 之后，这里的 throw 才会换成「登记等待」。
+ */
+const FENCE_ENFORCE = (() => {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    ?.env;
+  return !!env?.SGS_FENCE_ENFORCE;
+})();
+
+/** 被围栏挡住、且还没有 waiter 机制可去 → 当场抛出（方案 §3b.1 的 FenceBlockedWithoutWaiter） */
+export class FenceBlockedError extends Error {
+  readonly record: unknown;
+  constructor(record: unknown) {
+    super(`FenceBlockedWithoutWaiter: ${JSON.stringify(record)}`);
+    this.name = 'FenceBlockedWithoutWaiter';
+    this.record = record;
+  }
+}
+
+/**
  * 「先测量」探针的开关（`SGS_PROBE_CLOBBER=1` 打开）。
  *
  * 只在**测量脚本**里开：它会把每一次「收尾覆盖掉没答过的询问」都记进 `blockedTakeovers`
@@ -2666,6 +2692,10 @@ function resumePlay(
     ).process?.env;
     if (env?.SGS_TRACE_TAKEOVER) {
       console.log('[takeover-blocked]', JSON.stringify(rec));
+    }
+    if (FENCE_ENFORCE) {
+      // Step 3b：真生效 —— 不许 silent drop、也不许照旧覆盖。带上调用栈方便当场定位。
+      throw new FenceBlockedError({ ...rec, caller: topStackFrame() });
     }
     /**
      * **让路**（本轮的实质改动）：既然挡住我的是一条「不是我的」询问（实测全是嵌套使用的

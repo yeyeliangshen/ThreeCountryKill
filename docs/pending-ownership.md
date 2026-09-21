@@ -357,3 +357,34 @@ Step 1 后完全一致。
 **结论与下一步**：fence 的判定模型可以直接进 Step 3b（真生效 + 被挡时 fail-fast）。
 ⚠️ 3b 按方案会**故意让一批对局失败**（被挡的 continuation 不许 silent drop），需要你点头再动。
 Step 3a 后的固定指标：指标 1 = 257（影子视角）、指标 2/3 = 0、不变量 B/D = 0、未结束 0。
+
+### 4.8 Step 3b（fence 真生效 + 被挡时 fail-fast，禁止 silent drop）—— ✅ 已完成
+
+**做法**：`resumePlay` 被围栏挡住时——记录（一直开着）→ 若 `SGS_FENCE_ENFORCE=1` 则
+**抛出 `FenceBlockedError`**（名字就是方案 §3b.1 要求的 `FenceBlockedWithoutWaiter`，
+携带完整现场：site / phase / turnSeat / checkpoint / 被挡的那一格 / **调用栈**）。
+
+- **绝不 silent drop**：方案明确禁止 `if (blocked) return`（那会让 continuation 永久消失）；
+  这里被挡=不写槽 + 当场抛错 ✓。
+- **默认关**：直到 Step 4 接上 waiter 之前，引擎的默认行为仍是「记录 + 照旧覆盖」
+  （所以 `pnpm test` 三闸仍然全绿；跑 Step 3b 的数据要用开关显式打开）。
+  Step 4 之后这里会换成「登记等待」，那时它才是默认行为。
+
+**验收（`scripts/measure-fence-enforce.ts`，200 局）**：
+
+```text
+当场阻断（FenceBlockedWithoutWaiter）= 107 ｜ 正常跑完 = 93 ｜ 其它异常 = 0
+按「收尾点 | 被挡的那一格」：
+   101  resumePlay | old=respondSha(answered=true)   ← 求闪询问已答仍占槽（攻击收尾想覆盖它）
+     6  resumePlay | old=discard(answered=false)     ← 没答过的弃牌询问
+```
+
+方案 §3b.2 的判据全部满足：错误 takeover **全部**变成了显式阻断（107 条，每条都带
+site/phase/turn/checkpoint/caller，样例里有 `afterAttackSettledTail` 与钩子链两条调用栈），
+**没有一条走到 watchdog 超时**（其它异常 0）。
+
+**结论**：fence 能正确阻止错误覆盖、且被挡的 continuation 当场可定位 → 可以进 Step 4
+（接 `requestResumePlay` / waiter，把这里的 throw 换成「登记等待」）。
+⚠️ 顺带明确下一步的收尾顺序：107 条里 101 条是**【杀】的求闪询问**——它是 Step 1 那个
+「窗口自完成」模式的同类项（已答、流程没换掉它），补一次「谁建谁清」就能让这批被挡直接消失；
+剩下 6 条（没答过的弃牌询问）才是真正需要 waiter 机制的场景。
