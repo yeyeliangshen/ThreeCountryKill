@@ -146,8 +146,18 @@ ws.addEventListener('message', (ev) => {
   }
 
   if (prompt.kind === 'pickCards') {
-    const n = Math.max(1, prompt.mustSelectTargetCount ?? 1);
-    send({ type: 'intent', intent: { type: 'pickCards', cardIds: pick(n) } });
+    // ⚠️ 候选牌在 **`pickCards`**（一整份牌面），张数区间在 **`pickMin`/`pickMax`**；
+    //    `legalCardIds` 对这类询问是**空的**（它只用于手牌响应），`mustSelectTargetCount` 是 0。
+    //    以前这里读的是后两个字段 ⇒ 发出去空 cardIds ⇒ 服务端拒「需选择 1-1 张牌」⇒ 陪练不再应答，
+    //    整局**静默停在**「从一组牌里挑」的询问上（实测：太史慈天义拼点，2026-09-21）。
+    const cards = prompt.pickCards ?? [];
+    const min = Math.max(1, prompt.pickMin ?? 1);
+    const n = Math.min(cards.length, min);
+    if (n === 0) {
+      log('pickCards：没有可选的牌，不发');
+      return;
+    }
+    send({ type: 'intent', intent: { type: 'pickCards', cardIds: cards.slice(0, n).map((c) => c.id) } });
     return;
   }
 
@@ -179,6 +189,26 @@ ws.addEventListener('message', (ev) => {
     }
     send({ type: 'intent', intent: { type: 'chooseOption', optionId: opt.id } });
     log('选择：', opt.label ?? opt.id);
+    return;
+  }
+
+  if (prompt.kind === 'pickSeats') {
+    // 多选座位（一次选几名角色）：候选在 `seatCandidates`，至少几个看 `pickMin`。
+    // 与 pickCards 同一类坑——读错字段就会**静默卡住**，所以宁可显式处理。
+    const cands = prompt.seatCandidates ?? [];
+    const min = Math.max(1, prompt.pickMin ?? 1);
+    if (cands.length < min) {
+      log('pickSeats：候选不够，弃权兜底');
+      send({ type: 'intent', intent: { type: 'pass' } });
+      return;
+    }
+    send({ type: 'intent', intent: { type: 'pickSeats', seatIds: cands.slice(0, min) } });
+    return;
+  }
+
+  if (prompt.kind === 'viewCards') {
+    // 私密查看（知己知彼）：看完要 `ack`，`pass` 不是合法意图（会被拒 → 整局停在这一点）。
+    send({ type: 'intent', intent: { type: 'ack' } });
     return;
   }
 
