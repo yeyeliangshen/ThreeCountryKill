@@ -43,6 +43,7 @@ import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfir
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
+  prepare: '准备',
   judgment: '判定',
   draw: '摸牌',
   play: '出牌',
@@ -1119,7 +1120,8 @@ export function Game() {
     myTurn &&
     !skillMode &&
     !selected &&
-    (phase === 'judgment' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
+    // 主动明置只在**准备阶段**（判定阶段是另一个阶段了，不能亮）
+    (phase === 'prepare' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
   const canRevealNow = canRevealSlot(myHero);
   // 铁索连环可以把「自己」选成目标：这时自己的武将面板整体可点
   const canPickSelf =

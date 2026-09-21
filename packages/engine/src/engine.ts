@@ -1373,7 +1373,9 @@ function runDamageDealtHooksP(
 
 function startTurn(state: GameState, seatIndex: number): void {
   state.turnSeq++; // 回合交接：世代 +1（迟到的 resumePlay 请求靠它判过期）
-  state.turn = { seatIndex, phase: 'judgment' };
+  // ⚠️ 准备阶段与判定阶段是**两个**阶段（用户 2026-09-21：准备阶段在判定阶段前）。
+  //    以前这里直接写 'judgment'，两者共用一个值 —— 靠阶段判断的东西（亮将窗口）就分不开了。
+  state.turn = { seatIndex, phase: 'prepare' };
   const player = getPlayerOrThrow(state, state.seatOrder[seatIndex]!);
   // 回合开始重置本回合标记
   player.flags = emptyFlags();
@@ -1863,7 +1865,10 @@ function runDiscardPhaseEnd(state: GameState, player: Player, discarded: Card[] 
 
 /** 判定阶段：逐张处理判定区延时锦囊 */
 function processJudgmentPhase(state: GameState, player: Player): void {
-  const judgments = player.judgment.slice();
+  // ⚠️ 顺序（用户 2026-09-21 口径）：判定区的牌**后置的在上、从上往下判** = 后放的先判。
+  //    存放上 `judgment.push` ＝ 新牌放最上面，所以判定顺序要把数组**倒过来**。
+  //    （以前按放置顺序判，先放的先判 —— 那会让「闪电」和「乐不思蜀」的先后反过来。）
+  const judgments = player.judgment.slice().reverse();
   player.judgment = [];
   // 台账：这叠牌此刻不在任何区域（见 GameState.judgmentInFlight）。死了也要有人管它们。
   state.judgmentInFlight = { seatId: player.seatId, cards: judgments.slice() };
@@ -2408,7 +2413,13 @@ function resumePlay(
     endTurn(state);
     return;
   }
-  // 判定阶段濒死恢复 → 继续到摸牌阶段
+  // 阶段被濒死打断后的恢复：准备阶段 → 接着进判定阶段；判定阶段 → 接着进摸牌阶段。
+  // ⚠️ 这两支以前是同一支（两阶段共用一个 'judgment' 值），所以**准备阶段**里被打进濒死
+  //    再救回来，会直接跳到摸牌阶段、把判定阶段整段跳过。
+  if (state.turn.phase === 'prepare') {
+    startJudgmentPhase(state, source);
+    return;
+  }
   if (state.turn.phase === 'judgment') {
     continueTurnAfterJudgment(state, source);
     return;
@@ -9980,7 +9991,8 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
   const player = getPlayerOrThrow(state, seatId);
   // 主动亮将**只有准备阶段开始时**这一个时机（出牌阶段不算——那时只能靠「发动技能」
   // 顺带明置）。准备阶段的询问会正常给「明置主将/副将/全部」，这个意图是同一时机内的
-  // 补充入口（选过「暂不明置」之后又改主意）。引擎里准备阶段与判定阶段同属 'judgment'。
+  // 补充入口（选过「暂不明置」之后又改主意）。⚠️ 只在**准备阶段**（'prepare'）——
+  // 判定阶段是另一个阶段了，那时不能再主动明置（用户 2026-09-21 口径）。
   const isMyTurn = state.seatOrder[state.turn.seatIndex] === seatId;
   if (intent.heroId !== player.heroId && intent.heroId !== player.deputyHeroId)
     return err('该武将不是你的武将');
@@ -9993,7 +10005,7 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
   // **那张武将牌本身**的文本里——「出牌阶段，你可明置此武将牌」
   // （小乔·红颜、邹氏·祸水），所以按要亮的那张牌判，而不是按「你有没有这样的牌」。
   const playPhaseReveal = state.turn.phase === 'play' && target.canRevealInPlayPhase === true;
-  if (!isMyTurn || (state.turn.phase !== 'judgment' && !playPhaseReveal))
+  if (!isMyTurn || (state.turn.phase !== 'prepare' && !playPhaseReveal))
     return err('只能在你的准备阶段明置武将牌（其余时机要发动技能才能明置）');
   // 被君主旗「暂时不能明置」封着（君曹操·建安 → 五子良将纛的代价）
   if (revealBlocked(state, player, target.id))

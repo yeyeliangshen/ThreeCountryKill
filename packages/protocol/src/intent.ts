@@ -1,7 +1,21 @@
 import type { CardType, DamageAttribute } from './card';
 
 // 回合阶段
-export type Phase = 'judgment' | 'draw' | 'play' | 'discard' | 'turnEnd' | 'gameOver' | 'draft';
+/**
+ * 回合阶段。**准备阶段与判定阶段是两个阶段**（用户 2026-09-21 口径：准备阶段在判定阶段前）——
+ * 以前两者共用 `'judgment'`，于是「按阶段判断」的东西（典型是国战亮将：「准备阶段开始时」才能
+ * 主动明置）在判定阶段也会生效。
+ * `'turnEnd'` 只出现在类型里（结束阶段目前是一组钩子时机，不是 phase 值）。
+ */
+export type Phase =
+  | 'prepare'
+  | 'judgment'
+  | 'draw'
+  | 'play'
+  | 'discard'
+  | 'turnEnd'
+  | 'gameOver'
+  | 'draft';
 
 // 客户端发给服务端的"意图"：玩家想做什么
 // 服务端拿意图喂给引擎做权威判定，再裁剪广播
