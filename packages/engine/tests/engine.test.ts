@@ -25530,3 +25530,58 @@ describe('国战 · 诸葛恪（傲才）', () => {
     expect(state.pending?.kind).toBe('respondSha');
   });
 });
+
+/**
+ * 国战标记【阴阳鱼】的两种用法都要**有入口**（用户 2026-09-21 报「按钮点不动」）：
+ * - 出牌阶段：弃置标记摸一张；
+ * - 弃牌阶段：弃置标记令本回合手牌上限 +2。
+ * 界面按钮是从 `prompt.legalSkills` 画的，所以这两种用法都必须出现在提示里
+ * （标记技能不属于任何武将，界面本地查不到定义）。
+ */
+describe('国战标记【阴阳鱼】的两个入口（出牌阶段 / 弃牌阶段）', () => {
+  function gzYinYangYu() {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'taishici', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    addMarker(a, 'yinyangyu');
+    return { state, a };
+  }
+
+  it('出牌阶段：提示里给得出这个技能（含选择参数），发动后摸一张、标记用掉', () => {
+    const { state, a } = gzYinYangYu();
+    const prompt = toSnapshot(state, A).prompt!;
+    const sk = prompt.legalSkills?.find((x) => x.id === 'mark_yinyangyu');
+    expect(sk, '出牌阶段要下发【阴阳鱼】').toBeTruthy();
+    expect(sk!.needsCards).toBe(false);
+    expect(sk!.minTargets).toBe(0);
+    expect(sk!.maxTargets).toBe(0);
+    state.deck = [mk('d1', 'sha', 'spade', 9)];
+    ok(act(state, A, { type: 'useSkill', skillId: sk!.id, cardIds: [], targetIds: [] }));
+    expect(a.hand.map((c) => c.id)).toEqual(['d1']);
+    expect(markerCount(a, 'yinyangyu')).toBe(0);
+  });
+
+  it('弃牌阶段：同样下发（这是「手牌上限 +2」那条用法唯一的入口），发动后上限 +2', () => {
+    const { state, a } = gzYinYangYu();
+    a.hand = [mk('h1', 'sha', 'spade', 1), mk('h2', 'sha', 'spade', 2), mk('h3', 'sha', 'spade', 3)];
+    a.hp = 2;
+    // 真实的弃牌阶段会把 turn.phase 设成 'discard'（见 engine 的 beginDiscardPhasePart）——
+    // 阴阳鱼的两条用法就是按这个阶段分流的
+    state.turn.phase = 'discard';
+    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    const prompt = toSnapshot(state, A).prompt!;
+    expect(prompt.kind).toBe('discard');
+    const sk = prompt.legalSkills?.find((x) => x.name === '阴阳鱼');
+    expect(sk, '弃牌阶段也要下发【阴阳鱼】').toBeTruthy();
+    ok(act(state, A, { type: 'useSkill', skillId: sk!.id, cardIds: [], targetIds: [] }));
+    expect(a.flags.handLimitBonus).toBe(2);
+    expect(markerCount(a, 'yinyangyu')).toBe(0);
+    // 弃牌阶段本身还在（用完标记仍要弃牌）
+    expect(state.pending?.kind).toBe('discard');
+  });
+});

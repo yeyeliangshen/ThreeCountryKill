@@ -156,9 +156,19 @@ const YINYANGYU: ActiveSkill = {
   name: '阴阳鱼',
   minTargets: 0,
   maxTargets: 0,
-  canUse: () => true,
+  // 一枚标记两种用法，按**阶段**分流：出牌阶段摸一张、弃牌阶段本回合手牌上限 +2。
+  // （其余阶段不给这个按钮：判定/摸牌阶段用不上，也不该在别人的回合里点。
+  //   ⚠️ 2026-09-21 之前这里写死 `() => true`，而且 execute 永远走「摸一张」——
+  //      弃牌阶段那条用法虽然实现了（useYinyangyuHandLimit），却没有入口。）
+  canUse: (state) => state.turn.phase === 'play' || state.turn.phase === 'discard',
+  alsoUsableInDiscardPhase: true,
   execute: (state, player) => {
     if (!consumeMarker(player, 'yinyangyu')) return '没有【阴阳鱼】标记';
+    if (state.turn.phase === 'discard') {
+      noteMarkerUsed(state, player.seatId, 'yinyangyu', 'handLimit');
+      useYinyangyuHandLimit(state, player, `${player.name} 弃置【阴阳鱼】`);
+      return undefined;
+    }
     noteMarkerUsed(state, player.seatId, 'yinyangyu', 'draw');
     useYinyangyu(state, player, `${player.name} 弃置【阴阳鱼】`);
     return undefined;

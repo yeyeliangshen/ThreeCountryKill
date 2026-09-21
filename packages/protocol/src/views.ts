@@ -167,7 +167,19 @@ export interface PromptView {
    * 界面直接用这份渲染按钮，不要再拿技能名去 hero.skills 里配对——
    * 那样改名就会失效，而且标记带来的技能不属于任何武将，根本配不上。
    */
-  legalSkills?: { id: string; name: string; desc: string }[];
+  /**
+   * 现在可以点的主动技能。**带上选择参数**：标记技能（阴阳鱼/先驱/珠联璧合/野心家）
+   * 不属于任何武将，界面在本地武将表里查不到定义，只能靠这份数据驱动「选牌/选目标」——
+   * 见 ui 的 enterSkillMode（用户 2026-09-21：阴阳鱼点了没反应就是这个缺的）。
+   */
+  legalSkills?: {
+    id: string;
+    name: string;
+    desc: string;
+    needsCards: boolean;
+    minTargets: number;
+    maxTargets: number;
+  }[];
 
   // 「选择一项」提示（仅 choice 有）
   choiceTitle?: string;

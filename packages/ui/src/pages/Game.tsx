@@ -385,7 +385,20 @@ export function Game() {
   // 主动技能交互模式
   const [skillMode, setSkillMode] = useState<{
     skillId: string;
-    skill: ActiveSkill;
+    /**
+     * 技能定义。武将技能直接给 `ActiveSkill`（本地有对象、maxCards 是函数）；
+     * **标记技能**（阴阳鱼/先驱/珠联璧合/野心家）不属于任何武将，用服务端在提示里
+     * 下发的形状（见 protocol 的 `legalSkills`）——`maxCards` 缺省即可（这几枚都不吃牌）。
+     */
+    skill: {
+      id: string;
+      name: string;
+      desc?: string;
+      needsCards?: boolean;
+      minTargets: number;
+      maxTargets: number;
+      maxCards?: ActiveSkill['maxCards'];
+    };
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
@@ -706,9 +719,27 @@ export function Game() {
 
   // —— 主动技能交互 ——
   function enterSkillMode(skillId: string) {
-    const skill = findSkill(myHeroes, skillId);
-    if (!skill) return;
-    setSkillMode({ skillId, skill, cardIds: [], targetIds: [] });
+    // 先找**自己武将**的主动技；找不到就用**服务端下发**的那份定义。
+    //
+    // ⚠️ 这一步是「阴阳鱼按钮点不动」的修复（用户 2026-09-21）：标记技能不属于任何武将，
+    //    findSkill(myHeroes, …) 必然查不到 —— 以前这里直接 `return`，于是按钮点了毫无反应
+    //    （连「不可用」的提示都没有）。
+    const heroSkill = findSkill(myHeroes, skillId);
+    const given = (prompt?.legalSkills ?? []).find((x) => x.id === skillId);
+    if (!heroSkill && !given) return;
+    setSkillMode({
+      skillId,
+      skill: heroSkill ?? {
+        id: skillId,
+        name: given!.name,
+        desc: given!.desc,
+        needsCards: given!.needsCards,
+        minTargets: given!.minTargets,
+        maxTargets: given!.maxTargets,
+      },
+      cardIds: [],
+      targetIds: [],
+    });
   }
   function toggleSkillCard(cardId: string) {
     if (!skillMode) return;

@@ -11172,7 +11172,11 @@ function onUseSkill(
   intent: Extract<Intent, { type: 'useSkill' }>,
 ): ApplyResult {
   const pending = state.pending!;
-  if (pending.kind !== 'play' || pending.seatId !== seatId) return err('不是你的出牌阶段');
+  // 出牌阶段照旧；**弃牌阶段**只放行显式声明了 alsoUsableInDiscardPhase 的技能
+  // （国战标记【阴阳鱼】：弃牌阶段弃置＝本回合手牌上限 +2）。技能查到之后再判，见下面。
+  const inDiscard = pending.kind === 'discard';
+  if ((!inDiscard && pending.kind !== 'play') || pending.seatId !== seatId)
+    return err('不是你的出牌阶段');
   const player = getPlayerOrThrow(state, seatId);
   // 查找顺序：已明置武将的主动技 → 暗置武将的主动技（点了就等于明置+发动）
   //            → 标记带来的技能（标记不属于任何武将）
@@ -11204,6 +11208,8 @@ function onUseSkill(
   // 别人的反向技（眩惑：同势力角色交给明置的法正一张手牌，换一个临时技能）
   if (!skill) skill = xuanhuoFor(state, player).find((s) => s.id === intent.skillId);
   if (!skill) return err('你没有这个技能');
+  if (inDiscard && skill.alsoUsableInDiscardPhase !== true)
+    return err('该技能只能在出牌阶段发动');
   // 检查可用性
   if (!skill.canUse(state, player)) return err('该技能当前不可使用');
   // 限 1 次/回合

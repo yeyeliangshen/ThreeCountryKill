@@ -94,6 +94,14 @@ export interface ActiveSkill {
   oncePerGame?: boolean;
   /** 这是不是一个锁定技（影响「非锁定技失效」，缺省＝非锁定技） */
   locked?: boolean;
+  /**
+   * 这个技能**也能在弃牌阶段发动**（缺省只能在出牌阶段）。
+   *
+   * 只有国战标记【阴阳鱼】用到：它在弃牌阶段弃置＝本回合手牌上限 +2。
+   * ⚠️ 必须显式开——武将主动技的 `canUse` 一般不判阶段（它们默认自己在出牌阶段），
+   *    要是直接把弃牌阶段也放进来，天义/制衡那类就能在弃牌阶段被发动了。
+   */
+  alsoUsableInDiscardPhase?: boolean;
   /** 目标数范围 */
   minTargets: number;
   maxTargets: number;

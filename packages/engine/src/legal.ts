@@ -414,7 +414,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     .map((p) => p.seatId);
   // 可用主动技能：武将主动技 + 标记技能
   const legalSkillIds: string[] = [];
-  const legalSkills: { id: string; name: string; desc: string }[] = [];
+  const legalSkills: NonNullable<ReturnType<typeof buildPlayPrompt>['legalSkills']> = [];
   // 国战：暗置武将的主动技也列出来——点了就等于「明置该武将 + 发动」
   // （规则：发动技能时必须明置该武将）。技能说明要连暗置的武将一起找。
   const darkHeroes = state.mode === 'guozhan' ? unrevealedHeroes(state.mode, player) : [];
@@ -439,7 +439,14 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       !(skill.oncePerGame && player.usedOncePerGame[skill.id])
     ) {
       legalSkillIds.push(skill.id);
-      legalSkills.push({ id: skill.id, name: skill.name, desc: skillDescFor(descPool, skill) });
+      legalSkills.push({
+        id: skill.id,
+        name: skill.name,
+        desc: skillDescFor(descPool, skill),
+        needsCards: skill.needsCards === true,
+        minTargets: skill.minTargets,
+        maxTargets: skill.maxTargets,
+      });
     }
   }
   return {
@@ -598,12 +605,43 @@ function buildRespondDeathPrompt(state: GameState, seatId: string, dyingId: stri
 
 function buildDiscardPrompt(state: GameState, seatId: string, count: number): PromptView {
   const player = getPlayerOrThrow(state, seatId);
+  // 弃牌阶段也会用到「主动技能」：国战标记【阴阳鱼】在这里弃置＝本回合手牌上限 +2。
+  // （标记技能不属于任何武将，界面必须靠这份 list 才画得出按钮——见 legalSkillsOf。）
+  const markers = markerActiveSkills(state, player).filter((s) => s.canUse(state, player));
   return {
     kind: 'discard',
     message: `弃牌阶段：请弃 ${count} 张牌`,
     legalCardIds: player.hand.map((c) => c.id),
     legalTargetIds: [],
     mustSelectTargetCount: count,
+    ...(markers.length > 0
+      ? {
+          legalSkillIds: markers.map((s) => s.id),
+          legalSkills: markers.map((s) => legalSkillView(state, player, s)),
+        }
+      : {}),
+  };
+}
+
+/**
+ * 下发给界面的技能定义：**带上选择参数**（要不要选牌、至少/至多几个目标）。
+ *
+ * 为什么不只发 id/name/desc：界面的「点技能 → 选牌/选目标 → 确认」这条路要用这些参数
+ * （见 ui 的 enterSkillMode），而**标记技能**（阴阳鱼/先驱/珠联璧合/野心家）不属于任何武将，
+ * 界面在本地武将表里查不到定义 —— 所以参数必须由服务端给。
+ */
+function legalSkillView(
+  state: GameState,
+  player: Player,
+  skill: ActiveSkill,
+): { id: string; name: string; desc: string; needsCards: boolean; minTargets: number; maxTargets: number } {
+  return {
+    id: skill.id,
+    name: skill.name,
+    desc: skillDescFor(activeHeroes(state, player), skill),
+    needsCards: skill.needsCards === true,
+    minTargets: skill.minTargets,
+    maxTargets: skill.maxTargets,
   };
 }
 
