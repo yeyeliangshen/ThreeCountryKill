@@ -2203,6 +2203,11 @@ function afterTurnEnd(state: GameState): void {
       // 所以「本回合不能使用或打出手牌」实际上是永久生效的——顺手一起修了。
       p.flags.cannotPlayCardsThisTurn = false;
       p.flags.cannotPlayColor = null;
+      // 「本回合可额外使用一张【杀】」（天义/苦肉）与「使用【杀】无距离限制」（天义）都是
+      // 「本回合」语义——它们原来只靠**自己下一个回合开始**时的 emptyFlags() 清，
+      // 中间隔了别人的好几个回合还留着（那时若被【借刀杀人】逼着出杀就会多出一张）。
+      p.flags.shaLimitBonus = 0;
+      p.flags.ignoreShaDistanceThisTurn = false;
       // 「直到回合结束」的临时技能（孙策·魂殇 / 法正·眩惑）
       p.tempGrantedSkills = [];
       p.flags.cannotHealThisTurn = false;

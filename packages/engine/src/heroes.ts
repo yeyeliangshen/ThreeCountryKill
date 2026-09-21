@@ -1661,8 +1661,8 @@ const HUANGGAI: Hero = {
           }
           player.hand.push(...drawn);
           pushLog(state, 'skill', `${player.name} 摸了 ${drawn.length} 张牌。`);
-          // 本回合可额外使用一张【杀】：把已出杀数退 1（下限 0）即可
-          player.flags.shaCountThisTurn = Math.max(0, player.flags.shaCountThisTurn - 1);
+          // 本回合可额外使用一张【杀】：上限 +1（同天义那条注释，退已出杀数是错的）
+          grantExtraShaQuota(player);
           pushLog(state, 'skill', `本回合可额外使用一张【杀】。`);
         },
       },
@@ -3293,6 +3293,20 @@ const XIAOQIAO: Hero = {
   },
 };
 
+/**
+ * 「本回合可**额外**使用一张【杀】」（天义 / 苦肉那类）：**把出杀次数上限 +1**。
+ *
+ * ⚠️ 别再用「把已出杀数退 1」那招（曾经就是这么写的）：这两个技能通常是在**还没出过杀**
+ *    的时候发动的，那时 `shaCountThisTurn` 是 0，`Math.max(0, 0 - 1)` 还是 0 ——
+ *    上限一点没变，第二张【杀】根本出不去（用户 2026-09-21 报的
+ *    「太史慈拼点赢了出不了两张杀」就是这个：先拼点、再出杀，退 1 是空操作）。
+ *    改上限与**发动顺序无关**：先出过一张再发动也照样多一张。
+ *    （清账走 `afterTurnEnd` 的 clearTurnScoped，见 engine.ts 的「本回合」语义注释。）
+ */
+export function grantExtraShaQuota(player: Player): void {
+  player.flags.shaLimitBonus += 1;
+}
+
 const TAISHICI: Hero = {
   id: 'taishici',
   name: '太史慈',
@@ -3322,8 +3336,8 @@ const TAISHICI: Hero = {
             pushLog(st, 'skill', `${player.name} 的【天义】拼点未获胜。`);
             return;
           }
-          // 额外一张【杀】：把已出杀数退 1（和苦肉同一招）
-          player.flags.shaCountThisTurn = Math.max(0, player.flags.shaCountThisTurn - 1);
+          // 额外一张【杀】：**上限 +1**（不能退已出杀数——发动时通常还没出过杀，退了是空操作）
+          grantExtraShaQuota(player);
           player.flags.ignoreShaDistanceThisTurn = true;
           pushLog(
             st,

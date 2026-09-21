@@ -5767,12 +5767,71 @@ describe('拼点与天义', () => {
     // 13 > 1，太史慈赢
     expect(state.log.some((e) => e.message.includes('拼点获胜'))).toBe(true);
     expect(a.flags.ignoreShaDistanceThisTurn).toBe(true);
-    expect(a.flags.shaCountThisTurn).toBe(0); // 往回退了 1 ⇒ 本回合可额外出一张【杀】
+    // 「额外一张【杀】」＝**上限 +1**（不是把已出杀数退 1——发动时还没出过杀，退 1 是空操作）
+    expect(a.flags.shaLimitBonus).toBe(1);
+    expect(a.flags.shaCountThisTurn).toBe(0);
     // 两张拼点的牌都进了弃牌堆
     expect(state.discard.some((c) => c.id === 'a1')).toBe(true);
     expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
     // 关键：拼点链走完要把控制权还回来，不能停在 null
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('天义：拼点赢了能**真的**出两张【杀】（先发动技能、一张都还没出过）', () => {
+    const state = makeGame([
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'taishici',
+        // 两张【杀】+ 一张拼点用的牌：先拼点，再连出两张
+        hand: [mk('p1', 'shan', 'spade', 13), sha('a1'), sha('a2')],
+      },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'vanilla',
+        hand: [mk('b1', 'sha', 'club', 1), shan('b2'), shan('b3')],
+      },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, A, { type: 'useSkill', skillId: 'tianyi', targetIds: [B] }));
+    ok(act(state, A, { type: 'pickCards', cardIds: ['p1'] }));
+    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] })); // 13 > 1 → 甲赢
+    expect(a.flags.shaLimitBonus).toBe(1);
+    // 第一张【杀】（相邻的乙）——乙不出闪，掉血
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    expect(a.flags.shaCountThisTurn).toBe(1);
+    // 第二张【杀】——**这一张以前出不去**（上限还是 1）
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }), '天义赢了应当还能再出一张');
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'pass' }));
+    expect(a.flags.shaCountThisTurn).toBe(2);
+    // 第三张才被上限挡住
+    a.hand.push(sha('a3'));
+    expect(act(state, A, { type: 'playCard', cardId: 'a3', targetIds: [B] }).ok).toBe(false);
+  });
+
+  it('苦肉（国战版）：同样能**真的**出两张【杀】（原来两处都写成「退已出杀数」）', () => {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'huanggai', hand: [sha('a1'), sha('a2'), mk('x1', 'shan')] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1'), shan('b2')] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 弃一张（这里弃【闪】x1）→ 失去 1 点体力 → 摸三张 → 本回合可额外出一张【杀】
+    ok(act(state, A, { type: 'useSkill', skillId: 'kurou', cardIds: ['x1'], targetIds: [] }));
+    expect(a.flags.shaLimitBonus).toBe(1);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }), '苦肉之后应当能再出一张');
+    ok(act(state, B, { type: 'pass' }));
+    expect(a.flags.shaCountThisTurn).toBe(2);
   });
 
   it('天义：拼点没赢则没有加成', () => {
@@ -17187,7 +17246,10 @@ describe('国战 · 陆抗（恪守 / 筑围）', () => {
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei', hand: [] },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
-    b.judgment.push(lebu('l1')); // 乐不思蜀：非红桃则跳过出牌阶段
+    // ⚠️ 判定区放【兵粮寸断】（不是【乐不思蜀】）：兵粮只跳过**摸牌阶段**，出牌阶段照常，
+    //    这样才能在**乙自己的回合内**观察到那两项加成；乐不思蜀会直接跳过出牌阶段、
+    //    同一手就把回合交给下家（加成随「本回合」结束而过期，根本看不到）。
+    b.judgment.push(mk('bl1', 'bingliang', 'spade', 6));
     state.deck = [mk('j1', 'sha', 'spade', 5)]; // 判定牌是【杀】→ 筑围的获得条件成立
     ok(act(state, A, { type: 'endPhase' })); // 轮到乙 → 判定阶段
     skipRevealAsk(state);
@@ -17200,6 +17262,10 @@ describe('国战 · 陆抗（恪守 / 筑围）', () => {
     // 当前回合角色就是乙自己 → 上限/次数都 +1
     expect(b.flags.handLimitBonus).toBe(1);
     expect(b.flags.shaLimitBonus).toBe(1);
+    // 「本回合」语义：回合结束就过期（以前只靠自己下一个 startTurn 清，
+    // 中间隔了别人的回合还留着——那时被【借刀杀人】逼着出杀就会多出一张）
+    ok(act(state, B, { type: 'endPhase' }));
+    expect(b.flags.shaLimitBonus).toBe(0);
   });
 
   it('筑围：判定牌不是【杀】也不是伤害锦囊 → 什么也不做', () => {
