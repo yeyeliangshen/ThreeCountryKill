@@ -40,6 +40,7 @@ import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { cardBack } from '../components/cardBack';
+import { blindPickOwnerText, pickIsFaceDown } from '../blindPick';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { nextGuozhanSlots } from '../draftSlots';
@@ -1411,9 +1412,36 @@ export function Game() {
               候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
               {prompt.kind === 'pickCards' && prompt.pickCards && (
                 <div className="pick-cards">
+                  {/*
+                    **盲选**（`pickHidden`，用户 2026-09-22 的通用机制）：候选来自其他角色的
+                    未知手牌 ⇒ 一律画**牌背**——只体现张数与可选位置，不给牌名/花色/点数，
+                    点牌背按 id 选择、**不翻开**（规则要求公开时才由结算流程翻开）。
+                    其中 `pickVisibleIds` 命中的那几张是**已因其他效果公开**的，照常画牌面
+                    （可见性由规则层判定，界面不猜）。
+                  */}
+                  {prompt.pickHidden && (
+                    <div className="pick-owner-hint">
+                      {blindPickOwnerText(
+                        snapshot.players.find((p) => p.seatId === prompt.pickOwnerSeatId)?.name,
+                      )}
+                    </div>
+                  )}
                   <div className="pick-cards-row">
                     {prompt.pickCards.map((card) => {
                       const on = pickSel.includes(card.id);
+                      if (pickIsFaceDown(prompt, card.id)) {
+                        // 未知手牌：只画牌背
+                        return (
+                          <button
+                            key={card.id}
+                            className={`card-back-option ${on ? 'picked' : ''}`}
+                            aria-label="对方的一张手牌（看不到牌面）"
+                            onClick={() => togglePickCard(card.id)}
+                          >
+                            {cardBack ? <img className="card-back-img" src={cardBack} alt="牌背" /> : '🂠'}
+                          </button>
+                        );
+                      }
                       // 选牌是**有序**的（诸葛亮·观星要按点击顺序摆牌堆），所以给选中的牌标个序号
                       const order = pickSel.indexOf(card.id) + 1;
                       const name = cardShortName(card);

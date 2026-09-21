@@ -364,7 +364,18 @@ export function askPickCards(
   min: number,
   max: number,
   resolve: (state: GameState, player: Player, picked: Card[]) => void,
-  opts?: { returnTo?: string; secret?: boolean },
+  opts?: {
+    returnTo?: string;
+    secret?: boolean;
+    /**
+     * **盲选**：候选来自**其他角色的未知手牌**时置 true（用户 2026-09-22 的通用机制）。
+     * 下发给选择者的快照里只留 id、界面画牌背；`ownerSeatId` 标注在谁手里选，
+     * `visibleIds` 是其中已公开的那几张（照常画牌面）。
+     */
+    hidden?: boolean;
+    ownerSeatId?: string;
+    visibleIds?: string[];
+  },
 ): void {
   setPending(state, {
     kind: 'pickCards',
@@ -380,6 +391,10 @@ export function askPickCards(
     resolve,
     returnTo: opts?.returnTo,
     secret: opts?.secret,
+    // 盲选（从别人未知手牌里挑）：牌面不下发，界面画牌背
+    ...(opts?.hidden ? { hidden: true } : {}),
+    ...(opts?.ownerSeatId ? { ownerSeatId: opts.ownerSeatId } : {}),
+    ...(opts?.visibleIds?.length ? { visibleIds: opts.visibleIds.slice() } : {}),
   });
 }
 
@@ -5664,7 +5679,8 @@ function onPickCards(
   pushLog(
     state,
     'skill',
-    pending.secret
+    // 秘密选牌（观星）与**盲选**都不记牌名：日志是发给全场的，写了就等于把对手手牌公开
+    pending.secret || pending.hidden
       ? `${player.name} 选择了 ${picked.length} 张牌。`
       : `${player.name} 选择了 ${picked.map((c) => `【${cardLabel(c)}】`).join('、') || '（无）'}。`,
   );

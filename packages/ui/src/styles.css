@@ -1824,6 +1824,36 @@ select:focus-visible,
 .pick-cards .card {
   position: relative;
 }
+/* —— 盲选（从其他角色的未知手牌里挑）：只画牌背 ——
+   牌面绝不下发（legal.ts 把候选剥成 {id}），所以这里也没有可显示的名字/花色；
+   选中的牌背给金框 + 高亮，多选时标出点击序号，和选牌面时的 .c-order 一致。 */
+.pick-owner-hint {
+  font-size: 12px;
+  color: #6b4f2a;
+}
+.pick-cards .card-back-option {
+  position: relative;
+}
+.pick-cards .card-back-option.picked {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(200, 164, 92, 0.55);
+  filter: brightness(1.2);
+}
+.pick-cards .card-back-option .c-order {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #2a2118;
+  color: #f3d9a4;
+  border: 1px solid #c8a45c;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
 
 /* —— 私密查看（知己知彼）：内容只有本人看得到 —— */
 .view-cards {

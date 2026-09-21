@@ -202,6 +202,21 @@ export interface PromptView {
    */
   seatCandidates?: string[];
   pickCards?: Card[];
+  /**
+   * **这批候选对选择者是否隐藏**（「从其他角色未知手牌中选牌」的通用盲选，用户 2026-09-22 口径）。
+   *
+   * 为 true 时：`pickCards` 里**只填 id**（服务端不下发牌面），界面必须画**牌背**——玩家只看到
+   * 张数与可选位置，点牌背按 id 选择；被选中的牌在规则要求公开之前**不许翻开**。
+   * 规则层负责「能操作谁的哪些牌」，界面只按可见性画牌面还是牌背。
+   */
+  pickHidden?: boolean;
+  /** 这些候选属于谁（盲选时用来标注「在看谁的手牌」） */
+  pickOwnerSeatId?: string;
+  /**
+   * 其中**已经因其他效果公开**的那几张的 id（可见性由规则层判定，界面不猜）：
+   * 它们照常画牌面——已公开的牌不能假装看不见。
+   */
+  pickVisibleIds?: string[];
   pickMin?: number;
   pickMax?: number;
   /**

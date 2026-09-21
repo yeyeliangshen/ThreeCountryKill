@@ -135,8 +135,20 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         legalTargetIds: [],
         mustSelectTargetCount: 0,
         pickTitle: pending.title,
-        // 下发的牌面可能是牌堆顶这种不在手牌里的牌，所以整份发过去
-        pickCards: pending.cards.slice(),
+        // 下发的牌面可能是牌堆顶这种不在手牌里的牌，所以整份发过去。
+        // ⚠️ 但**盲选**（从别人未知手牌里挑，用户 2026-09-22）只发 id：牌面绝不出服务端，
+        //    界面按 pickHidden 画牌背；其中「已公开」的那几张由规则层放进 pickVisibleIds。
+        // 盲选：**只有 id** 发下去（牌面绝不出服务端）。其中 `visibleIds` 命中的那几张
+        // 已经因别的效果公开过（例如刚被【火攻】展示），照常发牌面——「已公开的手牌
+        // 按可见性显示」是规格第 9 条，判定在规则层，界面只管画。
+        pickCards: pending.hidden
+          ? pending.cards.map((c) =>
+              pending.visibleIds?.includes(c.id) ? c : ({ id: c.id } as Card),
+            )
+          : pending.cards.slice(),
+        ...(pending.hidden ? { pickHidden: true } : {}),
+        ...(pending.ownerSeatId ? { pickOwnerSeatId: pending.ownerSeatId } : {}),
+        ...(pending.visibleIds?.length ? { pickVisibleIds: pending.visibleIds.slice() } : {}),
         pickMin: pending.min,
         pickMax: pending.max,
       };

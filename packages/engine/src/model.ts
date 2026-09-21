@@ -798,13 +798,26 @@ export type Pending =
       cards: Card[];
       min: number;
       max: number;
+      /**
+       * 候选对**选择者**是否隐藏（「从其他角色未知手牌中选牌」的通用盲选，用户 2026-09-22）。
+       * 为 true 时下发给选择者的快照里**只留 id**（见 legal 的 buildPrompt）——牌面不出服务端。
+       */
+      hidden?: boolean;
+      /** 这些牌属于谁（盲选时界面标注「在看谁的手牌」） */
+      ownerSeatId?: string;
+      /** 其中已因其他效果公开的牌 id（由规则层给，界面照它画牌面） */
+      visibleIds?: string[];
       /** 选完怎么继续。收到的是被选中的**牌对象**，不用再去找 */
       resolve: (state: GameState, player: Player, picked: Card[]) => void;
       /**
        * 选完把控制权还给谁。钩子发起的不传（走续接队列）；技能发起的必须传。
        */
       returnTo?: string;
-      /** 选牌内容是不是秘密（观星）：是则日志只记张数，不记牌名 */
+      /**
+       * 选牌内容是不是秘密（观星）：是则日志只记张数，不记牌名。
+       * ⚠️ 盲选（`hidden`）**同样**不记牌名——见 `onPickCards` 的日志分支：
+       *    日志是**发给全场**的，选了哪张写进去就等于把对手的手牌公开了。
+       */
       secret?: boolean;
     }
   /**

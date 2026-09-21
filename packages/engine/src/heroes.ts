@@ -1126,6 +1126,9 @@ const SIMAYI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
+            // 盲选（通用机制）：候选是**来源的牌**，混了两个区域——手牌对别人隐藏（只发 id、
+            // 画牌背），装备区本来就是公开区（照常发牌面）。这正是 `visibleIds` 的用途：
+            // 「已公开的那几张按可见性显示」，可见性由规则层这里判，界面不猜。
             ctx.api.askPickCards(
               st,
               p.seatId,
@@ -1144,6 +1147,14 @@ const SIMAYI: Hero = {
                     `${p2.name} 发动【反馈】，获得 ${source.name} 的【${cardLabel(card)}】。`,
                   );
                 });
+              },
+              // 盲选：手牌不发牌面；装备区的牌是公开区，放进 visibleIds 照常画牌面
+              {
+                hidden: true,
+                ownerSeatId: source.seatId,
+                visibleIds: EQUIP_SLOTS.map((sl) => source.equipment[sl]?.id).filter(
+                  (id): id is string => !!id,
+                ),
               },
             );
           },
@@ -2003,6 +2014,8 @@ function tuxiTakeCards(
     tuxiTakeCards(state, player, targets, i + 1, api, skillName);
     return;
   }
+  // ⚠️ 盲选（用户 2026-09-22 的通用机制）：候选是**对方的未知手牌** ⇒ 只把 id 发下去、
+  //    界面画牌背；牌面绝不出服务端（`hidden: true` + `ownerSeatId` 供界面标注「在看谁的手牌」）。
   api.askPickCards(
     state,
     player.seatId,
@@ -2015,6 +2028,8 @@ function tuxiTakeCards(
       if (c) api.transferCard(t.seatId, c, p.seatId);
       tuxiTakeCards(st, p, targets, i + 1, api, skillName);
     },
+    // 盲选：牌面不下发（候选就是 t 的手牌）
+    { hidden: true, ownerSeatId: t.seatId },
   );
 }
 
@@ -3869,6 +3884,8 @@ function askZhengrong(ctx: HookContext): void {
       const target = getPlayer(st, picked);
       if (!target || !target.alive || target.hand.length === 0) return;
       const limit = Math.min(max, target.hand.length);
+      // 盲选（同【突袭】那套通用机制）：换哪几张由**发起者**挑，而候选是**别人的未知手牌**
+      // ⇒ 只发 id、界面画牌背。用户 2026-09-22 的规格把这条抽象成了公共原语，不是单给突袭做的。
       ctx.api.askPickCards(
         st,
         p.seatId,
@@ -3898,6 +3915,8 @@ function askZhengrong(ctx: HookContext): void {
             );
           });
         },
+        // 盲选：牌面不下发（候选就是 target 的手牌；本调用里选择者是发起者本人）
+        { hidden: true, ownerSeatId: target.seatId },
       );
     },
   );

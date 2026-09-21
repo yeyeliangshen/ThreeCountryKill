@@ -354,7 +354,18 @@ export interface SkillApi {
     min: number,
     max: number,
     resolve: (state: GameState, player: Player, picked: Card[]) => void,
-    opts?: { returnTo?: string; secret?: boolean },
+    opts?: {
+      returnTo?: string;
+      secret?: boolean;
+      /**
+       * **盲选**：候选来自**其他角色的未知手牌**时置 true（用户 2026-09-22 的通用机制）——
+       * 下发给选择者的快照只留 id（牌面不出服务端）、界面画牌背；`ownerSeatId` 标注在看谁的手牌，
+       * `visibleIds` 是其中已因其他效果公开的那几张（照常画牌面）。
+       */
+      hidden?: boolean;
+      ownerSeatId?: string;
+      visibleIds?: string[];
+    },
   ) => void;
   /**
    * 一次**选多名角色**（多选座位原语）：候选、至多/至少几个，回答给选中的座位 id 列表。
