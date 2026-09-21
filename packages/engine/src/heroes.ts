@@ -27,7 +27,16 @@ import type { HealPayload, HookContext, HookRegistration, SkillApi, Timing } fro
 import type { AttackContext, GameState, MarkerUsage, Player, TrickContext } from './model';
 // 座次环绕统一走 model 的两个助手（跳过被【调虎离山】移出座次的角色）——值导入，不只是类型
 import { aliveSeatsFrom } from './model';
-import { addMarker, consumeMarker, markerCount, noteMarkerUsed, useXianqu, useYinyangyu, useYinyangyuHandLimit, useZhulian } from './markers';
+import {
+  addMarker,
+  consumeMarker,
+  markerCount,
+  noteMarkerUsed,
+  useXianqu,
+  useYinyangyu,
+  useYinyangyuHandLimit,
+  useZhulian,
+} from './markers';
 import {
   drawOne,
   lordEquipDinglan,
@@ -138,6 +147,14 @@ export interface ActiveSkill {
 
 /** 国战版本的技能覆盖：只写与身份局/军争不同的字段，其余沿用 Hero 顶层 */
 export interface HeroVariant {
+  /**
+   * 「你不能成为…的目标」这类**纯判据**。
+   * ⚠️ 显式写 `undefined` 是**故意的**：合并是浅展开（`{...base, ...base.guozhan}`），
+   *    国战版若不用这套判据（陆逊：国战谦逊不是「不能被指定」而是「唯一目标取消」），
+   *    就必须把它清掉，否则顶层那条会在国战里继续生效。
+   */
+  cannotBeTargetOf?: Hero['cannotBeTargetOf'] | undefined;
+  onSoleTrickTarget?: Hero['onSoleTrickTarget'];
   canUseAs?: Hero['canUseAs'];
   shaLimit?: Hero['shaLimit'];
   hooks?: HookRegistration[];
@@ -225,6 +242,25 @@ export interface Hero {
    * 引擎在指定目标时校验，见 heroBlocksBeingTarget。
    */
   cannotBeTargetOf?: (state: GameState, self: Player, card: Card, source: Player) => boolean;
+  /**
+   * 「当你成为其他角色使用锦囊牌的**唯一目标**时，取消之」——**带副作用**的版本
+   * （陆逊·谦逊，当前移动版国战 2026）。
+   *
+   * 与 `cannotBeTargetOf` 的区别：那个是**纯判据**（只决定「能不能被指定」，无副作用）；
+   * 这个是在**目标已经定下来之后**跑：技能自己判断条件（是不是其他角色、是不是唯一目标、
+   * 「节」有没有满），返回 true 表示「这张牌我收下了」——引擎于是把这次使用的目标清空
+   * （这张牌**不结算**），牌本身由技能自己安置（谦逊是置于武将牌上成为「节」）。
+   *
+   * ⚠️ 时机：**无懈窗口之前**（目标取消 ≠ 锦囊效果被无懈，用户 2026-09-22 特意点明，
+   *    见 docs §5.182）。
+   */
+  onSoleTrickTarget?: (
+    state: GameState,
+    self: Player,
+    card: Card,
+    source: Player,
+    targetIds: string[],
+  ) => boolean;
   /**
    * **国战**【空城】的第二段（与 `cannotBeTargetOf` 合起来才是完整的国战空城）：
    * 「若你没有手牌，当其他角色于你的回合外交给你牌时，改为把这些牌置于你的武将牌上；
@@ -578,7 +614,13 @@ export type FieldSkill =
   /** 严白虎·寄篱：成为红色基本牌/普通锦囊的唯一目标后，此牌结算两次 */
   | 'jili'
   /** 潘濬·聪察②：场上所有存活角色都已确定势力时，摸牌阶段多摸两张 */
-  | 'drawCountDelta';
+  | 'drawCountDelta'
+  /**
+   * 陆逊（国战）·谦逊：成为**唯一目标**的锦囊被收成「节」。
+   * 与 `cannotBeTargetOf` 是同一类「字段型技能」，区别是**带副作用**（要把牌扣到武将牌上）：
+   * 纯判据会在算「合法目标」时被反复调用（界面每次快照都算），副作用放进去就成了灾难。
+   */
+  | 'onSoleTrickTarget';
 
 const ALL_FIELD_SKILLS: FieldSkill[] = [
   'canUseAs',
@@ -615,6 +657,7 @@ const ALL_FIELD_SKILLS: FieldSkill[] = [
   'feiying',
   'distanceMinusPerTian',
   'drawCountDelta',
+  'onSoleTrickTarget',
 ];
 
 const GUANYU: Hero = {
@@ -854,13 +897,13 @@ const DIAOCHAN: Hero = {
             'skill',
             `${player.name} 发动【离间】：弃置【${cardLabel(cost)}】，令 ${a.name} 视为对 ${b.name} 使用【决斗】。`,
           );
-        // 生成一张**虚拟【决斗】**，由 A 对 B 使用（用户 2026-09-21 给的现行文本：
-        // 「令一名男性角色视为对另一名男性角色使用一张【决斗】」）。
-        //
-        // ⚠️ 必须走**正常锦囊流程**（`api.useVirtualTrick`）而不是手搓 pending：
-        //    这张【决斗】**本身可以被无懈**（离间这个技能不能），也要能被「成为目标时」
-        //    的技能响应。旧实现（手搓一个 需出【杀】的 respondTrick）把这两样都绕过去了，
-        //    而且文本本身也是简化版（docs §5.179）。
+          // 生成一张**虚拟【决斗】**，由 A 对 B 使用（用户 2026-09-21 给的现行文本：
+          // 「令一名男性角色视为对另一名男性角色使用一张【决斗】」）。
+          //
+          // ⚠️ 必须走**正常锦囊流程**（`api.useVirtualTrick`）而不是手搓 pending：
+          //    这张【决斗】**本身可以被无懈**（离间这个技能不能），也要能被「成为目标时」
+          //    的技能响应。旧实现（手搓一个 需出【杀】的 respondTrick）把这两样都绕过去了，
+          //    而且文本本身也是简化版（docs §5.179）。
           api.useVirtualTrick(
             aId,
             { id: `lilian-${aId}-${bId}`, type: 'juedou', suit: 'heart', rank: 0, virtual: true },
@@ -973,7 +1016,12 @@ function luoshenStep(
 }
 
 /** 洛神收尾：把这一整次洛神攒下的黑色判定牌**一次性**收进手牌 */
-function finishLuoshen(state: GameState, player: Player, guozhan: boolean, collected: Card[]): void {
+function finishLuoshen(
+  state: GameState,
+  player: Player,
+  guozhan: boolean,
+  collected: Card[],
+): void {
   if (collected.length === 0) return;
   player.hand.push(...collected);
   pushLog(
@@ -1111,7 +1159,12 @@ const SIMAYI: Hero = {
         return damagedByOther(ctx) && !!src && handAndEquipOf(src).length > 0;
       },
       handler: (ctx) => {
-        const payload = ctx.payload as { attack?: AttackContext; /* ⚠️ 直写槽：heroes 不能 import engine（循环依赖），这一处暂不过版本号，见 docs §5.124 待办 */ damage?: number } | undefined;
+        const payload = ctx.payload as
+          | {
+              attack?: AttackContext;
+              /* ⚠️ 直写槽：heroes 不能 import engine（循环依赖），这一处暂不过版本号，见 docs §5.124 待办 */ damage?: number;
+            }
+          | undefined;
         if (!payload?.attack || !payload.damage) return;
         const source = getPlayer(ctx.state, payload.attack.sourceId);
         if (!source || source.seatId === ctx.player.seatId) return; // 无来源或自伤
@@ -1718,17 +1771,17 @@ const HUANGGAI: Hero = {
             },
           );
           api.discardCard(player.seatId, c, () => {
-          api.loseHp(player, 1);
-          const drawn: Card[] = [];
-          for (let i = 0; i < 3; i++) {
-            const d = drawOne(state);
-            if (d) drawn.push(d);
-          }
-          player.hand.push(...drawn);
-          pushLog(state, 'skill', `${player.name} 摸了 ${drawn.length} 张牌。`);
-          // 本回合可额外使用一张【杀】：上限 +1（同天义那条注释，退已出杀数是错的）
-          grantExtraShaQuota(player);
-          pushLog(state, 'skill', `本回合可额外使用一张【杀】。`);
+            api.loseHp(player, 1);
+            const drawn: Card[] = [];
+            for (let i = 0; i < 3; i++) {
+              const d = drawOne(state);
+              if (d) drawn.push(d);
+            }
+            player.hand.push(...drawn);
+            pushLog(state, 'skill', `${player.name} 摸了 ${drawn.length} 张牌。`);
+            // 本回合可额外使用一张【杀】：上限 +1（同天义那条注释，退已出杀数是错的）
+            grantExtraShaQuota(player);
+            pushLog(state, 'skill', `本回合可额外使用一张【杀】。`);
           });
         },
       },
@@ -2547,7 +2600,6 @@ export function formationQueue(state: GameState, player: Player): Player[] {
 export function siegeRelations(
   state: GameState,
 ): { besiegedSeatId: string; besiegers: string[] }[] {
-
   const alive = state.seatOrder
     .map((id) => getPlayer(state, id))
     // 被【调虎离山】移出座次的人**不计入座次**（与 baseDistance / formationQueue 同一口径）
@@ -2950,7 +3002,6 @@ const CAOHONG: Hero = {
     },
   ],
   activeSkills: [],
-
 };
 
 const HETAIHOU: Hero = {
@@ -3329,7 +3380,6 @@ const XUSHENG: Hero = {
     },
   ],
   activeSkills: [],
-
 };
 
 const XIAOQIAO: Hero = {
@@ -3967,15 +4017,18 @@ const JUN_CAOCAO: Hero = lordHero(
     hooks: [
       { timing: 'afterDamageDealt', skillId: '雄驰', handler: (ctx) => askXiongchi(ctx) },
       {
-      timing: 'afterDamage',
-      skillId: '征戎',
-      applies: (ctx) =>
-        damagedPositive(ctx) &&
-        ctx.state.deck.some((c) => c.type === 'sha') &&
-        Math.min(Math.max(1, ctx.player.maxHp - ctx.player.hp), ctx.state.deck.filter((c) => c.type === 'sha').length) > 0 &&
-        ctx.state.players.some((p) => p.alive && p.hand.length > 0),
-      handler: (ctx) => askZhengrong(ctx),
-    },
+        timing: 'afterDamage',
+        skillId: '征戎',
+        applies: (ctx) =>
+          damagedPositive(ctx) &&
+          ctx.state.deck.some((c) => c.type === 'sha') &&
+          Math.min(
+            Math.max(1, ctx.player.maxHp - ctx.player.hp),
+            ctx.state.deck.filter((c) => c.type === 'sha').length,
+          ) > 0 &&
+          ctx.state.players.some((p) => p.alive && p.hand.length > 0),
+        handler: (ctx) => askZhengrong(ctx),
+      },
     ],
   },
 );
@@ -4272,8 +4325,7 @@ function askQiuan(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
   const payload = ctx.payload as
-    | { targetId?: string; damage?: number; attack?: AttackContext }
-    | undefined;
+    { targetId?: string; damage?: number; attack?: AttackContext } | undefined;
   if (payload?.targetId !== me.seatId) return;
   const dmg = payload.damage ?? 0;
   if (dmg <= 0 || me.han.length > 0) return;
@@ -4471,17 +4523,16 @@ function askBushiSelf(ctx: HookContext): void {
       state,
       me.seatId,
       `【布施】（第 ${i + 1}/${n} 点）：是否令一名与你势力相同的角色摸一张牌？`,
-      [
-        ...mates.map((p) => ({ id: p.seatId, label: p.name })),
-        { id: 'no', label: '不发动' },
-      ],
+      [...mates.map((p) => ({ id: p.seatId, label: p.name })), { id: 'no', label: '不发动' }],
       (st, p, picked) => {
         if (picked !== 'no') {
           const t = getPlayer(st, picked);
           const c = t && t.alive ? drawOne(st) : null;
           if (c && t) {
             t.hand.push(c);
-            pushLog(st, 'skill', `${p.name} 的【布施】：${t.name} 摸了一张牌。`, { seat: t.seatId });
+            pushLog(st, 'skill', `${p.name} 的【布施】：${t.name} 摸了一张牌。`, {
+              seat: t.seatId,
+            });
           }
         }
         step(i + 1);
@@ -4535,7 +4586,9 @@ function askMidao(ctx: HookContext): void {
   const mine = effectiveFaction(state, me);
   const theirs = effectiveFaction(state, user);
   if (!mine || !theirs || mine !== theirs) return;
-  const physical = damageCardIds(state, attack).filter((id) => findCardAnywhere(state, id) !== null);
+  const physical = damageCardIds(state, attack).filter(
+    (id) => findCardAnywhere(state, id) !== null,
+  );
   if (physical.length === 0) return; // 纯虚拟牌不能发动
   if (state.midaoUsedSeats.includes(user.seatId)) return;
   const declare = (st: GameState): void => {
@@ -4847,9 +4900,7 @@ function askLixia(ctx: HookContext): void {
               { seat: a2.seatId },
             );
             const choices = [
-              ...(a2.hand.length >= 2
-                ? [{ id: 'discard2', label: '弃置两张手牌' }]
-                : []),
+              ...(a2.hand.length >= 2 ? [{ id: 'discard2', label: '弃置两张手牌' }] : []),
               { id: 'losehp', label: '失去 1 点体力' },
               { id: 'draw2', label: `令 ${owner.name} 摸两张牌` },
             ];
@@ -5361,7 +5412,12 @@ const JUN_YUANSHAO: Hero = lordHero(
       junweiSkill('mengjun', '盟军大纛', lordEquipMengjun),
     ],
     hooks: [
-      { timing: 'factionCountChanged', skillId: '会盟', locked: true, handler: (ctx) => askHuimeng(ctx) },
+      {
+        timing: 'factionCountChanged',
+        skillId: '会盟',
+        locked: true,
+        handler: (ctx) => askHuimeng(ctx),
+      },
       { timing: 'cardResolved', skillId: '授锋', handler: (ctx) => askShoufeng(ctx) },
     ],
   },
@@ -7071,9 +7127,7 @@ const XUSHU: Hero = {
             };
             const options = [
               ...shaCards.map((c) => ({ id: c.id, label: `使用【${cardLabel(c)}】` })),
-              ...(zhangbaOk
-                ? [{ id: 'zhangba', label: '【丈八蛇矛】：两张手牌当【杀】' }]
-                : []),
+              ...(zhangbaOk ? [{ id: 'zhangba', label: '【丈八蛇矛】：两张手牌当【杀】' }] : []),
             ];
             // 手里一张【杀】都没有、但有【丈八蛇矛】：直接进「选两张牌」
             if (shaCards.length === 0 && zhangbaOk) {
@@ -7389,9 +7443,7 @@ const WUJING: Hero = {
       canUse: (state, player) => handAndEquipOf(player).some((c) => isEquipCard(c)),
       execute: (state, player, intent, api) => {
         const cardId = intent.cardIds?.[0];
-        const material = cardId
-          ? handAndEquipOf(player).find((c) => c.id === cardId)
-          : undefined;
+        const material = cardId ? handAndEquipOf(player).find((c) => c.id === cardId) : undefined;
         if (!material || !isEquipCard(material)) return '调归要用一张装备牌当【调虎离山】';
         const targets = intent.targetIds.filter((id) => id !== player.seatId);
         if (targets.length === 0) return '【调虎离山】要指定一名其他角色';
@@ -7531,15 +7583,20 @@ export function targetCardOptions(
 ): { id: string; label: string }[] {
   const z = operableTargetCards(state, actorSeatId, target);
   const opts: { id: string; label: string }[] = [];
-  for (const c of z.equip) opts.push({ id: `card:${c.id}`, label: `${verb}其装备【${cardLabel(c)}】` });
+  for (const c of z.equip)
+    opts.push({ id: `card:${c.id}`, label: `${verb}其装备【${cardLabel(c)}】` });
   if (opts2?.noJudgment) {
     // 凌统·旋略：只能弃手牌/装备，不能动判定区
   } else {
-    for (const c of z.judge) opts.push({ id: `card:${c.id}`, label: `${verb}其判定区【${cardLabel(c)}】` });
+    for (const c of z.judge)
+      opts.push({ id: `card:${c.id}`, label: `${verb}其判定区【${cardLabel(c)}】` });
   }
   if (!opts2?.noHand) {
     z.hand.forEach((_c, i) =>
-      opts.push({ id: `hand:${i}`, label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）` }),
+      opts.push({
+        id: `hand:${i}`,
+        label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）`,
+      }),
     );
   }
   return opts;
@@ -9491,7 +9548,6 @@ const ZHANGREN: Hero = {
     },
   ],
   activeSkills: [],
-
 };
 
 const MIFUREN: Hero = {
@@ -9690,7 +9746,8 @@ const ZANGBA: Hero = {
       timing: 'afterDamage',
       skillId: '横江',
       applies: (ctx) =>
-        damagedPositive(ctx) && !!getPlayer(ctx.state, ctx.state.seatOrder[ctx.state.turn.seatIndex]!),
+        damagedPositive(ctx) &&
+        !!getPlayer(ctx.state, ctx.state.seatOrder[ctx.state.turn.seatIndex]!),
       handler: (ctx) => hengjiangAsk(ctx),
     },
     {
@@ -10137,6 +10194,7 @@ const LUXUN: Hero = {
   faction: 'wu',
   maxHp: 3,
   gender: 'male',
+  // —— 身份局/军争版（**保持原样**）——
   // 谦逊：当你成为【顺手牵羊】或【乐不思蜀】的目标时，取消之（先打出去再取消，同空城）
   cannotBeTargetOf: (_state, _self, card) => card.type === 'shunshou' || card.type === 'lebu',
   lockedFields: ['cannotBeTargetOf'],
@@ -10171,6 +10229,128 @@ const LUXUN: Hero = {
     { name: '谦逊', desc: '锁定技，你不能成为【顺手牵羊】和【乐不思蜀】的目标。' },
     { name: '连营', desc: '当你失去最后一张手牌后，你可以摸一张牌。' },
   ],
+  /**
+   * **国战版（当前移动版，用户 2026-09-22 给定口径）**：陆逊已经不是上面那套了——
+   * 现在围绕「节」运转，技能是【谦逊】+【度势】，**没有【连营】**。
+   *
+   * ⚠️ 换版本（不是微调，见 docs §5.182 的存底）：身份局版还是「挡顺手/乐 + 连营」，
+   *    两个版本必须分开写——共用一份会把身份局也改错。
+   */
+  guozhan: {
+    // 国战**没有【连营】**：显式清空顶层那条 handEmptied 钩子
+    hooks: [],
+    // 国战的谦逊不是「不能被指定」，而是「成为**唯一目标**时取消并收成『节』」——
+    // 所以顶层的 cannotBeTargetOf 在这里要**拿掉**（否则顺手/乐会被静默取消却不成为「节」）
+    cannotBeTargetOf: undefined,
+    lockedFields: ['onSoleTrickTarget'],
+    skillFields: { 谦逊: ['onSoleTrickTarget'] },
+    /**
+     * 【谦逊】（锁定技）：当你成为其他角色使用锦囊牌的**唯一目标**时，若你武将牌上的「节」数
+     * **小于 3**，你取消之，并将此牌置于你的武将牌上，称为「节」。
+     *
+     * - 屏蔽的是【顺手牵羊】【乐不思蜀】**以及任何其他单目标锦囊**（【过河拆桥】【决斗】
+     *   【火攻】【借刀杀人】【无中生有】（后者本就不指定别人）…）；
+     * - **南蛮入侵/万箭齐发/桃园结义/五谷丰登/以逸待劳** 这类多目标或全体锦囊**不触发**；
+     * - 「取消之」＝**取消陆逊这个目标**（`TARGET_CANCELLED_BY_SKILL`），发生在**目标确认层**、
+     *   **无懈窗口之前**——目标都取消了，这张牌根本不会走到「是否无懈」那一步；
+     * - 节满 3 之后这段不再触发，牌正常对他结算。
+     */
+    onSoleTrickTarget: (state, self, card, source, targetIds) => {
+      if (source.seatId === self.seatId) return false; // 必须是**其他角色**使用的
+      if (targetIds.length !== 1 || targetIds[0] !== self.seatId) return false; // 必须是**唯一**目标
+      if (self.jie.length >= 3) return false; // 已经有 3 张「节」→ 这一段不再触发
+      // 「将此牌置于你的武将牌上」：**牌此刻在哪要分两种**
+      //  · 即时锦囊：【过河拆桥】那类在结算入口时已经按「使用」进了弃牌堆；
+      //  · 延时锦囊：【乐不思蜀】【兵粮寸断】走的是「安置到判定区」那一步，牌**还在使用者手里**
+      //    ——所以两处都要能收走（引擎在安置之前调用本钩子）。
+      for (const zone of [source.hand, state.discard]) {
+        const idx = zone.findIndex((c) => c.id === card.id);
+        if (idx >= 0) {
+          self.jie.push(zone.splice(idx, 1)[0]!);
+          break;
+        }
+      }
+      pushLog(
+        state,
+        'skill',
+        `${self.name} 的【谦逊】取消了【${CARD_TYPE_NAME[card.type] ?? card.type}】，` +
+          `将其置于武将牌上成为「节」（${self.jie.length}/3）。`,
+        { seat: self.seatId },
+      );
+      return true;
+    },
+    activeSkills: [
+      {
+        id: 'dushi',
+        name: '度势',
+        oncePerTurn: true, // 「出牌阶段限一次」（新版；旧版是限四次，已作废）
+        minTargets: 0,
+        maxTargets: 0,
+        canUse: (_state, player) => player.hand.some((c) => isRedCard(c)),
+        execute: (state, player, intent, api) => {
+          const reds = player.hand.filter((c) => isRedCard(c));
+          if (reds.length === 0) return '【度势】选项一需要一张红色手牌';
+          api.askChoice(
+            state,
+            player.seatId,
+            '【度势】：请选择一项',
+            [
+              { id: 'yiyi', label: '将一张红色手牌当【以逸待劳】使用' },
+              // 选项二（三张「节」＝视为使用一张造成火焰伤害的牌）**待核对**：
+              // 用户 2026-09-22 明确要求「按移动版实机卡池/技能选择 UI 单独核实，
+              // 不要仅凭技能文本自行枚举」——所以这里先不给这一项，见 docs §5.182。
+            ],
+            (st, p, picked) => {
+              if (picked !== 'yiyi') return;
+              api.askPickCards(
+                st,
+                p.seatId,
+                '【度势】：选择一张红色手牌',
+                reds,
+                1,
+                1,
+                (st2, p2, chosen) => {
+                  const c = chosen[0];
+                  if (!c) return;
+                  // 「当【以逸待劳】使用」＝**转化使用**：走正常的锦囊流程（会开无懈窗口、
+                  // 会被「成为目标时」的技能响应），而不是「弃掉红牌再执行效果」
+                  api.discardCard(p2.seatId, c, () => {
+                    pushLog(
+                      st2,
+                      'skill',
+                      `${p2.name} 发动【度势】：将【${cardLabel(c)}】当【以逸待劳】使用。`,
+                    );
+                    api.useVirtualTrick(
+                      p2.seatId,
+                      {
+                        id: `dushi-${c.id}`,
+                        type: 'yiyi',
+                        suit: c.suit,
+                        rank: c.rank,
+                        virtual: true,
+                      },
+                      [],
+                    );
+                  });
+                },
+              );
+            },
+          );
+          return undefined;
+        },
+      },
+    ],
+    skills: [
+      {
+        name: '谦逊',
+        desc: '锁定技，当你成为其他角色使用锦囊牌的唯一目标时，若你武将牌上的「节」数小于3，你取消之，并将此牌置于你的武将牌上，称为「节」。',
+      },
+      {
+        name: '度势',
+        desc: '出牌阶段限一次，你可以选择一项：1. 将一张红色手牌当作【以逸待劳】使用；2. 将三张「节」置入弃牌堆，视为使用一张造成火焰伤害的牌。',
+      },
+    ],
+  },
 };
 
 const SUNSHANGXIANG: Hero = {
@@ -10402,9 +10582,7 @@ const JIAXU: Hero = {
       execute: (state, player, _intent, api) => {
         // 从贾诩的下家起、按座次排出所有存活的其他角色。
         // ⚠️ 走 `aliveSeatsFrom`（会跳过被【调虎离山】移出座次的角色）——手写 `% n` 会把他们算进来
-        const queue = aliveSeatsFrom(state, player.seatId).filter(
-          (sid) => sid !== player.seatId,
-        );
+        const queue = aliveSeatsFrom(state, player.seatId).filter((sid) => sid !== player.seatId);
         pushLog(state, 'skill', `${player.name} 发动【乱武】！`);
         luanwuStep(state, player, queue, 0, api);
         return undefined;
@@ -11549,11 +11727,11 @@ const DONGZHAO: Hero = {
         if (ids.length !== 1) return '请选择要交给对方的一张手牌';
         const targetId = intent.targetIds[0];
         if (!targetId) return '请选择一名在当前出牌阶段受到过伤害的角色';
-        if (!QUANJIN_CAN_TARGET_SELF && targetId === player.seatId) return '不能选择自己（待实测项）';
+        if (!QUANJIN_CAN_TARGET_SELF && targetId === player.seatId)
+          return '不能选择自己（待实测项）';
         const target = getPlayer(state, targetId);
         if (!target || !target.alive) return '目标无效';
-        if (!state.damagedThisPhase.includes(targetId))
-          return '该角色在当前出牌阶段没有受到过伤害';
+        if (!state.damagedThisPhase.includes(targetId)) return '该角色在当前出牌阶段没有受到过伤害';
         const card = player.hand.find((c) => c.id === ids[0]);
         if (!card) return '找不到手牌';
         // 「交给」走 giveCard（空城：国战 0 手牌诸葛的武将牌暂存）
@@ -13491,7 +13669,6 @@ function fenji(ctx: HookContext, who: Player): void {
   );
 }
 
-
 /** 势力显示名（未确定势力＝两张武将牌都暗着）——【问计】的选项与日志用它 */
 function factionNameOf(state: GameState, p: Player): string {
   const f = effectiveFaction(state, p);
@@ -13520,7 +13697,10 @@ function askWenji(ctx: HookContext): void {
     me.seatId,
     '【问计】：是否令一名其他角色交给你一张牌？',
     [
-      ...candidates.map((p) => ({ id: p.seatId, label: `${p.name}（${factionNameOf(state, p)}）` })),
+      ...candidates.map((p) => ({
+        id: p.seatId,
+        label: `${p.name}（${factionNameOf(state, p)}）`,
+      })),
       { id: 'no', label: '不发动' },
     ],
     (st, self, picked) => {
@@ -13731,8 +13911,7 @@ const TANGZI: Hero = {
       timing: 'afterDamage',
       skillId: '兴棹',
       locked: true,
-      applies: (ctx) =>
-        damagedByOther(ctx) && woundedFactionCount(ctx.state) >= 2,
+      applies: (ctx) => damagedByOther(ctx) && woundedFactionCount(ctx.state) >= 2,
       handler: askXingzhaoHands,
     },
     { timing: 'equipLost', skillId: '兴棹', locked: true, handler: askXingzhaoEquip },
@@ -13878,8 +14057,7 @@ function onFactionDetermined(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
   const ev = ctx.payload as
-    | { playerId?: string; faction?: string; isFirstDetermination?: boolean }
-    | undefined;
+    { playerId?: string; faction?: string; isFirstDetermination?: boolean } | undefined;
   if (!ev?.playerId || !ev.faction || ev.isFirstDetermination !== true) return;
   const target = getPlayer(state, ev.playerId);
   if (!target) return;
@@ -13946,8 +14124,7 @@ function gongqingSetOne(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
   const payload = ctx.payload as
-    | { targetId?: string; damage?: number; attack?: AttackContext }
-    | undefined;
+    { targetId?: string; damage?: number; attack?: AttackContext } | undefined;
   if (!payload || payload.targetId !== me.seatId) return;
   const range = gongqingRange(state, payload.attack?.sourceId);
   if (range === null) return;
@@ -14038,9 +14215,7 @@ function askLianpian(ctx: HookContext): void {
     // —— 自己的结束阶段：完全替换成「同势力角色手牌补至体力上限」 ——
     const mine = effectiveFaction(state, me);
     if (!mine) return;
-    const cands = state.players.filter(
-      (p) => p.alive && effectiveFaction(state, p) === mine,
-    );
+    const cands = state.players.filter((p) => p.alive && effectiveFaction(state, p) === mine);
     if (cands.length === 0) return;
     ctx.api.askChoice(
       state,
@@ -14086,7 +14261,8 @@ function askLianpian(ctx: HookContext): void {
 
   // —— 别人的结束阶段：**由他**决定 ——
   const opts: { id: string; label: string }[] = [];
-  if (handAndEquipOf(me).length > 0) opts.push({ id: 'discard', label: `弃置 ${me.name} 的一张牌` });
+  if (handAndEquipOf(me).length > 0)
+    opts.push({ id: 'discard', label: `弃置 ${me.name} 的一张牌` });
   if (me.hp < me.maxHp) opts.push({ id: 'heal', label: `令 ${me.name} 回复 1 点体力` });
   if (opts.length === 0) return;
   ctx.api.askChoice(
@@ -14098,12 +14274,7 @@ function askLianpian(ctx: HookContext): void {
       if (picked === 'no') return;
       if (picked === 'heal') {
         ctx.api.heal(me, 1);
-        pushLog(
-          st,
-          'skill',
-          `${me.name} 因【联翩】回复 1 点体力。`,
-          { seat: ending.seatId },
-        );
+        pushLog(st, 'skill', `${me.name} 因【联翩】回复 1 点体力。`, { seat: ending.seatId });
         return;
       }
       // ① 弃置苏飞的一张牌：选牌与**执行弃置的都是结束阶段那位**。
@@ -14121,14 +14292,19 @@ function askLianpian(ctx: HookContext): void {
           if (!card) return; // 跨步：那张牌已经不在原区域了
           // ⚠️ 第四个参数是**执行弃置动作的人**——账本因此记在结束阶段这位名下
           //    （这也会让他本回合的弃置数 +1，所以多个苏飞要逐个实时重算门槛）
-          ctx.api.discardCard(me.seatId, card, () => {
-            pushLog(
-              st2,
-              'skill',
-              `${ending.name} 因【联翩】弃置了 ${me.name} 的【${cardLabel(card)}】。`,
-              { seat: ending.seatId },
-            );
-          }, ending.seatId);
+          ctx.api.discardCard(
+            me.seatId,
+            card,
+            () => {
+              pushLog(
+                st2,
+                'skill',
+                `${ending.name} 因【联翩】弃置了 ${me.name} 的【${cardLabel(card)}】。`,
+                { seat: ending.seatId },
+              );
+            },
+            ending.seatId,
+          );
         },
       );
     },
@@ -14187,8 +14363,7 @@ function askChenglue(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
   const payload = ctx.payload as
-    | { useId?: number; sourceId?: string; targetIds?: string[] }
-    | undefined;
+    { useId?: number; sourceId?: string; targetIds?: string[] } | undefined;
   if (!payload?.useId) return;
   const targets = payload.targetIds ?? [];
   if (targets.length <= 1) return; // 目标数要大于 1（不是伤害目标数）
@@ -14389,12 +14564,9 @@ const DUWU_SKILL: ActiveSkill = {
             next();
             return;
           }
-          pushLog(
-            st,
-            'skill',
-            `${target.name} 拒绝执行军令，受到【黩武】的 1 点普通伤害。`,
-            { seat: player.seatId },
-          );
+          pushLog(st, 'skill', `${target.name} 拒绝执行军令，受到【黩武】的 1 点普通伤害。`, {
+            seat: player.seatId,
+          });
           api.dealDamage(target, 1, player.seatId, undefined, () => {
             if (player.alive) {
               const c = drawOne(st);
@@ -14452,7 +14624,9 @@ const ZHUGEKE: Hero = {
  * 写在 `unrespondableTargets`（只锁该目标，与彭羕·嚣逆同一套）。
  */
 function xisheCosts(me: Player): import('@sgs/protocol').Card[] {
-  return EQUIP_SLOTS.map((sl) => me.equipment[sl]).filter((c): c is import('@sgs/protocol').Card => !!c);
+  return EQUIP_SLOTS.map((sl) => me.equipment[sl]).filter(
+    (c): c is import('@sgs/protocol').Card => !!c,
+  );
 }
 
 function askXisheOne(ctx: HookContext, phaseSeatId: string): void {
@@ -14476,14 +14650,19 @@ function askXisheOne(ctx: HookContext, phaseSeatId: string): void {
       if (pool.length === 0) return;
       const fire = (st2: GameState, card: import('@sgs/protocol').Card): void => {
         // 成本是**真正的弃置**（执行者＝黄祖；会进「本回合弃置」账本）
-        ctx.api.discardCard(p.seatId, card, () => {
-          ctx.api.castVirtualSha(p.seatId, phaseSeatId, {
-            logKind: 'skill',
-            generatedBy: 'xishe',
-            // 目标体力值**小于**黄祖 → 不能响应（每次使用时实时判，所以连射会越来越险）
-            unrespondableTo: (s2, t) => t.hp < p.hp,
-          });
-        }, p.seatId);
+        ctx.api.discardCard(
+          p.seatId,
+          card,
+          () => {
+            ctx.api.castVirtualSha(p.seatId, phaseSeatId, {
+              logKind: 'skill',
+              generatedBy: 'xishe',
+              // 目标体力值**小于**黄祖 → 不能响应（每次使用时实时判，所以连射会越来越险）
+              unrespondableTo: (s2, t) => t.hp < p.hp,
+            });
+          },
+          p.seatId,
+        );
         void st2;
       };
       if (pool.length === 1 && pool[0]) {
@@ -14686,9 +14865,14 @@ function suzhiOnDealt(ctx: HookContext): void {
   // 只有这次伤害确实来自【杀】或【决斗】的攻击上下文才算
   if (!(attack.asType === 'sha' || attack.asType === 'juedou')) return;
   consumeSuzhi(state, me);
-  pushLog(state, 'skill', `${me.name} 的【夙智】：此伤害 +1（本回合第 ${state.suzhiTriggers} 次）。`, {
-    seat: me.seatId,
-  });
+  pushLog(
+    state,
+    'skill',
+    `${me.name} 的【夙智】：此伤害 +1（本回合第 ${state.suzhiTriggers} 次）。`,
+    {
+      seat: me.seatId,
+    },
+  );
 }
 
 /** 【夙智】②：自己回合内使用锦囊 → 摸 1（并消耗一次额度；无距离限制由标记提供） */
@@ -14906,7 +15090,10 @@ function askHuaiyi(state: GameState, player: Player, api: SkillApi): string | un
             return;
           }
           const options = [
-            ...t.hand.map((c) => ({ id: `card:${c.id}`, label: `交给对方手牌【${cardLabel(c)}】` })),
+            ...t.hand.map((c) => ({
+              id: `card:${c.id}`,
+              label: `交给对方手牌【${cardLabel(c)}】`,
+            })),
             ...EQUIP_SLOTS.map((slot) => t.equipment[slot])
               .filter((c): c is Card => c !== null)
               .map((c) => ({ id: `card:${c.id}`, label: `交给对方装备区的【${cardLabel(c)}】` })),
@@ -15118,9 +15305,14 @@ const LIUBA: Hero = {
           healedNames.push(`${t.name}（+${healed}）`);
         }
         if (healedNames.length > 0) {
-          pushLog(state, 'skill', `${player.name} 的【清隐】：${healedNames.join('、')} 回复至体力上限。`, {
-            seat: player.seatId,
-          });
+          pushLog(
+            state,
+            'skill',
+            `${player.name} 的【清隐】：${healedNames.join('、')} 回复至体力上限。`,
+            {
+              seat: player.seatId,
+            },
+          );
         }
         // 再移除刘巴这张武将牌（主将/副将位都行；替换为该势力同性别的士兵牌）
         api.removeHeroCard(player.seatId, 'liuba');
@@ -15231,16 +15423,12 @@ function askBaoliePlayPhase(ctx: HookContext): void {
             return;
           }
           p.seatId; // 选择者就是夏侯霸（api.askChoice 已按 me.seatId 发问）
-          ctx.api.discardTargetCard(
-            t.seatId,
-            picked === 'random' ? undefined : picked,
-            () => {
-              pushLog(st, 'skill', `${p.name} 因【豹烈】弃置了 ${t.name} 的一张牌。`, {
-                seat: p.seatId,
-              });
-              step(i + 1);
-            },
-          );
+          ctx.api.discardTargetCard(t.seatId, picked === 'random' ? undefined : picked, () => {
+            pushLog(st, 'skill', `${p.name} 因【豹烈】弃置了 ${t.name} 的一张牌。`, {
+              seat: p.seatId,
+            });
+            step(i + 1);
+          });
         },
       );
     };
@@ -15253,34 +15441,40 @@ function askBaoliePlayPhase(ctx: HookContext): void {
       punish();
       return;
     }
-    api.askChoice(state, t.seatId, `【豹烈】：是否对 ${me.name} 使用一张【杀】？`, options, (st, _p, picked) => {
-      if (picked === 'no') {
-        punish();
-        return;
-      }
-      if (picked === 'zhangba') {
-        api.askPickCards(
-          st,
-          t.seatId,
-          '【豹烈】·【丈八蛇矛】：选择两张手牌当【杀】',
-          t.hand.slice(),
-          2,
-          2,
-          (_st2, _p2, chosen) => {
-            const [c1, c2] = chosen;
-            if (!c1 || !c2) {
-              punish();
-              return;
-            }
-            use(c1, [c2.id]);
-          },
-        );
-        return;
-      }
-      const c = t.hand.find((x) => x.id === picked);
-      if (c) use(c);
-      else punish();
-    });
+    api.askChoice(
+      state,
+      t.seatId,
+      `【豹烈】：是否对 ${me.name} 使用一张【杀】？`,
+      options,
+      (st, _p, picked) => {
+        if (picked === 'no') {
+          punish();
+          return;
+        }
+        if (picked === 'zhangba') {
+          api.askPickCards(
+            st,
+            t.seatId,
+            '【豹烈】·【丈八蛇矛】：选择两张手牌当【杀】',
+            t.hand.slice(),
+            2,
+            2,
+            (_st2, _p2, chosen) => {
+              const [c1, c2] = chosen;
+              if (!c1 || !c2) {
+                punish();
+                return;
+              }
+              use(c1, [c2.id]);
+            },
+          );
+          return;
+        }
+        const c = t.hand.find((x) => x.id === picked);
+        if (c) use(c);
+        else punish();
+      },
+    );
   };
   step(0);
 }
@@ -15379,9 +15573,14 @@ function askShilu(ctx: HookContext): void {
           names.push(h?.name ?? id);
         }
       }
-      pushLog(st, 'skill', `${p.name} 的【嗜戮】：收得「戮」${names.map((n) => `【${n}】`).join('、')}（共 ${p.lu.length} 张）。`, {
-        seat: p.seatId,
-      });
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 的【嗜戮】：收得「戮」${names.map((n) => `【${n}】`).join('、')}（共 ${p.lu.length} 张）。`,
+        {
+          seat: p.seatId,
+        },
+      );
     },
   );
 }
@@ -15495,17 +15694,26 @@ function askXiongnueOffense(ctx: HookContext): void {
             { id: 'obtain', label: '本回合对其势力角色造成伤害后，获得其一张牌' },
             { id: 'limit', label: '本回合对其势力角色使用牌无次数限制' },
           ];
-          ctx.api.askChoice(st2, p2.seatId, '【凶虐】：选择本回合的攻击效果', modes, (st3, p3, mode) => {
-            if (entry.factions.length === 0) return; // 理论上不会
-            // ⚠️ 双势力「戮」= **两个牌面势力都算**（§5.121 的口径）
-            st3.xiongnue = { factions: entry.factions.slice(), mode: mode as 'dmg' | 'obtain' | 'limit' };
-            pushLog(
-              st3,
-              'skill',
-              `${p3.name} 的【凶虐】：本回合对【${entry.factions.map((f) => FACTION_NAME[f] ?? f).join('、')}】势力生效（${modes.find((m) => m.id === mode)?.label ?? mode}）。`,
-              { seat: p3.seatId },
-            );
-          });
+          ctx.api.askChoice(
+            st2,
+            p2.seatId,
+            '【凶虐】：选择本回合的攻击效果',
+            modes,
+            (st3, p3, mode) => {
+              if (entry.factions.length === 0) return; // 理论上不会
+              // ⚠️ 双势力「戮」= **两个牌面势力都算**（§5.121 的口径）
+              st3.xiongnue = {
+                factions: entry.factions.slice(),
+                mode: mode as 'dmg' | 'obtain' | 'limit',
+              };
+              pushLog(
+                st3,
+                'skill',
+                `${p3.name} 的【凶虐】：本回合对【${entry.factions.map((f) => FACTION_NAME[f] ?? f).join('、')}】势力生效（${modes.find((m) => m.id === mode)?.label ?? mode}）。`,
+                { seat: p3.seatId },
+              );
+            },
+          );
         },
       );
     },
@@ -15705,8 +15913,7 @@ function askDaming(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
   // 别人的出牌阶段走 othersPlayPhase（payload.turnSeatId）；**自己的**走 playPhase（没有 payload）
-  const activeId =
-    (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId ?? me.seatId;
+  const activeId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId ?? me.seatId;
   const active = getPlayer(state, activeId);
   if (!active || !active.alive) return;
   const mine = effectiveFaction(state, me);
@@ -15775,7 +15982,12 @@ function askDaming(ctx: HookContext): void {
                     t.alive &&
                     t.seatId !== active.seatId &&
                     canTarget(st3, active.seatId, t.seatId) &&
-                    !heroBlocksBeingTarget(st3, t, { id: '', type: 'sha', suit: 'spade', rank: 0 }, active),
+                    !heroBlocksBeingTarget(
+                      st3,
+                      t,
+                      { id: '', type: 'sha', suit: 'spade', rank: 0 },
+                      active,
+                    ),
                 );
                 const opts = [
                   { id: 'recover', label: `令 ${active.name} 回复 1 点体力` },
@@ -15948,9 +16160,7 @@ function askJinfa(state: GameState, me: Player, api: SkillApi): string | undefin
             // 选项按当前状态动态生成（A：有可获得牌；B：真的有可交出的装备牌）
             const opts = [
               { id: 'A', label: `令 ${p2.name} 获得你的一张牌` },
-              ...(giveable.length > 0
-                ? [{ id: 'B', label: `你交给 ${p2.name} 一张装备牌` }]
-                : []),
+              ...(giveable.length > 0 ? [{ id: 'B', label: `你交给 ${p2.name} 一张装备牌` }] : []),
             ];
             const runB = (st3: GameState, t3: Player): void => {
               const equips = handAndEquipOf(t3).filter((c) => isEquipCard(c));
@@ -16010,9 +16220,14 @@ function askJinfa(state: GameState, me: Player, api: SkillApi): string | undefin
                 const victim = getPlayer(st3, t3.seatId);
                 if (!owner || !victim) return;
                 takeOneOfTargetCards(st3, owner, victim, api, '矜伐', () => {
-                  pushLog(st3, 'skill', `${owner.name} 的【矜伐】：获得了 ${victim.name} 的一张牌。`, {
-                    seat: owner.seatId,
-                  });
+                  pushLog(
+                    st3,
+                    'skill',
+                    `${owner.name} 的【矜伐】：获得了 ${victim.name} 的一张牌。`,
+                    {
+                      seat: owner.seatId,
+                    },
+                  );
                 });
               },
             );
@@ -16152,9 +16367,7 @@ function askJuejueSettle(ctx: HookContext): void {
       return;
     }
     const opts = [
-      ...(victim.hand.length >= x
-        ? [{ id: 'put', label: `将 ${x} 张手牌置入弃牌堆` }]
-        : []),
+      ...(victim.hand.length >= x ? [{ id: 'put', label: `将 ${x} 张手牌置入弃牌堆` }] : []),
       { id: 'dmg', label: `受到 ${me.name} 造成的 1 点普通伤害` },
     ];
     const settle = (st: GameState, v: Player, pick: string): void => {
@@ -16172,12 +16385,9 @@ function askJuejueSettle(ctx: HookContext): void {
               removeCard(v2.hand, c.id);
               toDiscard(st2, c);
             }
-            pushLog(
-              st2,
-              'skill',
-              `${v2.name} 因【决绝】将 ${chosen.length} 张手牌置入弃牌堆。`,
-              { seat: v2.seatId },
-            );
+            pushLog(st2, 'skill', `${v2.name} 因【决绝】将 ${chosen.length} 张手牌置入弃牌堆。`, {
+              seat: v2.seatId,
+            });
             step(i + 1);
           },
         );
@@ -16227,9 +16437,14 @@ function askFangyuanSlash(ctx: HookContext): void {
     (st, p, picked) => {
       if (picked === 'no') return;
       // 纯虚拟普通【杀】：无实体、不继承花色点数；使用者与目标由技能定死 → 不查距离/不占次数
-      pushLog(st, 'skill', `${p.name} 发动【方圆】，视为对 ${getPlayer(st, picked)?.name ?? '?'} 使用一张普通【杀】。`, {
-        seat: p.seatId,
-      });
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 发动【方圆】，视为对 ${getPlayer(st, picked)?.name ?? '?'} 使用一张普通【杀】。`,
+        {
+          seat: p.seatId,
+        },
+      );
       ctx.api.castVirtualSha(p.seatId, picked, { logKind: 'skill' });
     },
   );
@@ -16266,7 +16481,6 @@ const ZHULING: Hero = {
     },
   ],
   activeSkills: [],
-
 };
 
 /**
@@ -16342,12 +16556,9 @@ function askQuanji(ctx: HookContext): void {
           if (!card) return;
           const put = (): void => {
             p2.quan.push(card);
-            pushLog(
-              st2,
-              'skill',
-              `${p2.name} 将【${cardLabel(card)}】置于武将牌上作为「权」。`,
-              { seat: p2.seatId },
-            );
+            pushLog(st2, 'skill', `${p2.name} 将【${cardLabel(card)}】置于武将牌上作为「权」。`, {
+              seat: p2.seatId,
+            });
           };
           const slot = EQUIP_SLOTS.find((sl) => p2.equipment[sl]?.id === card.id);
           if (slot) {
@@ -16447,7 +16658,7 @@ const JIE_ZHONGHUI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '权计',
-      applies: (ctx) => quanjiTrigger((damageEvent(ctx).attack ?? undefined), ctx.player),
+      applies: (ctx) => quanjiTrigger(damageEvent(ctx).attack ?? undefined, ctx.player),
       handler: askQuanji,
     },
     { timing: 'afterDamageDealt', skillId: '权计', handler: askQuanji },
@@ -16465,11 +16676,7 @@ const JIE_ZHONGHUI: Hero = {
   ],
 };
 
-const BUCHEN_AMBITIONIST: Hero[] = [
-  JIE_ZHONGHUI,
-  SP_SIMAZHAO,
-  GONGSUNYUAN,
-];
+const BUCHEN_AMBITIONIST: Hero[] = [JIE_ZHONGHUI, SP_SIMAZHAO, GONGSUNYUAN];
 
 export const HEROES: Hero[] = [
   LIUQI,
@@ -17191,6 +17398,10 @@ function removeCard(hand: Card[], id: string): Card | null {
 }
 
 /** 某人身上可以被「拿走」的牌：手牌 + 装备区 */
+function isRedCard(c: Card): boolean {
+  return c.suit === 'heart' || c.suit === 'diamond';
+}
+
 function handAndEquipOf(p: Player): Card[] {
   const eq = p.equipment;
   return [...p.hand, ...EQUIP_SLOTS.map((s) => eq[s]).filter((c): c is Card => c !== null)];

@@ -448,6 +448,12 @@ export interface Player {
    */
   tian: Card[];
   /**
+   * **「节」**（陆逊·谦逊，当前移动版国战）：被他【谦逊】收掉的**单目标锦囊牌**，扣在武将牌上。
+   * 最多 3 张（满了【谦逊】就不再触发），可以被【度势】选项二「三张节当一张火焰牌」消耗。
+   * 与「田/创/魂」同一类**实体牌区**（牌真的在这里，不是计数），所以模糊扫描要认得它。
+   */
+  jie: Card[];
+  /**
    * 国战【空城】第二段的**暂存牌**：0 手牌的空城诸葛在自己回合外被其他角色「交给」牌时，
    * 这些牌改为置于其**武将牌上**（**不进手牌**，所以空城照旧成立），到他的下一个
    * 摸牌阶段开始时**一次性获得**（见 heroes.ts 的 kongchengStash 与 engine 的 giveCard）。
@@ -511,7 +517,12 @@ export interface Player {
    * 一切「是不是同势力」的判断都走 `heroes.factionGroupKey`（它优先读这个字段）。
    */
   forceId?: string;
-  lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
+  lordGrant?: {
+    skillHeroId: string;
+    skillName: string;
+    blockedHeroId: string;
+    lordSeatId: string;
+  } | null;
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）
