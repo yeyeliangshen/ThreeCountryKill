@@ -15,6 +15,7 @@ import {
   emptyFlags,
   getHero,
   getHeroForMode,
+  toSnapshot,
   type GameState,
 } from '../src';
 import type { Card } from '@sgs/protocol';
@@ -88,6 +89,22 @@ describe('陆逊（国战）·谦逊：唯一目标被取消并收成「节」',
     expect(logs(state)).toContain('谦逊');
     // 手牌没被动
     expect(b.hand.map((c) => c.id)).toEqual(['b1']);
+  });
+
+  it('「节」是**公开信息**：本人与对手的快照里都能看到（界面要显示张数）', () => {
+    const state = gz([guohe('a1')], [mk('b1', 'tao', 'heart', 9)]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    const b = seat(state, B);
+    expect(b.jie.map((c) => c.id)).toEqual(['a1']);
+    // 对手（甲）的快照里也看得到：牌扣在武将牌上，是明面上的事
+    const seenByA = toSnapshot(state, A).players.find((p) => p.seatId === B)!;
+    expect(seenByA.jie?.map((c) => c.id)).toEqual(['a1']);
+    // 本人（乙）同样
+    const seenByB = toSnapshot(state, B).players.find((p) => p.seatId === B)!;
+    expect(seenByB.jie?.map((c) => c.id)).toEqual(['a1']);
+    // 丙没有被牵连
+    const seenC = toSnapshot(state, A).players.find((p) => p.seatId === C)!;
+    expect(seenC.jie ?? []).toEqual([]);
   });
 
   it('【顺手牵羊】【乐不思蜀】同理；乐**不进判定区**', () => {

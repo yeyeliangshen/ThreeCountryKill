@@ -1603,6 +1603,17 @@ button:disabled {
   gap: 3px;
   justify-content: center;
 }
+/* 武将牌上的牌区（田/权/创/节…）：与自己的面板同一份列表，字号跟标记行一样小 */
+.p-zones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+}
+.p-zones .zone-chip {
+  font-size: 10px;
+  padding: 1px 4px;
+}
 .p-markers .marker-chip {
   font-size: 10px;
   padding: 1px 4px;

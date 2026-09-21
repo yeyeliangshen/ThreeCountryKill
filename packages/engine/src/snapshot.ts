@@ -62,6 +62,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     yi: p.yi.slice(),
     // 界钟会·权（实体牌）与孙綝·戮（武将牌：数量 + 牌名）
     quan: p.quan.slice(),
+    // 陆逊（国战）·谦逊收下的「节」：扣在武将牌上的实体牌，公开信息（度势要看张数）
+    jie: p.jie.slice(),
     luCount: p.lu.length,
     luNames: p.lu.map((e) => getHeroForMode(e.heroId, state.mode)?.name ?? e.heroId),
     // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」

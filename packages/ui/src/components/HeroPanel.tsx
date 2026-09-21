@@ -24,6 +24,7 @@ import {
 } from '@sgs/protocol';
 import { EquipChip } from './EquipChip';
 import { equipSkillButtonOf } from '../equipSkill';
+import { specialZoneChips } from '../specialZones';
 import { heroArt } from './heroArt';
 import { useHoverTip } from './HoverTip';
 
@@ -126,6 +127,7 @@ export function HeroPanel({
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
   const faction = mode === 'guozhan' ? me.faction : (slots[0]?.faction ?? null);
   const factionClass = mode === 'guozhan' && me.faction ? `faction-${me.faction}` : '';
+  const zoneChips = specialZoneChips(me);
 
   return (
     <div
@@ -134,68 +136,13 @@ export function HeroPanel({
     >
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
-        {/* 特殊牌区（公开信息）：权 / 异 / 函 是**实体牌**，戮是**武将牌**（只显示牌名），
-            田 / 千幻 / 魂 / 创 / 【空城】暂存牌 只公开**张数**（田与空城那批的内容是暗的）。
-            没有明细的用 tianCount 那几个计数，避免把暗牌摊开。 */}
-        {me.quan?.length ||
-        me.yi?.length ||
-        me.han?.length ||
-        me.luCount ||
-        me.tianCount ||
-        me.qianhuanCount ||
-        me.hunCount ||
-        me.wounds?.length ||
-        me.kongchengCount ? (
+        {/* 特殊牌区（公开信息）：口径统一在 specialZones.ts —— 自己的面板与**对手那一行**
+            共用同一份列表（以前只有自己的面板画，对手有几张「节」看不到）。 */}
+        {zoneChips.length > 0 ? (
           <div className="special-zones">
-            {me.tianCount ? (
-              <span className="zone-chip" {...bind('田', '邓艾·屯田放在武将牌上的牌：距离 -X')}>
-                田·{me.tianCount}
-              </span>
-            ) : null}
-            {me.qianhuanCount ? (
-              <span className="zone-chip" {...bind('千幻', '于吉·千幻放在武将牌上的牌')}>
-                幻·{me.qianhuanCount}
-              </span>
-            ) : null}
-            {me.hunCount ? (
-              <span className="zone-chip" {...bind('魂', '左慈·役鬼扣在武将牌上的武将牌')}>
-                魂·{me.hunCount}
-              </span>
-            ) : null}
-            {me.wounds?.length ? (
-              <span
-                className="zone-chip"
-                {...bind('创', '周泰·不屈扣在武将牌上的牌（点数都不同才挡得住死）')}
-              >
-                创·{me.wounds.length}
-              </span>
-            ) : null}
-            {me.kongchengCount ? (
-              <span
-                className="zone-chip"
-                {...bind('城', '国战【空城】暂存牌：下个摸牌阶段开始时一次性获得')}
-              >
-                城·{me.kongchengCount}
-              </span>
-            ) : null}
-            {me.quan?.map((c) => (
-              <span key={`quan-${c.id}`} className="zone-chip">
-                权·{c.type}
-              </span>
-            ))}
-            {me.yi?.map((c) => (
-              <span key={`yi-${c.id}`} className="zone-chip">
-                异·{c.type}
-              </span>
-            ))}
-            {me.han?.map((c) => (
-              <span key={`han-${c.id}`} className="zone-chip">
-                函·{c.type}
-              </span>
-            ))}
-            {me.luNames?.map((n, i) => (
-              <span key={`lu-${i}`} className="zone-chip">
-                戮·{n}
+            {zoneChips.map((c) => (
+              <span key={c.key} className="zone-chip" {...bind(c.label.split('·')[0]!, c.tip)}>
+                {c.label}
               </span>
             ))}
           </div>

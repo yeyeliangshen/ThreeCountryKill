@@ -72,4 +72,19 @@ describe('国战选将 · 槽位分配（与引擎 pickHero 同口径）', () =>
     expect(src).toContain('nextGuozhanSlots(');
     expect(src).not.toMatch(/faction === h\.faction/);
   });
+
+  /**
+   * 静态守门：选将卡上的**技能列表**必须按**本局模式**取武将。
+   *
+   * 为什么值得钉（真机验收时发现的）：国战与身份局的同名武将技能不同（陆逊：国战＝谦逊+度势、
+   * 身份局＝谦逊+连营），而选将卡以前用的是不带模式的 `getHero` ⇒ 国战选将时卡面上写着
+   * 连营，实际打出来的是度势，玩家按卡面做决策必然踩空。
+   */
+  it('Game.tsx 的选将卡用 getHeroForMode（技能列表跟着本局模式走）', () => {
+    const src = readFileSync(join(__dirname, 'pages', 'Game.tsx'), 'utf8');
+    expect(src).toContain('getHeroForMode(id, snapshot.mode)');
+    // 选将区不许再用裸 getHero 拿武将（那会拿到身份局版本）
+    const draftBlock = src.slice(src.indexOf('className="draft"'), src.indexOf('className="draft"') + 4000);
+    expect(draftBlock).not.toMatch(/const h = getHero\(/);
+  });
 });

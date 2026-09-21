@@ -36,6 +36,7 @@ import {
 } from '@sgs/engine';
 import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
+import { specialZoneChips } from '../specialZones';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
@@ -789,6 +790,8 @@ export function Game() {
   // 槽位怎么变是纯函数（`nextGuozhanSlots`，单测在 draftSlots.test.ts）——判定必须与引擎的
   // `pickHero` 同口径（`canPairHeroes`），否则「界面拼不出来、引擎却收」的组合会再出现。
   function pickGuozhanHero(id: string) {
+    // 槽位判定只需要**势力**（`canPairHeroes` 读 faction/secondFaction），两个版本一致，
+    // 所以这里用不带模式的 getHero 就够（技能展示在渲染那一层用 getHeroForMode）。
     const next = nextGuozhanSlots({ main: mainPick, deputy: deputyPick }, id, (hid) => getHero(hid));
     setMainPick(next.main);
     setDeputyPick(next.deputy);
@@ -864,12 +867,18 @@ export function Game() {
               <div className="hero-list">
                 {options.map((dealtId) => {
                   const id = shownHeroId(dealtId);
-                  const h = getHero(id);
+                  // ⚠️ 技能列表要按**本局模式**取：国战与身份局的同名武将技能不同
+                  //    （陆逊：国战＝谦逊+度势、身份局＝谦逊+连营）。这里以前用 getHero，
+                  //    于是国战选将卡上写着身份局的技能，与实际打出来的技能对不上。
+                  const h = getHeroForMode(id, snapshot.mode);
                   if (!h) return null;
                   const isMain = mainPick === id;
                   const isDeputy = deputyPick === id;
                   const variantId = lordVariantOf(id);
-                  const variant = variantId && canSwapTo(variantId) ? getHero(variantId) : undefined;
+                  const variant =
+                    variantId && canSwapTo(variantId)
+                      ? getHeroForMode(variantId, snapshot.mode)
+                      : undefined;
                   // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
                   // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
                   const swapBlocked = isDeputy && !!variant?.isLord;
@@ -928,7 +937,7 @@ export function Game() {
                 }}
               >
                 {guozhanCanConfirm
-                  ? `确认：${getHero(mainPick)?.name ?? ''} + ${getHero(deputyPick)?.name ?? ''}`
+                  ? `确认：${getHeroForMode(mainPick, snapshot.mode)?.name ?? ''} + ${getHeroForMode(deputyPick, snapshot.mode)?.name ?? ''}`
                   : '请选择 2 位同阵营武将'}
               </button>
             </>
@@ -947,7 +956,7 @@ export function Game() {
           <>
             <div className="hero-list">
               {options.map((id) => {
-                const h = getHero(id);
+                const h = getHeroForMode(id, snapshot.mode);
                 if (!h) return null;
                 const isPicked = pickedHero === id;
                 const art = heroArt(id);
@@ -1255,6 +1264,7 @@ export function Game() {
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
+            const zoneChips = specialZoneChips(p);
             return (
               <button
                 key={p.seatId}
@@ -1310,6 +1320,22 @@ export function Game() {
                       >
                         {m.label}
                         {m.count > 1 && <span className="marker-count">{m.count}</span>}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {/* 武将牌上的牌区（公开信息，与自己的面板**同一份列表**）：田/权/创/节…
+                    以前对手这里看不到，于是「对方陆逊有几张节（满 3 就不再被谦逊挡）」这类
+                    关键信息只能靠日志猜（真机验收时发现）。 */}
+                {zoneChips.length > 0 && (
+                  <div className="p-zones">
+                    {zoneChips.map((c) => (
+                      <span
+                        key={c.key}
+                        className="zone-chip"
+                        {...bindTip(c.label.split('·')[0]!, c.tip)}
+                      >
+                        {c.label}
                       </span>
                     ))}
                   </div>

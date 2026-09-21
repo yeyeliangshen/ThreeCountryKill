@@ -169,19 +169,25 @@ ws.addEventListener('message', (ev) => {
   if (msg.type === 'error') {
     log('服务端拒绝：', msg.message);
     // 国战选将「两位要同阵营」：被拒就换下一对继续试（否则这个陪练永远不发将、整局开不起来）
-    if (mode === 'guozhan' && !picked && msg.message.includes('国战需选')) sendGuozhanPick();
+    // ⚠️ 判据是「**还在国战选将**」而不是某一句错误文案：房主开了「选将不限」时，
+    //    服务端拒的理由会是「不能组合」那类，按文案匹配会让陪练卡死在选将阶段（实测踩到）。
+    if (mode === 'guozhan' && !picked) sendGuozhanPick();
     return;
   }
 
   if (msg.type !== 'snapshot') return;
-  const prompt = msg.snapshot.prompt;
-  if (!prompt) return;
-  // 回合换人了（或又轮到我）→ 本回合的出牌计数清零
+  // ⚠️ 「回合换人了就清零出牌计数」必须放在**下面那个早退之前**：
+  //    没有提示（＝不是问我的那些快照）也要看回合座位。原来放在早退之后，于是陪练只在
+  //    **自己**的回合才更新 lastTurnSeat ⇒ 一直是自己、永远不重置 ⇒ 从第二回合起每个
+  //    出牌阶段都判成「本回合已经打过一张」、一张牌都不出（真机验收时撞出来的：
+  //    日志里连续出现「出牌阶段 → 结束（本回合已经打过一张）」）。
   const turnSeat = msg.snapshot.turn?.seatId ?? null;
   if (turnSeat !== lastTurnSeat) {
     lastTurnSeat = turnSeat;
     playedThisTurn = false;
   }
+  const prompt = msg.snapshot.prompt;
+  if (!prompt) return;
   // 诊断：把「我看到什么提示」打出来（排查「陪练不动了」时一眼能看出卡在哪条询问上）
   log('提示：', prompt.kind, '|', (prompt.message ?? '').slice(0, 36));
 

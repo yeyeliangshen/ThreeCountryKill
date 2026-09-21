@@ -47,6 +47,28 @@ describe('HeroPanel 特殊牌区', () => {
     expect(html).toContain('魂·2');
   });
 
+  it('「节」（陆逊·国战·谦逊）逐张列出牌名——它是公开的实体牌', () => {
+    const html = renderToStaticMarkup(
+      <HeroPanel
+        me={
+          view({
+            jie: [
+              { id: 'j1', type: 'guohe', suit: 'spade', rank: 3 },
+              { id: 'j2', type: 'lebu', suit: 'spade', rank: 6 },
+            ],
+          } as never)
+        }
+        mode="guozhan"
+        slots={slots}
+      />,
+    );
+    expect(html).toContain('节·过河拆桥');
+    expect(html).toContain('节·乐不思蜀');
+    // 逐张列 ⇒ 张数一眼看得出（3 张满、度势第二项要三张）；
+    // 张数的完整说明在悬浮提示里（静态渲染不含提示节点，所以这里只数块数）
+    expect(html.match(/节·/g)?.length).toBe(2);
+  });
+
   it('没有这些牌区时整块不渲染（不给空壳）', () => {
     const html = renderToStaticMarkup(<HeroPanel me={view({})} mode="guozhan" slots={slots} />);
     expect(html).not.toContain('special-zones');
@@ -68,7 +90,7 @@ describe('HeroPanel 特殊牌区', () => {
         slots={slots}
       />,
     );
-    expect(html).toContain('权·sha');
+    expect(html).toContain('权·杀'); // 牌名（以前是类型 id「权·sha」）
     expect(html).toContain('创·2');
   });
 });
