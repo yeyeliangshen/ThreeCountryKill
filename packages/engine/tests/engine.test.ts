@@ -25585,3 +25585,71 @@ describe('国战标记【阴阳鱼】的两个入口（出牌阶段 / 弃牌阶�
     expect(state.pending?.kind).toBe('discard');
   });
 });
+
+/**
+ * 四枚国战标记的**入口**都要对（用户 2026-09-21：不只阴阳鱼，先驱/野心家也一样）：
+ * - 出牌阶段：四枚都能点（先驱要选 1 名其他角色）；
+ * - 弃牌阶段：**只有**【阴阳鱼】和能当作阴阳鱼用的【野心家】给出来，
+ *   先驱/珠联璧合不该冒出来（它们的用法都写死「出牌阶段」）。
+ */
+describe('国战标记的入口（出牌阶段 / 弃牌阶段）', () => {
+  function gzMarkers(markers: ('xianqu' | 'yinyangyu' | 'zhulian' | 'ambitionist')[]) {
+    const state = makeGameMode(
+      [
+        { seatId: A, name: '甲', heroId: 'taishici', hand: [] },
+        { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      ],
+      'guozhan',
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    for (const m of markers) addMarker(a, m);
+    return { state, a };
+  }
+  const namesOf = (skills: { name: string }[] | undefined) =>
+    (skills ?? []).map((s) => s.name).sort();
+
+  it('出牌阶段：四枚标记的技能都下发，且先驱带「1 名目标」的参数', () => {
+    const { state } = gzMarkers(['xianqu', 'yinyangyu', 'zhulian', 'ambitionist']);
+    const prompt = toSnapshot(state, A).prompt!;
+    expect(namesOf(prompt.legalSkills)).toEqual(['先驱', '野心家', '珠联璧合', '阴阳鱼'].sort());
+    const xianqu = prompt.legalSkills!.find((s) => s.name === '先驱')!;
+    expect(xianqu.minTargets).toBe(1);
+    expect(xianqu.maxTargets).toBe(1);
+    const zhulian = prompt.legalSkills!.find((s) => s.name === '珠联璧合')!;
+    expect(zhulian.minTargets).toBe(0);
+    expect(zhulian.needsCards).toBe(false);
+  });
+
+  it('弃牌阶段：只给【阴阳鱼】与【野心家】，先驱/珠联璧合不出现（它们只能在出牌阶段用）', () => {
+    const { state, a } = gzMarkers(['xianqu', 'yinyangyu', 'zhulian', 'ambitionist']);
+    a.hand = [mk('h1', 'sha', 'spade', 1), mk('h2', 'sha', 'spade', 2)];
+    a.hp = 1;
+    state.turn.phase = 'discard';
+    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    const prompt = toSnapshot(state, A).prompt!;
+    expect(namesOf(prompt.legalSkills)).toEqual(['野心家', '阴阳鱼']);
+    // 引擎侧也要挡住：硬发先驱会被拒（界面不给按钮，但意图是能伪造的）
+    expect(
+      act(state, A, { type: 'useSkill', skillId: 'mark_xianqu', targetIds: [B] }).ok,
+    ).toBe(false);
+  });
+
+  it('野心家在弃牌阶段当作【阴阳鱼】用：本回合手牌上限 +2（不是摸牌）', () => {
+    const { state, a } = gzMarkers(['ambitionist']);
+    a.hand = [mk('h1', 'sha', 'spade', 1), mk('h2', 'sha', 'spade', 2)];
+    a.hp = 1;
+    state.turn.phase = 'discard';
+    state.pending = { kind: 'discard', seatId: A, count: 1 };
+    const prompt = toSnapshot(state, A).prompt!;
+    const amb = prompt.legalSkills!.find((s) => s.name === '野心家')!;
+    state.deck = [mk('d1', 'sha', 'spade', 9)];
+    const handBefore = a.hand.length;
+    ok(act(state, A, { type: 'useSkill', skillId: amb.id, cardIds: [], targetIds: [] }));
+    // 选「当作阴阳鱼」
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yinyangyu' }));
+    expect(a.flags.handLimitBonus).toBe(2);
+    expect(a.hand.length, '弃牌阶段那条用法是加上限，不是摸牌').toBe(handBefore);
+    expect(markerCount(a, 'ambitionist')).toBe(0);
+  });
+});
