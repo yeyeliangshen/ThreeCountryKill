@@ -9080,8 +9080,12 @@ function qiceTargets(state: GameState, player: Player, type: TrickType): Player[
       return alive.filter(legal);
     case 'shunshou':
       return others.filter((p) => distance(state, player.seatId, p.seatId) <= 1 && legal(p));
-    case 'guohe':
     case 'huogong':
+      // 【火攻】的目标必须**有手牌**（要对方展示一张手牌）：与 `playTrick` 的校验、
+      // 以及引擎结算入口的 `dropTargetsWithoutHand` 同一口径。以前这里和过河拆桥并在一起，
+      // 于是【奇策】/【役鬼】当【火攻】时能把空手角色当目标（用户 2026-09-23 复报）。
+      return others.filter((p) => p.hand.length > 0 && legal(p));
+    case 'guohe':
     case 'juedou':
     case 'zhibi':
     case 'yuanjiao':

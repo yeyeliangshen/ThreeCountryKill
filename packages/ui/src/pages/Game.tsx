@@ -37,6 +37,7 @@ import {
 import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { specialZoneChips } from '../specialZones';
+import { targetNeedsHandCards } from '../targetRules';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
@@ -1076,7 +1077,7 @@ export function Game() {
   const selectedTargetNeedsHand = (() => {
     if (!selected) return null;
     const eff = selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type;
-    return eff === 'huogong' ? true : null;
+    return targetNeedsHandCards(eff) ? true : null;
   })();
 
   // 判断某对手是否可被点击（选目标 / 技能选目标）

@@ -13,6 +13,11 @@ export {
   factionHelpers,
   isAoyu,
   prelitableSkills,
+  /**
+   * 【火攻】「目标必须有手牌」的**唯一判据**（纯函数）：直接出牌的校验、技能的目标候选
+   * （奇策/役鬼）、以及虚拟锦囊的结算入口三处共用（用户 2026-09-23 复报「其他交互路径」）。
+   */
+  dropTargetsWithoutHand,
   /** 探针用：这一格是不是「已走完却还占着槽」（施工方案 Step 1.5 的指标探测器） */
   isCompletedPending,
   /** 施工方案 Step 3b：被围栏挡住且没有 waiter 可去时抛出（`SGS_FENCE_ENFORCE=1` 才生效） */

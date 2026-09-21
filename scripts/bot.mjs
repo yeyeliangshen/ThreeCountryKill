@@ -20,6 +20,8 @@
  *   REVEAL=1 node scripts/bot.mjs                 # 准备阶段选择「全部明置」（看别人面板的
  *                                                # 「明置武将 + 技能提示」时用；默认保持暗将）
  *   PASSIVE=1 node scripts/bot.mjs                # 退回旧行为：出牌阶段一律结束、响应一律弃权
+ *   PLAY_PER_TURN=4 node scripts/bot.mjs          # 本回合**最多打几张**（默认 1）：想构造
+ *                                                # 「对手空手」这类现场时调到 4，几轮就把它打空
  *
  * 只用到 Node 自带的 WebSocket（Node 22+），不需要额外装包。
  * 房号/座位号在服务端日志或大厅里能看到；接替座位用的是「离线座位可以认回」那条规则。
@@ -30,6 +32,9 @@ const ROOM = process.env.ROOM ?? null;
 const SEAT = process.env.SEAT ?? null;
 const HERO = process.env.HERO ?? null;
 const PASSIVE = process.env.PASSIVE === '1';
+/** 每个出牌阶段**最多**打几张（默认 1：牌不会打空，看得到也留得住）。
+ *  调大（如 4）是为了构造「对手手里没牌」这类现场——调小到 1 是默认行为。 */
+const PLAY_PER_TURN = Math.max(1, Number(process.env.PLAY_PER_TURN ?? 1) || 1);
 let mode = null; // 当前房间模式（国战要选两位同阵营武将）
 let pairs = []; // 国战选将的候选组合（被服务端拒就换下一对）
 let pickAttempt = 0;
@@ -120,7 +125,7 @@ function choosePlayCard(snapshot, prompt) {
 const ws = new WebSocket(URL);
 const send = (msg) => ws.send(JSON.stringify(msg));
 
-let playedThisTurn = false; // 本回合是否已经打过一张（每个出牌阶段只打一张，别把牌打空）
+let playedThisTurn = 0; // 本回合已经打了几张（上限见 PLAY_PER_TURN）
 let lastTurnSeat = null; // 上一次看到的回合座位（换了人就重置 playedThisTurn）
 let asked = false; // 只在第一次拿到大厅列表时做一次「建房 / 进房」
 let started = false;
@@ -184,7 +189,7 @@ ws.addEventListener('message', (ev) => {
   const turnSeat = msg.snapshot.turn?.seatId ?? null;
   if (turnSeat !== lastTurnSeat) {
     lastTurnSeat = turnSeat;
-    playedThisTurn = false;
+    playedThisTurn = 0;
   }
   const prompt = msg.snapshot.prompt;
   if (!prompt) return;
@@ -222,8 +227,10 @@ ws.addEventListener('message', (ev) => {
 
   if (prompt.kind === 'play') {
     picked = true; // 已经进对局了，说明选将已被接受
-    if (PASSIVE || playedThisTurn) {
-      log(`出牌阶段 → 结束${PASSIVE ? '（PASSIVE=1）' : '（本回合已经打过一张）'}`);
+    if (PASSIVE || playedThisTurn >= PLAY_PER_TURN) {
+      log(
+        `出牌阶段 → 结束${PASSIVE ? '（PASSIVE=1）' : `（本回合已打 ${playedThisTurn} 张）`}`,
+      );
       send({ type: 'intent', intent: { type: 'endPhase' } });
       return;
     }
@@ -233,7 +240,7 @@ ws.addEventListener('message', (ev) => {
       send({ type: 'intent', intent: { type: 'endPhase' } });
       return;
     }
-    playedThisTurn = true;
+    playedThisTurn++;
     log(
       `出牌阶段 → 打出 ${chosen.label}${chosen.targetIds.length ? ` 指 ${chosen.targetIds.join('、')}` : ''}`,
     );

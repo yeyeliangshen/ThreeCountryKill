@@ -3041,6 +3041,29 @@ function fangtianRule(
  * `attack.fangtianQueue` 里逐个接着打（见 afterAttackSettled）。
  */
 /**
+ * 「这张锦囊的目标**必须有手牌**」——目前只有【火攻】（它要目标展示一张手牌）。
+ *
+ * 为什么做成一个判据：这条规则有**三个入口**——直接出牌的校验（`playTrick`）、技能的
+ * 目标候选（奇策/役鬼共用 `qiceTargets`）、以及技能发起的虚拟锦囊的**结算入口**。
+ * 用户 2026-09-23 复报「还能通过其他交互路径强行指定」，就是因为当时只挂了第一处。
+ */
+function trickNeedsCardsInHand(type: CardType): boolean {
+  return type === 'huogong';
+}
+
+/**
+ * 按上面那条规则**剔除**目标（纯函数，便于单测）：非「目标要有手牌」的锦囊原样返回。
+ *
+ * 结算入口（`startTrickResolution`）用它兜底：技能造出来的虚拟锦囊（`castVirtualTrick` /
+ * `useVirtualTrick`）**不经过** `playTrick` 的目标校验，所以这里必须再过一遍——一个目标都不剩时，
+ * 这次使用就没有可结算的目标（与「目标全部被取消」同一处理）。
+ */
+export function dropTargetsWithoutHand(state: GameState, type: CardType, ids: string[]): string[] {
+  if (!trickNeedsCardsInHand(type)) return ids.slice();
+  return ids.filter((id) => (getPlayer(state, id)?.hand.length ?? 0) > 0);
+}
+
+/**
  * 「成为目标时，取消之」的**统一落点**（空城 / 谦逊 / 帷幕 / 明光铠 / 调虎离山那套锁定技）。
  *
  * 用户 2026-09-21 定的实现形式：**牌先用出去，再把这个目标取消** —— 不是「不能选他当目标」。
@@ -6181,9 +6204,11 @@ function playTrick(
       !hasOperableTargetCard(state, player.seatId, t)
     )
       return err('目标区域里没有可操作的牌');
-    // 【火攻】的目标必须**有手牌**（用户 2026-09-22 报的缺陷）：火攻要他「展示一张手牌」，
-    // 没手牌的人根本没法结算。合法目标列表与这里**同一口径**（界面按玩家的 handCount 过滤）。
-    if (type === 'huogong' && t.hand.length === 0) return err('【火攻】的目标必须有手牌');
+    // 【火攻】的目标必须**有手牌**：火攻要他「展示一张手牌」，没手牌的人根本没法结算。
+    // 判据统一在 `trickNeedsCardsInHand`（用户 2026-09-22 报、09-23 复报「其他交互路径」——
+    // 技能发起的虚拟锦囊不经过这里，见 `dropTargetsWithoutHand` 与结算入口的兜底）。
+    if (trickNeedsCardsInHand(type) && t.hand.length === 0)
+      return err(`【${CARD_TYPE_NAME[type]}】的目标必须有手牌`);
   } else if (type === 'jiedao') {
     if (intent.targetIds.length !== 2)
       return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');
@@ -6327,6 +6352,10 @@ function startTrickResolution(
     type === 'nanman' || type === 'wanjian'
       ? targetIds.slice()
       : cancelBlockedTargets(state, player, card, targetIds);
+  // 「目标必须有手牌」（【火攻】）：技能发起 / 规则算出来的虚拟锦囊不走 playTrick 的校验，
+  // 所以在**结算入口**再兜一层（用户 2026-09-23 复报的「其他交互路径」就是这一类）。
+  keptTargets = dropTargetsWithoutHand(state, type, keptTargets);
+
   // 「成为**唯一目标**时把它整个收下」的技能（陆逊·谦逊，当前移动版国战）：
   // ⚠️ 这是**目标取消**（TARGET_CANCELLED_BY_SKILL）——发生在无懈窗口**之前**，
   //    与「锦囊效果被无懈」（EFFECT_NULLIFIED_BY_WUXIE）是两件事：目标已被取消的牌

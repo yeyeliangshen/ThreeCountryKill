@@ -365,9 +365,13 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
               effectiveFaction(state, p) !== myFaction,
           );
       } else {
-        // 决斗 / 火攻 / 过河拆桥 / 知己知彼：只要有一个其他存活玩家就能用 ——
+        // 决斗 / 过河拆桥 / 知己知彼：只要有一个其他存活玩家就能用 ——
         // 帷幕/空城那类是「成为目标时取消之」，不是「选不了他」（用户 2026-09-21 口径）。
         legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+        // ⚠️ 例外：【火攻】的目标必须**有手牌**（要对方展示一张手牌）——
+        //    全场其他人都空手时这张牌**根本用不出去**，不该在界面上亮着（用户 2026-09-23 复报）。
+        if (card.type === 'huogong')
+          legal = state.players.some((p) => p.alive && p.seatId !== seatId && p.hand.length > 0);
       }
       if (legal) {
         legalCardIds.push(card.id);
@@ -379,7 +383,10 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     for (const it of ['guohe', 'huogong', 'juedou'] as const) {
       if (seen.has(card.id)) break;
       if (!canUseAsCard(state, player, card, it)) continue;
-      const legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+      // 转化出来的【火攻】同样要求**有人有手牌**（卧龙·火计）
+      const legal = state.players.some(
+        (p) => p.alive && p.seatId !== seatId && (it !== 'huogong' || p.hand.length > 0),
+      );
       if (legal) {
         legalCardIds.push(card.id);
         seen.add(card.id);
