@@ -3519,12 +3519,12 @@ function chainStep(state: GameState, c: ChainPending, after: () => void): void {
 /** 杀结算（目标已出闪或已弃权） */
 function finishAttack(state: GameState, attack: AttackContext): void {
   const target = getPlayerOrThrow(state, attack.targetId);
-  // 「谁建谁清」：这次求闪的询问如果还挂在槽里、而它**从来没被玩家回答过**（八卦阵/护驾
-  // 那种自动代打会在同一个 intent 里创建又解决它），就给它打上「已处理」标记——
-  // 这样钩子链收尾的「环境还原」不会把一条处理完的旧询问摆回来，
-  // 诊断探针也不会把它误记成「收尾抢了一条没答过的询问」（docs §5.134 的测量口径）。
-  if (attack.shanAsk && state.pending === (attack.shanAsk as object)) {
-    answeredPendings.add(state.pending);
+  // 施工方案 Step 1 同款：这次的**求闪询问问完了**（出闪或弃权都走到这里）——
+  // 先标完成、release-if-mine，再往下收尾。以前它不释放，靠攻击收尾的 resumePlay 覆盖掉，
+  // 是 Step 3b 实测里被围栏挡住最多的那一类（200 局 101 次）。
+  // `shanAsk` 就是这次攻击创建的那个询问对象本身（见 beginAttack 等处），身份对得上才放。
+  if (attack.shanAsk) {
+    releaseIfMine(state, attack.shanAsk as NonNullable<GameState['pending']>);
   }
 
   if (attack.dodged) {
