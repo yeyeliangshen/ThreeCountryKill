@@ -367,7 +367,7 @@ export function Game() {
   const [seatPick, setSeatPick] = useState<string[]>([]);
   // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
   // 武将技能用的是同一套，见 components/HoverTip.tsx
-  const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
+  const { bind: bindTip, tipNode } = useHoverTip();
 
   // 连环（横置）状态的四种表现（用户 2026-09-24 口径①~④）：**绑定「连环状态」本身**——
   // 判据是相邻两份快照里 `players[].chained` 的翻转（`diffChainStates`）＋ 引擎下发的
@@ -1634,13 +1634,11 @@ export function Game() {
                           key={card.id}
                           className={`card ${isRed(card) ? 'red' : 'black'} legal ${on ? 'picked' : ''} ${catClass}`}
                           aria-label={cardLabel(card)}
-                          onMouseEnter={
-                            bindTip(
-                              `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
-                              cardDescription(card, snapshot.mode),
-                            ).onMouseEnter
-                          }
-                          onMouseLeave={hideTip}
+                          // 整套 bind（鼠标 + 触摸）：只挂鼠标那一半的话，手机点出来的说明关不掉
+                          {...bindTip(
+                            `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
+                            cardDescription(card, snapshot.mode),
+                          )}
                           onClick={() => togglePickCard(card.id)}
                         >
                           <span className="c-idx">
@@ -1977,13 +1975,11 @@ export function Game() {
                   className={`card ${isRed(card) ? 'red' : 'black'} ${dimmed ? 'dim' : 'legal'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass} ${isCargo ? 'cargo' : ''}`}
                   aria-disabled={cardDisabled}
                   aria-label={cardLabel(card)}
-                  onMouseEnter={
-                    bindTip(
-                      `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}${isCargo ? '（木牛流马·辎）' : ''}`,
-                      cardDescription(card, snapshot.mode),
-                    ).onMouseEnter
-                  }
-                  onMouseLeave={hideTip}
+                  // 整套 bind（鼠标 + 触摸）：手机点一下就有说明，点空白/再点一次就收
+                  {...bindTip(
+                    `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}${isCargo ? '（木牛流马·辎）' : ''}`,
+                    cardDescription(card, snapshot.mode),
+                  )}
                   onClick={() => {
                     // 【丈八蛇矛】模式优先：这时候点牌是「凑两张」而不是出牌
                     if (zhangbaMode) {

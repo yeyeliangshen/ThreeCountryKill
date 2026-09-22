@@ -103,14 +103,38 @@ export function SkillTipChip({
   onToggle: () => void;
 }) {
   const { bind, tipNode } = useHoverTip();
+  const rootRef = useRef<HTMLSpanElement | null>(null);
   const onClick = (e: MouseEvent<HTMLElement>): void => {
     // ⚠️ 不许把点击带给牌桌（对手那张牌是「选目标」按钮、自己的面板是「选自己」入口）：
     //    这里是**看技能说明**，不是选目标。
     e.stopPropagation();
     onToggle();
   };
+  /**
+   * 用户 2026-09-25 口径：「点牌桌空白处立即关闭当前说明弹层」。
+   *
+   * 展开着的这段技能描述原来只能「再点一次技能名」或用 30s 兜底收，
+   * 手机上点别处一点反应都没有——等于关不掉。这里补上：**点在提示之外的任何地方就收起**。
+   * 用捕获阶段，先于牌桌自己的点击逻辑（收起只是改状态，不会吃掉那一下点击）。
+   */
+  useEffect(() => {
+    if (!tip.pinned) return;
+    const onDown = (e: Event): void => {
+      const root = rootRef.current;
+      const t = e.target;
+      if (root && t instanceof Node && root.contains(t)) return; // 点技能名自己 ⇒ 走它的 toggle
+      onToggle();
+    };
+    document.addEventListener('touchstart', onDown, { capture: true, passive: true });
+    document.addEventListener('mousedown', onDown, { capture: true });
+    return () => {
+      document.removeEventListener('touchstart', onDown, { capture: true });
+      document.removeEventListener('mousedown', onDown, { capture: true });
+    };
+  }, [tip.pinned, onToggle]);
   return (
     <span
+      ref={rootRef}
       className={`skill-tip ${tip.settling ? 'settling' : ''} ${tip.pinned ? 'open' : ''}`}
       data-seat={tip.seatId}
       data-skill={tip.skillName}

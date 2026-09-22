@@ -1947,6 +1947,11 @@ select:focus-visible,
   pointer-events: none;
   z-index: 300;
 }
+/* 上方放不下（贴着屏幕上沿的元素）⇒ 翻到元素下方：原来这种情况下说明会被顶出可视区，
+   表现出来就是「点了没反应」（手机顶部那一排对手的牌与图标最容易撞上）。 */
+.hover-tip.below {
+  transform: translate(-50%, 22px);
+}
 .hover-tip-name {
   color: var(--gold);
   font-weight: 700;
