@@ -25773,6 +25773,13 @@ describe('国战 · 诸葛恪（傲才）', () => {
     const pick = state.pending;
     if (pick?.kind !== 'choice') throw new Error(`预期让玩家挑，实际是 ${pick?.kind}`);
     expect(pick.options.map((o) => o.id).sort()).toEqual(['d1', 'd2']);
+    // 选项文案是**给玩家看的**：中文花色 + 点数（不许出现 spade/club 这种内部值，§5.214 同类）
+    const labels = pick.options.map((o) => o.label).join(' ');
+    expect(labels, '两张【闪】分别是黑桃与梅花').toMatch(/黑桃/);
+    expect(labels).toMatch(/梅花/);
+    expect(labels, '内部花色值（英文）不许出现在用户文案里').not.toMatch(
+      /spade|heart|club|diamond/,
+    );
     const deckBefore = state.deck.length;
     const r2 = act(state, A, { type: 'chooseOption', optionId: 'd2' });
     expect(r2.ok, r2.ok ? '' : r2.error).toBe(true);

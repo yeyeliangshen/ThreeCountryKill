@@ -45,6 +45,8 @@ import { effectiveCardName, playConfirmText, playHintText } from '../playFlow';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
 import { ChainBadge, ChainSpreadTable, useChainFx } from '../components/ChainFx';
+import { SkillTipChip, useSkillTip } from '../components/SkillTip';
+import { skillTipDesc, type SkillTip } from '../skillTips';
 import { ZonePickPanel } from '../components/ZonePickPanel';
 import {
   cardSelfTargetAllowed,
@@ -373,6 +375,31 @@ export function Game() {
   // 所以【铁索连环】【勠力同心】以及将来任何令角色横置/重置的技能，都会走到同一套表现上。
   // ⚠️ 必须在下面那些 early return 之前调用（hooks 规则）。
   const chainFx = useChainFx(snapshot?.players ?? [], snapshot?.chain ?? null);
+
+  // 技能提示（用户 2026-09-25 口径①~④）：**统一事件源**——只看引擎下发的
+  // `snapshot.skillFx`（谁、哪个技能、还在不在结算），界面不解析日志、不认武将。
+  // 判据在 `skillTips.ts`（纯函数），这里只把结果贴到发动者旁边。
+  // ⚠️ 同样必须在下面那些 early return 之前调用（hooks 规则）。
+  const skillTip = useSkillTip(snapshot?.skillFx ?? null);
+  /**
+   * 「这一格（座次）现在该显示哪条技能提示」——没有就是 null。
+   *
+   * 判据（谁的、什么时候收）全在 `skillTips.ts`，这里只补上展示需要的另外两样：
+   * 发动者名（无障碍播报）与技能描述（按**引擎宣布过的技能名**去武将技能文本里查，
+   * 见 `skillTipDesc`——不新造规则文本，也不会因为查描述泄露暗将）。
+   */
+  const skillTipOf = (
+    seatId: string,
+  ): { tip: SkillTip; seatName: string; desc: string; onToggle: () => void } | null => {
+    const tip = skillTip.tip;
+    if (!tip || tip.seatId !== seatId) return null;
+    return {
+      tip,
+      seatName: snapshot?.players.find((p) => p.seatId === seatId)?.name ?? seatId,
+      desc: skillTipDesc(snapshot?.mode ?? 'junzheng', snapshot?.players ?? [], seatId, tip.skillName),
+      onToggle: skillTip.toggle,
+    };
+  };
 
   // 提示内容一变就清空本地选择。
   //
@@ -1292,108 +1319,118 @@ export function Game() {
             //   ④ 传导：`.chain-hit` 脉冲，延时由引擎给的顺序算好（`chainFx.hits`）
             const chainCls = chainFx.cardClass[p.seatId] ?? '';
             const chainHit = chainFx.hits[p.seatId];
+            // 技能提示（用户 2026-09-25 口径①~④）：他刚发动/触发的技能，浮在他这张牌旁边。
+            // ⚠️ 提示**不能**放进那张 `<button>` 里：没被选为目标时它是 `disabled`，
+            //    而禁用元素（含其子元素）收不到鼠标事件 ⇒ 点不开技能描述。
+            //    所以外面包一层 `.player-slot` 当定位父级，提示与按钮是兄弟。
+            const skillTipHere = skillTipOf(p.seatId);
             return (
-              <button
-                key={p.seatId}
-                className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${p.chained ? 'chained' : ''} ${chainCls} ${teamClass} ${factionClass}`}
-                onClick={isTarget ? () => handleTargetClick(p) : undefined}
-                disabled={!isTarget}
-              >
-                {/* 传导脉冲（口径④）：绝对定位、不吃点击，逐棒按引擎顺序闪 */}
-                {chainHit && (
-                  <span
-                    className={`chain-hit ${chainHit.cls}`}
-                    style={{ animationDelay: `${chainHit.delayMs}ms` }}
-                  />
-                )}
-                <div className="p-top">
-                  {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
-                      悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
-                  <HeroChips chips={heroChipsOf(p, snapshot.mode)} />
-                  <span className="p-info">
-                    <span className="p-name">
-                      {p.name}
-                      {isCurrent && <span className="dot">●</span>}
-                      {isLord && p.isAlive && <span className="lord-tag">主</span>}
-                      {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
-                        <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
-                      )}
-                      {isGuozhan && p.faction && (
-                        <span className={`faction-badge ${p.faction}`}>
-                          {FACTION_NAME[p.faction]}
-                        </span>
-                      )}
-                      {/* 横置（铁索连环状态）：公开信息，与自己的武将面板上那枚「横」同款。
-                          以前对手这一行**没有任何横置标识**——「谁被铁索连上了」只能靠日志认
-                          （用户 2026-09-24 报的正是这条）。 */}
-                      {p.chained && <ChainBadge bind={bindTip} />}
-                    </span>
-                    <span className="p-hp">
-                      {Array.from({ length: p.maxHp }).map((_, i) => (
-                        <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
-                      ))}
-                    </span>
-                    <span className="p-hand">手 {p.handCount}</span>
-                  </span>
-                </div>
-                {/* 装备区（花色 + 点数 + 牌名，与自己的面板同一个组件） */}
-                {p.equipment.length > 0 && (
-                  <div className="p-equip">
-                    {p.equipment.map((c) => (
-                      <EquipChip key={c.id} card={c} mode={snapshot.mode} bind={bindTip} />
-                    ))}
-                  </div>
-                )}
-                {/* 国战标记（公开信息，用户 2026-09-21 要求）：看得到对手手上还有哪些标记 */}
-                {p.markers && p.markers.length > 0 && (
-                  <div className="p-markers">
-                    {p.markers.map((m) => (
-                      <span
-                        key={m.id}
-                        className={`marker-chip mark-${m.id}`}
-                        {...bindTip(
-                          `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
-                          MARKER_DESC[m.id] ?? '',
+              <div className="player-slot" key={p.seatId}>
+                <button
+                  className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${p.chained ? 'chained' : ''} ${chainCls} ${teamClass} ${factionClass}`}
+                  onClick={isTarget ? () => handleTargetClick(p) : undefined}
+                  disabled={!isTarget}
+                >
+                  {/* 传导脉冲（口径④）：绝对定位、不吃点击，逐棒按引擎顺序闪 */}
+                  {chainHit && (
+                    <span
+                      className={`chain-hit ${chainHit.cls}`}
+                      style={{ animationDelay: `${chainHit.delayMs}ms` }}
+                    />
+                  )}
+                  <div className="p-top">
+                    {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
+                        悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
+                    <HeroChips chips={heroChipsOf(p, snapshot.mode)} />
+                    <span className="p-info">
+                      <span className="p-name">
+                        {p.name}
+                        {isCurrent && <span className="dot">●</span>}
+                        {isLord && p.isAlive && <span className="lord-tag">主</span>}
+                        {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
+                          <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
                         )}
-                      >
-                        {m.label}
-                        {m.count > 1 && <span className="marker-count">{m.count}</span>}
+                        {isGuozhan && p.faction && (
+                          <span className={`faction-badge ${p.faction}`}>
+                            {FACTION_NAME[p.faction]}
+                          </span>
+                        )}
+                        {/* 横置（铁索连环状态）：公开信息，与自己的武将面板上那枚「横」同款。
+                            以前对手这一行**没有任何横置标识**——「谁被铁索连上了」只能靠日志认
+                            （用户 2026-09-24 报的正是这条）。 */}
+                        {p.chained && <ChainBadge bind={bindTip} />}
                       </span>
-                    ))}
-                  </div>
-                )}
-                {/* 武将牌上的牌区（公开信息，与自己的面板**同一份列表**）：田/权/创/节…
-                    以前对手这里看不到，于是「对方陆逊有几张节（满 3 就不再被谦逊挡）」这类
-                    关键信息只能靠日志猜（真机验收时发现）。 */}
-                {zoneChips.length > 0 && (
-                  <div className="p-zones">
-                    {zoneChips.map((c) => (
-                      <span
-                        key={c.key}
-                        className="zone-chip"
-                        {...bindTip(c.label.split('·')[0]!, c.tip)}
-                      >
-                        {c.label}
+                      <span className="p-hp">
+                        {Array.from({ length: p.maxHp }).map((_, i) => (
+                          <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
+                        ))}
                       </span>
-                    ))}
+                      <span className="p-hand">手 {p.handCount}</span>
+                    </span>
                   </div>
-                )}
-                {/* 判定区 */}
-                {p.judgment.length > 0 && (
-                  <div className="p-judge">
-                    {p.judgment.map((c) => (
-                      <span
-                        key={c.id}
-                        className="judge-icon"
-                        {...bindTip(cardShortName(c), cardDescription(c, snapshot.mode))}
-                      >
-                        {cardShortName(c)}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {!p.isAlive && <div className="p-dead">阵亡</div>}
-              </button>
+                  {/* 装备区（花色 + 点数 + 牌名，与自己的面板同一个组件） */}
+                  {p.equipment.length > 0 && (
+                    <div className="p-equip">
+                      {p.equipment.map((c) => (
+                        <EquipChip key={c.id} card={c} mode={snapshot.mode} bind={bindTip} />
+                      ))}
+                    </div>
+                  )}
+                  {/* 国战标记（公开信息，用户 2026-09-21 要求）：看得到对手手上还有哪些标记 */}
+                  {p.markers && p.markers.length > 0 && (
+                    <div className="p-markers">
+                      {p.markers.map((m) => (
+                        <span
+                          key={m.id}
+                          className={`marker-chip mark-${m.id}`}
+                          {...bindTip(
+                            `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
+                            MARKER_DESC[m.id] ?? '',
+                          )}
+                        >
+                          {m.label}
+                          {m.count > 1 && <span className="marker-count">{m.count}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* 武将牌上的牌区（公开信息，与自己的面板**同一份列表**）：田/权/创/节…
+                      以前对手这里看不到，于是「对方陆逊有几张节（满 3 就不再被谦逊挡）」这类
+                      关键信息只能靠日志猜（真机验收时发现）。 */}
+                  {zoneChips.length > 0 && (
+                    <div className="p-zones">
+                      {zoneChips.map((c) => (
+                        <span
+                          key={c.key}
+                          className="zone-chip"
+                          {...bindTip(c.label.split('·')[0]!, c.tip)}
+                        >
+                          {c.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* 判定区 */}
+                  {p.judgment.length > 0 && (
+                    <div className="p-judge">
+                      {p.judgment.map((c) => (
+                        <span
+                          key={c.id}
+                          className="judge-icon"
+                          {...bindTip(cardShortName(c), cardDescription(c, snapshot.mode))}
+                        >
+                          {cardShortName(c)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {!p.isAlive && <div className="p-dead">阵亡</div>}
+                </button>
+                {/* 技能提示（口径①~④）：他刚发动的技能浮在他这张牌右下角——那块地方是布局上
+                    天然的留白（名字/血量在左上、装备与判定从左边排起），不盖手牌、不盖血量。
+                    点它展开完整描述；`skillTips.ts` 判据说了什么时候收（结算完 + 兜底超时）。 */}
+                {skillTipHere && <SkillTipChip {...skillTipHere} />}
+              </div>
             );
           })}
         </div>
@@ -2036,6 +2073,9 @@ export function Game() {
             // 连环状态的进入/解除动画与传导脉冲（用户 2026-09-24）：自己这一格也要有——
             // 我就是横置角色时，传导到我这一棒同样按引擎顺序闪（`chainFx.hits[me.seatId]`）。
             chainFx={{ cls: chainFx.cardClass[me.seatId], hit: chainFx.hits[me.seatId] }}
+            // 技能提示（用户 2026-09-25 口径①~④）：轮到我发动的技能同样浮在自己面板上，
+            // 用的是与对手那张牌上**完全同一个**组件与判据（只是位置换成面板右下角）。
+            skillTip={skillTipOf(me.seatId) ?? undefined}
             targetable={canPickSelf}
             picked={
               !!selected?.picked.includes(me.seatId) || !!skillMode?.targetIds.includes(me.seatId)

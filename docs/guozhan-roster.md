@@ -8804,3 +8804,297 @@ playwright/puppeteer。改用**本机 Chrome 153 headless + CDP**（`--remote-de
 - `pnpm build`：全绿（server Done、client `✓ built in 1.44s`）。
 - **未跑**仓库级 `pnpm format`（避免整片重排既有文件）；新增的 4 个文件（`chainState.ts` /
   `chainState.test.ts` / `ChainFx.tsx` / `ChainFx.test.tsx`）单独过过 prettier。
+
+---
+
+## §5.212 技能发动/触发的统一展示 UI（用户 2026-09-25 口径）
+
+### 一、用户原文（逐字）
+
+> 缺陷：其他角色发动技能时，缺少技能名称和技能效果展示。当前其他玩家发动或触发武将技能时，
+> 本地玩家往往只能看到最终结果，无法直观判断具体发动了什么技能以及技能正在执行什么效果。
+> 应增加统一的技能展示 UI：① 技能发动或触发时，在对应角色附近短暂显示技能名称；② 点击技能
+> 名称或技能提示时，可查看完整技能描述；③ 对于正在等待玩家响应或正在进行多步结算的技能，
+> 应保持必要的当前技能提示；④ 技能结算完成后自动收起，避免长期遮挡牌桌。该机制应由**统一的
+> 技能事件系统**驱动，而不是为每个武将分别制作提示逻辑。
+
+### 二、改动清单（文件:行号，行号为本次提交时）
+
+**引擎 / 协议（统一的技能事件源）**
+
+| 文件 | 行 | 改了什么 |
+|---|---|---|
+| `packages/protocol/src/views.ts` | 448–475 | 新增 `SkillFxView`：`{ seq, seatId, skillId?, skillName, settling }`（只带「谁、哪个技能、还在不在结算」，**不带牌面、不带武将牌信息**） |
+| 同上 | 493–500 | `Snapshot.skillFx?: SkillFxView \| null` |
+| `packages/engine/src/model.ts` | 1000–1014 | `GameState.skillFx` / `skillFxSeq`（瞬时视图 + 自增号） |
+| 同上 | 1504–1620 | `SkillCtx` / `withSkillCtx`（声明「这段代码是哪个技能在跑」）、`announceSkill`（写事件）、`isWaitingPending`（settling 判据）、`syncSkillSettling`、`announceSkillOnAsk`；`pushLog` 里 `kind === 'skill'` 时顺手写事件 |
+| `packages/engine/src/engine.ts` | 384–387 | `setPending`：询问产生 ⇒ `announceSkillOnAsk`（技能发起的询问＝这个技能真发动了）+ `syncSkillSettling` |
+| 同上 | 1125–1131 / 1454–1459 / 2206–2210 / 3627–3630 | **四处钩子派发点**（`runHooks` / `runHooksFrom.step` / 判定链 `beforeJudge` / 拼点链 `pindianRevealed`）用 `withSkillCtx` 声明技能身份 |
+| 同上 | 12016–12020 | 主动技：`onUseSkill` 里 `skill.execute` 外面包一层 `withSkillCtx({ seatId, skillId, skillName })` |
+| 同上 | 5803–5804 | `applyIntentInner` 开头的**让位规则**：`if (state.skillFx && !state.skillFx.settling) state.skillFx = null` |
+| 同上 | 12479–12481 | 建局时初始化 `skillFx: null, skillFxSeq: 0` |
+| `packages/engine/src/snapshot.ts` | 145–150 | 下发 `skillFx`（**每一份**快照都带，含 `settling`） |
+
+**界面（判据 / 组件 / 接线 / 样式）**
+
+| 文件 | 行 | 改了什么 |
+|---|---|---|
+| `packages/ui/src/skillTips.ts` | 全文件（新） | 纯判据：`nextSkillTip`（事件流 → 该显示什么、什么时候收）、`skillTipRemainingMs`、`skillTipDesc`（描述从哪来）、4 个时长常量 |
+| `packages/ui/src/components/SkillTip.tsx` | 全文件（新） | `useSkillTip`（判据 + 定时器）、`SkillTipChip`（技能名一枚 + 点开说明 + 「结算中」） |
+| `packages/ui/src/pages/Game.tsx` | 48–49, 383–402 | 接线：`useSkillTip(snapshot?.skillFx ?? null)` + `skillTipOf(seat)` |
+| 同上 | 1313–1433 | 对手那一行包一层 `.player-slot`，把提示挂在 `<button>` **外面**（禁用按钮的子元素收不到鼠标事件，点不开） |
+| 同上 | 2078 | 自己那一格（`HeroPanel`）同样接上 |
+| `packages/ui/src/components/HeroPanel.tsx` | 27–28, 88–105, 278–286 | 新增 `skillTip` 口 + 渲染（与自己那一格共用同一个组件） |
+| `packages/ui/src/styles.css` | 2556–2712 | `.player-slot` / `.skill-tip` / `.st-*` 一整块 + 窄屏与 `prefers-reduced-motion` 两段 |
+
+**用例**
+
+| 文件 | 条数 | 钉的是什么 |
+|---|---|---|
+| `packages/engine/tests/skill-fx.test.ts` | 9 | 主动技/触发技/「先问再结算」三类各自写下事件；同一事件对**所有人**下发；只带该带的字段；**注册了钩子但没发动不写**；让位与保持 |
+| `packages/ui/src/skillTips.test.ts` | 16 | 口径①②③④ 的判据直测（基线不播、换技能立刻替换、settling 保持、超时兜底、点开后不自动收、描述取本模式那一份） |
+| `packages/ui/src/components/SkillTip.test.tsx` | 16 | 渲染 + 源码/样式守门（技能名与座次属性、`role=status`、点开画说明、`结算中`、不吃点击、说明块往下挂、`prefers-reduced-motion`、由 `snapshot.skillFx` 驱动而非解析日志） |
+
+### 三、事件源怎么设计的（为什么不用日志正则 / 为什么用瞬时视图）
+
+- **结构化事件，不解析中文**：新增 `Snapshot.skillFx`（瞬时视图），界面**只**读它——`Game.tsx` 里
+  没有任何「按【】截技能名」的代码（`SkillTip.test.tsx` 有反向守门）。
+- **写入点唯一**：`pushLog` 收到 `kind === 'skill'` 且此刻有**技能身份**（`withSkillCtx` 在钩子派发 /
+  主动技执行处声明）时写一条；另外 `setPending` 里「这个询问是某个技能发起的」也写一条。
+  于是**所有武将（含将来新增的）自动生效**，不必逐个武将写提示逻辑（口径④「统一」这条的落点）。
+- **为什么这两条判据**：只认「钩子被派发」会**误报**——【咆哮】的钩子挂在 `useCard` 上，但只在
+  自己第 2 张【杀】时才真的发动（第 1 张也派发、也什么都不做）；只认「写了日志」又会**太晚**——
+  【刚烈】【反馈】【洛神】那类是**先问再写日志**，而口径③要的正是「等待响应期间保持提示」。
+  两条合起来：**有副作用（写了技能日志 / 发起了询问）才算发动**，`skill-fx.test.ts` 两个方向都钉了。
+- **为什么是瞬时视图而不是「给日志条目加 extra」**：日志条目要带 `skillId` 就得改 300+ 处
+  `pushLog(...)` 调用（必漏），而「谁在跑」这个信息是**动态作用域**（钩子→嵌套钩子→续接），
+  用 `withSkillCtx` 声明 + `pushLog` 统一盖章能一处收口；且日志是发给全场的文本流，界面还得自己
+  去重/排队，而瞬时视图天然只有一个「当前」。生命周期沿用仓库先例（`pindianView` / `chainView`）。
+- **生命周期**：下一次 intent 时，**已经结算完**（`settling === false`）的让位；`settling`（＝此刻有
+  流程在等某个角色回答，`pending` 非出牌占位）为真就留着——这是口径③的引擎侧判据。界面再叠一层
+  兜底超时（基础 4.2s / 保持每次续 2.6s / 单条最多 15s / 点开后最多 30s），保证**一定会收**（口径④）。
+  界面**拿不到别人的询问**（`prompt` 是按观看者构建的，别人的一律 null），所以 `settling` 只能由
+  引擎算——这也是它必须放进快照的理由。
+- **不泄露暗将**：事件只带「发动者座次 + 技能名」，不带武将牌信息；而且引擎只会记**真的发动过**
+  的技能。界面查描述是**按名字查字典**（先用该角色**已明置**武将牌上的那一份，模式正确；查不到
+  再按名在名册里找），不会反推出「这是谁的技能」。描述**复用**引擎的 `Hero.skills[].desc`，
+  没有新造规则文本。
+
+### 四、真机验收（四题，走的是**本机 headless Chrome + CDP**）
+
+- **环境**：服务端 8080、前端 5173（沿用会话里已在跑的那两个）；浏览器用
+  `C:/Program Files/Google/Chrome/Application/chrome.exe --headless=new --remote-debugging-port=9333`
+  （ZCode 的 IAB 在**子代理**里被拒：`Browser is not available in subagent`，所以走 CDP）。
+  驱动脚本沿用上一轮的 `%TEMP%/sgs-verify/cdp.mjs`（`evaluate` 派发 `.click()`，每次 < 2.5s）。
+- **现场**：新建房间（混战 + 选将不限）→ 浏览器侧（本地玩家）选张飞、脚本侧（陪练）选**甄姬**
+  `node scripts/verify-skill-tip.mjs`（**新写的**最小 WS 客户端：`scripts/bot.mjs` 只出牌、不发技能，
+  构造不出这条现场；它专做「让另一个角色发动技能」，被询问时故意拖 `HOLD_MS=5000` 才回答）。
+  甄姬的【洛神】在**准备阶段自动触发**，于是「另一个角色发动技能」「多步结算 / 等待响应」两条
+  在同一条流程里都能观察到。
+
+| 题 | 做法 | 观察到的证据 |
+|---|---|---|
+| (a) 另一个角色的技能名浮现在他附近 | 陪练回合开始 | DOM：`.skill-tip[data-seat="s?1"][data-skill="洛神"]`；元素矩形 `x=467..519, y=57..78` 落在该角色那张牌（`325..515 × 8..82`）内 → `chipInsideCard=true`；无障碍区文本「技能陪练 发动【洛神】」。截图 `tip-live-clip.png` / `tip-live-narrow-full.png` |
+| (b) 点它看完整描述 | `evaluate` 派发 `.st-name.click()` | `aria-expanded="true"`、根节点多一个 `open` 类、`.st-desc` 出现，内容是引擎武将文本「准备阶段，你可以进行判定：若为黑色，你获得此牌，然后你可以重复此流程。」（240×52，两行） |
+| (c) 等待响应 / 多步结算期间保持 | 陪练被问「是否发动【洛神】？」后**故意停 5s** | 采样时间线：`t=6053ms` 出现（`settling=true`，文案带「结算中」）→ `t=11055ms`（**整 5s**，＝陪练回答的时刻）才变成 `settling=false`。同一窗口的截图里能直接读到「洛神 结算中」 |
+| (d) 结算完自动收起 | 同上，继续采样 | `t=11055` settling 变 false → `t=12454` 提示消失：**恰好 1400ms**，等于判据里的 `SKILL_TIP_TAIL_MS`（结算后再留一会儿让最后一步看得到，然后自动收） |
+
+补充验证（口径③「不遮挡、不抢事件」）：提示矩形与该行手牌（`y≈1041`）、自己血量勾玉（`y≈1104`）、
+`.dock` **几何上都不相交**；`elementFromPoint` 在技能名中心拿到 `BUTTON.st-name`（**可点**）、
+在浮层之外的牌桌位置拿到的是原本的元素；窄屏 390×844 下 `documentElement.scrollWidth=375 ≤ 390`
+（**无横向溢出**），提示与说明块 `onScreen=true`（截图 `tip-live-narrow-full.png`）。
+`prefers-reduced-motion` 下动画全关（样式守门用例）。
+
+### 五、没验到的 / 已知取舍
+
+- **多排对手（3 人以上）时说明块的方向**：真机只跑了 2 人（一排）。说明块现在是**从技能名往下挂**
+  （`top: calc(100% + 4px)`）——第一排对手的牌在屏幕顶端，往上挂会把技能名自己顶出视口
+  （实测 `y=-17`，已修）。多排时它会盖到下一排那张牌的顶部一小块（它是 `pointer-events: none`，
+  不抢点击、且会自己收起），**没有**在多排现场肉眼复核；也没做「空间不够就自动翻方向」的自适应。
+- **暗置武将的技能**：只按引擎给的事件显示，理论上不会泄露（引擎只记真发动过的技能）；但真机
+  验收跑的是**已明置**的甄姬，**没有**构造「暗将发动技能时，别的玩家看到的提示是否泄露」这条现场。
+- **别人等待期间的提示**（口径③的极端情形）：真机验的是「陪练自己等待」。反过来的情形
+  （**我**在等别人答，提示留在别人身上）只有引擎侧的 `settling` 单测，没有真机复核。
+- **多人同时发动技能**：瞬时视图**同时只留一条**（后一条覆盖前一条）。同一次 intent 里连续发动
+  两个技能时，界面只会看到最后一条——这是「瞬时视图」这个选择的固有取舍（换来的是不需要去重、
+  不需要排队，也不会因为日志刷屏而乱跳）；真机**没有**做这种连发现场。
+- 仓库级 `pnpm format` **没跑**（按约定只手工格式化新增文件）。
+
+### 六、门禁（真实结果）
+
+- `pnpm test`：全绿（engine 26 文件 / **1222** 条，含 `fuzz.test.ts` 6 条与 `smoke.test.ts` 的
+  「200 局（固定种子）都跑到分出胜负」「200 局不出现重复牌 / 长期缺席」「60 局任何一步都有 pending」；
+  ui 24 文件 / **196** 条，其中本次新增 **32** 条；server 37 条）。**没有**放宽任何断言。
+- `pnpm typecheck`：全绿（protocol / engine / ui / server / client 全部 Done）。
+- `pnpm build`：全绿（server Done、client `✓ built in 1.57s`）。
+- 新增用例里标了「改动前 ✗」的断言在本特性落地前必红（那时快照里没有 `skillFx` 字段、
+  `skillTips.ts` / `SkillTip.tsx` 也不存在）。
+
+### 七、交接后的续接（§5.213 交接 → 本轮）：覆盖补漏 + 独立复验
+
+> **先更正 §5.213 的一条**：交接说「没做过浏览器真机验收」，**不准确**——上一轮的验收确实做了，
+> 证据在 `%TEMP%/sgs-verify/`（`skilltip-a/b/c-*.png` 六张截图 + `cdp.mjs`，含 **390×844 那张窄屏**
+> 截图；本章 §四 引用的文件名 `tip-live-*.png` 与磁盘上的实际名字不一致，内容一致）。
+> 本轮**又独立复跑了一遍**（这次 ZCode 的 IAB 在**主会话**里可用，没走 CDP），并补了一处漏网。
+
+#### ① 覆盖补漏（本轮唯一的功能性代码改动）
+
+| 文件 | 改动 |
+|---|---|
+| `packages/engine/src/heroes.ts`（甄姬·国战版 `turnStart`、许褚·国战版 `drawPhaseEnd`） | 两个钩子补上 `skillId`（`'洛神'` / `'裸衣'`） |
+| `packages/engine/tests/skill-fx.test.ts` | 新增 **2** 条：**覆盖守门**（所有武将、所有模式的钩子都必须声明 `skillId`）+ 国战暗置甄姬预亮【洛神】的询问与下发事件 |
+
+**为什么必须补**：`HookRegistration.skillId` 不只是提示的入口——它同时是**国战预亮名单**的键
+（`prelitableSkills` 的 `hookedNames`）、主将/副将技的过滤键（`collectTimingHooks`）。漏了它，
+国战版【洛神】【裸衣】在暗置时**既不可预亮、预亮了也不问、界面也不提示**（改前实测：
+`prelightSkill` 意图被直接拒「该技能不能预亮」——这就是新用例红的原文）。补上之后它们走 §5.10
+记的正常通路（预亮 → 时机询问「是否明置【X】并发动？」），提示那一半也顺带接上了。
+
+#### ② 本轮独立复验（口径①~④）
+
+- **现场**：`pnpm dev` 起服务端 8080 / 前端 5173（沿用会话里已在跑的那两个）；房间
+  3206（陪练＝**甄姬**，走【洛神】的「自动触发 + 多步结算」）与 1247（陪练＝**孙权**，走**主动技**
+  【制衡】的同步结算）；陪练都是 `scripts/verify-skill-tip.mjs`，本机浏览器操本地玩家。
+- **① 技能名浮现在发动者附近**：DOM ``.skill-tip[data-seat="1"][data-skill="洛神"]``；矩形
+  `x=427.5..526, y=57..78` 落在陪练那张牌 `340..530 × 8..82` 内。自己发动时同一组件挂在
+  **`.hero-panel`（自己那一格）**里（采样器读到 `挂载:hero-panel(自己)|x:1135,y:686`）。
+- **② 点开完整描述**：`evaluate` 派发 `.st-name.click()` 后 `aria-expanded="true"`、根节点多
+  `open` 类、`.st-desc` 出现，内容是引擎武将文本（制衡：`出牌阶段限一次，你可以弃置任意张牌，
+  然后摸等量的牌。`）。⚠️ React 18 的更新是**异步**的：点完当帧读 DOM 会读到旧状态（本轮先踩到，
+  隔一次调用再读才是对的）。
+- **③ 等待响应 / 多步结算期间保持**：采样时间线 `settling:true` 从出现一直保持到陪练回答的
+  那一刻（陪练故意拖 `HOLD_MS=6000`），期间文案带「结算中」。
+- **④ 结算完自动收起**：采样时间线 `none → 3|洛神|settling:true → 3|洛神|settling:false → none`，
+  最后一段 = **1410ms**，与判据里的 `SKILL_TIP_TAIL_MS = 1400`（+40ms tick + 100ms 采样粒度）吻合；
+  全程**没有人碰界面**。点开过的（`pinned`）那条按 `SKILL_TIP_PIN_MAX_MS = 30s` 兜底，本轮也自然
+  观察到了它到点自己消失（第一次截图晚了，回来已是空）。
+- **不遮挡 / 不抢事件**（口径③）：容器与说明块 `pointer-events: none`、只有技能名那一枚 `auto`；
+  `elementFromPoint` 打在说明块中心拿到的是**它底下的手牌**（`BUTTON.card`），打在技能名中心才是
+  提示自己。自己那一格（`.hero-panel`）同样成立。
+- **窄屏与横屏**：**390×844** 下提示与说明块都在视口内（`x73..313, y723..772`），说明块盖不到手牌
+  （手牌从 y≈790 起）；**844×390**（横屏手机，`.player-slot` 换成了 flex 项目，是本次最需要复核的
+  一处布局风险）`documentElement.scrollHeight ≤ innerHeight`（**不用滚动就能看见全部手牌**），
+  提示也在视口内。截图见会话产物（`sess_470ff373`：桌面 1280×720 / 390×844 / 844×390 三张）。
+
+### 八、本轮补记的已知取舍（接到本章 §五 的清单后面）
+
+- **转化类技能不产生提示**（【武圣】【龙胆】【倾国】【奇袭】…）：它们走的是 `playCard` 的**转化**
+  路径，既不写 `kind === 'skill'` 日志、也没有技能身份（`withSkillCtx`），两条判据都不触发。
+  本轮真机实测：用【武圣】把一张红色【闪】当【杀】打出去，牌局日志只有
+  「看看技能 对 陪练 使用了【杀】。」，**界面上没有任何提示**。
+  这是**口径问题**（「转化」算不算口诀①的「发动技能」？），按仓库规矩（规则文本/口径不猜）
+  **没有实现**，记为待核对。要补的话落点也只有一个（转化解析处），不破坏「统一事件源」这条约束。
+- **`.player-slot` 的 `min-width` 沿用桌面 `.player` 的 150px**：横屏手机那条媒体查询里的
+  `.player { min-width: 130px }` 现在只作用在槽**内**的卡上，不再决定行宽。8 人局 + 矮屏理论上会
+  更早换行；本轮只在「单人对手 + 844×390」下看过（`scrollNeeded=false`），多人矮屏**没看过**。
+- **展开的说明块 `pointer-events: none`** ⇒ 触屏上**滚不动**长描述，超出 `max-height`（150px/28vh）
+  的部分看不到（现有技能文本都短，没遇到）。要允许滚动就得让它吃触摸事件——与「不抢牌桌」冲突，
+  留给用户定。
+
+### 九、本轮的已知未修小 bug（已修）
+
+`packages/engine/src/legal.ts:814` 附近的【火攻】第二阶段提示把内部英文花色值拼进了用户文案
+（真机显示「弃一张黑色club花色手牌」）。**已修，单独记在 §5.214**（本轮第二个提交）。
+
+### 5.213 交接：上一轮留的交接（**已由本轮接手并结清，见 §5.212 七～九；下面是原文，保留备查**）
+
+> 上一轮会话上下文用尽，用户决定**开新会话**继续。这一节是交接：哪些是未完成的在制品、
+> 哪些是已定口径的待办、哪些是欠账。**新会话请从这里接，不要凭印象重做已完成的东西。**
+>
+> ⚠️ **本轮结论（2026-09-25 续接会话）**：这一节里的「在制品」已核实并收尾——
+> ① 真机验收**上一轮其实做过**（`%TEMP%/sgs-verify/` 里的 `skilltip-*.png` 六张 + `cdp.mjs`），
+> 本轮又独立复跑了一遍（IAB 在**主会话**里可用），并把漏掉的两处 `skillId` 补上，见 §5.212 §七；
+> ② 手机窄屏截图**已拿到**（上一轮的 + 本轮的 390×844/844×390 各一张）；
+> ③ `legal.ts` 的【火攻】文案 bug **已修**，见 §5.212 §九；
+> ④ 仍然欠着的是**身份局 / 2v2 真机**与 §5.207–5.209 那串待核对（本轮没动）。
+
+#### 一、在制品（**已 git add，未提交，未经我验收**）
+
+「其他角色发动技能时，显示技能名 + 可点开完整描述」（用户 2026-09-25 报的缺陷）由子代理
+实现到一半就被取消，改动全部 staged 在索引里（工作区＝索引），**没有跑过门禁、没有子代理报告**：
+
+```
+（交接时实测：这套 staged 改动的 `pnpm test` / `pnpm typecheck` / `pnpm build` **都是绿的**
+——engine 1222 / server 37 / ui 196；但**没做过浏览器真机验收，也没有子代理报告**，
+所以「绿」只说明没把已有测试弄红，不代表这个需求做对了。）
+
+M packages/engine/src/engine.ts, model.ts, snapshot.ts   （技能事件的引擎侧）
+A packages/engine/tests/skill-fx.test.ts
+M packages/protocol/src/views.ts
+M packages/ui/src/pages/Game.tsx, components/HeroPanel.tsx, styles.css
+A packages/ui/src/components/SkillTip.tsx + SkillTip.test.tsx
+A packages/ui/src/skillTips.ts + skillTips.test.ts
+A scripts/verify-skill-tip.mjs
+```
+
+新会话的第一件事：**读这份 diff 判断要不要留**（`git diff --cached`）。要留就补真机验收
+（四题见下）＋ 补 §5.212 文档小节 ＋ 过门禁再提交；判断不靠谱就
+`git restore --staged --worktree .` 丢掉重做（**别直接提交没验过的东西**）。
+
+用户对这个需求的口径原文（四要点）：技能发动/触发时在**对应角色附近**短暂显示技能名；
+点击技能名/提示可看**完整技能描述**；正在**等待响应或多步结算**中要保持必要的当前技能提示；
+**结算完成后自动收起**，避免长期遮挡牌桌。**必须由统一的技能事件系统驱动，不能为每个武将
+各写一份提示逻辑**（也不要靠正则去解析中文日志）。
+
+#### 二、待办欠账（口径已定，只差真机）
+
+1. **手机窄屏截图**：连环特效与技能提示在 390×844 下的**截图**始终没拿到（浏览器工具在该
+   尺寸下截图超时），只有 DOM 测量。桌面截图已有。
+2. **身份局 / 2v2 真机**：出牌两步流程、连环特效、技能提示都只在**国战**里真机点过。
+3. **§5.207 / §5.208 / §5.209 的待核对清单**：锁定技钩子的时机粒度（不预判 handler 内条件）、
+   明置被祸水/建安挡住时预亮技能仍结算、兵粮「距离 1 以内」的逐字出处、【借刀杀人】武器持有者
+   能否是自己、【散谣】【挑衅】【离间】【结姻】的条件、**「杀」的本地文案缺「其他」二字**。
+
+#### 三、已知未修的小 bug
+
+`packages/engine/src/legal.ts:814` 附近：【火攻】的提示把内部英文花色拼进了用户文案
+（真机上显示「弃一张黑色club花色手牌」）。改文案即可，注意别动规则判据。
+
+#### 四、真机验收的现成经验（省得重新踩）
+
+服务端 8080 / 前端 5173 用 `pnpm dev` 起（tsx watch 与 Vite HMR 会自动加载改动）。
+浏览器工具：**IAB 在子代理里会被拒**（`Browser is not available in subagent`）⇒ 用本机
+headless Chrome + CDP 驱动同一前端（可参考 `scripts/` 与本仓库历史里的验证脚本）；
+Playwright 的 `click()` 在游戏页会**卡死**（rect 稳定、elementFromPoint 就是按钮本身）⇒
+改用 `evaluate` 在页面里派发 `.click()`，**每次 evaluate 控制在 ~2.5 秒内**（工具上限 3 秒）；
+截图用 `nodeRepl.emitImage(await tab.screenshot())` 在同一格发出。造现场：对局右侧
+**「测试场景」开发面板**（给指定角色发牌到 手牌/装备区/判定区，日志打 `TEST_DEAL_OVERRIDE`）、
+选将阶段勾「选将不限（测试用）」＋「全扩展2026」预设；陪练
+`(ROOM=<房号> SEAT=2 NAME=陪练 PASSIVE=1 nohup node scripts/bot.mjs > /tmp/bot.log 2>&1 &)`。
+
+## §5.214 【火攻】第二阶段提示把内部英文花色值泄漏进用户文案（用户 2026-09-25 交接记录的小 bug）
+
+### 一、缺陷
+
+上一轮交接（§5.213 §三）记下来的已知未修小 bug：真机上【火攻】走到第二阶段时，提示显示的是
+
+> 【火攻】：弃一张黑色**club**花色手牌，或弃权
+
+`ctx.revealedSuit` 是引擎内部的**英文枚举值**（`spade/heart/club/diamond`），被直接拼进了给玩家看的
+文案里。判据本身是对的（那时该弃的就是梅花），只有文案错。
+
+### 二、改了什么
+
+| 文件:行号 | 改动 |
+|---|---|
+| `packages/engine/src/legal.ts:9` | 从 `@sgs/protocol` 引入 `SUIT_NAME`（全仓库**唯一一份**中文花色名，卡面/描述本来就用它） |
+| 同上 `:814` | 文案改成 `【火攻】：弃一张${SUIT_NAME[ctx.revealedSuit]}手牌，或弃权`（顺带删掉「红色/黑色」前缀——`黑桃/红桃/梅花/方块`本身已经带颜色信息，玩家口径本来就这么说） |
+| `packages/engine/src/engine.ts:9878`（**同类第二处，顺带修的**） | 【傲才】多候选时的选项文案 `` `【${CARD_TYPE_NAME[c.type]}】${c.suit}${c.rank}` `` 同样把英文花色拼给了玩家（会显示成「【杀】spade5」）；改成 `` `【${cardLabel(c)}】` ``（protocol 的中文牌面，与日志/其它选项文案同一份） |
+
+**规则判据一行没动**：【火攻】下面那行 `suitSeenAs(state, player, c) === ctx.revealedSuit` 才是
+「该弃哪张」，文案只影响显示；【傲才】只改 `label`（选项 `id` 仍是牌的 id，`chooseOption` 那条路不变）。
+
+### 三、用例
+
+- `packages/engine/tests/huogong.test.ts`「第二阶段的提示用中文花色名，不出现内部枚举值」：
+  乙展示一张**梅花**手牌 → 轮到甲时 `buildPrompt(state, A).message` 必须含「梅花」、
+  且**不许**匹配 `/spade|heart|club|diamond/`（旧文案含 `club`，本用例改动前必红）。
+- `packages/engine/tests/engine.test.ts`（【傲才】多候选那组用例）：两个选项的 `label` 合起来必须含
+  「黑桃」「梅花」，且同样不许出现英文花色值。
+
+### 四、没验到的
+
+两处都只过了单测（引擎全量门禁见 §5.212 §六），**没有回真机复看**——本轮凑不出【火攻】现场
+（浏览器那一侧手上没有【火攻】）。同类排查是 `grep '\${.*[sS]uit'` 做的：查到的**两处都修了**
+（【火攻】文案、【傲才】选项文案），没有第三处。
+

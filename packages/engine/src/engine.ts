@@ -44,7 +44,10 @@ import {
   healPlayer,
   nextAliveSeat,
   pushLog,
+  announceSkillOnAsk,
+  syncSkillSettling,
   toDiscard,
+  withSkillCtx,
   type AttackContext,
   type ChainPending,
   type GameState,
@@ -376,6 +379,12 @@ export function setPending(state: GameState, next: GameState['pending']): void {
   const prev = state.pending;
   state.pending = next;
   state.pendingSeq++;
+  // 技能提示（用户 2026-09-25 口径①③）：**这个询问如果是某个技能发起的，那个技能就是发动了**
+  // ——先宣告再刷新 settling，于是提示一出现就带着正确的「还在结算中」。
+  announceSkillOnAsk(state);
+  // 技能提示的「还在结算中」跟着这一格走：有询问在等回答 ⇒ 保持；
+  // 回到出牌阶段的占位空位 / 槽空 ⇒ 结算完了。
+  syncSkillSettling(state);
   // 装上这一格＝这条流程开始拥有控制权：把此刻的槽快照记在它身上
   if (next) pendingFences.set(next, capturePendingCheckpoint(state));
   // 施工方案 Step 4.5/4.6：**所有**「询问生命周期推进」（被换掉 / 被释放成空）都在这里收口——
@@ -1114,7 +1123,11 @@ function runHooks(state: GameState, timing: Timing, player: Player, payload?: un
     api: makeSkillApi(state, { actor: player.seatId }),
   };
   for (const h of hooks) {
-    const res = h.handler(ctx);
+    // 统一的技能事件源（用户 2026-09-25 口径①~④）：这条钩子跑的时候写的技能日志
+    // 归到它名下（`pushLog` 里写 `state.skillFx`）。触发技的 `skillId` 就是中文名。
+    const res = h.skillId
+      ? withSkillCtx({ seatId: player.seatId, skillName: h.skillId }, () => h.handler(ctx))
+      : h.handler(ctx);
     if (res && res.cancel) return false;
   }
   return true;
@@ -1437,7 +1450,13 @@ function runHooksFrom(
       );
       return;
     }
-    const res = hooks[k]!.handler(hookCtx());
+    // 统一的技能事件源：这条钩子写的技能日志归到它名下（触发技的 skillId 就是中文名）
+    const stepHook = hooks[k]!;
+    const res = stepHook.skillId
+      ? withSkillCtx({ seatId: player.seatId, skillName: stepHook.skillId }, () =>
+          stepHook.handler(hookCtx()),
+        )
+      : stepHook.handler(hookCtx());
     if (res && res.cancel) {
       onDone(true);
       return;
@@ -2176,14 +2195,19 @@ function judgeHookStep(
   }
   const { player, hook } = list[k]!;
   const box: JudgeBox = { chain };
-  const res = hook.handler({
-    state,
-    player,
-    timing: 'beforeJudge',
-    // judgedId：这是**谁的**判定。天妒这类技能只认自己的判定牌
-    payload: { trick, judgeCard: cur, judgedId },
-    api: makeSkillApi(state, { judgeBox: box }),
-  });
+  // 统一的技能事件源：改判技（鬼才/鬼道…）写的技能日志归到它名下
+  const runJudgeHook = (): ReturnType<typeof hook.handler> =>
+    hook.handler({
+      state,
+      player,
+      timing: 'beforeJudge',
+      // judgedId：这是**谁的**判定。天妒这类技能只认自己的判定牌
+      payload: { trick, judgeCard: cur, judgedId },
+      api: makeSkillApi(state, { judgeBox: box }),
+    });
+  const res = hook.skillId
+    ? withSkillCtx({ seatId: player.seatId, skillName: hook.skillId }, runJudgeHook)
+    : runJudgeHook();
 
   /** 把这个钩子的决定应用掉，然后跑下一个钩子 */
   const finish = (): void => {
@@ -3580,24 +3604,29 @@ function askPindianRevealed(
         step(i + 1);
         return;
       }
-      hk.handler({
-        state,
-        player: cur.player,
-        timing: 'pindianRevealed',
-        payload: {
-          card: cur.card,
-          opponentCard: opponent?.card,
-          isInitiator: cur.isInitiator,
-        },
-        // ⚠️ resumeTo 必须给：鹰扬的询问会**挂起**，而拼点自己的「回到出牌阶段」是靠最后那次
-        // 扣牌询问的 returnTo 兜的——一旦中间挂起，那条兜底就不生效了（不传就停在 pending=null，
-        // 出牌方卡死，是这个引擎反复踩过的坑）。口径与拼点自己的询问一致：还给当前回合玩家。
-        api: makeSkillApi(state, {
-          pindianBox: box,
-          actor: cur.player.seatId,
-          resumeTo: state.seatOrder[state.turn.seatIndex],
-        }),
-      });
+      const runPindianHook = (): void => {
+        hk.handler({
+          state,
+          player: cur.player,
+          timing: 'pindianRevealed',
+          payload: {
+            card: cur.card,
+            opponentCard: opponent?.card,
+            isInitiator: cur.isInitiator,
+          },
+          // ⚠️ resumeTo 必须给：鹰扬的询问会**挂起**，而拼点自己的「回到出牌阶段」是靠最后那次
+          // 扣牌询问的 returnTo 兜的——一旦中间挂起，那条兜底就不生效了（不传就停在 pending=null，
+          // 出牌方卡死，是这个引擎反复踩过的坑）。口径与拼点自己的询问一致：还给当前回合玩家。
+          api: makeSkillApi(state, {
+            pindianBox: box,
+            actor: cur.player.seatId,
+            resumeTo: state.seatOrder[state.turn.seatIndex],
+          }),
+        });
+      };
+      // 统一的技能事件源：拼点技（鹰扬…）写的技能日志归到它名下
+      if (hk.skillId) withSkillCtx({ seatId: cur.player.seatId, skillName: hk.skillId }, runPindianHook);
+      else runPindianHook();
       // 钩子挂起了询问（鹰扬的「+3 还是 -3」）：等它选完再跑下一个
       if (state.pending?.kind === 'choice' || state.pending?.kind === 'pickCards') {
         pushResume(state, () => runOne(k + 1));
@@ -5768,6 +5797,11 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
   // 连环传导的瞬时视图同理（用户 2026-09-24 口径④）：动画播完就该让位——下一次有人做事
   // （任何 intent）时清掉。它每次传导都会重新写入（`queueChainSpread`），所以不会丢。
   state.chainView = null;
+  // 技能提示（用户 2026-09-25 口径①~④）：让位规则**比拼点区/连环窄一档**——
+  // 只收「上一次发动**已经结算完**」的那条（写完提示之后没人被问话过）；
+  // `settling` 为真说明这条技能的流程还卡在某个询问上（多步结算 / 等某人响应），
+  // 这时**留着**继续提示（口径③），由界面自己的兜底超时收尾。
+  if (state.skillFx && !state.skillFx.settling) state.skillFx = null;
   // 选将阶段优先处理（并发：所有未选将的座位同时可行动）
   // ⚠️ 选将期间只有**选将本身**的意图归 onPickHero；否则选将阶段里挂起的询问
   //    （例如双势力的「选势力」）永远答不了——任何意图都会被塞进 onPickHero 然后被它拒绝。
@@ -9841,7 +9875,9 @@ function onAocai(state: GameState, seatId: string): ApplyResult {
     state,
     seatId,
     '【傲才】：选择要用哪一张牌响应',
-    matches.map((c) => ({ id: c.id, label: `【${CARD_TYPE_NAME[c.type]}】${c.suit}${c.rank}` })),
+    // ⚠️ 用 `cardLabel`（protocol 里那唯一一份中文牌面）：`c.suit` 是内部英文枚举值，
+    //    直接拼会变成「【杀】spade5」（与 §5.214 修掉的【火攻】文案是同一类缺陷）
+    matches.map((c) => ({ id: c.id, label: `【${cardLabel(c)}】` })),
     (st, pl, picked) => {
       const chosen = st.deck.find((c) => c.id === picked);
       if (chosen) {
@@ -11980,8 +12016,11 @@ function onUseSkill(
   if (skill.oncePerGame) player.usedOncePerGame[skill.id] = true;
   // 注入引擎内部 API（避免 heroes→engine 循环依赖）
   const api = makeSkillApi(state, { resumeTo: player.seatId, actor: player.seatId });
-  // 执行
-  const result = skill.execute(state, player, intent, api);
+  // 执行（统一的技能事件源：主动技执行期间写的技能日志 ⇒ 界面浮现技能名，用户 2026-09-25 口径①）
+  const result = withSkillCtx(
+    { seatId: player.seatId, skillId: skill.id, skillName: skill.name },
+    () => skill.execute(state, player, intent, api),
+  );
   if (typeof result === 'string') {
     // 执行失败：回滚标记
     if (skill.oncePerTurn) player.flags.skillUsedThisTurn[skill.id] = false;
@@ -12439,6 +12478,9 @@ export function createGame(
     ongoingChain: null,
     chainView: null,
     chainSeq: 0,
+    // 统一的技能事件源（用户 2026-09-25 口径①~④）：刚发动/刚触发的技能（`pushLog` 里写入）
+    skillFx: null,
+    skillFxSeq: 0,
     damagedThisTurn: [],
     killedThisTurn: [],
     gainedFromDeckThisTurn: [],

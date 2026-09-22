@@ -1,6 +1,7 @@
 import type { CardType, MarkerId, PromptView } from '@sgs/protocol';
 import {
   CARD_TYPE_NAME,
+  SUIT_NAME,
   cardTargetAllowsSelf,
   isDelayedTrick,
   isEquipCard,
@@ -811,7 +812,9 @@ function buildRespondTrickPrompt(state: GameState, seatId: string, ctx: TrickCon
         message = `【火攻】：展示一张手牌或弃权`;
         legalCardIds = player.hand.map((c) => c.id);
       } else {
-        message = `【火攻】：弃一张${ctx.revealedSuit === 'heart' || ctx.revealedSuit === 'diamond' ? '红色' : '黑色'}${ctx.revealedSuit}花色手牌，或弃权`;
+        // ⚠️ 花色名走 `SUIT_NAME`（protocol 里那唯一一份中文名）：`ctx.revealedSuit` 是内部
+        //    英文枚举值，直接拼进文案会变成「弃一张黑色club花色手牌」（用户 2026-09-25 真机看到过）
+        message = `【火攻】：弃一张${SUIT_NAME[ctx.revealedSuit]}手牌，或弃权`;
         // 按**出牌人**的口径比花色（小乔·红颜：她的黑桃视为红桃）
         legalCardIds = player.hand
           .filter((c) => suitSeenAs(state, player, c) === ctx.revealedSuit)

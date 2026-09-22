@@ -142,5 +142,11 @@ export function toSnapshot(state: GameState, seatId: string): Snapshot {
     // 顺序只有引擎知道（见 `queueChainSpread` / `chainStep`），界面照 index 排动画。
     // 只带座次与序号，不带牌面。
     chain: state.chainView ?? null,
+    // 「刚发动 / 刚触发的技能」（用户 2026-09-25 口径①~④）：界面据此在**那个角色附近**浮现技能名，
+    // 点开看完整描述。写入点是 `pushLog`（`kind === 'skill'` 且此刻有技能身份，
+    // 见 model.ts 的 `withSkillCtx` / `announceSkill`）——**不认牌、不认武将**，
+    // 也不带任何武将牌信息，所以暗将的技能不会因为这条提示泄露。
+    // `settling` 一并下发：别人的询问不在我的 `prompt` 里，界面只能靠它判断「要不要保持提示」。
+    skillFx: state.skillFx ?? null,
   };
 }

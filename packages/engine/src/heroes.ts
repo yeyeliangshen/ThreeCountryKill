@@ -1098,6 +1098,10 @@ const ZHENJI: Hero = {
     hooks: [
       {
         timing: 'turnStart',
+        // ⚠️ skillId 不能漏：它同时是国战**预亮名单**（prelitableSkills）与主将/副将技过滤
+        //    （collectTimingHooks）的键，也是技能提示（SkillFxView）的入口。漏了它，
+        //    暗置时这个技能既不可预亮、预亮了也不问、界面也不提示——三者一起断。
+        skillId: '洛神',
         handler: (ctx) => askLuoshen(ctx, true),
       },
     ],
@@ -1374,6 +1378,8 @@ const XUCHU: Hero = {
     hooks: [
       {
         timing: 'drawPhaseEnd',
+        // ⚠️ skillId 不能漏（同【洛神】国战版）：预亮名单 / 主将技过滤 / 技能提示都认它
+        skillId: '裸衣',
         handler: (ctx) => {
           if (ctx.player.hand.length === 0) return;
           ctx.api.askChoice(

@@ -8,6 +8,7 @@ import type {
   PindianView,
   PublicPoolView,
   ChainSpreadView,
+  SkillFxView,
   Faction,
   GameMode,
   LogEntry,
@@ -999,6 +1000,18 @@ export interface GameState {
   chainView?: ChainSpreadView | null;
   /** 传导视图的自增号（`ChainSpreadView.seq`）：界面靠它认出「新的一次传导」 */
   chainSeq: number;
+  /**
+   * **刚发动 / 刚触发的技能**（`SkillFxView`，用户 2026-09-25 口径①~④）。
+   *
+   * 写入口**唯一**：`pushLog` 收到 `kind === 'skill'` 且此刻有技能身份（`withSkillCtx`，
+   * 钩子派发 / 主动技执行处声明）时写一条——见 model.ts 的 `announceSkill`。
+   * 生命周期与拼点区/连环不同：不是「下一次 intent 一律清」，而是
+   * 「下一次 intent 时，**已经结算完**（`settling === false`）的才让位」——
+   * 用户口径③要求「等待响应／多步结算期间保持提示」（见 applyIntentInner）。
+   */
+  skillFx?: SkillFxView | null;
+  /** 技能视图的自增号（`SkillFxView.seq`）：界面靠它认出「新的一次发动」 */
+  skillFxSeq?: number;
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];
@@ -1492,8 +1505,116 @@ export interface LogExtra {
   action?: string;
 }
 
+/**
+ * 「此刻正在跑哪个技能」——**统一的技能事件源**（用户 2026-09-25 口径①~④）。
+ *
+ * 用法（引擎内部）：在**每一个**技能的执行点上用 `withSkillCtx` 声明身份——钩子派发
+ * （`runHooks` / `runHooksFrom` / 判定链 / 拼点链）与主动技执行（`onUseSkill`）。
+ * 声明之后，该技能在这段代码里写的 `kind === 'skill'` 日志会顺手把结构化信息
+ * （谁 / 技能名 / 还在不在结算）写进 `state.skillFx` 下发（见 `pushLog`）。
+ *
+ * 为什么挂在 `pushLog` 上而不是逐处调用：全仓库有 300+ 处技能日志，逐个改必漏；
+ * 而且「写了技能日志」本身就是「这个技能真的发动了」的口径——注册了钩子但没发动的技能
+ * （例如【咆哮】只在自己的第 2 张【杀】上生效）不会误报。
+ *
+ * 嵌套（钩子里又触发别人的技能）靠栈式保存/还原隔离，同一次发动只写一条提示。
+ */
+export interface SkillCtx {
+  /** 发动者座次（提示贴谁身上） */
+  seatId: string;
+  /** 技能拼音 id（只有主动技有） */
+  skillId?: string;
+  /** 技能中文名 */
+  skillName: string;
+  /** 本次发动是否已经写过提示（同一次发动里的多条日志只写一条） */
+  announced?: boolean;
+}
+
+let activeSkillCtx: SkillCtx | null = null;
+
+/**
+ * 声明「接下来这段代码是我在跑」：期间写的技能日志都归到这个技能名下。
+ *
+ * ⚠️ 必须栈式还原（try/finally）：钩子里可能触发别人的钩子（伤害 → 卖血技），
+ *    不还原就会把内层技能的日志记到外层技能身上。
+ */
+export function withSkillCtx<T>(ctx: SkillCtx, fn: () => T): T {
+  const prev = activeSkillCtx;
+  activeSkillCtx = ctx;
+  try {
+    return fn();
+  } finally {
+    activeSkillCtx = prev;
+  }
+}
+
+/**
+ * 记一条「技能发动」事件（瞬时视图）：界面上那个角色的附近会浮现技能名。
+ *
+ * 序号自增：界面靠 `seq` 变没变认出「新的一次发动」，同一份快照重复到达不会重播。
+ */
+export function announceSkill(
+  state: GameState,
+  seatId: string,
+  skillName: string,
+  skillId?: string,
+): void {
+  state.skillFxSeq = (state.skillFxSeq ?? 0) + 1;
+  state.skillFx = {
+    seq: state.skillFxSeq,
+    seatId,
+    ...(skillId ? { skillId } : {}),
+    skillName,
+    settling: isWaitingPending(state.pending),
+  };
+}
+
+/**
+ * 「此刻是不是有人在等回答」——技能提示的「保持」判据（`SkillFxView.settling`）。
+ *
+ * 出牌阶段的占位空位（`kind === 'play'`）不算：那一格是「谁都能动」，不是「在等某人回应」。
+ * 其余（choice / pickCards / pickSeats / respondSha / respondDeath / respondTrick /
+ * discard / viewCards / wuxieQueue / factionCall…）都算——多步结算正卡在这些询问上。
+ */
+export function isWaitingPending(pending: GameState['pending']): boolean {
+  return pending !== null && pending.kind !== 'play';
+}
+
+/** 询问换了一格（`setPending` 里调）：把技能提示的「还在结算中」跟着刷新 */
+export function syncSkillSettling(state: GameState): void {
+  if (!state.skillFx) return;
+  state.skillFx.settling = isWaitingPending(state.pending);
+}
+
+/**
+ * **询问产生了 ⇒ 此刻运行的技能就是「真发动了」**（`setPending` 里调）。
+ *
+ * 为什么除了「写了技能日志」还要这一条：有些技能是**先问再写日志**的——典型是
+ * 【刚烈】（问伤害来源「弃两张手牌 / 受 1 点伤害」）、【反馈】（问是否发动）、
+ * 【洛神】（问要不要继续判）。若只认日志，提示要等到玩家**答完**才出现，
+ * 而用户口径③要的正是「正在等待玩家响应时**保持**提示」——那就太晚了。
+ * 询问出现的那一刻就是最好的宣告时刻：谁在做什么，一目了然。
+ *
+ * 反过来，**没问也没写日志**的技能（注册了钩子但这次不发动，例如【咆哮】只在
+ * 自己的第 2 张【杀】上生效）依然不会误报——这正是这条判据取「有副作用」而不是
+ * 「钩子被派发」的原因。
+ */
+export function announceSkillOnAsk(state: GameState): void {
+  const ctx = activeSkillCtx;
+  if (!ctx || ctx.announced) return;
+  if (!isWaitingPending(state.pending)) return; // 出牌阶段的占位空位不算「询问」
+  ctx.announced = true;
+  announceSkill(state, ctx.seatId, ctx.skillName, ctx.skillId);
+}
+
 export function pushLog(state: GameState, kind: string, message: string, extra?: LogExtra): void {
   state.log.push({ id: state.logSeq++, kind, message, ...extra });
+  // **统一的技能事件源**：技能日志＝这个技能真的发动了 ⇒ 给界面写一条技能提示。
+  // 放在这里而不是逐处调用，是为了「所有武将（含将来新增的）自动生效」（用户口径④）。
+  if (kind === 'skill' && activeSkillCtx && !activeSkillCtx.announced) {
+    activeSkillCtx.announced = true;
+    announceSkill(state, activeSkillCtx.seatId, activeSkillCtx.skillName, activeSkillCtx.skillId);
+  }
   // 保留最近 200 条，避免无限增长
   if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
 }

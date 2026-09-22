@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
+  buildPrompt,
   configFromPreset,
   createGame,
   dropTargetsWithoutHand,
@@ -81,6 +82,28 @@ describe('火攻：目标必须有手牌（用户 2026-09-22）', () => {
     c.hand = [];
     expect(applyIntent(state, A, { type: 'playCard', cardId: 'h1', targetIds: [B] }).ok).toBe(true);
     expect(c.hand).toHaveLength(0);
+  });
+
+  /**
+   * 用户 2026-09-25 交接记录的真机缺陷：第二阶段提示把**内部英文花色值**拼进了用户文案
+   * （真机上显示「弃一张黑色club花色手牌」）。花色名统一走 protocol 的 `SUIT_NAME`
+   * （全仓库唯一一份中文花色名）。
+   */
+  it('第二阶段的提示用中文花色名，不出现内部枚举值', () => {
+    const state = gz([mk('b1', 'sha', 'club', 5)]);
+    ok(applyIntent(state, A, { type: 'playCard', cardId: 'h1', targetIds: [B] }));
+    // 无懈窗口依次弃权，直到问乙「展示一张手牌」
+    while (state.pending?.kind === 'wuxieQueue') {
+      const asked = state.pending.askQueue[state.pending.askIndex]!;
+      ok(act(state, asked, { type: 'pass' }), '无懈弃权');
+    }
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }), '乙展示手牌');
+    const msg = buildPrompt(state, A).message ?? '';
+    expect(msg, '轮到甲弃同花色手牌').toContain('【火攻】');
+    expect(msg).toContain('梅花');
+    expect(msg, '内部花色值（英文）不许出现在用户文案里').not.toMatch(
+      /spade|heart|club|diamond/,
+    );
   });
 });
 

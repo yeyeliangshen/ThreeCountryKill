@@ -429,6 +429,41 @@ export interface ChainSpreadView {
   order: { seatId: string; index: number }[];
 }
 
+/**
+ * **「某个技能正在发动 / 触发」的瞬时视图**（用户 2026-09-25 口径①~④：统一的技能展示 UI）。
+ *
+ * 为什么要有这一份结构化视图：其他角色发动技能时，本地玩家以前只能看到**最终结果**
+ * （血量/手牌变了、日志多了一行），认不出「刚才是哪个技能、它现在结算到哪一步」。
+ * 界面**不许**去正则匹配日志里的中文技能名，所以引擎把「谁、哪个技能、还在不在结算」
+ * 明写在这里下发。
+ *
+ * 写入点是**唯一的**：`pushLog` 里凡是带技能的日志（`kind === 'skill'`）都会顺手盖上
+ * 「此刻正在跑的那个技能」（`withSkillCtx` 在钩子派发 / 主动技执行处声明，见 model.ts）。
+ * 这样**所有**武将（含将来新增的）都自动走上同一条事件源，不必逐个武将写提示逻辑，
+ * 也不会为「注册了钩子但其实没发动」的技能误报（没写日志＝没发动）。
+ *
+ * 生命周期：下一次**已经结算完**的 intent 时让位（`applyIntentInner`）；
+ * 仍在等某人回答（`settling`）的留着——用户口径③「等待响应或多步结算期间保持提示」。
+ */
+export interface SkillFxView {
+  /** 自增号：界面靠它认出「这是新的一次发动」（同一份快照重复到达时不重播） */
+  seq: number;
+  /** 发动者座次：提示就贴在他那张牌 / 武将面板附近 */
+  seatId: string;
+  /** 技能拼音 id（只有主动技有；触发技的钩子只登记中文名，见 HookRegistration.skillId） */
+  skillId?: string;
+  /** 技能中文名（展示用；也是界面查技能描述的唯一键） */
+  skillName: string;
+  /**
+   * **这次发动还在结算中吗**：引擎口径＝此刻有流程在等某个角色回答
+   * （`pending` 非空、且不是出牌阶段那种「谁都能动」的占位空位）。
+   *
+   * 界面拿不到别人的询问（`prompt` 是**按观看者**构建的，别人的一律为 null），
+   * 所以「要不要保持提示」只能由引擎说了算。
+   */
+  settling: boolean;
+}
+
 export interface Snapshot {
   seatId: string; // 此快照属于哪个座位
   roomCode: string;
@@ -455,4 +490,12 @@ export interface Snapshot {
    * 没有传导时为 null；下一次任何 intent 时清空（同拼点区）。
    */
   chain?: ChainSpreadView | null;
+  /**
+   * **刚发动 / 刚触发的技能**（用户 2026-09-25 口径①~④）：提示贴 `seatId` 那位角色附近。
+   *
+   * 只带「谁、哪个技能（名 + id）、还在不在结算」——**不带牌面、不带武将牌信息**，
+   * 所以暗置武将的技能不会因为这条提示泄露：引擎只会记**真的发动过**的技能
+   * （写入点是 `pushLog(kind === 'skill')`，见 SkillFxView）。
+   */
+  skillFx?: SkillFxView | null;
 }

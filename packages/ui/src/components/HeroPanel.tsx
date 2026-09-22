@@ -24,6 +24,8 @@ import {
 } from '@sgs/protocol';
 import { EquipChip } from './EquipChip';
 import { ChainBadge } from './ChainFx';
+import { SkillTipChip } from './SkillTip';
+import type { SkillTip } from '../skillTips';
 import { equipSkillButtonOf } from '../equipSkill';
 import { specialZoneChips } from '../specialZones';
 import { heroArt } from './heroArt';
@@ -87,6 +89,21 @@ export interface HeroPanelProps {
     /** 传导脉冲：类名 + 延时（延时 = 引擎给的传导序号 × 步长） */
     hit?: { cls: string; delayMs: number };
   };
+  /**
+   * **我自己刚发动 / 刚触发的技能提示**（用户 2026-09-25 口径①~④）。
+   *
+   * 只接受上层算好的那一条（判据在 `ui/src/skillTips.ts`，组件是 `components/SkillTip.tsx`）——
+   * 面板自己不判断「哪个技能该显示、什么时候收」，免得又变成第二套规则。
+   * 对手那一行用的是同一个组件，只是挂在对方那张牌的右下角（见 Game.tsx 的 `.player-slot`）。
+   */
+  skillTip?: {
+    tip: SkillTip;
+    /** 发动者名（只用于无障碍播报） */
+    seatName: string;
+    /** 技能完整描述（来自引擎的武将技能文本） */
+    desc: string;
+    onToggle: () => void;
+  };
 }
 
 function Portrait({
@@ -136,6 +153,7 @@ export function HeroPanel({
   equipPick,
   equipUse,
   chainFx,
+  skillTip,
 }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
@@ -255,6 +273,16 @@ export function HeroPanel({
       </div>
 
       {tipNode}
+      {/* 技能提示（口径①~④）：我自己发动的技能同样要看得见（别人有提示、自己没有会显得漏了）。
+          挂在面板右下角，与对手那张牌上的提示同一个组件、同一套判据。 */}
+      {skillTip && (
+        <SkillTipChip
+          tip={skillTip.tip}
+          seatName={skillTip.seatName}
+          desc={skillTip.desc}
+          onToggle={skillTip.onToggle}
+        />
+      )}
     </div>
   );
 }
