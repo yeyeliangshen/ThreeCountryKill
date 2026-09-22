@@ -829,6 +829,8 @@ export type Pending =
        * 改为直接点牌桌中央那张牌（点完立即拿走）。见 `GameState.publicPool`。
        */
       fromPool?: boolean;
+      /** 多目标时的分区布局（见 ZonePickLayout）：界面给每一家画一块独立牌位 */
+      zonePick?: ZonePickLayout;
       /** 这些牌属于谁（盲选时界面标注「在看谁的手牌」） */
       ownerSeatId?: string;
       /** 其中已因其他效果公开的牌 id（由规则层给，界面照它画牌面） */

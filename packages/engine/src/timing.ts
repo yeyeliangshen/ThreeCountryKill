@@ -1,4 +1,5 @@
-import type { Card, DamageAttribute, Suit, TrickType } from '@sgs/protocol';
+import type {
+  ZonePickLayout, Card, DamageAttribute, Suit, TrickType } from '@sgs/protocol';
 import type { GameState, Player } from './model';
 
 // 事件时序点（时机）。
@@ -365,6 +366,11 @@ export interface SkillApi {
       hidden?: boolean;
       ownerSeatId?: string;
       visibleIds?: string[];
+      /**
+       * 多目标时的**分区布局**（用户 2026-09-23）：每一名目标一块牌位（横向分栏），
+       * 每块只有规则允许的区域。【突袭】用它做到「每家一块独立牌背区、每家选 1 张」。
+       */
+      zonePick?: ZonePickLayout;
     },
   ) => void;
   /**

@@ -431,6 +431,11 @@ export function askPickCards(
     hidden?: boolean;
     ownerSeatId?: string;
     visibleIds?: string[];
+    /**
+     * 多目标时的**分区布局**（用户 2026-09-23）：每一名目标一块牌位（横向分栏）、
+     * 每块只有规则允许的区域。`optionId` 这里是**牌 id**（`pickCards` 按 id 回答）。
+     */
+    zonePick?: ZonePickLayout;
   },
 ): void {
   setPending(state, {
@@ -451,6 +456,7 @@ export function askPickCards(
     ...(opts?.hidden ? { hidden: true } : {}),
     ...(opts?.ownerSeatId ? { ownerSeatId: opts.ownerSeatId } : {}),
     ...(opts?.visibleIds?.length ? { visibleIds: opts.visibleIds.slice() } : {}),
+    ...(opts?.zonePick ? { zonePick: opts.zonePick } : {}),
   });
 }
 

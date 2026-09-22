@@ -115,10 +115,44 @@ describe('分区选牌面板', () => {
     expect(seen).toEqual([]); // 渲染不触发点击
   });
 
+  it('多选模式（突袭那种「每家选 1 张」）：选中高亮 + 序号，点击走 onToggle 而不是立即提交', () => {
+    const toggled: string[] = [];
+    const layout2: ZonePickLayout = {
+      targets: [
+        { seatId: 's1', zones: [{ zone: 'hand', items: [{ optionId: 'c1' }] }] },
+        { seatId: 's2', zones: [{ zone: 'hand', items: [{ optionId: 'x1' }, { optionId: 'x2' }] }] },
+      ],
+    };
+    const h = renderToStaticMarkup(
+      <ZonePickPanel
+        layout={layout2}
+        players={players}
+        onPick={(id) => toggled.push('pick:' + id)}
+        pickedIds={['x2']}
+        onToggle={(id) => toggled.push('toggle:' + id)}
+        bindTip={() => ({})}
+      />,
+    );
+    // 两家各一栏（横向分栏）
+    expect(h.match(/zp-target/g)?.length).toBe(2);
+    // 已选的那张高亮并带序号
+    expect(h).toContain('picked');
+    expect(h).toContain('zp-order');
+    expect(h).toContain('aria-pressed="true"');
+    // 每栏都只有手牌区（都是牌背）
+    expect(h.match(/zp-card zp-back/g)?.length).toBe(3); // ⚠️ 别写成 /zp-back/g：会连 zp-back-img 一起数
+    expect(h).not.toContain('zp-face');
+    // 渲染不触发任何回调
+    expect(toggled).toEqual([]);
+  });
+
   it('Game.tsx 在 choice 询问带布局时改用这块面板（老询问照旧一排按钮）', () => {
     const src = readFileSync(join(__dirname, '..', 'pages', 'Game.tsx'), 'utf8');
     expect(src).toContain('<ZonePickPanel');
     expect(src).toContain('prompt.kind === \'choice\' && prompt.zonePick');
     expect(src, '带布局与不带布局是两条渲染分支').toContain("prompt.kind === 'choice' && !prompt.zonePick");
+    // 多目标盲选（突袭）：pickCards 带布局 → 也走这块面板（多选 + 确定）
+    expect(src).toContain("prompt.kind === 'pickCards' && prompt.pickCards && prompt.zonePick");
+    expect(src).toContain('onToggle={togglePickCard}');
   });
 });

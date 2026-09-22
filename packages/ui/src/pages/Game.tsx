@@ -1382,7 +1382,36 @@ export function Game() {
               候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
               {/* ⚠️ `pickFromPool`（五谷那类「从牌桌上那排牌里拿」）不画这个通用框——
                   牌桌中央的牌池那排牌**就是**选择界面，避免同一个选择出现两套 UI */}
-              {prompt.kind === 'pickCards' && prompt.pickCards && !prompt.pickFromPool && (
+              {/* 多目标盲选（【突袭】那类）：每家一块**独立牌背区**，点选后统一确认
+                  （用户 2026-09-23：「多目标各自独立牌背区、每名目标选 1 张」） */}
+              {prompt.kind === 'pickCards' && prompt.pickCards && prompt.zonePick && (
+                <div className="pick-cards">
+                  <ZonePickPanel
+                    layout={prompt.zonePick}
+                    players={snapshot.players}
+                    onPick={() => {}}
+                    pickedIds={pickSel}
+                    onToggle={togglePickCard}
+                    bindTip={bindTip}
+                  />
+                  <button
+                    className="primary"
+                    aria-disabled={
+                      pickSel.length < (prompt.pickMin ?? 0) ||
+                      pickSel.length > (prompt.pickMax ?? 0)
+                    }
+                    onClick={confirmPickCards}
+                  >
+                    确定（已选 {pickSel.length} / {prompt.pickMin}
+                    {prompt.pickMin === prompt.pickMax ? '' : `-${prompt.pickMax}`} 张）
+                  </button>
+                </div>
+              )}
+
+              {prompt.kind === 'pickCards' &&
+                prompt.pickCards &&
+                !prompt.pickFromPool &&
+                !prompt.zonePick && (
                 <div className="pick-cards">
                   {/*
                     **盲选**（`pickHidden`，用户 2026-09-22 的通用机制）：候选来自其他角色的

@@ -2261,6 +2261,27 @@ select:focus-visible,
   object-fit: cover;
   display: block;
 }
+/* 多选模式：选中的牌背/牌面给金框高亮 + 序号（每家拿第几张一眼看出） */
+.zp-card.picked {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(200, 164, 92, 0.55);
+  filter: brightness(1.15);
+  position: relative;
+}
+.zp-card .zp-order {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: #2a2118;
+  color: #f3d9a4;
+  border: 1px solid #c8a45c;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
 /* 牌面（装备/判定/已公开）：稍宽，能读出牌名 */
 .zp-face {
   min-width: 46px;

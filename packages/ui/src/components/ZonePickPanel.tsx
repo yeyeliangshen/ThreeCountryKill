@@ -25,9 +25,26 @@ export interface ZonePickPanelProps {
   /** 点某一张 → 发它的 optionId（引擎照旧按 `chooseOption` 解析） */
   onPick: (optionId: string) => void;
   bindTip: (title: string, desc: string) => Record<string, unknown>;
+  /**
+   * **多选模式**（【突袭】那种「每家选 1 张、选完一起确认」的 `pickCards` 询问）：
+   * 传了这两个就变成「点一下选中/取消、由外面的确认按钮提交」，
+   * 选中的牌背高亮并在牌位上标序号（多目标时一眼看出每家拿了哪张）。
+   */
+  pickedIds?: string[];
+  onToggle?: (id: string) => void;
 }
 
-export function ZonePickPanel({ layout, players, onPick, bindTip }: ZonePickPanelProps) {
+export function ZonePickPanel({
+  layout,
+  players,
+  onPick,
+  bindTip,
+  pickedIds,
+  onToggle,
+}: ZonePickPanelProps) {
+  const multi = !!onToggle;
+  const isOn = (id: string) => (pickedIds ?? []).includes(id);
+  const order = (id: string) => (pickedIds ?? []).indexOf(id) + 1;
   const nameOf = (seatId: string) => players.find((p) => p.seatId === seatId)?.name ?? seatId;
   return (
     <div className={`zone-pick ${layout.targets.length > 1 ? 'multi' : 'single'}`}>
@@ -38,17 +55,21 @@ export function ZonePickPanel({ layout, players, onPick, bindTip }: ZonePickPane
             <div key={z.zone} className={`zp-zone zp-${z.zone}`}>
               {z.items.map((it) => {
                 const card = it.card as Card | undefined;
+                const act = () => (multi ? onToggle!(it.optionId) : onPick(it.optionId));
+                const on = multi && isOn(it.optionId);
                 if (!card) {
                   // 隐藏的手牌：只画牌背（服务端就没下发牌面）
                   return (
                     <button
                       key={it.optionId}
                       type="button"
-                      className="zp-card zp-back"
+                      className={['zp-card', 'zp-back', on ? 'picked' : ''].filter(Boolean).join(' ')}
                       aria-label="对方的一张手牌（看不到牌面）"
-                      onClick={() => onPick(it.optionId)}
+                      aria-pressed={multi ? on : undefined}
+                      onClick={act}
                     >
                       {cardBack ? <img className="zp-back-img" src={cardBack} alt="牌背" /> : '🂠'}
+                      {on && <span className="zp-order">{order(it.optionId)}</span>}
                     </button>
                   );
                 }
@@ -56,10 +77,11 @@ export function ZonePickPanel({ layout, players, onPick, bindTip }: ZonePickPane
                   <button
                     key={it.optionId}
                     type="button"
-                    className="zp-card zp-face"
+                    className={['zp-card', 'zp-face', on ? 'picked' : ''].filter(Boolean).join(' ')}
                     aria-label={cardShortName(card)}
+                    aria-pressed={multi ? on : undefined}
                     {...bindTip(cardShortName(card), cardDescription(card))}
-                    onClick={() => onPick(it.optionId)}
+                    onClick={act}
                   >
                     {cardShortName(card)}
                   </button>

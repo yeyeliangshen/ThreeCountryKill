@@ -5317,7 +5317,7 @@ describe('突袭与仁德', () => {
       expect(state.pending.options.map((o) => o.id)).toEqual([C]);
     }
     ok(act(state, B, { type: 'chooseOption', optionId: C }));
-    // 由张辽挑拿对方哪一张
+    // 由张辽挑拿对方哪一张（单目标：盲选，候选是他的两张手牌）
     expect(state.pending?.kind).toBe('pickCards');
     if (state.pending?.kind === 'pickCards') {
       expect(state.pending.cards.map((x) => x.id).sort()).toEqual(['c1', 'c2']);
@@ -5366,6 +5366,39 @@ describe('突袭与仁德', () => {
     ok(act(state, B, { type: 'pickCards', cardIds: ['a1'] }));
     expect(c.hand).toHaveLength(1); // 丙没被拿
     expect(b.hand.map((x) => x.id)).toContain('a1');
+
+    // ---- 两名目标：**一次询问**里每家一块牌背区、每家选 1 张（用户 2026-09-23）----
+    const state2 = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangliao', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [sha('c1')] },
+    ]);
+    const b2 = state2.players.find((p) => p.seatId === B)!;
+    const c2 = state2.players.find((p) => p.seatId === C)!;
+    const a2 = state2.players.find((p) => p.seatId === A)!;
+    state2.deck.push(mk('d1', 'sha', 'spade', 1));
+    ok(act(state2, A, { type: 'endPhase' }));
+    ok(act(state2, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state2, B, { type: 'chooseOption', optionId: A }));
+    // 选满两个（至多两名）⇒ 直接进「每家各拿一张」的那一次询问，不再问 __stop
+    ok(act(state2, B, { type: 'chooseOption', optionId: C }));
+    expect(state2.pending?.kind, '两家都选了 ⇒ 一次询问').toBe('pickCards');
+    if (state2.pending?.kind !== 'pickCards') return;
+    // 候选是他俩手牌的和（两张），min=max=2（每家正好一张）
+    expect(state2.pending.cards.map((x) => x.id).sort()).toEqual(['a1', 'c1']);
+    expect([state2.pending.min, state2.pending.max]).toEqual([2, 2]);
+    // 布局：**每家一栏**，每栏只有手牌区、且不给牌面（只有 id）
+    const layout = state2.pending.zonePick!;
+    expect(layout.targets.map((t) => t.seatId).sort()).toEqual([A, C]);
+    for (const t of layout.targets) {
+      expect(t.zones.map((z) => z.zone), '只有手牌区').toEqual(['hand']);
+      expect(t.zones[0]!.items.every((i) => i.card === undefined), '牌背区不给牌面').toBe(true);
+    }
+    // 每家各一张 ⇒ 都能拿到
+    ok(act(state2, B, { type: 'pickCards', cardIds: ['a1', 'c1'] }));
+    expect(a2.hand).toHaveLength(0);
+    expect(c2.hand).toHaveLength(0);
+    expect(b2.hand.map((x) => x.id).sort()).toEqual(['a1', 'c1', 'd1']);
   });
 
   it('仁德：一次交出两张 → 回复 1 点体力', () => {

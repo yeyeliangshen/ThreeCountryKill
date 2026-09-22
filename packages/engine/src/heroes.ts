@@ -2027,7 +2027,7 @@ function tuxiAskTargets(
     (p) => p.alive && p.seatId !== player.seatId && p.hand.length > 0 && !picked.includes(p.seatId),
   );
   if (picked.length >= 2 || candidates.length === 0) {
-    tuxiTakeCards(state, player, picked, 0, api, skillName);
+    tuxiTakeCards(state, player, picked, api, skillName);
     return;
   }
   const options = candidates.map((p) => ({ id: p.seatId, label: p.name }));
@@ -2039,7 +2039,7 @@ function tuxiAskTargets(
     options,
     (st, p, id) => {
       if (id === '__stop') {
-        tuxiTakeCards(st, p, picked, 0, api, skillName);
+        tuxiTakeCards(st, p, picked, api, skillName);
         return;
       }
       tuxiAskTargets(st, p, [...picked, id], api, skillName);
@@ -2047,44 +2047,86 @@ function tuxiAskTargets(
   );
 }
 
-/** 依次从已定目标手里挑一张手牌拿走 */
+/**
+ * 从已定的几名目标手里**各拿一张**（【突袭】）。
+ *
+ * 用户 2026-09-23 的口径：**一次询问**，把每一名目标的手牌各自摆成一块**独立牌背区**
+ * （多目标横向分栏、每栏只有手牌区、每栏选 1 张），而不是「逐个目标各问一次」。
+ *
+ * ⚠️ 盲选（用户 2026-09-22 的通用机制）：候选是**对方的未知手牌** ⇒ 只把 id 发下去、
+ *    界面画牌背；牌面绝不出服务端（`hidden: true`）。多目标时不再用 `ownerSeatId`
+ *    （那是单目标时的「在看谁的手牌」标注），改成布局里**每家一栏**。
+ */
 function tuxiTakeCards(
   state: GameState,
   player: Player,
   targets: string[],
-  i: number,
   api: SkillApi,
   skillName = '突袭',
 ): void {
-  if (i >= targets.length) {
-    pushLog(
-      state,
-      'skill',
-      `${player.name} 发动【${skillName}】，获得 ${targets.length} 名角色的各一张手牌。`,
-    );
+  // 跨步：目标可能已经阵亡/手牌空掉（问话之间死人是很常见的）
+  const live = targets
+    .map((id) => getPlayer(state, id))
+    .filter((t): t is Player => !!t && t.alive && t.hand.length > 0);
+  if (live.length === 0) {
+    pushLog(state, 'skill', `${player.name} 发动【${skillName}】，但没有可取牌的目标。`);
     return;
   }
-  const t = getPlayer(state, targets[i]!);
-  if (!t || !t.alive || t.hand.length === 0) {
-    tuxiTakeCards(state, player, targets, i + 1, api, skillName);
-    return;
-  }
-  // ⚠️ 盲选（用户 2026-09-22 的通用机制）：候选是**对方的未知手牌** ⇒ 只把 id 发下去、
-  //    界面画牌背；牌面绝不出服务端（`hidden: true` + `ownerSeatId` 供界面标注「在看谁的手牌」）。
+  const pool = live.flatMap((t) => t.hand.slice());
   api.askPickCards(
     state,
     player.seatId,
-    `【${skillName}】：选择获得 ${t.name} 的一张手牌`,
-    t.hand.slice(),
-    1,
-    1,
-    (st, p, chosen) => {
-      const c = chosen[0];
-      if (c) api.transferCard(t.seatId, c, p.seatId);
-      tuxiTakeCards(st, p, targets, i + 1, api, skillName);
+    live.length === 1
+      ? `【${skillName}】：选择获得 ${live[0]!.name} 的一张手牌`
+      : `【${skillName}】：从 ${live.map((t) => t.name).join('、')} 手里各拿一张`,
+    pool,
+    live.length,
+    live.length,
+    (st, p, picked) => {
+      // 每家必须**正好**一张：少了/多了一家就重问（跨步期间手牌会变）
+      const byOwner = new Map<string, Card[]>();
+      for (const c of picked) {
+        const owner = live.find((t) => t.hand.some((h) => h.id === c.id));
+        if (!owner) continue;
+        const list = byOwner.get(owner.seatId) ?? [];
+        list.push(c);
+        byOwner.set(owner.seatId, list);
+      }
+      if (live.some((t) => (byOwner.get(t.seatId) ?? []).length !== 1)) {
+        pushLog(st, 'skill', `【${skillName}】：每名角色各选一张，请重新选择。`);
+        tuxiTakeCards(st, p, live.map((t) => t.seatId), api, skillName);
+        return;
+      }
+      for (const t of live) {
+        const c = byOwner.get(t.seatId)![0]!;
+        api.transferCard(t.seatId, c, p.seatId);
+      }
+      pushLog(
+        st,
+        'skill',
+        `${p.name} 发动【${skillName}】，获得 ${live.length} 名角色的各一张手牌。`,
+      );
     },
-    // 盲选：牌面不下发（候选就是 t 的手牌）
-    { hidden: true, ownerSeatId: t.seatId },
+    {
+      // 盲选：牌面不下发（候选就是这几家的手牌）
+      hidden: true,
+      // 多目标：**每家一栏**，每栏只有手牌区（界面画牌背、每家选 1 张）
+      ...(live.length > 1
+        ? {
+            zonePick: {
+              targets: live.map((t) => ({
+                seatId: t.seatId,
+                zones: [
+                  {
+                    zone: 'hand' as const,
+                    items: t.hand.map((c) => ({ optionId: c.id })),
+                  },
+                ],
+              })),
+            },
+          }
+        : { ownerSeatId: live[0]!.seatId }),
+    },
   );
 }
 
