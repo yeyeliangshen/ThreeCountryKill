@@ -70,6 +70,19 @@ export interface PlayerFlags {
   /** 本回合已用主动技能标记 */
   skillUsedThisTurn: Record<string, boolean>;
   /**
+   * **每回合限一次**的**钩子**技能：技能名 → 发动时的 `state.turnSeq`。
+   *
+   * ⚠️ 与 `skillUsedThisTurn` 的区别是「回合」指谁的：
+   * - `skillUsedThisTurn` 随**这名角色自己的回合**重置（管「出牌阶段限一次」的主动技，对的）；
+   * - 这一份按**全局当前回合**（`state.turnSeq`，每次回合交接 +1）判——文本写「每回合限一次」
+   *   的钩子技指的是**当前这一回合**，不是「你自己的回合」。吴国太·补益就是：别人的回合里
+   *   同势力角色脱离濒死也能发动；同一回合内只许一次，下一名角色的回合立刻重置。
+   *
+   * 用户 2026-09-25 口径：「程序不要把 counter 挂在吴国太自己的 turn，
+   * 应该是随全局当前回合变化重置」。
+   */
+  hookUsedTurnSeq: Record<string, number>;
+  /**
    * 技能自己用的每回合计数（仁德记「本阶段给出几张」、苦肉记次数…）。
    * 随 emptyFlags() 每回合清零。键名建议用 `<技能id>_<含义>`。
    */
@@ -291,6 +304,7 @@ export function emptyFlags(): PlayerFlags {
     jiuActive: false,
     taoSaveCountThisTurn: 0,
     skillUsedThisTurn: {},
+    hookUsedTurnSeq: {},
     skillNumbers: {},
     usedCardsInPlayPhase: [],
     skipPlay: false,

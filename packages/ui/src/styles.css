@@ -3380,3 +3380,53 @@ select:focus-visible,
   }
 }
 
+
+/* —— 【甘露】交换预览（用户 2026-09-25 口径）——
+   换的是**双方整个装备区**，玩家不挑具体装备，所以两个目标定下来之后在中央把两边装备区
+   按牌名列出来、把「牌数差 vs 已损失体力」的核对写清楚，再让玩家确认（按钮文案同时也变成「交换」）。
+   与库里其它浮层同一条规矩：不接指针的地方一律 pointer-events: none（这里是纯展示）。 */
+.equip-swap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  background: rgba(18, 14, 10, 0.92);
+  pointer-events: none;
+}
+.equip-swap .es-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 92px;
+}
+.equip-swap .es-name {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 12px;
+}
+.equip-swap .es-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.equip-swap .es-item {
+  padding: 1px 5px;
+  border: 1px solid var(--panel-2);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.equip-swap .es-empty {
+  color: var(--muted, #8b8578);
+  font-size: 11px;
+}
+.equip-swap .es-arrow {
+  font-size: 16px;
+  color: var(--gold);
+}
+.equip-swap .es-note {
+  color: #d8d0c0;
+  font-size: 11px;
+}

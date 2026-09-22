@@ -468,6 +468,20 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       !(skill.oncePerGame && player.usedOncePerGame[skill.id])
     ) {
       legalSkillIds.push(skill.id);
+      // 「一对目标」的限制（甘露那种）：把合法**座位对**一并下发，界面据此动态过滤第二目标
+      // （用户 2026-09-25 口径：不让玩家自己算差值）。引擎在 execute 里照样自己校验。
+      const pairOk = skill.targetPairOk;
+      const pairs: string[][] = [];
+      if (pairOk) {
+        const pool = state.players.filter((p) => p.alive);
+        for (let i = 0; i < pool.length; i++) {
+          for (let j = i + 1; j < pool.length; j++) {
+            if (pairOk(state, player, pool[i]!, pool[j]!)) {
+              pairs.push([pool[i]!.seatId, pool[j]!.seatId]);
+            }
+          }
+        }
+      }
       legalSkills.push({
         id: skill.id,
         name: skill.name,
@@ -475,6 +489,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         needsCards: skill.needsCards === true,
         minTargets: skill.minTargets,
         maxTargets: skill.maxTargets,
+        ...(pairOk ? { legalTargetPairs: pairs } : {}),
+        ...(skill.preview ? { preview: skill.preview } : {}),
         // 技能**自己的**目标规则：写「一名角色」的技能声明了 selfTarget ⇒ 界面可以点自己
         // （写「一名其他角色」的不声明；引擎侧由 onUseSkill 统一拦，见 ActiveSkill.selfTarget）
         selfTarget: skill.selfTarget === true,

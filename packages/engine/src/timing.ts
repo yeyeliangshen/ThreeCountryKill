@@ -627,6 +627,14 @@ export interface SkillApi {
     initiatorSeatId: string,
     executorSeatId: string,
     onDone: (state: GameState, executed: boolean) => void,
+    opts?: {
+      /**
+       * 「拒绝执行会怎样」——写进**执行者**看到的询问里（用户 2026-09-25 口径：
+       * 「这里尤其应该把拒绝的后果写出来，否则玩家根本不知道不执行意味着什么」）。
+       * 例：吴国太·补益 ⇒「不执行则 孙权 回复 1 点体力」。
+       */
+      refuseHint?: string;
+    },
   ) => void;
   /**
    * 令**多名**角色依次决定是否执行**同一条**军令（王平·将略）。
@@ -643,6 +651,8 @@ export interface SkillApi {
     opts?: {
       /** 拒绝执行时的额外结算（诸葛恪·黩武）；不填＝公共规则（什么都不发生） */
       onRefuse?: (st: GameState, executorSeatId: string, next: () => void) => void;
+      /** 「拒绝执行会怎样」——同 `armyOrder.refuseHint`，写进执行者的询问里 */
+      refuseHint?: string;
     },
   ) => void;
   /**

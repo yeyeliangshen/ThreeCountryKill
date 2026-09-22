@@ -42,6 +42,7 @@ import { TestScenarioPanel } from '../components/TestScenarioPanel';
 import { specialZoneChips } from '../specialZones';
 import { cardUses, useActionOf, type CardUse } from '../cardUses';
 import { effectiveCardName, playConfirmText, playHintText } from '../playFlow';
+import { equipSwapNote, pairAllowsMore, pairComplete } from '../skillTargets';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
 import { ChainBadge, ChainSpreadTable, useChainFx } from '../components/ChainFx';
@@ -345,6 +346,14 @@ export function Game() {
       maxCards?: ActiveSkill['maxCards'];
       /** 代价能取自哪个区（'handEquip' ＝自己装备区的牌也可点；见 protocol 的 legalSkills） */
       costFrom?: 'hand' | 'handEquip';
+      /**
+       * **合法目标对**（引擎下发；只有限制落在「一对目标」上的技能才有，目前只有甘露）。
+       * 界面据此把「跟已选目标凑不出合法对」的座位置灰（用户 2026-09-25。
+       * 判据在 ../skillTargets.ts，引擎在 execute 里照样再校验一遍）。
+       */
+      legalTargetPairs?: string[][];
+      /** 界面预览形态（纯展示；'equipSwap' ＝ 甘露那种「列双方装备区再确认」） */
+      preview?: 'equipSwap';
       /**
        * 技能**自己的**目标规则：允不允许把使用者自己选成目标。
        * 服务端 `legalSkills[].selfTarget` 与武将定义上的 `ActiveSkill.selfTarget` 是**同一个
@@ -727,7 +736,11 @@ export function Game() {
       skill: heroSkill
         ? // 本地武将定义：selfTarget 优先用**服务端下发**的那份（两边是同一个字段，
           // 服务端是权威——用户 2026-09-24 口径「能否选自己读服务端下发的合法目标」）
-          { ...heroSkill, selfTarget: given?.selfTarget ?? heroSkill.selfTarget }
+          {
+            ...heroSkill,
+            selfTarget: given?.selfTarget ?? heroSkill.selfTarget,
+            legalTargetPairs: given?.legalTargetPairs,
+          }
         : {
             id: skillId,
             name: given!.name,
@@ -736,6 +749,7 @@ export function Game() {
             minTargets: given!.minTargets,
             maxTargets: given!.maxTargets,
             selfTarget: given!.selfTarget,
+            legalTargetPairs: given!.legalTargetPairs,
           },
       cardIds: [],
       targetIds: [],
@@ -807,7 +821,10 @@ export function Game() {
     const { skill, cardIds, targetIds } = skillMode;
     const cardsOk = !skill.needsCards || cardIds.length >= 1;
     const targetsOk = targetIds.length >= skill.minTargets && targetIds.length <= skill.maxTargets;
-    return cardsOk && targetsOk;
+    // 「一对目标」还要真的成对（甘露：选了两个凑不成合法对的人 ⇒ 不给确认；
+    // 正常流程里第二个人根本点不亮，这里是给「先选了两个、后来体力变了」这类边界兜底）
+    const pairOk = pairComplete(skill.legalTargetPairs, targetIds);
+    return cardsOk && targetsOk && pairOk;
   }
 
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
@@ -1085,7 +1102,12 @@ export function Game() {
     if (!targeting) return false;
     if (skillMode) {
       if (skillMode.targetIds.includes(p.seatId)) return true;
-      return targetSet.has(p.seatId) && skillMode.targetIds.length < skillMode.skill.maxTargets;
+      return (
+        targetSet.has(p.seatId) &&
+        skillMode.targetIds.length < skillMode.skill.maxTargets &&
+        // 「一对目标」的限制（甘露）：跟已选的那个凑不出合法对 ⇒ 直接不可点（置灰）
+        pairAllowsMore(skillMode.skill.legalTargetPairs, skillMode.targetIds, p.seatId)
+      );
     }
     if (selected) {
       if (selected.picked.includes(p.seatId)) return true;
@@ -1150,7 +1172,9 @@ export function Game() {
       : !!skillMode &&
         skillSelfTargetAllowed(skillMode.skill) &&
         !skillMode.targetIds.includes(me.seatId) &&
-        skillMode.targetIds.length < skillMode.skill.maxTargets);
+        skillMode.targetIds.length < skillMode.skill.maxTargets &&
+        // 「一对目标」的限制同样管着自己（甘露可以选自己）
+        pairAllowsMore(skillMode.skill.legalTargetPairs, skillMode.targetIds, me.seatId));
   const heroSlots: HeroSlot[] = isGuozhan
     ? [
         {
@@ -1797,8 +1821,45 @@ export function Game() {
                   {skillMode.skill.desc && (
                     <span className="use-effect-desc">{skillMode.skill.desc}</span>
                   )}
+                  {/* 【甘露】这类「交换双方整个装备区」的技能：两个目标都定下来之后，
+                      在中央把**双方完整装备区**按牌名列出来再让玩家确认（用户 2026-09-25 口径：
+                      换的是整个装备区、玩家不挑具体装备，所以界面要把「换的是什么」说清楚）。 */}
+                  {skillMode.skill.preview === 'equipSwap' && skillMode.targetIds.length === 2 && (
+                    <div className="equip-swap">
+                      {skillMode.targetIds.map((seatId) => {
+                        const t = snapshot.players.find((p) => p.seatId === seatId);
+                        const equips = t?.equipment ?? [];
+                        return (
+                          <div className="es-side" key={seatId}>
+                            <span className="es-name">{t?.name ?? seatId}</span>
+                            {equips.length > 0 ? (
+                              <span className="es-list">
+                                {equips.map((c) => (
+                                  <span className="es-item" key={c.id}>
+                                    {cardShortName(c)}
+                                  </span>
+                                ))}
+                              </span>
+                            ) : (
+                              <span className="es-empty">（装备区为空）</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <span className="es-arrow" aria-hidden="true">⇄</span>
+                      <span className="es-note">
+                        {equipSwapNote(
+                          snapshot.players.find((p) => p.seatId === skillMode.targetIds[0])?.equipment
+                            .length ?? 0,
+                          snapshot.players.find((p) => p.seatId === skillMode.targetIds[1])?.equipment
+                            .length ?? 0,
+                          me.maxHp - me.hp,
+                        )}
+                      </span>
+                    </div>
+                  )}
                   <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
-                    确认技能
+                    {skillMode.skill.preview === 'equipSwap' ? '交换' : '确认技能'}
                   </button>
                   <button className="ghost" onClick={() => setSkillMode(null)}>
                     取消

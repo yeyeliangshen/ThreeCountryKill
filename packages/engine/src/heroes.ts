@@ -130,6 +130,21 @@ export interface ActiveSkill {
    *    （例如青囊的目标必须已受伤、甘露要凑得出合法的一对、劝进的目标必须已受伤）。
    */
   selfTarget?: boolean;
+  /**
+   * **这一对目标合法吗**——少数技能的限制落在「两名角色」这一对上，逐目标判不出来
+   * （吴国太·甘露：两者装备区牌数之差 ≤ 你已损失体力值、且牌数之和 ≥ 1）。
+   *
+   * 声明了它的技能，界面会拿到 `legalTargetPairs` 做动态过滤（用户 2026-09-25 口径）；
+   * 引擎在 `execute` 里仍然自己校验一遍——界面只是帮忙，不是判据。
+   */
+  targetPairOk?: (state: GameState, player: Player, a: Player, b: Player) => boolean;
+  /**
+   * 界面上的**预览形态**（纯展示用，不参与规则）。目前只有一种：
+   * - `'equipSwap'`：吴国太·甘露——两个目标都选好之后，在牌桌中央列出双方**完整装备区**
+   *   （按牌名）并要求确认，而不是让玩家盲着点「确认技能」（用户 2026-09-25 口径：
+   *   这是「玩家不选具体装备、换的是整个装备区」这件事在界面上的表达）。
+   */
+  preview?: 'equipSwap';
 
   /** 是否需要选择手牌（制衡/苦肉/离间/反间） */
   needsCards?: boolean;
@@ -6862,7 +6877,9 @@ const LIJUE_GUOSI: Hero = {
  *   「你已损失的体力值」按 X = 体力上限 - 当前体力。
  * - 补益挂在 `nearDeathResolved`（本轮才补上的派发点，见 engine.dispatchNearDeathResolved），
  *   payload 里的 `sourceId` 就是「本次伤害来源」。没有来源（闪电那种）时无从执行军令，直接跳过。
- *   「每回合限一次」用 `flags.skillUsedThisTurn['补益']`（随吴国太自己的回合重置）。
+ *   「每回合限一次」按**全局当前回合**记账（`flags.hookUsedTurnSeq['补益'] = state.turnSeq`，
+ *   用户 2026-09-25 口径：不能挂在吴国太自己的 turn 上——那样她自己回合用过一次之后，
+ *   后面每个角色的回合都发不动了，比规则严）。
  */
 /**
  * 袁术 —— 庸肆 / 伪帝（君临天下·权，群，**2 阴阳鱼 → 4**；文本按三国杀官网现行文本，已核）。
@@ -8007,7 +8024,11 @@ const WUGUOTAI: Hero = {
           { dyingSeatId?: string; alive?: boolean; sourceId?: string } | undefined;
         const me = ctx.player;
         if (!payload?.alive || !payload.dyingSeatId || !payload.sourceId) return;
-        if (me.flags.skillUsedThisTurn['补益']) return; // 每回合限一次
+        // **每回合限一次**：按**全局当前回合**记账（`state.turnSeq`），不是吴国太自己的回合——
+        // 规则说的是「本回合」，别人的回合里同势力角色脱离濒死照样可以发动一次。
+        // ⚠️ 原来用的是 `skillUsedThisTurn`（随**她自己**的回合重置）⇒ 她一旦在自己回合用过，
+        //    这一整轮里其他角色的回合就再也发不动了（比规则严）。见 flags.hookUsedTurnSeq。
+        if (me.flags.hookUsedTurnSeq['补益'] === ctx.state.turnSeq) return; // 每回合限一次
         const dying = getPlayer(ctx.state, payload.dyingSeatId);
         const source = getPlayer(ctx.state, payload.sourceId);
         if (!dying || !source || !source.alive) return;
@@ -8024,18 +8045,24 @@ const WUGUOTAI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            p.flags.skillUsedThisTurn['补益'] = true;
-            ctx.api.armyOrder(p.seatId, source.seatId, (st2, executed) => {
-              if (executed) return;
-              const d = getPlayer(st2, dying.seatId);
-              if (!d || !d.alive) return;
-              const healed = ctx.api.heal(d, 1);
-              pushLog(
-                st2,
-                'skill',
-                `${source.name} 没有执行军令，${d.name} 因【补益】回复 ${healed} 点体力。`,
-              );
-            });
+            p.flags.hookUsedTurnSeq['补益'] = st.turnSeq; // 记「本回合已经用过」
+            ctx.api.armyOrder(
+              p.seatId,
+              source.seatId,
+              (st2, executed) => {
+                if (executed) return;
+                const d = getPlayer(st2, dying.seatId);
+                if (!d || !d.alive) return;
+                const healed = ctx.api.heal(d, 1);
+                pushLog(
+                  st2,
+                  'skill',
+                  `${source.name} 没有执行军令，${d.name} 因【补益】回复 ${healed} 点体力。`,
+                );
+              },
+              // 执行者要看到「不执行会怎样」（用户 2026-09-25 口径）
+              { refuseHint: `不执行则 ${dying.name} 回复 1 点体力` },
+            );
           },
         );
       },
@@ -8052,6 +8079,11 @@ const WUGUOTAI: Hero = {
       // （`ganluPairs` 本来就遍历全场存活角色，含使用者本人）。
       selfTarget: true,
       needsCards: false,
+      // 「两名角色的装备区牌数之差 ≤ 你已损失体力值、且之和 ≥ 1」——限制在一**对**上，
+      // 所以用 targetPairOk 声明，界面据此把凑不出合法对的座位置灰（引擎照样自己校验）
+      targetPairOk: (state, player, a, b) => ganluPairOk(state, player, a, b),
+      // 界面预览：两个目标都选好后列出双方装备区（换的是整个装备区，玩家不选具体牌）
+      preview: 'equipSwap',
       canUse: (state, player) => ganluPairs(state, player).length > 0,
       execute: (state, player, intent, api) => {
         const pair = ganluPairs(state, player).find(
@@ -8084,19 +8116,24 @@ const WUGUOTAI: Hero = {
  * ① 装备区牌数之差 ≤ 吴国太已损失体力值；② 两边牌数之和 ≥ 1（不能是两张空装备区）。
  * 返回的是「座位对」的集合（用来判玩家的目标选择是否合法）。
  */
-function ganluPairs(state: GameState, player: Player): Set<string>[] {
+/** 甘露的一对是否合法（唯一判据，`ganluPairs` 与 `targetPairOk` 都走它） */
+function ganluPairOk(state: GameState, player: Player, a: Player, b: Player): boolean {
+  if (!a.alive || !b.alive || a.seatId === b.seatId) return false;
   const lost = player.maxHp - player.hp;
-  const alive = state.players.filter((p) => p.alive);
   const count = (p: Player): number => EQUIP_SLOTS.filter((s) => !!p.equipment[s]).length;
+  const na = count(a);
+  const nb = count(b);
+  return na + nb >= 1 && Math.abs(na - nb) <= lost;
+}
+
+function ganluPairs(state: GameState, player: Player): Set<string>[] {
+  const alive = state.players.filter((p) => p.alive);
   const out: Set<string>[] = [];
   for (let i = 0; i < alive.length; i++) {
     for (let j = i + 1; j < alive.length; j++) {
       const a = alive[i]!;
       const b = alive[j]!;
-      const na = count(a);
-      const nb = count(b);
-      if (na + nb < 1) continue;
-      if (Math.abs(na - nb) > lost) continue;
+      if (!ganluPairOk(state, player, a, b)) continue;
       out.push(new Set([a.seatId, b.seatId]));
     }
   }

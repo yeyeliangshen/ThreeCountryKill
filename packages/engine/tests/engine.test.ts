@@ -18031,6 +18031,113 @@ describe('国战 · 吴国太（甘露 / 补益）', () => {
     // 不执行就什么都不发生的对照：换一条路（执行）留给 arm_order 自己的用例
   });
 
+  it('补益：**每回合限一次指全局当前回合**——下一名角色的回合就能再用（用户 2026-09-25 口径）', () => {
+    // 三个都是吴：A = 吴国太（座次 0，自己回合先用掉一次）、B = 甲（下一回合的杀人者）、C = 乙（被救的）
+    const state = gz(
+      [
+        { seatId: A, name: '吴国太', heroId: 'wuguotai', faction: 'wu', hand: [sha('a1'), tao('a2')] },
+        { seatId: B, name: '甲', heroId: 'vanilla', faction: 'wu', hand: [sha('b1'), tao('b2')] },
+        { seatId: C, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [], hp: 1 },
+      ],
+      A,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    const c = state.players.find((p) => p.seatId === C)!;
+    // 求桃队列按引擎的顺序问人，所以这里不假设「一定是杀人者来救」：谁被问、谁有桃谁出
+    const rescue = (killer: string, shaId: string): void => {
+      ok(act(state, killer, { type: 'playCard', cardId: shaId, targetIds: [C] }));
+      ok(act(state, C, { type: 'pass' })); // 乙不出闪
+      for (let i = 0; i < 6 && state.pending?.kind === 'respondDeath'; i++) {
+        const asked = state.pending.askQueue[state.pending.askIndex]!;
+        const p = state.players.find((x) => x.seatId === asked)!;
+        const tao = p.hand.find((x) => x.type === 'tao');
+        if (tao) ok(act(state, asked, { type: 'respondCard', cardId: tao.id }));
+        else ok(act(state, asked, { type: 'pass' }));
+      }
+    };
+    const buyiThrough = (): void => {
+      expect(state.pending?.kind, '应问吴国太是否补益').toBe('choice');
+      if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('补益');
+      ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+      // 军令：吴国太从两张里挑一条
+      expect(state.pending?.kind).toBe('choice');
+      ok(act(state, A, { type: 'chooseOption', optionId: state.pending.options[0]!.id }));
+      // 执行者拒绝 → 乙回 1 点（这一步只为了把链走完）
+      expect(state.pending?.kind).toBe('choice');
+      ok(act(state, state.pending.seatId, { type: 'chooseOption', optionId: 'no' }));
+    };
+
+    // 第 1 回合（吴国太自己的回合）：用掉这一次
+    rescue(A, 'a1');
+    buyiThrough();
+    expect(c.hp, '救回 1 点 + 补益再 1 点').toBe(2);
+    void a;
+
+    // 交给下一位角色（甲）的回合
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.turn.seatIndex, '轮到甲').toBe(state.seatOrder.indexOf(B));
+    // 同一个「全局回合」里已经用过了；但**换了一个回合** ⇒ 又能发动
+    // （改动前用 skillUsedThisTurn：随吴国太**自己**的回合重置 ⇒ 这里根本不会问）
+    c.hp = 1; // 先把乙按回 1 血，好让第二刀同样打进濒死
+    rescue(B, 'b1');
+    const hpHint = c.hp;
+    buyiThrough();
+    expect(c.hp, '第二个回合里照样补益成功').toBe(hpHint + 1);
+  });
+
+  it('军令的执行者能看到「拒绝的后果」（用户 2026-09-25 口径）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'vanilla', faction: 'wu', hand: [sha('a1'), tao('a2')] },
+        { seatId: B, name: '吴国太', heroId: 'wuguotai', faction: 'wu' },
+        { seatId: C, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [], hp: 1 },
+      ],
+      A,
+    );
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, C, { type: 'pass' }));
+    ok(act(state, A, { type: 'respondCard', cardId: 'a2' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: state.pending!.options[0]!.id }));
+    // 执行者那一步：标题里要写清不执行的后果（否则玩家不知道「拒绝」意味着什么）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId).toBe(A);
+      expect(state.pending.title).toContain('军令');
+      expect(state.pending.title, '拒绝的后果').toContain('不执行则');
+      expect(state.pending.title).toContain('乙');
+      expect(state.pending.title).toContain('回复 1 点体力');
+    }
+  });
+
+  it('甘露：提示里下发**合法目标对**（界面据此过滤第二目标），且与规则一致', () => {
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '吴国太',
+          heroId: 'wuguotai',
+          faction: 'wu',
+          hp: 2, // 已损失 1
+          equip: [mk('e1', 'weapon', 'spade', 1), mk('e2', 'armor', 'club', 2)],
+        },
+        { seatId: B, name: '甲', heroId: 'vanilla', faction: 'wu', equip: [mk('e3', 'plusMount', 'heart', 3)] },
+        { seatId: C, name: '乙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      A,
+    );
+    const prompt = toSnapshot(state, A).prompt;
+    const ganlu = prompt?.legalSkills?.find((x) => x.id === 'ganlu');
+    expect(ganlu, '甘露应当在可点技能里').toBeTruthy();
+    // A(2) ↔ B(1)：差 1 ≤ 已损失 1、和 3 ≥ 1 ⇒ 合法；A(2) ↔ C(0)：差 2 > 1 ⇒ 不合法；B(1) ↔ C(0)：差 1 ⇒ 合法
+    expect(ganlu!.legalTargetPairs).toEqual([
+      [A, B],
+      [B, C],
+    ]);
+    expect(ganlu!.selfTarget, '「两名角色」含自己').toBe(true);
+  });
+
   it('补益：每回合限一次；不同势力的濒死不触发', () => {
     const state = gz(
       [

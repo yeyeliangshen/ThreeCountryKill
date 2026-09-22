@@ -10260,6 +10260,8 @@ function runArmyOrder(
      * 不填＝按公共规则什么都不发生（劝进/节钺/将略都是这种）。
      */
     onRefuse?: (st: GameState, executorSeatId: string, next: () => void) => void;
+    /** 「拒绝执行会怎样」：写进执行者的询问（用户 2026-09-25 口径） */
+    refuseHint?: string;
   },
   done: (st: GameState, executedSeatIds: string[]) => void,
 ): void {
@@ -10310,7 +10312,9 @@ function runArmyOrder(
         askChoice(
           st2,
           executor.seatId,
-          `【军令】${initiator.name} 令你执行：${token.label}。是否执行？`,
+          `【军令】${initiator.name} 令你执行：${token.label}。是否执行？${
+            opts.refuseHint ? `（${opts.refuseHint}）` : ''
+          }`,
           [
             { id: 'yes', label: '执行军令' },
             { id: 'no', label: '不执行' },
@@ -11664,17 +11668,28 @@ function makeSkillApi(
       );
     },
     // 军令：两条入口共用上面那一个 `runArmyOrder`，这里只做「单人 / 名单」的适配
-    armyOrder: (initiatorSeatId, executorSeatId, onDone) => {
+    armyOrder: (initiatorSeatId, executorSeatId, onDone, opts2) => {
       runArmyOrder(
         state,
-        { initiatorSeatId, executorSeatIds: [executorSeatId], resumeTo },
+        {
+          initiatorSeatId,
+          executorSeatIds: [executorSeatId],
+          resumeTo,
+          ...(opts2?.refuseHint ? { refuseHint: opts2.refuseHint } : {}),
+        },
         (st, executed) => onDone(st, executed.includes(executorSeatId)),
       );
     },
     armyOrderMulti: (initiatorSeatId, executorSeatIds, onDone, opts2) => {
       runArmyOrder(
         state,
-        { initiatorSeatId, executorSeatIds, resumeTo, onRefuse: opts2?.onRefuse },
+        {
+          initiatorSeatId,
+          executorSeatIds,
+          resumeTo,
+          ...(opts2?.onRefuse ? { onRefuse: opts2.onRefuse } : {}),
+          ...(opts2?.refuseHint ? { refuseHint: opts2.refuseHint } : {}),
+        },
         onDone,
       );
     },
