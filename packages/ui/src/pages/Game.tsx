@@ -2093,7 +2093,7 @@ export function Game() {
             title="开发工具：给指定角色发指定的牌（场景构造，日志里会打 TEST_DEAL_OVERRIDE）"
             onClick={() => setDevOpen((v) => !v)}
           >
-            测试场景
+            测试场景编辑器
           </button>
         ) : null}
         {devTools && devOpen ? (

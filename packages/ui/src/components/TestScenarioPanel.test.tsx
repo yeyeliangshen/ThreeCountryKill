@@ -99,6 +99,13 @@ describe('测试场景编辑器：入口只在开发模式（源码守卫）', (
     expect(src).toContain('<TestScenarioPanel');
   });
 
+  it('入口按钮的名字就是「测试场景编辑器」（用户 2026-09-25：这是开发工具的正式叫法，不是「发牌自选」）', () => {
+    expect(src).toContain('测试场景编辑器');
+    // 面板自己的 aria-label 也用同一个名字（无障碍读屏时一致）
+    const panel = readFileSync(join(__dirname, 'TestScenarioPanel.tsx'), 'utf8');
+    expect(panel).toContain('aria-label="测试场景编辑器"');
+  });
+
   it('面板把意图发给服务端（引擎侧才是权威），界面上不自己改牌', () => {
     expect(src).toContain(
       "sendIntent({ type: 'testScenario', deals: [{ seatId, cardId, zone }] })",
