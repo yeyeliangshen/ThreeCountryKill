@@ -116,6 +116,21 @@ export interface ActiveSkill {
   /** 目标数范围 */
   minTargets: number;
   maxTargets: number;
+  /**
+   * **这个技能自己的目标规则**：文本允许把使用者自己选为目标吗？
+   *
+   * 口径（用户 2026-09-24，与牌的 `CARD_TARGET_EXCLUDES_SELF` 同一条）：技能文本写
+   * 「一名**其他**角色」的 ⇒ **不声明**（缺省 false）；写「一名角色」的 ⇒ 声明 `true`。
+   * 缺省 false 由 `onUseSkill` **统一**拦（以前靠界面下发的候选不含自己兜着，绕过界面就能指定
+   * 自己 —— 那正是「通用 UI 决定能否选自己」的毛病）。
+   *
+   * 已声明 `true` 的：青囊（「一名已受伤的角色」）、凶算（「与你势力相同的一名角色」）、
+   * 甘露（「两名角色」）、排异（「一名角色」）、存嗣（「一名角色…若其不为你」）。
+   * ⚠️ 声明 `true` 只表示**文本允许**，技能自身的条件仍在 `canUse` / `execute` 里判
+   *    （例如青囊的目标必须已受伤、甘露要凑得出合法的一对、劝进的目标必须已受伤）。
+   */
+  selfTarget?: boolean;
+
   /** 是否需要选择手牌（制衡/苦肉/离间/反间） */
   needsCards?: boolean;
   /**
@@ -1417,6 +1432,9 @@ const HUATUO: Hero = {
       oncePerTurn: true,
       minTargets: 1,
       maxTargets: 1,
+      // 文本「一名已受伤的角色」（**没有**「其他」）⇒ 自己也可以是目标（用户 2026-09-24 口径：
+      // 能否选自己由技能文本决定，不由通用目标 UI 决定）。能不能选到还看自身条件（受伤才回得了血）。
+      selfTarget: true,
       needsCards: true,
       maxCards: () => 1,
       canUse: (state, player) =>
@@ -5554,6 +5572,9 @@ const MASU: Hero = {
       oncePerTurn: true,
       minTargets: 1,
       maxTargets: 1,
+      // ⚠️ 本轮**不声明** selfTarget：本地文案写「一名体力值最大的角色」（没有「其他」），
+      //    与下面的 `不能选择自己` 冲突 —— 文本未核到，按用户口径「核不到就标待核对、不猜」
+      //    保持既有行为（候选不含自己 + 执行里拒绝）。见 docs §5.209 待核对项。
       needsCards: true,
       maxCards: () => 1,
       canUse: (state, player) => {
@@ -5687,10 +5708,11 @@ function yongjinStep(state: GameState, me: Player, done: number, api: SkillApi):
       if (c) entries.push({ card: c, owner: p });
     }
   }
-  // 只在「还有别人能接收」时才列出来——移到原地等于没动
-  const movable = entries.filter(
-    (e) => state.players.filter((x) => x.alive && x.seatId !== e.owner.seatId).length > 0,
+  // 只在「还有别人能接收」时才列出来——移到原地等于没动（判据＝canMoveFieldCardTo，唯一事实来源）
+  const movable = entries.filter((e) =>
+    state.players.some((x) => canMoveFieldCardTo(state, e.owner.seatId, x.seatId)),
   );
+
   if (movable.length === 0) return;
   const options: { id: string; label: string }[] = movable.map((e) => ({
     id: e.card.id,
@@ -5707,7 +5729,9 @@ function yongjinStep(state: GameState, me: Player, done: number, api: SkillApi):
       if (picked === 'stop') return;
       const entry = movable.find((e) => e.card.id === picked);
       if (!entry) return;
-      const dest = st.players.filter((x) => x.alive && x.seatId !== entry.owner.seatId);
+      // 终点候选走同一个判据（起点≠终点）；勇进自己的条目存的是 `owner`（Player）
+      const dest = st.players.filter((x) => canMoveFieldCardTo(st, entry.owner.seatId, x.seatId));
+
       if (dest.length === 0) return;
       api.askChoice(
         st,
@@ -6641,6 +6665,9 @@ const LIJUE_GUOSI: Hero = {
       oncePerGame: true,
       minTargets: 1,
       maxTargets: 1,
+      // 文本「与你势力相同的一名角色」（**没有**「其他」）⇒ 自己也可以是目标
+      // （同类先例：君孙权·据江那类同势力向的技能。用户 2026-09-24 口径）。
+      selfTarget: true,
       needsCards: true,
       maxCards: () => 1,
       canUse: (state, player) =>
@@ -7728,6 +7755,32 @@ export interface FieldCardEntry {
   zone: 'equip' | 'judge';
 }
 
+/**
+ * 「移动场上的牌」的**终点**判据 —— 唯一事实来源。
+ *
+ * 口径（用户 2026-09-24，规则权威，见 `docs/guozhan-roster.md` §5.209）：
+ *
+ * > 张郃【巧变】跳过出牌阶段后移动场上的牌时，张郃本人可以作为牌移动的**起点或终点之一**，
+ * > 但牌必须从「一名角色」移动到「另一名角色」的对应区域，因此**起点角色与终点角色不能是同一人**。
+ *
+ * 两条要点，都在这一处判：
+ *   ① **起点/终点都可以是发动者本人**（「一名角色」没有「其他」字样）⇒ 不做任何「排除自己」；
+ *   ② **起点 ≠ 终点**（「一名角色」→「**另一名**角色」）⇒ 原地不动不算移动。
+ *
+ * 消费者：巧变/谋断的终点候选（`askMoveFieldCard`）、勇进的终点候选、以及搬运原语
+ * `api.moveFieldCard` 的兜底校验（绕过询问也不能把牌「移」到原地）。
+ */
+export function canMoveFieldCardTo(
+  state: GameState,
+  fromSeatId: string,
+  toSeatId: string,
+): boolean {
+  if (fromSeatId === toSeatId) return false; // 牌要从「一名角色」移到「另一名角色」
+  const to = getPlayer(state, toSeatId);
+  return !!to && to.alive;
+}
+
+
 /** 全场可操作的明牌（过一遍 `canOperateTargetCard`：风扬那类「不能被弃置/获得」的保护也在这里生效） */
 export function fieldCardEntries(state: GameState, actorSeatId: string): FieldCardEntry[] {
   const out: FieldCardEntry[] = [];
@@ -7931,6 +7984,9 @@ const WUGUOTAI: Hero = {
       oncePerTurn: true,
       minTargets: 2,
       maxTargets: 2,
+      // 文本「交换两名角色装备区里的牌」（**没有**「其他」）⇒ 两名角色里可以是自己
+      // （`ganluPairs` 本来就遍历全场存活角色，含使用者本人）。
+      selfTarget: true,
       needsCards: false,
       canUse: (state, player) => ganluPairs(state, player).length > 0,
       execute: (state, player, intent, api) => {
@@ -9712,6 +9768,9 @@ const MIFUREN: Hero = {
       name: '存嗣',
       minTargets: 1,
       maxTargets: 1,
+      // 文本「令一名角色获得【勇决】，**若其不为你**，其摸两张牌」——「若其不为你」这句本身就
+      // 说明自己可以是目标（执行里也有 `target.seatId !== player.seatId` 那一支）。
+      selfTarget: true,
       needsCards: false,
       canUse: (state, player) =>
         !player.removedHeroIds.includes('mifuren') && state.players.some((x) => x.alive),
@@ -11448,9 +11507,12 @@ function askMoveFieldCard(ctx: HookContext, skillName: string): void {
       if (picked === 'no') return;
       const entry = findFieldCardByChoice(st, entries, picked);
       if (!entry) return; // 跨步：那张牌已经不在原处
-      // 移到**别人**的区域去——移给自己等于没动
-      const candidates = st.players.filter((x) => x.alive && x.seatId !== entry.ownerSeatId);
-      if (candidates.length === 0) return;
+      // 终点候选：**起点与终点不能是同一人**（`canMoveFieldCardTo`，唯一的判据）。
+      // ⚠️ 自己（发动者）本来就在候选里——「一名角色」→「另一名角色」只排除「原地不动」。
+      const candidates = st.players.filter((x) =>
+        canMoveFieldCardTo(st, entry.ownerSeatId, x.seatId),
+      );
+
       ctx.api.askChoice(
         st,
         player.seatId,
@@ -16821,6 +16883,9 @@ const PAIYI_SKILL: ActiveSkill = {
   perPhaseLimit: 2,
   minTargets: 1,
   maxTargets: 1,
+  // 文本「令一名角色摸两张牌」（**没有**「其他」）⇒ 自己可以是目标
+  // （执行里的提示语本来就写着「可以是自己」）。
+  selfTarget: true,
   needsCards: false,
   canUse: (state, player) => player.quan.length > 0,
   execute: (state, player, intent, api) => {

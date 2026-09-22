@@ -20,6 +20,8 @@ import {
   EQUIP_NAME,
   cardLabel,
   cardShortName,
+  cardTargetExcludesSelf,
+  cardTargetAllowsSelf,
   isDelayedTrick,
   isEquipCard,
   isInstantTrick,
@@ -94,6 +96,7 @@ import {
   EQUIP_SLOTS,
   armorCancelsFireTrick,
   bigFactions,
+  canMoveFieldCardTo,
   immuneToChaining,
   isBigFaction,
   isMalePlayer,
@@ -2953,7 +2956,10 @@ function playSha(
   const seenTargets = new Set<string>();
   const usedFactions = new Set<string>();
   for (const [index, targetId] of targetIds.entries()) {
-    if (targetId === source.seatId) return err('不能对自己使用杀');
+    // 「能不能拿自己当目标」是**这张牌自己的**目标规则（`CARD_TARGET_EXCLUDES_SELF`），
+    // 不是一条通用规则：【杀】由用户 2026-09-24 明确点名属于「排除自己」那一类。
+    if (cardTargetExcludesSelf(asType) && targetId === source.seatId)
+      return err('不能对自己使用【杀】');
     if (seenTargets.has(targetId)) return err('目标不能重复');
     seenTargets.add(targetId);
     const target = getPlayer(state, targetId);
@@ -3095,6 +3101,21 @@ function trickNeedsCardsInHand(type: CardType): boolean {
 export function dropTargetsWithoutHand(state: GameState, type: CardType, ids: string[]): string[] {
   if (!trickNeedsCardsInHand(type)) return ids.slice();
   return ids.filter((id) => (getPlayer(state, id)?.hand.length ?? 0) > 0);
+}
+
+/**
+ * 「这张牌**打出之后**，这名角色手里还剩几张手牌」——只在**目标就是使用者自己**时与
+ * `player.hand.length` 不同（【火攻】自己：这张火攻打出后离开自己的手牌，而结算时目标的
+ * 手牌数已经少了一张）。
+ *
+ * 为什么需要它：用户 2026-09-24 的口径是「自己有手牌时【火攻】可以对自己使用，**自己没手牌时
+ * 仍不可选**」。若不做这一步修正，「手里只剩这一张火攻、指自己」会通过校验、却在结算时发现
+ * 目标的（也就是自己的）手牌已经空了 → 白打一张、日志还写着「没有手牌，【火攻】无效」。
+ * 用 `player.hand.some(...)` 而不是直接减一：那张牌也可能躺在【木牛流马】的「辎」里
+ * （不算手牌），这时手牌数不该被减。
+ */
+export function handCardsAfterPlaying(player: Player, cardId: string): number {
+  return player.hand.length - (player.hand.some((c) => c.id === cardId) ? 1 : 0);
 }
 
 /**
@@ -6184,7 +6205,9 @@ function playDelayedTrick(
   //    判据收在 `delayedTrickTargetInRange`（唯一事实来源，`legal.ts` 也读它）。
   if (targetIds.length !== 1) return err('需指定 1 名目标');
   const targetId = targetIds[0]!;
-  if (targetId === player.seatId) return err('不能以自己为目标');
+  // 【乐不思蜀】/【兵粮寸断】的牌面都是「一名**其他**角色」⇒ 按**这张牌自己**的目标规则排除自己
+  // （声明表见 protocol 的 `CARD_TARGET_EXCLUDES_SELF`；「闪电」是「置于自己判定区」，上面单独一支）
+  if (cardTargetExcludesSelf(type) && targetId === player.seatId) return err('不能以自己为目标');
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) return err('目标无效');
   // 奇才：使用锦囊牌无距离限制；刘琦·问计标记的那张实体牌同样无距离限制
@@ -6262,7 +6285,13 @@ function playTrick(
   } else if (type === 'guohe' || type === 'shunshou' || type === 'juedou' || type === 'huogong') {
     if (intent.targetIds.length !== 1) return err('需指定 1 名目标');
     const tid = intent.targetIds[0]!;
-    if (tid === player.seatId) return err('不能以自己为目标');
+    // 「能不能拿自己当目标」严格按**这张牌自己的**目标规则判，不是一条通用规则
+    // （声明表：protocol 的 `CARD_TARGET_EXCLUDES_SELF`）：
+    //   【过河拆桥】【顺手牵羊】【决斗】牌面写「一名**其他**角色」⇒ 排除自己（回归线）；
+    //   【火攻】牌面写「一名**有手牌**的角色」（没有「其他」）⇒ **可以对自己使用**——
+    //   只要自己有手牌（用户 2026-09-24 点名的第一条口径，见 docs §5.209）。
+    //   自己没手牌时仍不可选：下面那条「目标必须有手牌」照常拦（trickNeedsCardsInHand）。
+    if (cardTargetExcludesSelf(type) && tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
     // 锁定技（帷幕/谦逊等）：不能成为此牌的目标
@@ -6285,9 +6314,19 @@ function playTrick(
     // 【火攻】的目标必须**有手牌**：火攻要他「展示一张手牌」，没手牌的人根本没法结算。
     // 判据统一在 `trickNeedsCardsInHand`（用户 2026-09-22 报、09-23 复报「其他交互路径」——
     // 技能发起的虚拟锦囊不经过这里，见 `dropTargetsWithoutHand` 与结算入口的兜底）。
-    if (trickNeedsCardsInHand(type) && t.hand.length === 0)
+    // ⚠️ 目标就是使用者自己时，要按**这张牌打出之后**的手牌数算（`handCardsAfterPlaying`）：
+    //    否则「手里只剩这张火攻、指自己」会过校验却在结算时空手白打（用户 2026-09-24 口径
+    //    「自己有手牌才可对自己使用，自己没手牌时仍不可选」）。
+    const targetHandLeft =
+      tid === player.seatId ? handCardsAfterPlaying(player, card.id) : t.hand.length;
+    if (trickNeedsCardsInHand(type) && targetHandLeft === 0)
       return err(`【${CARD_TYPE_NAME[type]}】的目标必须有手牌`);
   } else if (type === 'jiedao') {
+    // ⚠️ 审计留痕（§5.209）：武器持有者这一层**没有**自身校验——本地文案
+    //    「指定一名装备了武器的角色…」缺「其他」二字，而官方通行口径含「其他角色」。
+    //    文本未核到 ⇒ 按用户口径「核不到就标待核对、不猜」，本轮保持既有行为
+    //    （候选只给其他人：legal.ts 的 `p.seatId !== seatId`）。等文本核对后再决定是否加。
+    //    「另一名角色」那一半（出杀目标 ≠ 武器持有者）仍是硬规则，见下面那条。
     if (intent.targetIds.length !== 2)
       return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');
     const [holderId, shaTargetId] = intent.targetIds;
@@ -6310,10 +6349,12 @@ function playTrick(
       if (!t || !t.alive) return err('目标无效');
     }
   } else if (type === 'yuanjiao') {
-    // 远交近攻：一名与你势力不同、且已明置武将牌的其他角色
+    // 远交近攻：一名与你势力不同、且已明置武将牌的角色。
+    // ⚠️ 这里**不写**「tid === 自己 ⇒ 拒」的硬编码：牌面写的是「与你**势力不同**」，
+    //    而自己与自己的势力必然相同 ⇒ 文本自身就排除了自己（下面那条势力比较会拦下自己）。
+    //    「排除自己」因此是这张牌的目标规则的自然结果，不是一条通用规则（见 §5.209）。
     if (intent.targetIds.length !== 1) return err('【远交近攻】需指定 1 名目标');
     const tid = intent.targetIds[0]!;
-    if (tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
     if (!t.heroRevealed && !t.deputyRevealed)
@@ -6330,28 +6371,29 @@ function playTrick(
     // 勠力同心的目标是「所有大势力 / 所有小势力角色」——场上没有大势力就没有合法目标
     if (bigFactions(state).length === 0) return err('场上没有大势力，【勠力同心】没有目标');
   } else if (type === 'tiaohu') {
-    // 调虎离山：一至两名**其他**角色，无距离限制
+    // 调虎离山：一至两名**其他**角色，无距离限制 ⇒ 按这张牌自己的目标规则排除自己（回归线）
     if (intent.targetIds.length < 1 || intent.targetIds.length > 2)
       return err('【调虎离山】需指定 1 至 2 名目标');
     if (new Set(intent.targetIds).size !== intent.targetIds.length) return err('目标不能重复');
     for (const tid of intent.targetIds) {
-      if (tid === player.seatId) return err('不能以自己为目标');
+      if (cardTargetExcludesSelf(type) && tid === player.seatId) return err('不能以自己为目标');
       const t = getPlayer(state, tid);
       if (!t || !t.alive) return err('目标无效');
     }
   } else if (type === 'shuiyan') {
-    // 水淹七军：一名**装备区里有牌**的其他角色
+    // 水淹七军：一名**装备区里有牌**的**其他**角色 ⇒ 按这张牌自己的目标规则排除自己（回归线）
     if (intent.targetIds.length !== 1) return err('【水淹七军】需指定 1 名目标');
     const tid = intent.targetIds[0]!;
-    if (tid === player.seatId) return err('不能以自己为目标');
+    if (cardTargetExcludesSelf(type) && tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
     if (EQUIP_SLOTS.every((s) => !t.equipment[s]))
       return err('目标装备区里没有牌，不能成为【水淹七军】的目标');
   } else if (type === 'zhibi') {
+    // 知己知彼：一名**其他**角色 ⇒ 按这张牌自己的目标规则排除自己（回归线）
     if (intent.targetIds.length !== 1) return err('【知己知彼】需指定 1 名目标');
     const tid = intent.targetIds[0]!;
-    if (tid === player.seatId) return err('不能以自己为目标');
+    if (cardTargetExcludesSelf(type) && tid === player.seatId) return err('不能以自己为目标');
     const t = getPlayer(state, tid);
     if (!t || !t.alive) return err('目标无效');
   } else if (type === 'guoanjianbang') {
@@ -11592,6 +11634,14 @@ function makeSkillApi(
         after?.();
         return;
       }
+      // 「牌要从**一名角色**移到**另一名角色**的对应区域」——起点＝终点不算移动（原地不动），
+      // 判据与终点候选共用 `canMoveFieldCardTo`（唯一事实来源，见 heroes.ts 的说明）。
+      // ⚠️ 这不是「排除自己」：起点或终点**可以是发动者本人**（用户 2026-09-24 的巧变口径），
+      //    被排除的只是「同一个角色」。
+      if (!canMoveFieldCardTo(state, owner.seatId, target.seatId)) {
+        after?.();
+        return;
+      }
       const from: Player = owner;
       if (slot === 'judge') {
         from.judgment = from.judgment.filter((c) => c.id !== card.id);
@@ -11885,6 +11935,14 @@ function onUseSkill(
   // 目标数校验
   if (intent.targetIds.length < skill.minTargets || intent.targetIds.length > skill.maxTargets)
     return err(`目标数量不符（需 ${skill.minTargets}-${skill.maxTargets}）`);
+  // 「能不能拿自己当目标」＝**技能自己的**目标规则（`ActiveSkill.selfTarget`，用户 2026-09-24 口径）：
+  // 文本写「一名**其他**角色」的技能都不声明 ⇒ 在这**一处**统一拦；写「一名角色」的技能
+  // （青囊/凶算/甘露/排异/存嗣）自己声明 `true`。
+  // ⚠️ 这条以前不存在——以前全靠**界面**兜着（legal.ts 下发的候选不含自己），
+  //    于是「绕过界面就能指定自己」，而反过来界面又因此无法让【火攻】那类牌选自己
+  //    （通用 UI 决定了规则，正是用户点名的缺陷）。
+  if (skill.selfTarget !== true && intent.targetIds.includes(seatId))
+    return err('该技能不能以自己为目标');
   // 代价牌校验：**手牌**（缺省）或**手牌＋自己装备区**（技能声明了 costFrom: 'handEquip'）。
   // ⚠️ 口径见 ActiveSkill.costFrom：文本写「手牌」的绝不能拿装备区凑数，「一张牌」的才放开。
   if (skill.needsCards) {

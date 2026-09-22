@@ -44,7 +44,11 @@ import { cardUses, useActionOf, type CardUse } from '../cardUses';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
 import { ZonePickPanel } from '../components/ZonePickPanel';
-import { targetNeedsHandCards } from '../targetRules';
+import {
+  cardSelfTargetAllowed,
+  skillSelfTargetAllowed,
+  targetNeedsHandCards,
+} from '../targetRules';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
@@ -152,28 +156,31 @@ function targetRange(
   card: Card,
   as?: CardType,
   shaMaxTargets?: number,
-): { min: number; max: number; self: boolean } {
+): { min: number; max: number } {
   // 转化牌按转化后的类型算需要几个目标（大乔·国色：方块牌当【乐不思蜀】要 1 个目标）
   const type = as ?? card.type;
   const effective: Card = type === card.type ? card : { ...card, type };
-  if (type === 'tiesuo') return { min: 1, max: 2, self: true };
-  // 调虎离山：一至两名**其他**角色（不能选自己）
-  if (type === 'tiaohu') return { min: 1, max: 2, self: false };
-  if (isEquipCard(effective)) return { min: 0, max: 0, self: false };
-  if (type === 'tao' || type === 'jiu') return { min: 0, max: 0, self: false };
-  if (type === 'wuzhong' || type === 'taoyuan') return { min: 0, max: 0, self: false };
-  if (type === 'shandian') return { min: 0, max: 0, self: false };
-  if (type === 'nanman' || type === 'wanjian') return { min: 0, max: 0, self: false };
-  if (type === 'yiyi' || type === 'wugu') return { min: 0, max: 0, self: false };
-  if (type === 'jiedao') return { min: 2, max: 2, self: false };
+  if (type === 'tiesuo') return { min: 1, max: 2 };
+  // 调虎离山：一至两名角色（**「其他」那一条由引擎判**，界面不在这里管能不能选自己）
+  if (type === 'tiaohu') return { min: 1, max: 2 };
+  if (isEquipCard(effective)) return { min: 0, max: 0 };
+  if (type === 'tao' || type === 'jiu') return { min: 0, max: 0 };
+  if (type === 'wuzhong' || type === 'taoyuan') return { min: 0, max: 0 };
+  if (type === 'shandian') return { min: 0, max: 0 };
+  if (type === 'nanman' || type === 'wanjian') return { min: 0, max: 0 };
+  if (type === 'yiyi' || type === 'wugu') return { min: 0, max: 0 };
+  if (type === 'jiedao') return { min: 2, max: 2 };
   // 敕令：目标是规则算出来的（所有没有势力的角色），不用点
-  if (type === 'chiling') return { min: 0, max: 0, self: false };
+  if (type === 'chiling') return { min: 0, max: 0 };
   // 联军盛宴：点一个代表角色 = 选一个「其他势力」
-  if (type === 'lianjun') return { min: 1, max: 1, self: false };
+  if (type === 'lianjun') return { min: 1, max: 1 };
   if (type === 'sha' && (shaMaxTargets ?? 1) > 1) {
-    return { min: 1, max: shaMaxTargets!, self: false };
+    return { min: 1, max: shaMaxTargets! };
   }
-  return { min: 1, max: 1, self: false }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
+  // ⚠️ 这里**不再**返回 `self`：以前那张「哪几张牌能选自己」的表是界面自己写的第二套规则，
+  // 和引擎对不上（火攻/号令天下/克复中原就是这么被挡住的）。现在一律读服务端下发的
+  // `prompt.selfTargetUses`——见 targetRules.ts 与 docs §5.209（用户 2026-09-24 口径）。
+  return { min: 1, max: 1 }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
 }
 
 /** 从快照获取当前玩家的活跃武将（国战：已亮将；其他：主将） */
@@ -247,8 +254,11 @@ export function Game() {
     /** 至少/至多几个目标（铁索连环是 1–2 名，所以是个区间） */
     min: number;
     max: number;
-    /** 是否允许把自己选成目标（铁索连环） */
-    self: boolean;
+    /**
+     * ⚠️ 这里**没有** `self` 字段（以前有，是界面自己写的一张「哪些牌能选自己」的表）。
+     * 用户 2026-09-24 口径：能否选自己由**牌/技能自己的**目标规则决定，界面只读服务端下发的
+     * `prompt.selfTargetUses`（见 targetRules.ts 的 `cardSelfTargetAllowed`）。
+     */
     picked: string[];
     /** 【丈八蛇矛】：与 cardId 一起当【杀】的第二张手牌 */
     extraCardIds?: string[];
@@ -331,6 +341,12 @@ export function Game() {
       maxCards?: ActiveSkill['maxCards'];
       /** 代价能取自哪个区（'handEquip' ＝自己装备区的牌也可点；见 protocol 的 legalSkills） */
       costFrom?: 'hand' | 'handEquip';
+      /**
+       * 技能**自己的**目标规则：允不允许把使用者自己选成目标。
+       * 服务端 `legalSkills[].selfTarget` 与武将定义上的 `ActiveSkill.selfTarget` 是**同一个
+       * 字段**（标记技能只有服务端那份带得回来），界面只读它，不自己判断（用户 2026-09-24 口径）。
+       */
+      selfTarget?: boolean;
     };
     cardIds: string[];
     targetIds: string[];
@@ -479,7 +495,6 @@ export function Game() {
       ...(asAttribute ? { asAttribute } : {}),
       min: range.min,
       max: range.max,
-      self: range.self,
       picked: [],
     });
   }
@@ -518,12 +533,13 @@ export function Game() {
     // 当【杀】使用 → 复用现有的选目标流程。
     // 目标是**一名**角色：丈八蛇矛与方天画戟都是武器，不可能同时装备，
     // 所以这里不存在「方天画戟那种多目标」的情况。
+    // 【杀】的目标限「其他角色」（见引擎的 targetRule 表），所以这里也不可能有「选自己」那一支：
+    // 能不能选自己由服务端下发的 selfTargetUses 说了算，而不是本地写死。
     setSelected({
       cardId: first!,
       extraCardIds: [second!],
       min: 1,
       max: 1,
-      self: false,
       picked: [],
     });
     setZhangbaMode(null);
@@ -667,14 +683,19 @@ export function Game() {
     if (!heroSkill && !given) return;
     setSkillMode({
       skillId,
-      skill: heroSkill ?? {
-        id: skillId,
-        name: given!.name,
-        desc: given!.desc,
-        needsCards: given!.needsCards,
-        minTargets: given!.minTargets,
-        maxTargets: given!.maxTargets,
-      },
+      skill: heroSkill
+        ? // 本地武将定义：selfTarget 优先用**服务端下发**的那份（两边是同一个字段，
+          // 服务端是权威——用户 2026-09-24 口径「能否选自己读服务端下发的合法目标」）
+          { ...heroSkill, selfTarget: given?.selfTarget ?? heroSkill.selfTarget }
+        : {
+            id: skillId,
+            name: given!.name,
+            desc: given!.desc,
+            needsCards: given!.needsCards,
+            minTargets: given!.minTargets,
+            maxTargets: given!.maxTargets,
+            selfTarget: given!.selfTarget,
+          },
       cardIds: [],
       targetIds: [],
     });
@@ -739,7 +760,8 @@ export function Game() {
       return '请选择出杀目标';
     }
     if (selected.max > 1) {
-      return `请选择 1 至 2 名目标（${selected.self ? '可含自己' : '不含自己'}），已选 ${selected.picked.length} 名`;
+      // 「可含自己」也读服务端下发的合法目标，不在界面里二次判断
+      return `请选择 1 至 2 名目标（${selectedCanTargetSelf ? '可含自己' : '不含自己'}），已选 ${selected.picked.length} 名`;
     }
     return '请选择目标（点上方对手，选完再点确认）';
   }
@@ -997,11 +1019,23 @@ export function Game() {
    * 【火攻】（用户 2026-09-22 报的缺陷）：目标要展示一张手牌，**没有手牌的角色不能被指定**。
    * 引擎侧在 `resolvePlayedCard` 的校验里同样拦（见那里的注释），两边是同一个判据。
    */
-  const selectedTargetNeedsHand = (() => {
+  /** 当前选中那张牌的**生效牌型**（有转化用法时是 `as`；用来查「目标门槛」与「能否选自己」） */
+  const selectedEffectiveType = (() => {
     if (!selected) return null;
-    const eff = selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type;
-    return targetNeedsHandCards(eff) ? true : null;
+    return selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type ?? null;
   })();
+  const selectedTargetNeedsHand = selected
+    ? targetNeedsHandCards(selectedEffectiveType)
+      ? true
+      : null
+    : null;
+  /**
+   * 当前这张牌**按这个用法**能不能把自己选成目标——**读服务端下发的合法目标**
+   * （`prompt.selfTargetUses`，用户 2026-09-24 口径：能否选自己由牌/技能文本决定，
+   * 不许界面自己加通用规则）。见 targetRules.ts。
+   */
+  const selectedCanTargetSelf =
+    !!selected && cardSelfTargetAllowed(prompt, selected.cardId, selectedEffectiveType);
 
   // 判断某对手是否可被点击（选目标 / 技能选目标）
   function canClickTarget(p: PlayerView): boolean {
@@ -1062,14 +1096,26 @@ export function Game() {
     // 主动明置只在**准备阶段**（判定阶段是另一个阶段了，不能亮）
     (phase === 'prepare' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
   const canRevealNow = canRevealSlot(myHero);
-  // 铁索连环可以把「自己」选成目标：这时自己的武将面板整体可点
+  /**
+   * 自己的武将面板此刻可点吗（＝把自己选成目标）。
+   *
+   * 判据全部来自**服务端下发的自身合法目标**，界面不写「哪张牌能选自己」这类规则
+   * （用户 2026-09-24 口径）：
+   * - 出牌阶段选牌中：`prompt.selfTargetUses` 里有「这张牌 + 当前用法」才能点自己
+   *   （所以【火攻】【铁索连环】【号令天下】【克复中原】点得动，【杀】【顺手牵羊】点不动）；
+   * - 技能模式：该技能自己声明了 `selfTarget` 才能点自己（青囊/凶算/甘露/排异/存嗣）。
+   */
   const canPickSelf =
-    !!selected &&
     !lianhengCard &&
-    selected.self &&
-    prompt?.kind === 'play' &&
-    !selected.picked.includes(me.seatId) &&
-    selected.picked.length < selected.max;
+    !selected?.picked.includes(me.seatId) &&
+    (selected
+      ? prompt?.kind === 'play' &&
+        selectedCanTargetSelf &&
+        selected.picked.length < selected.max
+      : !!skillMode &&
+        skillSelfTargetAllowed(skillMode.skill) &&
+        !skillMode.targetIds.includes(me.seatId) &&
+        skillMode.targetIds.length < skillMode.skill.maxTargets);
   const heroSlots: HeroSlot[] = isGuozhan
     ? [
         {
@@ -1962,9 +2008,12 @@ export function Game() {
             me={me}
             mode={snapshot.mode}
             slots={heroSlots}
-            targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
-            picked={!!selected?.picked.includes(me.seatId)}
-            onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
+            targetable={canPickSelf}
+            picked={
+              !!selected?.picked.includes(me.seatId) || !!skillMode?.targetIds.includes(me.seatId)
+            }
+            // 选牌模式与技能模式都走 handleTargetClick 的同一套分派（点自己＝选中自己）
+            onSelect={canPickSelf ? () => handleTargetClick(me) : undefined}
             // 装备牌自带可用主动技（木牛流马）→ 点这张装备牌＝发动它（用户 2026-09-22 报的缺口）
             equipUse={{
               skillIds: skillIds,

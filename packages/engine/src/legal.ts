@@ -1,6 +1,7 @@
 import type { CardType, MarkerId, PromptView } from '@sgs/protocol';
 import {
   CARD_TYPE_NAME,
+  cardTargetAllowsSelf,
   isDelayedTrick,
   isEquipCard,
   isInstantTrick,
@@ -38,6 +39,7 @@ import {
   haolingTargets,
   duelShaRequired,
   factionHelpers,
+  handCardsAfterPlaying,
   lianhengTargets,
   lianjunFactionOk,
   isTianCard,
@@ -370,13 +372,17 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
               effectiveFaction(state, p) !== myFaction,
           );
       } else {
-        // 决斗 / 过河拆桥 / 知己知彼：只要有一个其他存活玩家就能用 ——
-        // 帷幕/空城那类是「成为目标时取消之」，不是「选不了他」（用户 2026-09-21 口径）。
+        // 决斗 / 过河拆桥 / 知己知彼：只要有一个**其他**存活玩家就能用（这三张的牌面都写
+        // 「一名其他角色」）—— 帷幕/空城那类是「成为目标时取消之」，不是「选不了他」
+        // （用户 2026-09-21 口径）。
         legal = state.players.some((p) => p.alive && p.seatId !== seatId);
-        // ⚠️ 例外：【火攻】的目标必须**有手牌**（要对方展示一张手牌）——
-        //    全场其他人都空手时这张牌**根本用不出去**，不该在界面上亮着（用户 2026-09-23 复报）。
-        if (card.type === 'huogong')
-          legal = state.players.some((p) => p.alive && p.seatId !== seatId && p.hand.length > 0);
+        // ⚠️ 【火攻】：牌面是「一名**有手牌**的角色」——
+        //    既**没有**「其他」⇒ 自己有手牌时可以指自己（用户 2026-09-24 点名）；
+        //    也不是「任意角色」⇒ 没手牌的人根本结算不了，全场都没手牌时这张牌打不出去
+        //    （用户 2026-09-23 复报）。
+        //    指自己时按「这张牌打出之后自己还剩几张手牌」算（与出牌校验同一判据，
+        //    否则界面会亮着、点下去却被引擎拒）。
+        if (card.type === 'huogong') legal = hasHuogongTarget(state, player, card.id);
       }
       if (legal) {
         legalCardIds.push(card.id);
@@ -388,10 +394,12 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     for (const it of ['guohe', 'huogong', 'juedou'] as const) {
       if (seen.has(card.id)) break;
       if (!canUseAsCard(state, player, card, it)) continue;
-      // 转化出来的【火攻】同样要求**有人有手牌**（卧龙·火计）
-      const legal = state.players.some(
-        (p) => p.alive && p.seatId !== seatId && (it !== 'huogong' || p.hand.length > 0),
-      );
+      // 转化出来的牌按**转化后的牌型**的目标规则判（与上面按牌面那几支同一口径，用户 2026-09-24）：
+      // 【火攻】（卧龙·火计）只要有人有手牌——**自己也算**；【过河拆桥】【决斗】必须有个其他角色。
+      const legal =
+        it === 'huogong'
+          ? hasHuogongTarget(state, player, card.id)
+          : state.players.some((p) => p.alive && p.seatId !== seatId);
       if (legal) {
         legalCardIds.push(card.id);
         seen.add(card.id);
@@ -423,7 +431,12 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       seen.add(card.id);
     }
   }
-  // 不能成为目标的角色（调虎离山）也不该出现在可点目标里
+  // **其他人的**可点目标集合：存活 + 未被调虎离山封（不能成为目标的角色不该出现在可点目标里）。
+  //
+  // ⚠️ 这份清单**不是**一条「谁都不能选自己」的通用规则，它只是「其他角色」这一栏；
+  //    「自己能不能被选」由**每张牌/每个技能自己的目标规则**决定，单独放在 `selfTargetUses`
+  //    （牌）与 `legalSkills[].selfTarget`（技能）里下发（用户 2026-09-24 口径）。
+  //    界面把两者拼起来才是完整的可点集合，不许自己再加一条「不能选自己」。
   const legalTargetIds = state.players
     .filter((p) => p.alive && p.seatId !== seatId && !p.flags.cannotBeTargetThisTurn)
     .map((p) => p.seatId);
@@ -461,6 +474,9 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         needsCards: skill.needsCards === true,
         minTargets: skill.minTargets,
         maxTargets: skill.maxTargets,
+        // 技能**自己的**目标规则：写「一名角色」的技能声明了 selfTarget ⇒ 界面可以点自己
+        // （写「一名其他角色」的不声明；引擎侧由 onUseSkill 统一拦，见 ActiveSkill.selfTarget）
+        selfTarget: skill.selfTarget === true,
       });
     }
   }
@@ -469,6 +485,8 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     message: '你的出牌阶段：出牌或结束',
     legalCardIds,
     legalTargetIds,
+    // 这批「牌 + 用法」此刻能把**自己**选为目标（服务端算的，界面据此点亮自己那一栏）
+    selfTargetUses: selfTargetUsesOf(state, player, usable, legalCardIds),
     // 装备/桃/酒不需要目标；杀需1目标，客户端按牌类型判断
     mustSelectTargetCount: 0,
     legalSkillIds,
@@ -478,6 +496,86 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     // 【丈八蛇矛】此刻能不能把两张手牌当【杀】用（能的话界面会多给一条用法）
     zhangbaOk: canSha && canZhangba(player, usable.length),
   };
+}
+
+/**
+ * 这个牌型**此刻**能不能把使用者自己选为目标（目标自身的条件照牌面走）。
+ *
+ * 口径（用户 2026-09-24）：**能选自己由每张牌自己的文本决定**，所以这里只认那些「玩家指定目标
+ * + 文本没有排除自己」的牌型；`cardTargetAllowsSelf` 先按声明表把「其他角色」那一类挡掉
+ * （见 protocol 的 `CARD_TARGET_EXCLUDES_SELF`）。
+ *
+ * ⚠️ 只列**玩家真的会去点目标**的四种：
+ *   - 【火攻】（「一名**有手牌**的角色」）：还有一条自身条件——自己得有手牌；
+ *   - 【铁索连环】（「一至两名角色」）：无附加条件；
+ *   - 【号令天下】（「一名体力值不是最少的角色」）：自己得符合那个条件；
+ *   - 【克复中原】（「对至少一名角色」）：无附加条件。
+ * 【挟天子以令诸侯】【固国安邦】是「只对自己使用」、目标由规则定死（玩家不点目标），
+ * 不进这份清单；【以逸待劳】【五谷丰登】那类全体牌同理。
+ */
+function hasHuogongTarget(state: GameState, player: Player, cardId: string): boolean {
+  return state.players.some((p) =>
+    !p.alive
+      ? false
+      : p.seatId === player.seatId
+        ? handCardsAfterPlaying(player, cardId) > 0
+        : p.hand.length > 0,
+  );
+}
+
+function selfTargetTypeOk(state: GameState, player: Player, card: Card, type: CardType): boolean {
+  if (!cardTargetAllowsSelf(type)) return false;
+  switch (type) {
+    case 'huogong':
+      // 目标要「有手牌」；目标就是自己时按**这张牌打出之后**的手牌数算（与出牌校验同一判据）
+      return handCardsAfterPlaying(player, card.id) > 0;
+    case 'tiesuo':
+    case 'kefuzhongyuan':
+      return true;
+    case 'haolingtianxia':
+      return haolingTargets(state).some((p) => p.seatId === player.seatId);
+    default:
+      return false;
+  }
+}
+
+/** 可以被转化技「做出来」的、且文本允许自己的牌型（卧龙·火计→火攻 / 庞统·连环→铁索连环） */
+const SELF_TARGET_CONVERSIONS: readonly CardType[] = ['huogong', 'tiesuo'];
+
+/**
+ * 这批「牌 + 用法」里，哪些**此刻可以把使用者自己选为目标** —— 下发给界面的唯一来源。
+ *
+ * 为什么由服务端算：用户 2026-09-24 的口径是「能否选自己由牌/技能的文本决定，**不能由通用目标
+ * 选择 UI 决定**」。界面以前自己维护一张「哪些牌能选自己」的表（`targetRange` 的 `self` 字段），
+ * 于是和引擎各写一套、必然对不上（火攻、号令天下、克复中原、青囊、排异…全被 UI 那张表挡在外面）。
+ *
+ * 只列 `legalCardIds` 里真的出得来的牌，并且**带上用法**（同一张牌不同用法答案不同：卧龙的红
+ * 【决斗】按【决斗】用不能指自己、按【火攻】用可以）。
+ */
+function selfTargetUsesOf(
+  state: GameState,
+  player: Player,
+  usable: Card[],
+  legalCardIds: string[],
+): { cardId: string; type: CardType }[] {
+  const legal = new Set(legalCardIds);
+  const out: { cardId: string; type: CardType }[] = [];
+  const add = (card: Card, type: CardType): void => {
+    if (!legal.has(card.id)) return;
+    if (out.some((u) => u.cardId === card.id && u.type === type)) return;
+    out.push({ cardId: card.id, type });
+  };
+  for (const card of usable) {
+    // ① 按牌面本身用（火攻/铁索/号令天下/克复中原…）
+    if (selfTargetTypeOk(state, player, card, card.type)) add(card, card.type);
+    // ② 用转化技当别的牌型用（红牌当火攻、梅花牌当铁索连环…）
+    for (const type of SELF_TARGET_CONVERSIONS) {
+      if (type !== card.type && canUseAsCard(state, player, card, type)) {
+        if (selfTargetTypeOk(state, player, card, type)) add(card, type);
+      }
+    }
+  }
+  return out;
 }
 
 /**
