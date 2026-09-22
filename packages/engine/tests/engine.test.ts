@@ -6046,6 +6046,52 @@ describe('铁索连环（横置）', () => {
     expect(d.chained).toBe(false);
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
+
+  /**
+   * 用户 2026-09-24 口径④：传导顺序要能到客户端。整段传导在**同一条 intent 里同步跑完**，
+   * 界面只 diff `chained` 只会看到「一下子全解除」，所以顺序必须由引擎明写进快照
+   * （`ChainSpreadView`：源头 + 按结算顺序的名单，只带座次与序号）。
+   */
+  it('传导顺序写进快照的 chain 视图（源头 + 名单，且与日志的实际结算顺序一致）', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+      { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
+      { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
+    ]);
+    for (const sid of [B, C, D]) {
+      state.players.find((p) => p.seatId === sid)!.chained = true;
+    }
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    const snap = toSnapshot(state, A);
+    expect(snap.chain).not.toBeUndefined();
+    expect(snap.chain!.fromSeatId).toBe(B); // 源头 = 吃到属性伤害、因此被重置的那位
+    expect(snap.chain!.order.map((o) => o.index)).toEqual([1, 2]);
+    // 快照里的顺序 == 日志里**实际结算**的顺序（两边都来自引擎，界面照抄即可）
+    const settledSeats = state.log
+      .filter((e) => e.message.includes('因【铁索连环】受到'))
+      .map((e) => state.players.find((p) => e.message.startsWith(p.name))!.seatId);
+    expect(settledSeats).toEqual([C, D]); // 前提：这一次真的逐个结算了两个人
+    expect(snap.chain!.order.map((o) => o.seatId)).toEqual(settledSeats);
+    // 只带座次与序号：不带任何牌面信息
+    expect(Object.keys(snap.chain!).sort()).toEqual(['fromSeatId', 'order', 'seq']);
+    expect(Object.keys(snap.chain!.order[0]!).sort()).toEqual(['index', 'seatId']);
+    // 与拼点区同一生命周期：下一次任何 intent 就收起来
+    ok(act(state, A, { type: 'endPhase' }));
+    expect(state.chainView).toBeNull();
+    expect(toSnapshot(state, A).chain).toBeNull();
+  });
+
+  it('没有传导（没人横置 / 目标没横置）时 chain 视图为空', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [fireSha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    expect(toSnapshot(state, A).chain).toBeNull();
+  });
 });
 
 // ——————————————————————————————————————————

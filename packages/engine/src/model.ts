@@ -7,6 +7,7 @@ import type {
   DamageAttribute,
   PindianView,
   PublicPoolView,
+  ChainSpreadView,
   Faction,
   GameMode,
   LogEntry,
@@ -987,6 +988,17 @@ export interface GameState {
    * 与拼点不同，它**跨多个 intent 存活**（每人一次选牌），所以不能在 applyIntent 里清。
    */
   publicPool?: PublicPoolView | null;
+  /**
+   * **属性伤害沿横置角色传导**的瞬时视图（`ChainSpreadView`，用户 2026-09-24 口径④）。
+   *
+   * 引擎里传导是**有序**的（`queueChainSpread` 记名单 → `chainStep` 按名单逐个结算），
+   * 但整段传导通常在同一条 intent 里同步跑完，界面只靠 diff `Player.chained` 拿不到先后。
+   * 所以把「源头 + 按顺序的名单」写在这里下发（只带座次与序号，不带牌面）。
+   * 生命周期同 `pindianView`：下一次任何 intent 时清空。
+   */
+  chainView?: ChainSpreadView | null;
+  /** 传导视图的自增号（`ChainSpreadView.seq`）：界面靠它认出「新的一次传导」 */
+  chainSeq: number;
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];

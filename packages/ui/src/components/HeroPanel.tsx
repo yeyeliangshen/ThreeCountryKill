@@ -23,6 +23,7 @@ import {
   type PlayerView,
 } from '@sgs/protocol';
 import { EquipChip } from './EquipChip';
+import { ChainBadge } from './ChainFx';
 import { equipSkillButtonOf } from '../equipSkill';
 import { specialZoneChips } from '../specialZones';
 import { heroArt } from './heroArt';
@@ -73,6 +74,19 @@ export interface HeroPanelProps {
     skillIds: readonly string[];
     onUse: (skillId: string) => void;
   };
+  /**
+   * 连环状态的进入 / 解除动画类与传导脉冲（用户 2026-09-24 口径①③④）。
+   *
+   * 只接受**算好的类名与延时**（判据与顺序都在 `chainState.ts` / `useChainFx` 里，
+   * 见 `packages/ui/src/components/ChainFx.tsx`）——面板自己不判断连环状态，
+   * 免得又变成第二套规则。`chained` 的常驻标记仍由 `me.chained` 直接决定。
+   */
+  chainFx?: {
+    /** 贴在面板根上的动画类（`chain-in-a` / `chain-out-b` …）；没有就不传 */
+    cls?: string;
+    /** 传导脉冲：类名 + 延时（延时 = 引擎给的传导序号 × 步长） */
+    hit?: { cls: string; delayMs: number };
+  };
 }
 
 function Portrait({
@@ -121,6 +135,7 @@ export function HeroPanel({
   picked,
   equipPick,
   equipUse,
+  chainFx,
 }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
@@ -131,9 +146,17 @@ export function HeroPanel({
 
   return (
     <div
-      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''}`}
+      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''} ${me.chained ? 'chained' : ''} ${chainFx?.cls ?? ''}`}
       onClick={onSelect}
     >
+      {/* 连环传导的脉冲（口径④）：延时由引擎给的顺序算出来，逐棒在自己面板上闪一下。
+          绝对定位 + `pointer-events: none`（见 styles.css），不占位、不挡点击。 */}
+      {chainFx?.hit && (
+        <span
+          className={`chain-hit ${chainFx.hit.cls}`}
+          style={{ animationDelay: `${chainFx.hit.delayMs}ms` }}
+        />
+      )}
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
         {/* 特殊牌区（公开信息）：口径统一在 specialZones.ts —— 自己的面板与**对手那一行**
@@ -162,18 +185,10 @@ export function HeroPanel({
               翻
             </span>
           )}
-          {/* 横置状态（铁索连环）：属性伤害会沿横置的角色蔓延 */}
-          {me.chained && (
-            <span
-              className="marker-chip mark-chained"
-              {...bind(
-                '横置',
-                '处于铁索连环状态：受到属性伤害时会重置，并让其他横置的角色受到同样的伤害。',
-              )}
-            >
-              横
-            </span>
-          )}
+          {/* 横置状态（铁索连环）：属性伤害会沿横置的角色蔓延。
+              用户 2026-09-24：这枚徽标抽成了 `ChainBadge`（对手那一行现在也画同一枚），
+              文案与提示词只有一处（ui/src/chainState.ts）。 */}
+          {me.chained && <ChainBadge bind={bind} />}
           <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
         </div>
 

@@ -2553,6 +2553,412 @@ select:focus-visible,
   }
 }
 
+/* —— 连环（横置）状态的表现（用户 2026-09-24 口径①~④）——
+   绑定的是「连环状态」本身（`PlayerView.chained`），不是【铁索连环】这张牌：
+   任何令角色横置 / 重置的技能都走这一套。四层表现：
+
+     ① 进入：卡面「锁链收紧」——轻微倾斜 + 一段金属扫描带扫过（`chain-in-*`）
+     ② 常驻：一圈**虚线内描边** + 一枚「横」徽标（与武将面板上那枚同款）
+     ③ 解除：卡面「抖断」——横向抖动 + 亮闪（`chain-out-*`），描边与徽标同时消失
+     ④ 传导：牌桌中央的面板按**引擎给的顺序**逐棒点亮（`.cs-*`），
+        每一棒对应的卡面同时闪一下（`.chain-hit`，延时 = 引擎序号 × 步长）
+
+   为什么常驻标识用 outline：`.player.current` 用 box-shadow 画金框、`.player.targetable`
+   用 box-shadow 呼吸，再加一条 box-shadow 会互相覆盖；border 会改尺寸（牌桌会抖一像素）。
+   outline 不占位、可与它们共存。 */
+.player,
+.hero-panel {
+  /* `.chain-hit` 脉冲要绝对定位盖在卡面上 */
+  position: relative;
+}
+/* ② 常驻标识：虚线内描边（细、不占位、不遮任何文字），一眼看出「这张牌横着」 */
+.player.chained,
+.hero-panel.chained {
+  outline: 1px dashed rgba(127, 176, 217, 0.8);
+  outline-offset: -4px;
+}
+/* —— ④ 传导脉冲：盖在卡面/面板上的一圈光晕 + 金属边。
+   绝对定位 + pointer-events: none：不占位、绝不吃点击（牌桌交互不受影响）。 —— */
+.chain-hit {
+  position: absolute;
+  inset: -2px;
+  border-radius: 12px;
+  pointer-events: none;
+  opacity: 0;
+  /* ⚠️ 用 forwards 而不是 both：这些脉冲靠行内 `animation-delay` 错开，
+     `both` 会在**延时期间**就套上 0% 的关键帧（opacity 1）→ 所有棒一次性全亮，
+     顺序就看不出来了。forwards 让延时期间保持基样式（opacity 0），到点才闪。 */
+  animation: chain-hit 0.62s ease-out forwards;
+}
+.chain-hit.hit-a {
+  animation-name: chain-hit;
+}
+.chain-hit.hit-b {
+  animation-name: chain-hit-b;
+}
+/* 源头（吃到属性伤害的那位）用偏红的版本：它是这次伤害的落点 */
+.chain-hit.hit-src {
+  animation-name: chain-hit-src;
+}
+@keyframes chain-hit {
+  0% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 2px rgba(176, 216, 240, 0.95),
+      0 0 18px 4px rgba(127, 176, 217, 0.75);
+    background: rgba(127, 176, 217, 0.16);
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      inset 0 0 0 1px rgba(176, 216, 240, 0.2),
+      0 0 4px 0 rgba(127, 176, 217, 0.1);
+    background: transparent;
+  }
+}
+@keyframes chain-hit-b {
+  0% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 2px rgba(176, 216, 240, 0.95),
+      0 0 18px 4px rgba(127, 176, 217, 0.75);
+    background: rgba(127, 176, 217, 0.16);
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      inset 0 0 0 1px rgba(176, 216, 240, 0.2),
+      0 0 4px 0 rgba(127, 176, 217, 0.1);
+    background: transparent;
+  }
+}
+@keyframes chain-hit-src {
+  0% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 2px rgba(240, 186, 150, 0.95),
+      0 0 20px 5px rgba(217, 105, 58, 0.8);
+    background: rgba(217, 105, 58, 0.2);
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    background: transparent;
+  }
+}
+/* —— ① 进入 / ③ 解除：卡面本身的动作（倾斜收紧 / 抖断）。
+   只用 transform + filter：不碰 outline / box-shadow，所以与常驻描边、金框、呼吸动画都不打架。
+   `-a` / `-b` 两份内容相同的 keyframes：同一座次连着两次也能重新播一遍（动画名变了 → 重启）。 —— */
+.player.chain-in-a,
+.player.chain-in-b,
+.hero-panel.chain-in-a,
+.hero-panel.chain-in-b {
+  animation: chain-link-in 0.72s cubic-bezier(0.34, 1.32, 0.64, 1) both;
+}
+.player.chain-in-a,
+.hero-panel.chain-in-a {
+  animation-name: chain-link-in;
+}
+.player.chain-in-b,
+.hero-panel.chain-in-b {
+  animation-name: chain-link-in-b;
+}
+@keyframes chain-link-in {
+  0% {
+    transform: rotate(-2.6deg) scale(1.045);
+    filter: brightness(1.75) saturate(1.25);
+  }
+  38% {
+    transform: rotate(-1.2deg) scale(1.02);
+    filter: brightness(1.3);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes chain-link-in-b {
+  0% {
+    transform: rotate(-2.6deg) scale(1.045);
+    filter: brightness(1.75) saturate(1.25);
+  }
+  38% {
+    transform: rotate(-1.2deg) scale(1.02);
+    filter: brightness(1.3);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+.player.chain-out-a,
+.player.chain-out-b,
+.hero-panel.chain-out-a,
+.hero-panel.chain-out-b {
+  animation: chain-break 0.72s ease-out both;
+}
+.player.chain-out-b,
+.hero-panel.chain-out-b {
+  animation-name: chain-break-b;
+}
+@keyframes chain-break {
+  0% {
+    transform: rotate(0.6deg) translateX(0);
+    filter: brightness(1.5);
+  }
+  18% {
+    transform: translateX(-4px) rotate(-0.8deg);
+  }
+  36% {
+    transform: translateX(4px) rotate(0.8deg);
+  }
+  54% {
+    transform: translateX(-2px);
+  }
+  72% {
+    transform: translateX(2px);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes chain-break-b {
+  0% {
+    transform: rotate(0.6deg) translateX(0);
+    filter: brightness(1.5);
+  }
+  18% {
+    transform: translateX(-4px) rotate(-0.8deg);
+  }
+  36% {
+    transform: translateX(4px) rotate(0.8deg);
+  }
+  54% {
+    transform: translateX(-2px);
+  }
+  72% {
+    transform: translateX(2px);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+/* ①③ 的「一道金属扫描带」：卡面 ::after 上一道窄光带扫过去（只在这两个动画类在时才有 content） */
+.chain-in-a::after,
+.chain-in-b::after,
+.chain-out-a::after,
+.chain-out-b::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 32%,
+    rgba(198, 228, 246, 0.55) 50%,
+    transparent 68%
+  );
+  animation: chain-sweep 0.72s ease-out both;
+}
+.chain-out-a::after,
+.chain-out-b::after {
+  background: linear-gradient(
+    100deg,
+    transparent 32%,
+    rgba(255, 196, 150, 0.5) 50%,
+    transparent 68%
+  );
+}
+@keyframes chain-sweep {
+  0% {
+    opacity: 0.9;
+    transform: translateX(-110%);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(110%);
+  }
+}
+
+/* —— ④ 牌桌中央的**连环传导**面板：按引擎给的顺序逐棒点亮 ——
+   与拼点区/牌池同一处、同一套视觉语言（深色面板 + 金边）。
+   `pointer-events: none`：它只是演出，绝不许抢牌桌的点击（手牌/目标选择照常点）。 */
+.chain-spread-table {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(18, 24, 32, 0.94) 0%, rgba(26, 38, 50, 0.94) 100%);
+  border: 1px solid #6f9dc0;
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 24px rgba(127, 176, 217, 0.14);
+}
+.cs-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #bcd9ee;
+}
+.cs-title .cs-progress {
+  font-weight: 400;
+  color: #8fa7b8;
+}
+.cs-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+/* 一棒：一个角色。位置固定，靠宽度自适应；窄屏换行也不会溢出（flex-wrap） */
+.cs-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 176, 217, 0.45);
+  background: rgba(0, 0, 0, 0.25);
+  min-width: 62px;
+}
+.cs-node.src {
+  border-color: #d98a5a;
+  background: rgba(80, 40, 20, 0.28);
+}
+/* 前两棒之间画一节「链环」：直观表示伤害是从左边这一棒传到右边这一棒 */
+.cs-node .cs-link {
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 8px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #7fb0d9, #dceaf5);
+  opacity: 0.75;
+}
+.cs-node:first-child .cs-link {
+  display: none;
+}
+.cs-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #eaf4fb;
+  white-space: nowrap;
+}
+.cs-node.src .cs-name {
+  color: #ffd9c0;
+}
+.cs-order {
+  font-size: 10px;
+  color: #9fb6c6;
+}
+.cs-node.src .cs-order {
+  color: #e8a878;
+}
+.cs-me {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  font-size: 9px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--gold);
+  color: #1a1208;
+  font-weight: 700;
+}
+/* 逐棒点亮的闪光：延时由**引擎给的序号**算出来（行内 style），这里只定义形状 */
+.cs-flash {
+  position: absolute;
+  inset: -3px;
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  /* 同 `.chain-hit`：延时期间必须保持不可见，否则四棒会一起亮 */
+  animation: chain-flash 0.62s ease-out forwards;
+}
+.cs-flash.flash-src {
+  animation-name: chain-flash-src;
+}
+@keyframes chain-flash {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 16px 4px rgba(127, 176, 217, 0.85);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 4px 0 rgba(127, 176, 217, 0.15);
+  }
+}
+@keyframes chain-flash-src {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 16px 4px rgba(217, 138, 90, 0.85);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 4px 0 rgba(217, 138, 90, 0.15);
+  }
+}
+/* 窄屏：面板不铺满整行（免得看起来像一块挡住牌桌的东西），节点标题缩一档 */
+@media (max-width: 480px) {
+  .chain-spread-table {
+    align-self: center;
+    padding: 6px 8px;
+  }
+  .cs-title {
+    font-size: 12px;
+    letter-spacing: 0;
+  }
+  .cs-node {
+    padding: 3px 7px;
+    min-width: 54px;
+  }
+  .cs-name {
+    font-size: 11px;
+  }
+}
+/* 无障碍（与拼点区同一条）：开了「减少动态效果」时，动静全部关掉——顺序信息仍在
+   （面板里的「源头 / 1 / 2 …」是文字，不依赖动画），常驻描边与徽标也照旧。 */
+@media (prefers-reduced-motion: reduce) {
+  .chain-hit,
+  .cs-flash,
+  .chain-in-a::after,
+  .chain-in-b::after,
+  .chain-out-a::after,
+  .chain-out-b::after,
+  .player.chain-in-a,
+  .player.chain-in-b,
+  .player.chain-out-a,
+  .player.chain-out-b,
+  .hero-panel.chain-in-a,
+  .hero-panel.chain-in-b,
+  .hero-panel.chain-out-a,
+  .hero-panel.chain-out-b {
+    animation: none !important;
+  }
+}
+
 /* 特殊牌区（权 / 异 / 函 / 戮）：紧挨武将名的一条小徽章行 */
 .special-zones {
   display: flex;

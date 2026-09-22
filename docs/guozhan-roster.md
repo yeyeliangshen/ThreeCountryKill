@@ -8677,3 +8677,130 @@ playwright/puppeteer。改用**本机 Chrome 153 headless + CDP**（`--remote-de
 - `pnpm build`：全绿（server Done、client `✓ built in 1.48s`）。
 - **未跑**仓库级 `pnpm format`（避免整片重排既有文件）；新增文件（`playFlow.ts` /
   `playFlow.test.ts`）单独过过 prettier，`Game.tsx` 既有行的格式漂移保持原样。
+
+## §5.211 连环（横置）状态的统一视觉特效（用户 2026-09-24 口径）
+
+#### 一、用户原文口径（逐字，规则权威）
+
+> 缺陷：【铁索连环】及连环状态缺少明确的视觉特效。当前角色进入或解除连环状态时，牌桌上的
+> 视觉反馈不够明显。应增加统一的连环状态表现：①【铁索连环】结算并使角色进入连环状态时，
+> 应有明显的铁索连接或横置状态动画；②角色已经处于连环状态时，应持续提供清晰但不过度遮挡
+> 牌桌的视觉标识；③角色解除连环状态时，应播放对应的解除效果；④属性伤害发生连环传导时，
+> 应通过动画明确表现伤害从一名连环角色向其他连环角色传递的顺序。该效果应绑定「连环状态」
+> 本身，而不是只绑定【铁索连环】这张牌，以便其他能够令角色进入或解除连环状态的技能同样复用。
+
+补充口径（同一条消息的实现要求）：传导顺序**必须来自引擎**（不许前端自己编）；瞬时视图字段
+照 `pindianView` / `publicPool` 的先例写（结算时写入、下一次 intent 清掉），**不许泄露暗信息**；
+尊重 `prefers-reduced-motion`；不得退化既有交互（手牌两步出牌、目标选择面板）。
+
+#### 二、绑定「状态」而不是绑定「牌」——落点在哪
+
+判据**只有两处**，都与「是哪张牌 / 哪个技能改的」无关：
+
+| 口径 | 判据（唯一来源） | 说明 |
+|---|---|---|
+| ①③ 进入 / 解除 | **相邻两份快照里 `players[].chained` 的翻转** | `diffChainStates()`（纯函数）。首次见到某座次（进房/刷新重连）**没有基线 → 不播动画**，免得播一遍假动画 |
+| ② 常驻标识 | `PlayerView.chained` 本身（既有字段，无需新下发） | 常驻「横」徽标 + 虚线内描边，纯 React 渲染，与动画无关 |
+| ④ 传导顺序 | 引擎下发的 `snapshot.chain`（`ChainSpreadView`） | 源头 + **按实际结算顺序**的名单，见下 |
+
+所以【铁索连环】（`resolveTiesuo`）、【勠力同心】（`resolveLutong` 的「小势力角色被横置」那一支）、
+`api.chainPlayers`（齐策/断绁那类技能走的公共机制）以及将来任何改 `chained` 的技能，表现**自动一致**
+——前端没有一处提到牌名或技能名（`ChainFx.test.tsx` 里有一条源码守门专门钉这条）。
+
+#### 三、改动清单（文件:行号）
+
+**引擎 / 协议（只加一个瞬时视图字段，规则一行没动）**
+
+| 文件:行号 | 改动 |
+|---|---|
+| `packages/protocol/src/views.ts:423` | 新增 `ChainSpreadView { seq; fromSeatId; order: {seatId; index}[] }`；`Snapshot.chain?: ChainSpreadView \| null`（`:457`）。**只带座次与序号，不带任何牌面** |
+| `packages/engine/src/model.ts:999,1001` | `GameState.chainView`（瞬时视图）+ `chainSeq`（自增号：界面靠它认出「新的一次传导」并重播动画） |
+| `packages/engine/src/engine.ts:3672-3686` | `queueChainSpread()`：**名单就在这里**（`rest` 就是紧接着 `chainStep` 逐个结算的顺序）→ 写入 `chainView`。没有可传导的人时清空（避免留下上一次的旧名单） |
+| `packages/engine/src/engine.ts:5770` | `applyIntentInner()`：与 `pindianView` 同一处清空（**下一次任何 intent** 就收起来） |
+| `packages/engine/src/engine.ts:12440` | `createGame()`：初始化 `chainView: null` / `chainSeq: 0` |
+| `packages/engine/src/snapshot.ts:144` | `chain: state.chainView ?? null` 下发 |
+
+**界面（判据是纯函数，组件只贴 class / 延时）**
+
+| 文件:行号 | 改动 |
+|---|---|
+| `packages/ui/src/chainState.ts`（新） | `diffChainStates()`（状态 diff → 事件流）、`chainSpreadSequence()` / `chainSpreadTotalMs()` / `chainSpreadBySeat()`（引擎顺序 → 动画序列，**只做乘法换算延时**）、徽标文案常量 |
+| `packages/ui/src/components/ChainFx.tsx`（新） | `useChainFx()`（状态机：进出动画 780ms 后自己摘掉；传导面板按 seq 重播、按时长收起）、`ChainBadge`（常驻「横」徽标，与武将面板那枚同款）、`ChainSpreadTable`（牌桌中央的传递面板，`role=status`） |
+| `packages/ui/src/pages/Game.tsx:375,1293-1330` | 接上 hook；对手卡面加 `chained` / 进出动画类 / `.chain-hit` 脉冲 / `横` 徽标；`Game.tsx:1391` 牌桌主列中部渲染 `<ChainSpreadTable>`；`:1855` 自己的武将面板也接上 |
+| `packages/ui/src/components/HeroPanel.tsx:84,149-158,191` | 新增可选 `chainFx`（只接受**算好的类名与延时**）；面板根带 `chained` + 动画类；脉冲 span；横置徽标改用共用的 `ChainBadge` |
+| `packages/ui/src/styles.css:2560-2957` | 四种表现的样式 + `@media (max-width: 480px)` 窄屏档 + `prefers-reduced-motion` 全关（见下） |
+
+**样式要点（game-feel：反馈要分层、要回到静止；game-ui-ux：可访问性、不遮挡、不吃点击）**
+
+- ② 常驻用 `outline` 而不是 `border`/`box-shadow`：`.player.current` 的金框与 `.player.targetable`
+  的呼吸都占着 `box-shadow`，再叠一条会互相覆盖；`border` 会改尺寸（牌桌会抖一像素）。
+- ①③ 卡面动画只用 `transform` + `filter`（倾斜收紧 / 抖断），另外在 `::after` 上一道金属扫描带；
+  `-a` / `-b` 两份内容相同的 keyframes 交替用，保证**同一座次连着两次也能重新播**（动画名变了才会重启）。
+- ④ 脉冲的 `animation-fill-mode` 特意用 `forwards` 而不是 `both`：这四棒靠行内 `animation-delay`
+  错开，`both` 会在**延时期间**就套上 0% 关键帧（opacity 1）→ 四棒一次性全亮，顺序就看不出来了。
+- `.chain-spread-table` / `.chain-hit` 一律 `pointer-events: none` + 绝对定位：**不占位、不吃点击**。
+
+#### 四、用例（`pnpm test` 里真实跑的那些）
+
+| 文件 | 钉什么 |
+|---|---|
+| `packages/ui/src/chainState.test.ts`（新，8 条） | 状态 diff 只认 `chained` 翻转（只看状态，事件里没有牌/技能字段）；没有基线不产生事件；传导顺序**照抄引擎 index**，并显式断言**不等于**按座位号排的结果；延时 = 序号 × 步长 |
+| `packages/ui/src/components/ChainFx.test.tsx`（新，12 条） | 传导面板的顺序与逐棒延时（`0 / 520ms / 1040ms`）、「我」那一格的标记、`role=status`；`marker-chip mark-chained` 徽标；武将面板接线；**源码守门**：`Game.tsx` 用 `useChainFx(snapshot?.players ?? [], snapshot?.chain ?? null)`、不含 `card.type === 'tiesuo'` 这类第二套判据、面板画在对手行之后/手牌之前、样式表里传导面板有 `pointer-events: none` 且 `prefers-reduced-motion` 段覆盖 `.chain-hit` / `.cs-flash` / `.player.chain-in-a` / `.hero-panel.chain-out-b` |
+| `packages/engine/tests/engine.test.ts`（+2 条） | 传导顺序写进快照的 `chain` 字段，且**与日志里逐条结算的顺序一致**；字段只有 `seq/fromSeatId/order[{seatId,index}]`（无牌面）；下一次 intent 后清空；没有传导时为 `null` |
+
+（仓库没有 jsdom ⇒ 组件侧照既有写法用 `renderToStaticMarkup` + 源码字符串守门；hook 本身不单测，
+它的判据全在纯函数里。）
+
+#### 五、本次真机验收记录（用户点名的四条；一条一句：怎么造现场 / 看到什么）
+
+⚠️ 前置说明（如实记，与上一轮同一情形）：本会话是**子代理**，ZCode 的 IAB 被拒
+（`mcp__node_repl__js` 返回 `Browser is not available in subagent`，实测过一次），本机也没有
+playwright/puppeteer。改用**本机 Chrome 153 headless + CDP**（`--remote-debugging-port=9333`、
+临时 profile、`Runtime.evaluate` 派发 `.click()`、`Input.insertText` 填昵称）驱动**同一个开发前端**
+（先核过 Vite 真的在发改动后的源码：`/@fs/.../components/ChainFx.tsx` 与 `chainState.ts` 都 200）。
+现场：房间 **9198** · 国战 · 全扩展2026 · 选将不限 · 3 人（我 1 号座 verifier = 刘琦+孟达，**暂不明置**
+⇒ 技能不参与，2/3 号座是 `PASSIVE=1` 的陪练A / 陪练B）· 牌用「测试场景」面板发（日志有
+`TEST_DEAL_OVERRIDE`）· 用一个 MutationObserver 记录所有 `chain-*` / `cs-*` class 的**增删时刻**，
+作为「动画真的被贴上去了」的硬证据。截图在 `C:\Users\99433\AppData\Local\Temp\sgs-chain\`。
+
+| 题 | 现场怎么造 | 看到了什么（证据） |
+|---|---|---|
+| (a) 进入连环 = 有动画 | 发【铁索连环】→ 选自己 → 确认；提前装好 observer | observer 记到自己的面板 `chained → chained chain-in-a`（`t=196096`）、780ms 后 `chain-in-a` 被摘掉（`t=196876`）；随后对陪练A 再来一次并**在 120ms 时截图**：A 的卡片明显**倾斜 + 提亮**、B 静止（`a-enter-A.png`，同一帧里 A 与 B 的对比就是「正在播」的证明）。两张卡同时横置那次记到 A=`chain-in-a`、B=`chain-in-b` |
+| (b) 常驻标识可见且不遮挡 | 【铁索连环】选陪练A+陪练B → 截图 + 量元素盒 | 两张卡各有一枚蓝色「横」徽标（22×16px，在 `.p-name` 行内、不压名字/血量/手牌数）＋ 一圈**虚线内描边**（`b-markers-crop.png` 放大图）；徽标在卡内（`inside: true`），手牌第一张仍在 `y=693` 未被遮 |
+| (c) 解除 = 有解除效果 | 再发一张【铁索连环】→ 只选**已横置的**陪练A（横置取反＝重置）→ 250ms 截图 | observer：`陪练A chained → ''`（徽标与描边同时消失）→ 2ms 后贴 `chain-out-b`，780ms 后摘掉；同帧陪练B **仍是**横置（`c-reset-A.png` 里 A 无徽标/无描边、B 有） |
+| (d) 传导顺序 = 引擎顺序 | 对手A/B 横置 + 自己横置（3 人连环）→ 火【杀】打**陪练A**（A 是源头，属性伤害沿其余横置角色传） | **引擎日志**（右栏）：`陪练A 因受到属性伤害而重置。` → `verifier 因【铁索连环】受到 1 点伤害，剩余 2 体力。` → `陪练B 因【铁索连环】受到 1 点伤害，剩余 2 体力。`；**界面面板**（牌桌中央，同帧截图 `d-spread.png`）：`陪练A / 源头 / 0ms` → `verifier / 1 / 520ms`（带「我」）→ `陪练B / 2 / 1040ms`，且截图那一刻 **陪练B 那一格正在亮**（它的延时最长）——两边顺序**逐字一致**。observer 同时记到三张卡各自的 `.chain-hit`：A `hit-src` 0ms、我 `hit-b` 520ms、B `hit-b` 1040ms |
+
+**补充验证（同一次真机）**
+
+- **窄屏 390×844**（CDP `Emulation.setDeviceMetricsOverride`）：把 3 人重新横置（真牌真流程）⇒
+  两张对手卡的「横」徽标 `x=231/230, right=253/252`、都在卡内（卡宽 190）、`scrollWidth=375 ≤ 390`
+  **不溢出**（`mobile-3chained.png`）；再打一次火【杀】拿**真**传导面板：面板 221×74、`x=77..298`
+  在视口内、`pointer-events: none`、三棒延时仍是 `0 / 520 / 1040ms`，手牌在 `y=734`、操作区在
+  `y=636`，**都没被面板压住**（`mobile-spread.png`）。窄屏下面板落在单列**顶部**（与既有的牌池/拼点
+  面板同款行为：`.board` 在窄屏是 `display: contents`、面板没有 `order`），没有被遮挡的交互：
+  实测该面板中心点 `elementFromPoint(188,45)` 返回的是它**下面**的 `DIV.game`（不吃点击）。
+- **`prefers-reduced-motion: reduce`**（CDP `Emulation.setEmulatedMedia`，同一条连接内测）：
+  卡面 / `.chain-hit` / `.cs-flash` 的 `computed animation-name` 全是 `none`（大幅动画全关），
+  而虚线描边仍是 `dashed/1px`、传递面板仍然在且文字（`陪练A 源头 陪练B 1`）照旧 —— 顺序信息不依赖动画。
+- **不退化既有交互**：桌面版插入 82px 高的传导面板前/后量 `.hand .card` 与 `.dock`：`shifted: false`
+  （桌面 `.board .dock` 有 `margin-top:auto` 吃掉余量）；面板在时仍能照常走完「点牌 → 选中 → 使用 →
+  选目标 → 确认」两步出牌（本轮所有造现场步骤都是在面板出现过之后继续点的）。
+
+**没验到的 / 如实记**：
+
+① 真机只跑了**国战 3 人局**；身份局 / 2v2 / 更多人的牌桌上横置表现没在真机上点过（同一段组件 +
+单测覆盖）。② 窄屏那张面板的**位置**（落在单列顶部）只是如实记下——它是既有的牌池/拼点面板同款行为，
+本轮**没有**改它们的 `order`（避免为一个纯位置偏好动窄屏布局）。③ 「同一回合内连着两次传导」
+（`seq` 递增 → 面板与脉冲重播）只在单测里钉了（`seq` 交替后缀 / 面板 `key`），真机上本轮只触发了
+两种情况的各一次。④ 刷新/重连时**不播假动画**这条只在 `chainState.test.ts` 里直测（「没有基线不产生
+事件」），真机没有在「有人横置时刷新页面」复核。
+
+#### 六、门禁（真实结果）
+
+- `pnpm test`：全绿（engine 25 文件 / **1213** 条，含 `fuzz.test.ts` 6 条与
+  `smoke.test.ts` 的「200 局（固定种子）都跑到分出胜负」；ui 22 文件 / **163** 条；server 全绿）。
+  **没有**放宽任何断言。
+- `pnpm typecheck`：全绿（protocol / engine / ui / server / client 全部 Done）。
+- `pnpm build`：全绿（server Done、client `✓ built in 1.44s`）。
+- **未跑**仓库级 `pnpm format`（避免整片重排既有文件）；新增的 4 个文件（`chainState.ts` /
+  `chainState.test.ts` / `ChainFx.tsx` / `ChainFx.test.tsx`）单独过过 prettier。

@@ -407,6 +407,28 @@ export interface PindianView {
   tie?: boolean;
 }
 
+/**
+ * **属性伤害沿横置（连环）角色传导**的瞬时视图（用户 2026-09-24 口径④）。
+ *
+ * 为什么需要它：传导的**结算顺序**只有引擎知道——`queueChainSpread` / `chainStep` 是
+ * **有序**的（名单是那一刻的 `state.players` 顺序），而整段传导通常在**同一条 intent 里
+ * 同步跑完**（只有中途打出濒死/询问才会分帧）。所以界面拿到的两份相邻快照里，
+ * `players[].chained` 会「一下子全变成 false」，光靠 diff 拿不到先后。
+ * 这里把顺序**明写**进快照：客户端照 `order[].index` 排动画，顺序永远是引擎的。
+ *
+ * ⚠️ 只带**座次 + 序号**，不带任何牌面（与 `pindianView` 同一条「服务端把关」的规矩）。
+ * 与拼点区同一生命周期：**下一次任何 intent 时清空**（`applyIntentInner` 里与
+ * `pindianView` 一起清），动画播完就收起来。
+ */
+export interface ChainSpreadView {
+  /** 本次传导的局内自增号：界面靠它认出「这是新的一次传导」并重播一遍动画 */
+  seq: number;
+  /** 触发这次传导的座次：受到属性伤害、并因此被重置的那一位（传导的源头） */
+  fromSeatId: string;
+  /** 还要按顺序传导到的座次——**顺序就是引擎的实际结算顺序**，`index` 从 1 起 */
+  order: { seatId: string; index: number }[];
+}
+
 export interface Snapshot {
   seatId: string; // 此快照属于哪个座位
   roomCode: string;
@@ -428,4 +450,9 @@ export interface Snapshot {
    * 同样是公开信息（亮出来的牌本来就是明的）——**所有人都看得到整池与谁轮到了**。
    */
   publicPool?: PublicPoolView | null;
+  /**
+   * 属性伤害这次沿连环角色的**传导顺序**（公开信息：横置本来就是明的）。
+   * 没有传导时为 null；下一次任何 intent 时清空（同拼点区）。
+   */
+  chain?: ChainSpreadView | null;
 }

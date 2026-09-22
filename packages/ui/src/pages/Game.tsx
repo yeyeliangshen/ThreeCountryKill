@@ -44,6 +44,7 @@ import { cardUses, useActionOf, type CardUse } from '../cardUses';
 import { effectiveCardName, playConfirmText, playHintText } from '../playFlow';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
+import { ChainBadge, ChainSpreadTable, useChainFx } from '../components/ChainFx';
 import { ZonePickPanel } from '../components/ZonePickPanel';
 import {
   cardSelfTargetAllowed,
@@ -365,6 +366,13 @@ export function Game() {
   // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
   // 武将技能用的是同一套，见 components/HoverTip.tsx
   const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
+
+  // 连环（横置）状态的四种表现（用户 2026-09-24 口径①~④）：**绑定「连环状态」本身**——
+  // 判据是相邻两份快照里 `players[].chained` 的翻转（`diffChainStates`）＋ 引擎下发的
+  // 传导顺序（`snapshot.chain`，见 engine 的 `queueChainSpread`）。
+  // 所以【铁索连环】【勠力同心】以及将来任何令角色横置/重置的技能，都会走到同一套表现上。
+  // ⚠️ 必须在下面那些 early return 之前调用（hooks 规则）。
+  const chainFx = useChainFx(snapshot?.players ?? [], snapshot?.chain ?? null);
 
   // 提示内容一变就清空本地选择。
   //
@@ -1278,13 +1286,26 @@ export function Game() {
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
             const zoneChips = specialZoneChips(p);
+            // 连环（横置）状态的表现（用户 2026-09-24）：
+            //   ② 常驻：`.chained` 的虚线描边 + 一枚「横」徽标（下面 `.p-name` 里）
+            //   ①③ 进入/解除：`chain-in-*` / `chain-out-*` 动画类（判据是状态翻转，不是这张牌）
+            //   ④ 传导：`.chain-hit` 脉冲，延时由引擎给的顺序算好（`chainFx.hits`）
+            const chainCls = chainFx.cardClass[p.seatId] ?? '';
+            const chainHit = chainFx.hits[p.seatId];
             return (
               <button
                 key={p.seatId}
-                className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${teamClass} ${factionClass}`}
+                className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${p.chained ? 'chained' : ''} ${chainCls} ${teamClass} ${factionClass}`}
                 onClick={isTarget ? () => handleTargetClick(p) : undefined}
                 disabled={!isTarget}
               >
+                {/* 传导脉冲（口径④）：绝对定位、不吃点击，逐棒按引擎顺序闪 */}
+                {chainHit && (
+                  <span
+                    className={`chain-hit ${chainHit.cls}`}
+                    style={{ animationDelay: `${chainHit.delayMs}ms` }}
+                  />
+                )}
                 <div className="p-top">
                   {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
                       悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
@@ -1302,6 +1323,10 @@ export function Game() {
                           {FACTION_NAME[p.faction]}
                         </span>
                       )}
+                      {/* 横置（铁索连环状态）：公开信息，与自己的武将面板上那枚「横」同款。
+                          以前对手这一行**没有任何横置标识**——「谁被铁索连上了」只能靠日志认
+                          （用户 2026-09-24 报的正是这条）。 */}
+                      {p.chained && <ChainBadge bind={bindTip} />}
                     </span>
                     <span className="p-hp">
                       {Array.from({ length: p.maxHp }).map((_, i) => (
@@ -1372,6 +1397,18 @@ export function Game() {
             );
           })}
         </div>
+
+        {/* 连环传导（**牌桌中央**，用户 2026-09-24 口径④）：按**引擎给的顺序**逐棒点亮——
+            源头 + 每一名被传导到的横置角色，延时 = 序号 × 步长。顺序来自快照的 `chain`
+            （引擎 `queueChainSpread` 里写下的实际结算名单），界面不自己排。
+            与拼点区/牌池同一处：`.board` 主列中部。 */}
+        {chainFx.spread && (
+          <ChainSpreadTable
+            steps={chainFx.spread.steps}
+            players={snapshot.players}
+            meSeatId={snapshot.seatId}
+          />
+        )}
 
         {/* 牌桌上公开摆着的牌池（【五谷丰登】，用户 2026-09-23）：固定顺序平铺、依次点牌拿走、
             拿走的留在原位标上「谁拿走」。所有人都看得到；能不能点由快照的 interactive 说了算。 */}
@@ -1996,6 +2033,9 @@ export function Game() {
             me={me}
             mode={snapshot.mode}
             slots={heroSlots}
+            // 连环状态的进入/解除动画与传导脉冲（用户 2026-09-24）：自己这一格也要有——
+            // 我就是横置角色时，传导到我这一棒同样按引擎顺序闪（`chainFx.hits[me.seatId]`）。
+            chainFx={{ cls: chainFx.cardClass[me.seatId], hit: chainFx.hits[me.seatId] }}
             targetable={canPickSelf}
             picked={
               !!selected?.picked.includes(me.seatId) || !!skillMode?.targetIds.includes(me.seatId)

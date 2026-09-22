@@ -138,5 +138,9 @@ export function toSnapshot(state: GameState, seatId: string): Snapshot {
             state.pending.seatId === seatId,
         }
       : null,
+    // 属性伤害这次沿连环角色传导的**顺序**（用户 2026-09-24 口径④）：源头 + 按顺序的名单。
+    // 顺序只有引擎知道（见 `queueChainSpread` / `chainStep`），界面照 index 排动画。
+    // 只带座次与序号，不带牌面。
+    chain: state.chainView ?? null,
   };
 }

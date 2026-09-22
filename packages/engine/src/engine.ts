@@ -3670,8 +3670,21 @@ function queueChainSpread(state: GameState, attack: AttackContext, damage: numbe
   first.chained = false;
   pushLog(state, 'chained', `${first.name} 因受到属性伤害而重置。`);
   const rest = state.players.filter((p) => p.alive && p.chained).map((p) => p.seatId);
-  if (rest.length === 0) return;
+  if (rest.length === 0) {
+    state.chainView = null;
+    return;
+  }
   state.ongoingChain = { attack, damage, rest, index: 0 };
+  // 传导顺序**只有这里知道**（`rest` 就是接下来 `chainStep` 逐个结算的名单，
+  // 顺序 = 这一刻 state.players 的顺序），而整段传导通常在同一条 intent 里同步跑完
+  // ⇒ 界面拿两份相邻快照 diff `chained` 只会看到「一下子全解除」，看不出先后。
+  // 所以把源头与名单写进瞬时视图下发（只带座次与序号，不带牌面），界面照 index 排动画。
+  state.chainSeq += 1;
+  state.chainView = {
+    seq: state.chainSeq,
+    fromSeatId: first.seatId,
+    order: rest.map((seatId, i) => ({ seatId, index: i + 1 })),
+  };
 }
 
 /** 跑完横置蔓延再调 after；中途被打断就留在 ongoingChain 里等 resumePlay */
@@ -5752,6 +5765,9 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
   // 下一次有人做事（任何 intent）就该让位了。拼点自己的「扣牌」也是 intent，
   // 所以下面那条流程会在扣完之后**重新**把视图写回来（顺序：先清、后写）。
   state.pindianView = null;
+  // 连环传导的瞬时视图同理（用户 2026-09-24 口径④）：动画播完就该让位——下一次有人做事
+  // （任何 intent）时清掉。它每次传导都会重新写入（`queueChainSpread`），所以不会丢。
+  state.chainView = null;
   // 选将阶段优先处理（并发：所有未选将的座位同时可行动）
   // ⚠️ 选将期间只有**选将本身**的意图归 onPickHero；否则选将阶段里挂起的询问
   //    （例如双势力的「选势力」）永远答不了——任何意图都会被塞进 onPickHero 然后被它拒绝。
@@ -12421,6 +12437,8 @@ export function createGame(
     log: [],
     logSeq: 0,
     ongoingChain: null,
+    chainView: null,
+    chainSeq: 0,
     damagedThisTurn: [],
     killedThisTurn: [],
     gainedFromDeckThisTurn: [],
