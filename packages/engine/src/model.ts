@@ -1,5 +1,6 @@
 import { CARD_TYPE_NAME, EQUIP_NAME, FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type {
+  GuozhanExtensions,
   Card,
   CardType,
   DamageAttribute,
@@ -1008,6 +1009,13 @@ export interface GameState {
    */
   deferredEndOfIntentHooks: (() => void)[];
   pendingFactionTricks: Card[];
+  /**
+   * **本局归一化后的扩展开关**（`createGame` 里算好后存下来）。
+   *
+   * 存它的理由：有些**规则**要看「当前模式实际开放了哪些牌」（例如【度势】② 的候选、
+   * 势备篇独有的【火烧连营】）——不能在引擎里撒 `if (ext.xxx)`，所以把这份开关交给规则层读。
+   */
+  extensions: GuozhanExtensions;
   /**
    * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：
    * 势力锦囊用/弃后进这里；君主专属装备「离开装备区即销毁」也进这里。

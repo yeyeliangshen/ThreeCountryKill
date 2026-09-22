@@ -1,6 +1,7 @@
 import {
   CARD_TYPE_NAME,
   DAMAGE_CARD_TYPES,
+  FIRE_DAMAGE_CARD_NAMES,
   FACTION_TRICK_TYPES,
   cardColor,
   cardLabel,
@@ -14,6 +15,7 @@ import {
 import type {
   Card,
   CardType,
+  FireDamageCardName,
   MarkerId,
   DamageAttribute,
   Faction,
@@ -9102,6 +9104,17 @@ function cardOfType(type: TrickType): Card {
   return { id: `virtual-ask-${type}`, type, suit: 'spade', rank: 0 };
 }
 
+/** 同上，但用于【杀】——「只为问目标合法性」的假牌（火【杀】连属性也带上） */
+function cardOfSha(attribute?: DamageAttribute): Card {
+  return {
+    id: `virtual-ask-sha-${attribute ?? 'none'}`,
+    type: 'sha',
+    suit: 'spade',
+    rank: 0,
+    ...(attribute ? { attribute } : {}),
+  };
+}
+
 /** 收下一个目标：够了就把它打出去 */
 function step2(
   state: GameState,
@@ -10290,21 +10303,144 @@ const LUXUN: Hero = {
         oncePerTurn: true, // 「出牌阶段限一次」（新版；旧版是限四次，已作废）
         minTargets: 0,
         maxTargets: 0,
-        canUse: (_state, player) => player.hand.some((c) => isRedCard(c)),
+        // 两项任一可做就能发动：①有红手牌 ②「节」满三张
+        canUse: (_state, player) =>
+          player.hand.some((c) => isRedCard(c)) || player.jie.length >= 3,
         execute: (state, player, intent, api) => {
           const reds = player.hand.filter((c) => isRedCard(c));
-          if (reds.length === 0) return '【度势】选项一需要一张红色手牌';
+          const fireCards = availableFireDamageCards(state);
+          const options = [
+            ...(reds.length > 0
+              ? [{ id: 'yiyi', label: '将一张红色手牌当【以逸待劳】使用' }]
+              : []),
+            ...(player.jie.length >= 3
+              ? [
+                  {
+                    id: 'fire',
+                    label: `将三张「节」置入弃牌堆，视为使用一张造成火焰伤害的牌（${fireCards
+                      .map((c) => c.label)
+                      .join('、')}）`,
+                  },
+                ]
+              : []),
+          ];
+          if (options.length === 0) return '【度势】现在两项都做不了';
+          const doFire = (): void => {
+            // 「将三张「节」置入弃牌堆」：节在武将牌上（不是手牌区），所以自己搬到弃牌堆
+            const spent = player.jie.splice(0, 3);
+            toDiscard(state, ...spent);
+            pushLog(
+              state,
+              'skill',
+              `${player.name} 发动【度势】：将三张「节」置入弃牌堆。`,
+              { seat: player.seatId, action: 'skill' },
+            );
+            const use = (spec: FireDamageCardName): void => {
+              pushLog(
+                state,
+                'skill',
+                `${player.name} 的【度势】视为使用一张${spec.label}。`,
+                { seat: player.seatId, action: 'skill' },
+              );
+              if (spec.type === 'sha') {
+                // 火【杀】：走正常的【杀】使用流程（要选目标、要算攻击范围、可被闪）
+                const targets = alivePlayers(state).filter(
+                  (t) =>
+                    t.seatId !== player.seatId &&
+                    canTarget(state, player.seatId, t.seatId) &&
+                    !heroBlocksBeingTarget(state, t, cardOfSha('fire'), player),
+                );
+                if (targets.length === 0) {
+                  pushLog(state, 'skill', '没有【杀】的合法目标，【度势】未生效。');
+                  return;
+                }
+                const strike = (tid: string): void =>
+                  api.castVirtualSha(player.seatId, tid, { attribute: 'fire', logKind: 'skill' });
+                if (targets.length === 1) {
+                  strike(targets[0]!.seatId);
+                  return;
+                }
+                api.askChoice(
+                  state,
+                  player.seatId,
+                  '【度势】：火【杀】的目标',
+                  targets.map((t) => ({ id: t.seatId, label: t.name })),
+                  (_st, _p, tid) => strike(tid),
+                  player.seatId,
+                );
+                return;
+              }
+              if (spec.type === 'huogong') {
+                // 【火攻】的目标必须有手牌（用户 09-22 的口径）
+                const targets = alivePlayers(state).filter(
+                  (t) =>
+                    t.seatId !== player.seatId &&
+                    t.hand.length > 0 &&
+                    !heroBlocksBeingTarget(state, t, cardOfType('huogong'), player),
+                );
+                if (targets.length === 0) {
+                  pushLog(state, 'skill', '没有【火攻】的合法目标，【度势】未生效。');
+                  return;
+                }
+                const burn = (tid: string): void =>
+                  api.useVirtualTrick(
+                    player.seatId,
+                    {
+                      id: `dushi-huogong-${state.logSeq}`,
+                      type: 'huogong',
+                      suit: 'spade',
+                      rank: 0,
+                      virtual: true,
+                    },
+                    [tid],
+                  );
+                if (targets.length === 1) {
+                  burn(targets[0]!.seatId);
+                  return;
+                }
+                api.askChoice(
+                  state,
+                  player.seatId,
+                  '【度势】：火攻的目标',
+                  targets.map((t) => ({ id: t.seatId, label: t.name })),
+                  (_st, _p, tid) => burn(tid),
+                  player.seatId,
+                );
+                return;
+              }
+              // 【火烧连营】：目标是规则算出来的（下家与其同一队列），不用玩家选
+              api.castVirtualTrick(
+                player.seatId,
+                { type: 'huoshao', suit: 'spade' },
+                [],
+              );
+            };
+            if (fireCards.length === 1) {
+              use(fireCards[0]!);
+              return;
+            }
+            api.askChoice(
+              state,
+              player.seatId,
+              '【度势】：视为使用哪张造成火焰伤害的牌？',
+              fireCards.map((c) => ({ id: c.id, label: c.label })),
+              (_st, _p, pickedId) => {
+                const spec = fireCards.find((c) => c.id === pickedId);
+                if (spec) use(spec);
+              },
+              player.seatId,
+            );
+          };
           api.askChoice(
             state,
             player.seatId,
             '【度势】：请选择一项',
-            [
-              { id: 'yiyi', label: '将一张红色手牌当【以逸待劳】使用' },
-              // 选项二（三张「节」＝视为使用一张造成火焰伤害的牌）**待核对**：
-              // 用户 2026-09-22 明确要求「按移动版实机卡池/技能选择 UI 单独核实，
-              // 不要仅凭技能文本自行枚举」——所以这里先不给这一项，见 docs §5.182。
-            ],
+            options,
             (st, p, picked) => {
+              if (picked === 'fire') {
+                doFire();
+                return;
+              }
               if (picked !== 'yiyi') return;
               api.askPickCards(
                 st,
@@ -17401,9 +17537,23 @@ function removeCard(hand: Card[], id: string): Card | null {
   return c ?? null;
 }
 
-/** 某人身上可以被「拿走」的牌：手牌 + 装备区 */
+/** 红牌（红桃/方块）——【度势】①、「火计」那类看颜色 */
 function isRedCard(c: Card): boolean {
   return c.suit === 'heart' || c.suit === 'diamond';
+}
+
+/**
+ * **当前这一局实际开放的**「会造成火焰伤害的牌」（【度势】② 的候选）。
+ *
+ * 口径（用户 2026-09-23）：候选按**卡牌元数据 + 当前模式实际开放的牌名**生成，不在技能里写枚举——
+ * 【火烧连营】只有开了势备篇才进牌堆，基础国战里它不该出现在选项里。
+ */
+function availableFireDamageCards(state: GameState): FireDamageCardName[] {
+  return FIRE_DAMAGE_CARD_NAMES.filter(
+    (c) =>
+      !c.requiresExtension ||
+      state.extensions?.[c.requiresExtension as keyof typeof state.extensions] !== 'off',
+  );
 }
 
 function handAndEquipOf(p: Player): Card[] {

@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
+  configFromPreset,
   createGame,
   emptyFlags,
   getHero,
@@ -36,7 +37,7 @@ const nanman = (id: string) => mk(id, 'nanman', 'spade', 7);
 const shunshou = (id: string, suit: Card['suit'] = 'spade') => mk(id, 'shunshou', suit, 3);
 
 /** 国战局：甲（关羽）乙（陆逊）丙（张飞），全部已明置（谦逊只看「其他角色」与「唯一目标」） */
-function gz(aHand: Card[], bHand: Card[]): GameState {
+function gz(aHand: Card[], bHand: Card[], preset: 'standard' | 'full2026' = 'full2026'): GameState {
   const state = createGame(
     [
       { seatId: A, name: '甲', heroId: 'guanyu' },
@@ -44,7 +45,7 @@ function gz(aHand: Card[], bHand: Card[]): GameState {
       { seatId: C, name: '丙', heroId: 'zhangfei' },
     ],
     'TEST',
-    { mode: 'guozhan' },
+    { mode: 'guozhan', config: configFromPreset(preset) },
   );
   state.draft = null;
   // ⚠️ 必须显式写 heroId：`createGame` 不落将（那是选将阶段的事）。漏了的话
@@ -189,6 +190,128 @@ describe('陆逊（国战）· 换版本本身', () => {
     expect(getHero('luxun')!.id).toBe('luxun');
   });
 });
+
+describe('陆逊（国战）·度势②：三张「节」＝视为使用一张造成火焰伤害的牌（用户 09-23 定的口径）', () => {
+  /** 把三张「节」摆好（谦逊收上来的实体牌） */
+  const withThreeJie = (state: GameState) => {
+    const b = seat(state, B);
+    b.jie = [
+      mk('j1', 'shan', 'club', 2),
+      mk('j2', 'shan', 'club', 3),
+      mk('j3', 'shan', 'club', 4),
+    ];
+    return b;
+  };
+
+  it('候选按**当前模式开放的牌名**生成：基础国战＝火杀/火攻；开势备篇再加【火烧连营】', () => {
+    // 基础国战：显式用 standard 预设（`createGame` 不传 config 时的历史默认是**全开**）
+    const base = gz([], [], 'standard');
+    state1(base);
+    const b1 = withThreeJie(base);
+    b1.faction = 'wu';
+    ok(act(base, B, { type: 'useSkill', skillId: 'dushi', targetIds: [] }));
+    expect(base.pending?.kind).toBe('choice');
+    if (base.pending?.kind !== 'choice') return;
+    // 两项都在：①红手牌那项要有红牌才给；这里乙没红牌 ⇒ 只有②
+    const opts1 = base.pending.options.map((o) => o.label).join('｜');
+    expect(opts1).toContain('火【杀】');
+    expect(opts1).toContain('【火攻】');
+    expect(opts1, '势备篇没开 ⇒ 不该出现【火烧连营】').not.toContain('【火烧连营】');
+
+    // 开势备篇
+    const state2 = gz([], [], 'full2026');
+    state1(state2);
+    const b2 = withThreeJie(state2);
+    b2.faction = 'wu';
+    ok(act(state2, B, { type: 'useSkill', skillId: 'dushi', targetIds: [] }));
+    if (state2.pending?.kind !== 'choice') throw new Error('应为度势的二选一');
+    const opts2 = state2.pending.options.map((o) => o.label).join('｜');
+    expect(opts2, '开了势备篇才把【火烧连营】算进候选').toContain('【火烧连营】');
+  });
+
+  it('选②：三张「节」进弃牌堆 → 再选哪张火焰牌 → 【火攻】走完整锦囊流程', () => {
+    const state = gz([], [], 'standard'); // 基础国战 ⇒ 火焰牌候选正好两张
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    state.log = [];
+    const b = withThreeJie(state);
+    b.faction = 'wu';
+    const a = seat(state, A);
+    a.faction = 'shu';
+    a.hand = [mk('a1', 'tao', 'heart', 3)]; // 火攻的目标必须有手牌
+    ok(act(state, B, { type: 'useSkill', skillId: 'dushi', targetIds: [] }));
+    if (state.pending?.kind !== 'choice') throw new Error('应为度势的二选一');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'fire' }));
+    // 「节」已进弃牌堆
+    expect(b.jie).toHaveLength(0);
+    expect(state.discard.map((c) => c.id).sort()).toEqual(['j1', 'j2', 'j3']);
+    // 再问用哪张火焰牌（基础国战两张）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.options.map((o) => o.id).sort()).toEqual(['huogong', 'sha:fire']);
+    ok(act(state, B, { type: 'chooseOption', optionId: 'huogong' }));
+    // 只有一个合法目标（甲）⇒ 直接进结算：先无懈窗口，再火攻的展示/弃牌
+    while (state.pending?.kind === 'wuxieQueue') {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    expect(logs(state)).toContain('视为使用一张【火攻】');
+    expect(state.pending?.kind === 'respondTrick' || state.pending?.kind === 'choice').toBe(true);
+  });
+
+  it('选②里的火【杀】：走正常的【杀】流程（目标要有、能出闪）', () => {
+    const state = gz([], []);
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    state.log = [];
+    const b = withThreeJie(state);
+    b.faction = 'wu';
+    ok(act(state, B, { type: 'useSkill', skillId: 'dushi', targetIds: [] }));
+    if (state.pending?.kind !== 'choice') throw new Error('应为度势的二选一');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'fire' }));
+    if (state.pending?.kind !== 'choice') throw new Error('应为火焰牌选择');
+    ok(act(state, B, { type: 'chooseOption', optionId: 'sha:fire' }));
+    // 两名其他角色都在攻击范围内 ⇒ 先问打谁；选甲之后进入「出闪或弃权」
+    if (state.pending?.kind === 'choice') {
+      ok(act(state, B, { type: 'chooseOption', optionId: A }));
+    }
+    while (state.pending?.kind === 'wuxieQueue') {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    expect(logs(state)).toContain('视为使用一张火【杀】');
+    expect(state.pending?.kind).toBe('respondSha');
+  });
+
+  it('「节」不满三张 ⇒ 选项二不出现（只剩选项一）', () => {
+    const state = gz([], [mk('b1', 'sha', 'heart', 5)]);
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    state.log = [];
+    const b = seat(state, B);
+    b.faction = 'wu';
+    b.jie = [mk('j1', 'shan', 'club', 2)]; // 只有 1 张
+    ok(act(state, B, { type: 'useSkill', skillId: 'dushi', targetIds: [] }));
+    if (state.pending?.kind !== 'choice') throw new Error('应为度势的选项');
+    expect(state.pending.options.map((o) => o.id)).toEqual(['yiyi']);
+  });
+
+  it('两项都做不了时技能不可发动（红手牌 0 张 + 节不足 3）', () => {
+    const state = gz([], []);
+    state.turn = { seatIndex: 1, phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    state.log = [];
+    const b = seat(state, B);
+    b.faction = 'wu';
+    b.hand = [mk('b1', 'sha', 'spade', 5)]; // 黑牌
+    const r = act(state, B, { type: 'useSkill', skillId: 'dushi', targetIds: [] });
+    expect(r.ok).toBe(false);
+  });
+});
+
+function state1(s: GameState): void {
+  s.turn = { seatIndex: 1, phase: 'play' };
+  s.pending = { kind: 'play', seatId: B };
+  s.log = [];
+}
 
 describe('陆逊（国战）·度势：红手牌当【以逸待劳】', () => {
   it('出牌阶段限一次：选红手牌 → 转化使用【以逸待劳】（真的走锦囊流程），第二次拒发', () => {

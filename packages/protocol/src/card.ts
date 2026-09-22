@@ -278,6 +278,33 @@ export const CARD_TYPE_NAME: Record<CardType, string> = {
 };
 
 /** 装备牌名 → 中文显示 */
+/**
+ * **「会造成火焰伤害」的牌名表**（用户 2026-09-23 定的口径）。
+ *
+ * 用途：像【度势】② 「将三张「节」置入弃牌堆，视为使用一张**造成火焰伤害**的牌」这类效果，
+ * 候选应当**由卡牌元数据 + 当前模式实际开放的牌名生成**，而不是在技能里写一份枚举。
+ *
+ * ⚠️ 为什么 key 是「牌名」而不是 `CardType`：火【杀】与雷【杀】都是 `sha`，靠 `attribute` 区分；
+ * ⚠️ 为什么带 `requiresExtension`：【火烧连营】只有开了势备篇才进牌堆——基础国战里它不该出现在选项里。
+ */
+export interface FireDamageCardName {
+  /** 稳定 id（引擎与协议两边都用它比对） */
+  id: 'sha:fire' | 'huogong' | 'huoshao';
+  /** 展示名（选项文字用它） */
+  label: string;
+  type: CardType;
+  /** 只有【杀】需要它（火杀） */
+  attribute?: DamageAttribute;
+  /** 需要哪个扩展开关才开放（缺省＝基础牌堆里就有） */
+  requiresExtension?: 'shibei';
+}
+
+export const FIRE_DAMAGE_CARD_NAMES: readonly FireDamageCardName[] = [
+  { id: 'sha:fire', label: '火【杀】', type: 'sha', attribute: 'fire' },
+  { id: 'huogong', label: '【火攻】', type: 'huogong' },
+  { id: 'huoshao', label: '【火烧连营】', type: 'huoshao', requiresExtension: 'shibei' },
+];
+
 export const EQUIP_NAME: Record<string, string> = {
   // 武器
   zhuge: '诸葛连弩',

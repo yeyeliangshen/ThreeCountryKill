@@ -8334,7 +8334,12 @@ describe('国战装备特效（麒麟弓 / 寒冰剑 / 白银狮子 / 三尖两�
     expect(b.hp).toBe(b.maxHp - 1);
   });
 
-  it('寒冰剑：可以防止伤害，改为依次弃置目标两张牌', () => {
+  /**
+   * 寒冰剑：**由发动者依次选两张**（用户 2026-09-23 的口径）——
+   * 两次询问、一次一张，且第二次是在第一次**结算之后**重新算候选。
+   * （以前是「自动取前两张」：玩家没得选，而且两张一起丢。）
+   */
+  it('寒冰剑：防止伤害，改为依次弃置目标两张牌（两次选择）', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1'), tao('b2')] },
@@ -8348,11 +8353,70 @@ describe('国战装备特效（麒麟弓 / 寒冰剑 / 白银狮子 / 三尖两�
     // 伤害时问寒冰剑
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    // 伤害被防止 → 不掉血，弃两张牌
+    // 第 1 张：由甲选（乙的两张手牌都是候选）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.seatId).toBe(A);
+    expect(state.pending.title).toContain('第 1 张');
+    expect(state.pending.options.map((o) => o.id)).toEqual(['hand:0', 'hand:1']);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
+    // 第 2 张：重新问（此时乙只剩一张）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    expect(state.pending.title).toContain('第 2 张');
+    expect(state.pending.options.map((o) => o.id)).toEqual(['hand:0']);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
+    // 伤害被防止 → 不掉血，两张都进了弃牌堆
     expect(b.hp).toBe(b.maxHp);
     expect(b.hand).toHaveLength(0);
     expect(state.discard.some((c) => c.id === 'b1')).toBe(true);
     expect(state.discard.some((c) => c.id === 'b2')).toBe(true);
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('寒冰剑：只含手牌+装备区，**判定区不出现**；判定区的牌不会被弃', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('w1', 'hanbing', 2);
+    b.equipment.armor = mk('ar1', 'armor', 'club', 2);
+    b.judgment = [mk('lb1', 'lebu', 'spade', 6)]; // 判定区的牌：不能被寒冰剑弃
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
+    // 候选只有「乙的手牌」与「乙的装备」——没有判定区那一条
+    expect(state.pending.options.map((o) => o.id).sort()).toEqual(['card:ar1', 'hand:0']);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:ar1' }));
+    // 第 2 张：剩手牌
+    if (state.pending?.kind !== 'choice') throw new Error('应为第 2 张的询问');
+    expect(state.pending.options.map((o) => o.id)).toEqual(['hand:0']);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
+    // 判定区的乐不思蜀还在
+    expect(b.judgment.map((c) => c.id)).toEqual(['lb1']);
+    expect(b.equipment.armor).toBeNull();
+    expect(b.hand).toHaveLength(0);
+  });
+
+  it('寒冰剑：目标只剩 1 张可弃的牌 → 只弃那 1 张', () => {
+    const state = makeGame([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.equipment.weapon = weapon('w1', 'hanbing', 2);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }));
+    // 没有第二张可弃 ⇒ 直接收尾（不再问）
+    expect(b.hand).toHaveLength(0);
+    expect(b.hp).toBe(b.maxHp);
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 

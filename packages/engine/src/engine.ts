@@ -4579,36 +4579,63 @@ function askDamageWeaponEffects(
         `${source!.name} 的【寒冰剑】防止了伤害，改为弃置 ${target.name} 的牌。`,
         { seat: source!.seatId, action: 'equip' },
       );
-      // 依次弃置两张：有手牌先弃手牌，不够再弃装备/判定（由玩家选，这里自动取前两张）
-      const victims = targetDiscardableCards(target).slice(0, 2);
-      for (const c of victims) {
-        removeTargetCard(target, c);
-        toDiscard(st, c);
-        pushLog(st, 'discard', `${target.name} 的【${cardLabel(c)}】被弃置。`);
-      }
       // 伤害被防止 → 没有伤害结算（铁索不蔓延、不进濒死）
       // 施工方案 Step 3a.1：这条流程的起点就是此刻（拿快照当围栏）
       const tianxiangSince = capturePendingCheckpoint(st);
       const finishPrevented = (): void =>
         resumePlay(st, st.seatOrder[st.turn.seatIndex]!, tianxiangSince);
-      const lostEquips = victims.filter((c) => isEquipCard(c));
-      // 一次动作同时失去多张装备 → **共用同一个 eventId**（旋略只问一次、兴棹只算一批）
-      const batchId = lostEquips.length > 1 ? ++st.equipLossSeq : undefined;
-      const step = (i: number): void => {
-        if (i >= lostEquips.length) {
+
+      /**
+       * **依次弃置两张：两次询问、一次一张**（用户 2026-09-23 的口径）。
+       *
+       * ⚠️ 以前这里是「自动取前两张」（`targetDiscardableCards(target).slice(0, 2)`）——
+       *    两处都不对：①玩家没得选；②两张一起丢，**第一张结算前的状态**被当成两张的候选集。
+       *    规则上第二次必须在第一次**结算之后**重新判断（第一张弃掉装备可能触发技能、目标可能
+       *    因此多出/少掉牌），而且两次是**两个独立事件**（各算一批失去装备）。
+       * ⚠️ 区域只含**手牌 + 装备区**：判定区里的牌不能被【寒冰剑】弃置（官方 FAQ）。
+       */
+      const hanbingStep = (left: number): void => {
+        if (left <= 0 || !target.alive) {
           finishPrevented();
           return;
         }
-        const eq = lostEquips[i]!;
-        fireEquipLost(
+        const options = targetCardOptions(st, source!.seatId, target, '弃置', {
+          noJudgment: true,
+        });
+        if (options.length === 0) {
+          // 没有可弃的牌了（或只剩判定区的牌）⇒ 剩下的那一张不弃
+          finishPrevented();
+          return;
+        }
+        askChoice(
           st,
-          target,
-          eq,
-          () => step(i + 1),
-          batchId ? { id: batchId, cards: [eq] } : undefined,
+          source!.seatId,
+          `【寒冰剑】：弃置 ${target.name} 的第 ${3 - left} 张牌`,
+          options,
+          (st2, _p2, picked) => {
+            const got = takeTargetCardByChoice(st2, source!.seatId, target, picked);
+            if (!got) {
+              // 跨步：那张牌已经不在原区域（规格第十三条）→ 重新问，不换一张
+              hanbingStep(left);
+              return;
+            }
+            toDiscard(st2, got.card);
+            pushLog(
+              st2,
+              'discard',
+              `${source!.name} 的【寒冰剑】弃置了 ${target.name} 的【${cardLabel(got.card)}】。`,
+              { seat: target.seatId },
+            );
+            // 弃掉的是装备 → 目标失去装备区的一张牌（枭姬那类）；**一次一张、各自一批**
+            if (got.from === 'equip') {
+              fireEquipLost(st2, target, got.card, () => hanbingStep(left - 1));
+              return;
+            }
+            hanbingStep(left - 1);
+          },
         );
       };
-      step(0);
+      hanbingStep(2);
     },
   );
 }
@@ -11965,6 +11992,8 @@ export function createGame(
     deck: shuffle(applyDeckExtensions(buildDeck(mode), ext), opts?.rng),
     // 势力锦囊四张（不臣篇）：**开局不进摸牌堆**（所以开局还是 160 张），等第一次重洗再洗入
     pendingFactionTricks: mode === 'guozhan' && ext.buchen !== 'off' ? factionTrickCards() : [],
+    // 归一化后的扩展开关（规则层要读：「当前模式实际开放了哪些牌」，见 GameState.extensions）
+    extensions: ext,
     forceSeq: 0,
     ambitionAsked: [],
     ambitionJoined: [],
