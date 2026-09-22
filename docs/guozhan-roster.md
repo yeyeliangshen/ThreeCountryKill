@@ -8567,3 +8567,113 @@ grep 口径：`!== <某人>.seatId` / `=== <某人>.seatId → 拒` / `不能选
   与改动文件里**新写的那几段**单独过过 prettier；`heroes.ts` / `Game.tsx` / `legal.ts` / `engine.ts`
   / `card.ts` 既有行的格式漂移**保持原样**（确认过：这些文件在 `HEAD` 上本来就不符合 prettier）。
 - **未提交**（用户自己来）。
+
+---
+
+### 5.210 出牌确认：**无需目标的牌也必须走「选中 → 使用/确定」两步**（用户 2026-09-25 报）
+
+#### 一、用户原文口径（逐字，规则权威）
+
+> 【无中生有】单击后会立即使用，容易造成误操作。当前玩家在手牌区单击【无中生有】后，系统会
+> 立即将其使用，没有正常的选中或确认过程。虽然【无中生有】不需要额外选择其他角色作为目标，
+> 但 UI 层仍应保留统一的出牌确认逻辑。首次点击应先选中并展示该牌，随后通过「使用/确定」操作
+> 正式打出；移动端也可以支持拖动出牌。不应因为某张牌无需选择目标，就把「选中牌」和「正式使用牌」
+> 合并成一次不可撤销的点击。
+
+**口径依据**：用户（规则权威）上述转述即权威来源。本次**没有**引入用户未给的新规则：
+需要目标的牌、国战/身份局既有的目标选择流程（点目标只选中、再点确认发出、已选可取消）**一字未改**。
+
+#### 二、缺陷现场（改动前）
+
+`packages/ui/src/pages/Game.tsx` 的 `beginPlay()` 里有一条**按目标数分流**的捷径：
+
+```ts
+const range = targetRange(card, as, shaMaxTargetsFor(card));
+if (range.max === 0) {                       // ← 需要目标的牌才有资格进「选中态」
+  ... sendIntent({ type: 'playCard', targetIds: [] });   // 不需要目标 ⇒ 直接打出
+  return;
+}
+setSelected({ ... });                        // 需要目标 ⇒ 才进两步流程
+```
+
+「这张牌不需要选目标」被当成了「可以省掉确认」的理由，于是【无中生有】【桃园结义】【五谷丰登】
+【南蛮入侵】【万箭齐发】【酒】、装备牌等**一次点击就不可撤销地打出**（装备牌原先靠 `confirmUse`
+弹框做的那次确认也只在「max === 0」这一支里，等于两条并行的出牌路径）。
+
+#### 三、改了什么（文件:行号）
+
+| 文件:行号 | 改动 |
+|---|---|
+| `packages/ui/src/playFlow.ts`（**新文件**，89 行） | 「选中态文案」的**纯函数**单一来源：`needsTargetPick(min,max)`、`playConfirmText(name, targetNames)`（`无中生有` → `使用【无中生有】`；有目标仍是 `确认：对 甲、乙 使用【杀】`）、`playHintText({name,min,max,targetNames,canTargetSelf})`（新增 `max === 0` 那一支：`已选中【无中生有】——点「使用」打出（点「取消」放回手牌）`）、`effectiveCardName(card, as)`（转化牌按转化后的牌名） |
+| `packages/ui/src/pages/Game.tsx:470-493` | `beginPlay()` **删掉 `range.max === 0` 那条捷径**：出牌**一律** `setSelected(...)`（`min/max` 照旧来自 `targetRange`，无需目标就是 `0/0`）。**不是给【无中生有】特判**——所有牌只有一条路 |
+| `packages/ui/src/pages/Game.tsx:539-561` | `pickPlayCard()`：**再点一次同一张牌＝取消选中**（与「取消」同义，只在还没点目标时生效）——两步流程里点两下不该把牌打出去 |
+| `packages/ui/src/pages/Game.tsx:597-613` | `selectedConfirmLabel()` 改走 `playConfirmText`，并抽出 `selectedTargetNames()`（空目标不再渲染出「确认：对  使用【X】」这种残句） |
+| `packages/ui/src/pages/Game.tsx:355-364` | **删掉 `confirmUse` 弹框状态**（原「生效前的确认」）：它和选中态说的是同一件事，留着就是第二条出牌路径＋给无需目标的牌开特判。效果说明改由选中态的 `selectedEffectDesc()`（`effectConfirmFor().desc`）显示，【酒】/装装备的信息量不减 |
+| `packages/ui/src/pages/Game.tsx:757-770` | `selectedHint()` 改走 `playHintText`（文案搬进纯函数，便于单测） |
+| `packages/ui/src/pages/Game.tsx:624-638` | `confirmTargets()` 现在同时服务两类牌（`targetIds: selected.picked`，无需目标时为空数组）——**全仓唯一一处发出 `playCard` 的地方** |
+| `packages/ui/src/pages/Game.tsx:1795-1818` | 选中态那一块（提示 + 效果说明 + 「使用/确定」+「取消」）就是两步流程的第二步；「结束出牌」在选中态下隐藏（与需要目标的牌同节奏） |
+| `packages/ui/src/playFlow.test.ts`（**新文件**，152 行，11 条） | 本次用例（见下） |
+
+**没退化**：有目标牌的 `targetRange` / `selected` / `pickTarget` / `canClickTarget` / `canPickSelf`
+与国战、身份局的目标选择流程**一行未动**；`respondSha` / `respondDeath` / `respondTrick` 这类
+**响应**路径也**没动**（用户口径说的是「手牌区出牌阶段的使用」，响应不是使用）。
+
+#### 四、用例（`packages/ui/src/playFlow.test.ts`）
+
+仓库的 `packages/ui/src/**/*.test.tsx` 是 `renderToStaticMarkup` + 源码字符串守门（**没有 jsdom**，
+不能模拟点击），所以用例分两层：
+
+| 用例 | 说明了什么 |
+|---|---|
+| `needsTargetPick`：只有 `(0,0)` 是「无需目标」 | 判据只认目标区间，不认具体牌名 |
+| `playConfirmText('无中生有', [])` === `使用【无中生有】` | 按钮文案不再出现空目标的「确认：对 …」（改动前那条捷径的痕迹） |
+| `playConfirmText('杀', ['甲','乙'])` 照旧、`playHintText` 四支（够目标/两名目标/多选/单目标）逐条比对 | **不许退化**：有目标牌的文案一字不改 |
+| `effectiveCardName(card('shan'), 'sha')` === `杀` | 转化牌给转化后的牌名 |
+| `beginPlay` 块（去注释后）**不含** `sendIntent(`、不含 `range.max === 0`，且含 `setSelected(` | 「无需目标 ⇒ 点击直接 playCard」这条捷径不许回来 |
+| 全文件 `type: 'playCard'` 恰好 **1** 处，且落在 `confirmTargets` 里（并断言 `targetIds: selected.picked`） | 出牌路径收敛成一条 |
+| 选中态 JSX 块含 `selectedHint()` / `onClick={confirmTargets}` / `selectedConfirmLabel()` / `setSelected(null)` | 两步流程的两个按钮真的渲染在同一处 |
+| 去注释后全文件不含 `confirmUse` / `use-confirm` | 老弹框删干净（不留第二条路径） |
+| `pickPlayCard` 块不含 `sendIntent(` 且含 `setSelected(null)` | 手牌点击只到「选中」为止，再点一次＝取消 |
+
+区分性**实测过**：把 `range.max === 0` 那条捷径临时塞回 `beginPlay` 后重跑 —— 上表第 5、6 两条
+**当场红**（`2 failed | 9 passed`），撤掉后 11/11 全绿。
+
+#### 五、本次真机验收记录（用户点名的四条；一条一句：怎么造现场 / 看到什么）
+
+⚠️ 前置说明（如实记）：本会话里 ZCode 的 IAB **不可用**（`mcp__node_repl__js` 每次调用都被拒
+`Browser is not available in subagent`；`agent.browsers.list()/get()` 同样被拒），本机也没有
+playwright/puppeteer。改用**本机 Chrome 153 headless + CDP**（`--remote-debugging-port`，
+一个临时 profile，`Runtime.evaluate` 派发 `.click()`，与用户给的 IAB 绕行办法同一手法）驱动
+**同一个开发前端**（先核过 Vite 真的在发改动后的源码：`/@fs/.../playFlow.ts` 含「已选中」、
+`Game.tsx` 里 `type: 'playCard'` 只剩 1 处）。现场：房间 8095 · 国战 · 全扩展2026 · 选将不限 ·
+4 人（我 1 号座 = 张飞+黄忠，2/3/4 号座是 `PASSIVE=1` 的陪练）· 牌用「测试场景」面板发给
+自己（日志有 `TEST_DEAL_OVERRIDE`）。截图存在 `C:\Users\99433\AppData\Local\Temp\sgs-verify\`。
+
+| 题 | 现场怎么造 | 看到了什么（证据） |
+|---|---|---|
+| (a) 无需目标的牌两步出牌 | 开发面板给自己发【无中生有】；单击手牌 | 单击后手牌**仍在**（10 张）、该牌 class 变 `picked`、提示 `已选中【无中生有】——点「使用」打出（点「取消」放回手牌）`、按钮 `使用【无中生有】 \| 取消`，日志**没有**使用记录（`a-selected-wuzhong.png`）；点【取消】→ `picked` 消失、仍 10 张；再点牌 + 点「使用【无中生有】」→ 日志 `验收员 使用了【无中生有】。/ 验收员 摸了 2 张牌。`、手牌 10 → 11（`a-used-wuzhong.png`） |
+| (b) 国战锁定技的亮将入口 | 准备阶段点「暂不明置」→ 出牌阶段点 `.skill-chip` 上的《咆哮》 | 点前 chip 是 `skill-chip usable  reveal` 且写着「咆哮明置」（`b-before-reveal.png`）；点后 chip 变成不可点的 `skill-chip`，日志 `验收员 亮将：张飞。/ 验收员 是首个明置武将的角色，获得【先驱】。`，副将黄忠仍是暗（`b-after-reveal.png`） |
+| (c) 乐不思蜀 距离 2 可用 / 兵粮寸断 距离 2 被拒 | 4 人局（我 1 号座、陪练3 是 3 号座＝距离 2）；给自己发这两张牌，分别点 3 号座 + 确认 | 【乐不思蜀】：日志 `验收员 使用了【乐不思蜀】。/ 验收员 将【乐不思蜀】置于 陪练3 的判定区。`、**无**错误提示、陪练3 面板上出现「乐不思蜀」判定区标记（`c-lebu-target-distance2.png`）；【兵粮寸断】：同一条路 → 红色 toast **`目标超出距离1`**、日志无新记录（`c-bingliang-toast.png` 里有 toast 原文） |
+| (d) 火攻可选自己 | 给自己发【火攻】（我手上有牌）；选牌后点**自己的武将面板** | 自己的面板由 `hero-panel faction-shu targetable` → `picked-target`，提示 `目标：验收员 —— 点「确认」发出`、按钮 `确认：对 验收员 使用【火攻】`（`d-huogong-self-target.png`）；确认后日志 `验收员 使用了【火攻】。/ 验收员 需展示一张手牌。` → 我展示 `梅花4·杀` → 要求弃同花色 → 弃 `梅花8·杀` → `验收员 受到 1 点火属性伤害，剩余 3 体力。`（`d-huogong-self-resolved.png`），全程无错误提示。【火攻】选自己这一步是 §5.209 记的**未在真机验证**项，本轮回验通过 |
+
+**没验到的**：① **移动端拖动出牌**——用户说「也可以」，属于可选：仓库里没有任何拖拽基础设施
+（grep `onDragStart` / `draggable` / `onPointerDown` 只有 HoverTip 的 `touchstart`），而拖动要接在
+`<button class="card">` 上、与 click/长按提示（`HoverTip`）争事件，本轮**不做**（避免为可选项引入
+风险），如实记为**未实现**；② 真机只跑了**国战 4 人局**桌面版（headless 1440×900），
+**手机窄屏 / 触屏**与身份局、2v2 的出牌流程**没有**在真机上点过（单测+源码守门覆盖同一段逻辑）。
+
+#### 六、顺带发现（**未改**，与本次无关）
+
+真机跑【火攻】时看到提示文案 `【火攻】：弃一张黑色club花色手牌，或弃权` ——
+`packages/engine/src/legal.ts:814` 直接拼了内部的英文花色 id（`ctx.revealedSuit`）。
+属于用户可见文案里漏了中文花色名，**本次不动**（不在用户给的口径里，且属引擎文案而非出牌流程），
+记为**待办**。
+
+#### 七、门禁（真实结果）
+
+- `pnpm test`：全绿（engine 25 文件 / 1211 条、server 37 条、ui 20 文件 / **142** 条）。
+  UI 改动不碰引擎核心，但既然跑了就全跑完；**没有**放宽任何断言。
+- `pnpm typecheck`：全绿（protocol / engine / ui / server / client 全部 Done）。
+- `pnpm build`：全绿（server Done、client `✓ built in 1.48s`）。
+- **未跑**仓库级 `pnpm format`（避免整片重排既有文件）；新增文件（`playFlow.ts` /
+  `playFlow.test.ts`）单独过过 prettier，`Game.tsx` 既有行的格式漂移保持原样。

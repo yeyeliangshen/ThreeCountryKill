@@ -41,6 +41,7 @@ import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
 import { TestScenarioPanel } from '../components/TestScenarioPanel';
 import { specialZoneChips } from '../specialZones';
 import { cardUses, useActionOf, type CardUse } from '../cardUses';
+import { effectiveCardName, playConfirmText, playHintText } from '../playFlow';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
 import { ZonePickPanel } from '../components/ZonePickPanel';
@@ -352,19 +353,15 @@ export function Game() {
     targetIds: string[];
   } | null>(null);
   /**
-   * 「生效前的确认」（用户 2026-09-18 要求）：**主动发起的效果**——【杀】【酒】、装装备、武将技能——
-   * 真正发出去之前先摆一句「它到底干什么」，确认了才发。
+   * 多选座位（`pickSeats` 提示）：点亮了几家，确认时才发出去
    *
-   * 为什么要它：这几类点一下就生效，而牌面说明平时只有**悬停**才看得到（触屏上根本没有悬停）；
-   * 装装备尤其疼（点错就把装备丢进装备区、还顶掉原来那件）。
+   * ⚠️ 这里以前还有一个 `confirmUse` 状态（「生效前的确认」弹框，用户 2026-09-18 要求）：
+   * 【杀】【酒】、装装备这类「点一下就生效」的牌先弹一句说明再发。用户 2026-09-25 把口径
+   * 统一成了**一套两步流程**——首次点击只选中并展示、点「使用/确定」才打出；那个弹框与选中态
+   * 说的其实是同一件事，留着就是**两条出牌路径**（还给「无需目标的牌」开了特判），所以删掉，
+   * 效果说明改由选中态的 `selectedEffectDesc()` 显示（见 §5.210）。
    */
-  /** 多选座位（`pickSeats` 提示）：点亮了几家，确认时才发出去 */
   const [seatPick, setSeatPick] = useState<string[]>([]);
-  const [confirmUse, setConfirmUse] = useState<{
-    title: string;
-    desc: string;
-    ok: () => void;
-  } | null>(null);
   // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
   // 武将技能用的是同一套，见 components/HoverTip.tsx
   const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
@@ -467,28 +464,21 @@ export function Game() {
   const lianhengTargets = prompt?.kind === 'play' ? (prompt.lianhengTargets ?? []) : [];
   const lianhengSet = new Set(lianhengTargets);
 
-  /** 已经选定用法、开始出这张牌：要目标就进选择模式，不要就直接发 */
+  /**
+   * 已经选定用法、开始出这张牌：**一律先进选中态**（两步流程的第一步）。
+   *
+   * ⚠️ 这里以前有一条**按目标数分流**的捷径：`range.max === 0`（【无中生有】【桃园结义】
+   * 【五谷丰登】【南蛮入侵】【万箭齐发】【酒】、装备牌…）**直接 `sendIntent({ type: 'playCard' })`**
+   * ——「不需要选目标」被当成了「可以省掉确认」，于是手牌区点一下【无中生有】就立即使用、
+   * 不可撤销（用户 2026-09-25 报的缺陷，见 docs §5.210）。
+   *
+   * 现在这条捷径**没有了**：出牌只有一条路——选中（`selected`）→ 点「使用/确定」按钮
+   * （`confirmTargets`，唯一一处发出 `playCard` 的地方）。**不是给某张牌特判**，
+   * 所以【无中生有】与【杀】用的是同一套确认逻辑；装备牌/【酒】原来靠 `confirmUse` 弹框
+   * 做的那次确认，改由选中态这一步统一承担（效果说明照旧显示，见 `selectedEffectDesc`）。
+   */
   function beginPlay(card: Card, as?: CardType, asAttribute?: DamageAttribute) {
     const range = targetRange(card, as, shaMaxTargetsFor(card));
-    if (range.max === 0) {
-      const fire = (): void => {
-        sendIntent({
-          type: 'playCard',
-          cardId: card.id,
-          ...(as ? { as } : {}),
-          ...(asAttribute ? { asAttribute } : {}),
-          targetIds: [],
-        });
-      };
-      // 【酒】/装装备这类「不需要目标」的牌原先点一下就发——现在先生效前确认（§5.144）
-      if (needsEffectConfirm(card, as)) {
-        const info = effectConfirmFor(card, as, snapshot?.mode);
-        setConfirmUse({ title: info.title, desc: info.desc, ok: () => { setConfirmUse(null); fire(); } });
-        return;
-      }
-      fire();
-      return;
-    }
     setSelected({
       cardId: card.id,
       ...(as ? { as } : {}),
@@ -548,6 +538,17 @@ export function Game() {
   // —— 出牌：这张牌有几种用法就先让玩家挑 ——
   function pickPlayCard(card: Card) {
     if (!prompt || prompt.kind !== 'play' || !legalSet.has(card.id)) return;
+    // 再点一次同一张牌＝取消选中（与「取消」按钮同义）：两步流程里点两下不该把牌打出去。
+    // 只在「还没点任何目标」时生效——已经选了目标的，再点这张牌是重新开始选目标。
+    if (
+      selected &&
+      selected.cardId === card.id &&
+      selected.picked.length === 0 &&
+      !selected.extraCardIds
+    ) {
+      setSelected(null);
+      return;
+    }
     const hasZhuque = me.equipment.some((c) => c.equipName === 'zhuque');
     const uses = cardUses(
       card,
@@ -592,15 +593,20 @@ export function Game() {
     return selected.picked.length >= selected.min && selected.picked.length <= selected.max;
   }
 
-  /** 确认按钮文案：把「对谁用什么」写清楚，免得又误点 */
+  /** 确认按钮文案：把「对谁用什么」写清楚，免得又误点；无需目标的牌写「使用【无中生有】」 */
   function selectedConfirmLabel(): string {
     if (!selected) return '确认使用';
     const card = myUsableCards.find((c) => c.id === selected.cardId);
-    const name = selected.as ? CARD_TYPE_NAME[selected.as] : card ? cardShortName(card) : '这张牌';
-    const who = selected.picked
-      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
-      .join('、');
-    return `确认：对 ${who} 使用【${name}】`;
+    const name = card ? effectiveCardName(card, selected.as) : '这张牌';
+    return playConfirmText(name, selectedTargetNames());
+  }
+
+  /** 已点选的目标名（没有就空数组——「无需目标的牌」与「还没点人」都走这一支） */
+  function selectedTargetNames(): string[] {
+    if (!selected) return [];
+    return selected.picked.map(
+      (id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id,
+    );
   }
 
   /**
@@ -614,7 +620,7 @@ export function Game() {
     return effectConfirmFor(card, selected.as, snapshot?.mode).desc;
   }
 
-  /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去 */
+  /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去；**无需目标的牌也在这里发出** */
   function confirmTargets() {
     if (!selected) return;
     if (selected.picked.length < selected.min || selected.picked.length > selected.max) return;
@@ -742,28 +748,22 @@ export function Game() {
     setDeputyPick(next.deputy);
   }
 
-  // 判定当前选中牌的目标提示文案
+  /**
+   * 判定当前选中牌的提示文案——文案本身是**纯函数**（`playHintText`，单测在 playFlow.test.ts）。
+   *
+   * ⚠️ 那个 `max === 0` 分支就是本次缺陷的正面：无需目标的牌以前根本没机会进选中态
+   * （点了就发），现在它和需要目标的牌共用这条提示，并且**明确指向「使用」按钮**。
+   */
   function selectedHint(): string {
     if (!selected) return '';
-    const names = selected.picked
-      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
-      .join('、');
-    // 目标够了：把「对谁用」摆出来，并提示还要点一下确认（点目标不再直接出牌）
-    if (selected.picked.length >= selected.min) {
-      if (selected.min === 2) {
-        return `已选：${names}（第 1 个是武器持有者、第 2 个是出杀目标）——点「确认」发出`;
-      }
-      return `目标：${names} —— 点「确认」发出`;
-    }
-    if (selected.min === 2) {
-      if (selected.picked.length === 0) return '请选择武器持有者';
-      return '请选择出杀目标';
-    }
-    if (selected.max > 1) {
-      // 「可含自己」也读服务端下发的合法目标，不在界面里二次判断
-      return `请选择 1 至 2 名目标（${selectedCanTargetSelf ? '可含自己' : '不含自己'}），已选 ${selected.picked.length} 名`;
-    }
-    return '请选择目标（点上方对手，选完再点确认）';
+    const card = myUsableCards.find((c) => c.id === selected.cardId);
+    return playHintText({
+      name: card ? effectiveCardName(card, selected.as) : '这张牌',
+      min: selected.min,
+      max: selected.max,
+      targetNames: selectedTargetNames(),
+      canTargetSelf: selectedCanTargetSelf,
+    });
   }
 
   // 技能确认按钮是否可用
@@ -1680,8 +1680,10 @@ export function Game() {
                 </div>
               )}
 
-              {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
-              {prompt.kind === 'play' && !skillMode && !selected && !confirmUse && (
+              {/* 出牌阶段：结束出牌（主动技能在武将面板里发动）。
+                  ⚠️ 选中态（含无需目标的牌）下藏起来：这时「结束出牌」与「使用」并排会点错，
+                  要收手先点「取消」——与需要目标的牌一直是同一套节奏 */}
+              {prompt.kind === 'play' && !skillMode && !selected && (
                 <>
                   <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
                     结束出牌
@@ -1790,23 +1792,9 @@ export function Game() {
                 </>
               )}
 
-              {/* 生效前的确认：主动发起的效果先说明再发（【杀】【酒】/装装备，见 effectConfirm.ts） */}
-              {confirmUse && prompt.kind === 'play' && (
-                <div className="use-confirm">
-                  <div className="use-confirm-title">{confirmUse.title}</div>
-                  <div className="use-confirm-desc">{confirmUse.desc}</div>
-                  <div className="use-confirm-actions">
-                    <button className="primary" onClick={confirmUse.ok}>
-                      确认使用
-                    </button>
-                    <button className="ghost" onClick={() => setConfirmUse(null)}>
-                      取消
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 选目标提示 */}
+              {/* 选中态 = 两步流程的第一步（**所有**要打出去的牌都经过这里，包括【无中生有】
+                  这类无需目标的牌）：提示 + （【杀】/【酒】/装备的）效果说明 + 「使用/确定」+「取消」。
+                  点目标**不再直接出牌**，点这张牌也只到这里为止——误触到这一步还能取消。 */}
               {selected && prompt.kind === 'play' && (
                 <>
                   <span className="hint">{selectedHint()}</span>
