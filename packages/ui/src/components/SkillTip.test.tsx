@@ -164,6 +164,12 @@ describe('接线守门（无 jsdom：用源码字符串钉）', () => {
     expect(game).toContain('if (!tip || tip.seatId !== seatId) return null;');
   });
 
+  it('已播过的事件不许重播（hook 把 consumedSeq 交给判据；无 jsdom，用源码钉）', () => {
+    const src = readFileSync(join(__dirname, 'SkillTip.tsx'), 'utf8');
+    expect(src).toContain('consumedSeq: consumedSeqRef.current');
+    expect(src, '播出一条就记下它的事件号').toContain('consumedSeqRef.current = next.seq');
+  });
+
   it('基础停留时长是个常量（口径①的「短暂」可核对），没有散落的魔法数', () => {
     expect(SKILL_TIP_BASE_MS).toBeGreaterThan(1000);
     expect(game).not.toMatch(/setTimeout\([^,]+,\s*4\d{3}\)/);

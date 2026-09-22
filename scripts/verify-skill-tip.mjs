@@ -19,6 +19,9 @@
  *   **在同一条流程里**都能观察到：提示出现 → 保持（每答一次继续算一步）→ 答「停止」后收起。
  * - 其他武将（例如 `sunquan` 孙权）：出牌阶段主动发动一次【制衡】（弃一张手牌）——
  *   覆盖「主动技」那条路（同步结算，提示短暂浮现后自动收）。
+ * - `guanyu`（关羽）：出牌阶段用【武圣】**转化**（把一张红牌当【杀】打给对手）——
+ *   覆盖「转化技」那条路（转化既没有主动技的 execute、也没有钩子，
+ *   是引擎里单独收口的一类；牌面看不到，所以逐张试到服务端接受为止）。
  *
  * ⚠️ 它**只用来造现场**：不做任何断言（断言在浏览器那一侧的 DOM 观察里，见 docs §5.212）。
  * 只用到 Node 自带的 WebSocket（Node 22+），不需要装包。
@@ -36,12 +39,57 @@ const LUOSHEN_MAX = Number(process.env.LUOSHEN_MAX ?? 2);
 const log = (...a) => console.log('[verify-skill-tip]', ...a);
 const send = (msg) => ws.send(JSON.stringify(msg));
 
+/**
+ * 【武圣】那条路：把一张红牌当【杀】打给对手。
+ *
+ * 本客户端看不到牌面（提示里只有牌 id），所以**逐张试**：服务端对黑牌会拒
+ * 「不能将该牌转化为该类型」，被拒就接着试下一张，直到一张被接受（红牌当【杀】能成）。
+ * 上一次被接受的表现是「我的手牌少了一张」——下一次进来就收工，不再出第二张。
+ */
+function tryWusheng(prompt) {
+  const ids = prompt.legalCardIds ?? [];
+  const target = (prompt.legalTargetIds ?? [])[0];
+  const me = lastSnapshot?.players?.find((p) => p.seatId === lastSnapshot.seatId);
+  if (wushengTry > 0 && me && me.handCount < wushengHand) {
+    log('【武圣】已经打出去了（手牌少了一张）→ 不再出牌');
+    wushengDone = true;
+    send({ type: 'intent', intent: { type: 'endPhase' } });
+    return;
+  }
+  if (!target) {
+    log('没有可指定的目标（对手可能已经死了）');
+    wushengDone = true;
+    send({ type: 'intent', intent: { type: 'endPhase' } });
+    return;
+  }
+  if (wushengTry >= ids.length) {
+    log('手上没有红牌可转化 → 结束回合');
+    wushengDone = true;
+    send({ type: 'intent', intent: { type: 'endPhase' } });
+    return;
+  }
+  const cardId = ids[wushengTry++];
+  wushengHand = me ? me.handCount : 0;
+  log(`出牌阶段 → 试第 ${wushengTry}/${ids.length} 张当【杀】（武圣）`);
+  send({ type: 'intent', intent: { type: 'playCard', cardId, targetIds: [target], as: 'sha' } });
+}
+
 const ws = new WebSocket(URL);
 let asked = false; // 只在第一次拿到大厅列表时做一次「建房 / 进房」
 let started = false;
 let picked = false;
 let luoshenSteps = 0;
 let zhihengDone = false;
+/** 武圣那条路：已经把第几张候选牌试过当【杀】（牌面看不到，只能逐张试） */
+let wushengTry = 0;
+let wushengDone = false;
+/** 试这张之前我的手牌数（用来认「上一张被接受了」） */
+let wushengHand = 0;
+/** 最近一次出牌阶段的提示 + 最近一份快照（武圣逐张重试要用） */
+let lastPlay = null;
+let lastSnapshot = null;
+/** 我自己的座次（服务端 lobby 里给） */
+let mySeat = null;
 
 ws.addEventListener('open', () => {
   log('已连接', URL);
@@ -67,6 +115,7 @@ ws.addEventListener('message', (ev) => {
 
   if (msg.type === 'lobby') {
     const seated = msg.seats.filter((s) => s.name).length;
+    mySeat = msg.mySeatId ?? mySeat;
     log(`房号 ${msg.roomCode}，我在 ${msg.mySeatId} 号座，已落座 ${seated} 人`);
     if (!ROOM) {
       if (msg.mode !== 'melee') send({ type: 'setMode', mode: 'melee' });
@@ -82,9 +131,15 @@ ws.addEventListener('message', (ev) => {
 
   if (msg.type === 'error') {
     log('服务端拒绝：', msg.message);
+    // 武圣那条路是**逐张试**的：被拒之后服务端不会因为一次「什么都没发生」的意图就重发快照，
+    // 所以要自己接着试下一张（否则脚本会停在这儿等一个永远不来的提示）。
+    if (HERO === 'guanyu' && !wushengDone && lastPlay && msg.message.includes('转化')) {
+      setTimeout(() => tryWusheng(lastPlay), 120);
+    }
     return;
   }
   if (msg.type !== 'snapshot') return;
+  lastSnapshot = msg.snapshot;
 
   const prompt = msg.snapshot.prompt;
   if (!prompt) return;
@@ -122,9 +177,15 @@ ws.addEventListener('message', (ev) => {
 
   if (prompt.kind === 'play') {
     picked = true;
+    lastPlay = prompt; // 武圣逐张重试要用（见 error 那一支）
+    // 转化技那条路（关羽·武圣）：把一张红牌当【杀】打给对手（见 tryWusheng）
+    if (HERO === 'guanyu' && !wushengDone) {
+      tryWusheng(prompt);
+      return;
+    }
     // 主动技那条路（非甄姬）：发动一次【制衡】就结束回合
     const legalSkills = prompt.legalSkillIds ?? [];
-    if (HERO !== 'zhenji' && !zhihengDone && legalSkills.includes('zhiheng')) {
+    if (HERO !== 'zhenji' && HERO !== 'guanyu' && !zhihengDone && legalSkills.includes('zhiheng')) {
       const cardId = (prompt.legalCardIds ?? [])[0];
       if (cardId) {
         zhihengDone = true;

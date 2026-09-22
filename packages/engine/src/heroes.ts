@@ -213,6 +213,15 @@ export interface Hero {
    */
   canUseAs?: (card: Card, type: CardType, state?: GameState, player?: Player) => boolean;
   /**
+   * 转化技**各提供哪个牌型**（技能名 → 牌型表）。
+   *
+   * `canUseAs` 是**武将级**的谓词，说不出「这次是哪两个技能里的哪一个在做事」——
+   * 只有一个人有这个问题：卧龙诸葛亮（火计=火攻 / 看破=无懈）。技能提示要报对技能名、
+   * 国战预亮要认对技能，就得有这么一份表。**只有多个转化技的武将需要声明**；
+   * 单转化技的武将照旧靠 `skillFields` 里 `canUseAs` 那一项反查（见 engine 的 conversionSkillName）。
+   */
+  conversionTypes?: Record<string, CardType[]>;
+  /**
    * 被动修改器：本回合最多可出杀数。默认 1。
    * 张飞·咆哮：无限。
    */
@@ -11742,6 +11751,9 @@ const WOLONG: Hero = {
   canUseAs: (card, type) =>
     (type === 'huogong' && isRed(card)) || (type === 'wuxie' && !isRed(card)),
   skillFields: { 火计: ['canUseAs'], 看破: ['canUseAs'] },
+  // 全仓库唯一「一个武将有多个转化技」的人：得说清哪个技能提供哪个牌型
+  // （否则技能提示会把【看破】报成【火计】）
+  conversionTypes: { 火计: ['huogong'], 看破: ['wuxie'] },
   skills: [
     { name: '八阵', desc: '锁定技，若你的装备区没有防具牌，视为你装备着【八卦阵】。' },
     { name: '火计', desc: '你可以将一张红色手牌当【火攻】使用。' },

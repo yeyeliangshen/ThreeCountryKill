@@ -54,6 +54,9 @@ export interface SkillTip {
  * 逐条规则（有意写死，别让上层再判一遍）：
  * - **基线**：本客户端看到的**第一份快照**不播——进房 / 刷新时引擎那份 `skillFx` 可能是
  *   好几步之前的事，照着播就是把旧技能当新闻（与 `chainState.diffChainStates` 同一条规矩）。
+ * - **播过的那条不许重播**（`consumedSeq`）：一条提示按兜底时长收起来之后，引擎那份事件
+ *   可能**还在快照里**（结算还没完）——不能因为它还在就再弹一次。真机上实测到过这条：
+ *   15s 兜底收起后，settling 由真变假那一刻提示又冒出来 4.2s（同一个 seq）。
  * - **换了一条**（`seq` 变了）⇒ 立刻换成新的（口径①），旧的让位；
  * - **还在结算**（`settling`）⇒ 续时保持（口径③），但撞到 `SKILL_TIP_MAX_MS` 兜底就收；
  * - **结算完了** ⇒ 从「现在」起最多再留 `SKILL_TIP_TAIL_MS`，到点自动收起（口径④）；
@@ -64,11 +67,13 @@ export function nextSkillTip(
   prev: SkillTip | null,
   fx: SkillFxView | null,
   now: number,
-  opts: { baseline?: boolean } = {},
+  opts: { baseline?: boolean; consumedSeq?: number } = {},
 ): SkillTip | null {
   // ① 这一次发动是新的（或本来就没有）
   if (fx && (!prev || prev.seq !== fx.seq)) {
     if (opts.baseline) return prev; // 第一份快照只当基线，不播
+    // 已经播过、已经收起来的那一条：快照里还留着它，但它不是新闻（别再弹一次）
+    if (opts.consumedSeq !== undefined && fx.seq === opts.consumedSeq) return prev;
     return {
       seq: fx.seq,
       seatId: fx.seatId,

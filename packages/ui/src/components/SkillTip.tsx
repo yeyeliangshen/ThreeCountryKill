@@ -29,13 +29,20 @@ export function useSkillTip(fx: SkillFxView | null): {
   const tipRef = useRef<SkillTip | null>(null);
   // 第一份快照只当基线（进房/刷新时那份 skillFx 可能是好几步之前的事，不该当新闻播）
   const baselineRef = useRef(true);
+  // 已经**播过**的那一条的事件号：它收起之后引擎那份事件可能还在快照里（结算没完），
+  // 不许因为「还在」就再弹一次——真机实测到过这个重播（见 skillTips.ts 的判据说明）
+  const consumedSeqRef = useRef<number | undefined>(undefined);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const tick = useCallback(() => {
     const now = Date.now();
     const next = nextSkillTip(tipRef.current, fxRef.current, now, {
       baseline: baselineRef.current,
+      consumedSeq: consumedSeqRef.current,
     });
+    // 基线那一份也算「播过」：它之后 settling 由真变假时不该把它补播出来
+    if (next) consumedSeqRef.current = next.seq;
+    else if (baselineRef.current && fxRef.current) consumedSeqRef.current = fxRef.current.seq;
     baselineRef.current = false;
     tipRef.current = next;
     // 判据没变就不要换新对象（否则每次 tick 都白重渲染一遍）

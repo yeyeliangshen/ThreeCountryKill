@@ -45,6 +45,8 @@ const mk = (id: string, type: Card['type'], suit: Card['suit'], rank = 1): Card 
 });
 const sha = (id: string) => mk(id, 'sha', 'spade', 5);
 const shan = (id: string) => mk(id, 'shan', 'heart', 2);
+/** 红色非【杀】（武圣要转化的就是这种牌） */
+const redTrick = (id: string) => mk(id, 'shunshou', 'heart', 3);
 
 /**
  * 国战牌局：直接指定武将牌（绕开选将），默认甲的出牌阶段；武将默认**已明置**。
@@ -321,5 +323,142 @@ describe('国战版【洛神】：暗置预亮 → 询问 + 技能提示（改�
     expect(seen?.skillName).toBe('洛神');
     expect(seen?.seatId).toBe(A);
     expect(seen?.settling, '正在等甲回答 ⇒ 界面保持提示').toBe(true);
+  });
+});
+
+/**
+ * **转化技也是「发动技能」**（用户 2026-09-25 口径①的补漏）：【武圣】【龙胆】【倾国】
+ * 【看破】【奇袭】【急救】… 这类技能既没有主动技的 `execute`、也没有钩子，所以不经过
+ * 技能事件源原有的两条入口（`withSkillCtx` 包着的技能日志、`setPending` 的技能询问）。
+ * 它们在引擎里的落点是「一张牌被转化着打出去」的那 7 处（`announceConversion`），
+ * 仍然是**一个函数管全部转化技**，不是给每个武将写一份提示。
+ *
+ * ⚠️ 反例与正例同样重要：`canUseAs` 是**武将级**谓词（武圣＝「红牌」），真【杀】当【杀】
+ * 打、真【闪】当【闪】打也满足它——那样报技能名就是**误报**。用例两头都钉。
+ */
+describe('转化技：转化也是「发动技能」，走同一个事件源', () => {
+  it('关羽用【武圣】把红牌当【杀】使用 ⇒ skillFx 是武圣（改动前 ✗：转化一个字都不报）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'guanyu', hand: [redTrick('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B], as: 'sha' }));
+    // 别人（乙）也看得到——这正是用户报的那条缺陷
+    const seen = toSnapshot(state, B).skillFx;
+    expect(seen?.skillName).toBe('武圣');
+    expect(seen?.seatId).toBe(A);
+    // 这张【杀】打完就问乙「是否出闪」⇒ 正在等回答，提示**保持**（口径③）。
+    // 这一格是 setPending 里的 syncSkillSettling 续上的，说明转化提示也吃同一条保持规则
+    expect(seen?.settling).toBe(true);
+  });
+
+  it('反例：真【杀】当【杀】打，不报技能（武圣的「红牌」对红【杀】也成立，别误报）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'guanyu', hand: [mk('a1', 'sha', 'heart', 5)] },
+      { seatId: B, name: '乙', heroId: 'vanilla' },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(toSnapshot(state, A).skillFx, '没转化就没提示').toBeNull();
+  });
+
+  it('赵云用【龙胆】把【杀】当【闪】打出 ⇒ skillFx 是龙胆（响应那条落点）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhaoyun', hand: [sha('b1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }), '龙胆：杀当闪');
+    const seen = toSnapshot(state, A).skillFx;
+    expect(seen?.skillName).toBe('龙胆');
+    expect(seen?.seatId).toBe(B);
+  });
+
+  it('反例：真【闪】当【闪】打出，不报', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhaoyun', hand: [shan('b1')] },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(toSnapshot(state, A).skillFx).toBeNull();
+  });
+
+  it('卧龙诸葛亮：红牌当【火攻】报火计、黑牌当【无懈】报看破（一个人两个转化技，要报对）', () => {
+    // ① 出牌阶段：红牌当【火攻】
+    const s1 = gz([
+      { seatId: A, name: '甲', heroId: 'wolong', hand: [redTrick('a1')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [shan('b1')] },
+    ]);
+    ok(act(s1, A, { type: 'playCard', cardId: 'a1', targetIds: [B], as: 'huogong' }));
+    expect(toSnapshot(s1, B).skillFx?.skillName, '火计而不是看破').toBe('火计');
+
+    // ② 无懈窗口：黑牌当【无懈可击】→ 看破
+    const s2 = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [mk('a1', 'wuzhong', 'heart', 3)] },
+      { seatId: B, name: '乙', heroId: 'wolong', hand: [mk('b1', 'shan', 'spade', 2)] },
+    ]);
+    ok(act(s2, A, { type: 'playCard', cardId: 'a1', targetIds: [A] }));
+    expect(s2.pending?.kind, '无中生有的无懈窗口').toBe('wuxieQueue');
+    while (s2.pending?.kind === 'wuxieQueue' && s2.pending.askQueue[s2.pending.askIndex] !== B) {
+      ok(act(s2, s2.pending.askQueue[s2.pending.askIndex]!, { type: 'pass' }));
+    }
+    ok(act(s2, B, { type: 'respondCard', cardId: 'b1' }), '看破：黑牌当无懈');
+    expect(toSnapshot(s2, A).skillFx?.skillName, '看破而不是火计').toBe('看破');
+  });
+
+  it('反例：【无懈可击·国】本来就是当【无懈可击】打的，不算转化（不报看破）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'vanilla', hand: [mk('a1', 'wuzhong', 'heart', 3)] },
+      {
+        seatId: B,
+        name: '乙',
+        heroId: 'wolong',
+        hand: [mk('b1', 'wuxieguo', 'spade', 2)], // 黑色的【无懈可击·国】
+      },
+    ]);
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [A] }));
+    while (state.pending?.kind === 'wuxieQueue' && state.pending.askQueue[state.pending.askIndex] !== B) {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }));
+    expect(toSnapshot(state, A).skillFx, '牌自己的用法，不是技能转化').toBeNull();
+  });
+
+  it('反例：【酒】濒死当【桃】自救也不算转化（华佗的急救不该被报出来）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'huatuo', hand: [mk('a1', 'jiu', 'heart', 5)] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [sha('b1')] },
+    ]);
+    const a = at(state, A);
+    a.hp = 1;
+    state.turn = { seatIndex: state.seatOrder.indexOf(B)!, phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }), '不闪');
+    expect(state.pending?.kind).toBe('respondDeath');
+    ok(act(state, A, { type: 'respondCard', cardId: 'a1' }), '酒当桃自救');
+    expect(a.hp).toBe(1);
+    expect(toSnapshot(state, B).skillFx, '酒自己的用法，不是急救').toBeNull();
+  });
+
+  it('覆盖守门：每个「多转化技」的武将都必须声明 conversionTypes（否则技能名会报错）', () => {
+    const missing: string[] = [];
+    const MODES = ['junzheng', '2v2', 'melee', 'guozhan'] as const;
+    for (const h of HEROES) {
+      for (const mode of MODES) {
+        const hero = getHeroForMode(h.id, mode);
+        if (!hero) continue;
+        const names = Object.entries(hero.skillFields ?? {})
+          .filter(([, f]) => f.includes('canUseAs'))
+          .map(([n]) => n);
+        if (names.length < 2) continue;
+        const declared = hero.conversionTypes ?? {};
+        for (const n of names) {
+          if (!declared[n]?.length) missing.push(`${hero.id}/${mode}:${n}`);
+        }
+      }
+    }
+    expect(missing, '多个转化技的武将必须说清各自提供哪个牌型').toEqual([]);
   });
 });

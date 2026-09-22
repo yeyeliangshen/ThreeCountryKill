@@ -44,6 +44,7 @@ import {
   healPlayer,
   nextAliveSeat,
   pushLog,
+  announceSkill,
   announceSkillOnAsk,
   syncSkillSettling,
   toDiscard,
@@ -860,12 +861,76 @@ export function canUseAsCard(
   return false;
 }
 
-/** 这个武将的转化能力（canUseAs）是哪个技能给的（读 skillFields 反查） */
-function conversionSkillName(hero: Hero): string | null {
-  for (const [name, fields] of Object.entries(hero.skillFields ?? {})) {
-    if (fields.includes('canUseAs')) return name;
+/**
+ * 这个武将的转化能力（canUseAs）是哪个技能给的（读 skillFields 反查）。
+ *
+ * `as` 给上时按 `Hero.conversionTypes` 认**对的那个**技能：卧龙诸葛亮一个人有
+ * 【火计】（红牌当火攻）与【看破】（黑牌当无懈）两个转化技，不区分就会把看破报成火计。
+ * 没声明 `conversionTypes` 的单转化技武将照旧取第一项。
+ */
+function conversionSkillName(hero: Hero, as?: CardType): string | null {
+  const names = Object.entries(hero.skillFields ?? {})
+    .filter(([, fields]) => fields.includes('canUseAs'))
+    .map(([name]) => name);
+  if (names.length === 0) return null;
+  if (as) {
+    const typed = names.find((name) => hero.conversionTypes?.[name]?.includes(as));
+    if (typed) return typed;
   }
-  return null;
+  return names[0]!;
+}
+
+/**
+ * 「这张牌这次是**哪个技能**把它转化的」——与 `canUseAsCard` **完全同一套判据**
+ * （`conversionAvailable` 的主将/副将技约束 + `heroCanUseAs` 的「按使用者口径看牌」），
+ * 只在最后多返回一个技能名。查不到就是 null（不是转化，或没人能转化它）。
+ *
+ * 暗置武将那一支要**已预亮**才算数：暗置武将没有技能，预亮过才允许先用（真打出去时
+ * 由 `revealForConversion` 明置）——与 `canUseAsCard` 里那段口径一致。
+ */
+function conversionSkillOf(
+  state: GameState,
+  player: Player,
+  card: Card,
+  as: CardType,
+): string | null {
+  const match = (h: Hero): boolean =>
+    conversionAvailable(state, player, h) && heroCanUseAs(h, card, as, state, player);
+  const hero =
+    activeHeroes(state, player).find(match) ??
+    (state.mode === 'guozhan'
+      ? unrevealedHeroes(state.mode, player).find((h) => {
+          if (!match(h)) return false;
+          const name = conversionSkillName(h, as);
+          return !!name && player.prelitSkills.includes(name);
+        })
+      : undefined);
+  return hero ? conversionSkillName(hero, as) : null;
+}
+
+/** 这张牌**本来**就能当 `as` 用吗（不用任何技能）——这些不算转化，不报技能名 */
+function isNativeUseOf(card: Card, as: CardType): boolean {
+  if (card.type === as) return true;
+  // 【酒】：濒死时**本人**本来就能当【桃】用（官方文本的用法之一，不是技能转化）
+  if (as === 'tao' && card.type === 'jiu') return true;
+  // 【无懈可击·国】：本来就当【无懈可击】打（两张牌在无懈窗口里等价）
+  if (as === 'wuxie' && isWuxieLike(card)) return true;
+  return false;
+}
+
+/**
+ * **转化也是「发动技能」**（用户 2026-09-25 口径①）：把这次转化归到提供它的那个技能名下，
+ * 在**发动者**旁边浮一次技能名（【武圣】【龙胆】【倾国】【看破】【奇袭】【急袭】…）。
+ *
+ * 为什么转化技要单独一个入口：它们既没有主动技的 `execute`、也没有钩子，所以**不经过**
+ * 技能事件源的那两条入口（`withSkillCtx` 包着的技能日志、`setPending` 的技能询问）。
+ * 落点与 `revealForConversion` 完全同一批——就是那 7 处「一张牌被转化着打出去」的地方；
+ * 仍然是**一个函数管全部转化技**，不是给每个武将写一份提示逻辑。
+ */
+function announceConversion(state: GameState, player: Player, card: Card, as: CardType): void {
+  if (isNativeUseOf(card, as)) return;
+  const name = conversionSkillOf(state, player, card, as);
+  if (name) announceSkill(state, player.seatId, name);
 }
 
 /**
@@ -5996,7 +6061,8 @@ function onPlayCard(
   // 丈八凑出来的虚拟【杀】本身就是杀，不需要再过转化技那一关。
   if (!card.virtual && intent.as && intent.as !== card.type) {
     if (!canUseAsCard(state, player, card, intent.as!)) return err('不能将该牌转化为该类型');
-    // 真的要用转化技了 → 明置提供它的那张武将牌（暗置+已预亮的情况）
+    // 真的要用转化技了 → ① 浮一次技能名（口径①）② 明置提供它的那张武将牌（暗置+已预亮）
+    announceConversion(state, player, card, intent.as);
     revealForConversion(state, player, card, intent.as);
   }
 
@@ -9054,6 +9120,7 @@ function takeRespondedSha(
   if (card.type !== 'sha' && !canUseAsCard(state, responder, card, 'sha')) return '需打出【杀】';
   // 用转化技就得明置提供它的武将。这条以前只在「被【杀】指定后出闪」那条路上做了，
   // 于是南蛮/决斗/借刀里用武圣、龙胆打出的【杀】不会亮将。
+  announceConversion(state, responder, card, 'sha');
   revealForConversion(state, responder, card, 'sha');
   consumeCard(state, responder, card);
   return card;
@@ -9415,7 +9482,8 @@ function respondWanjianShan(
   }
   if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
     return err('万箭齐发需打出【闪】');
-  // 靠转化技出的这张【闪】要明置（甄姬·倾国 / 赵云·龙胆）
+  // 靠转化技出的这张【闪】：浮一次技能名 + 明置（甄姬·倾国 / 赵云·龙胆）
+  announceConversion(state, responder, card, 'shan');
   revealForConversion(state, responder, card, 'shan');
   takeAndDiscard(state, responder, card);
   pushLog(state, 'trick', `${responder.name} 打出了【闪】。`, {
@@ -9638,6 +9706,8 @@ function onRespondWuxie(
   // 接受【无懈可击】/【无懈可击·国】，或武将可转化的牌（卧龙诸葛亮·看破：黑色手牌当无懈）
   if (!isWuxieLike(card) && !canUseAsCard(state, responder, card, 'wuxie'))
     return err('只能使用【无懈可击】');
+  // 转化出来的【无懈】（卧龙诸葛亮·看破：黑色手牌当无懈）
+  announceConversion(state, responder, card, 'wuxie');
   revealForConversion(state, responder, card, 'wuxie');
   takeAndDiscard(state, responder, card);
   const ctx = pending.ctx;
@@ -9909,6 +9979,8 @@ function respondSha(
   // 暗置武将要预亮过对应的转化技才能这么出，出了就明置（canUseAsCard 已含这层判断）
   if (card.type !== 'shan' && !canUseAsCard(state, responder, card, 'shan'))
     return err('只能用【闪】响应');
+  // 转化出来的【闪】（赵云·龙胆：杀当闪；甄姬·倾国：黑牌当闪）
+  announceConversion(state, responder, card, 'shan');
   revealForConversion(state, responder, card, 'shan');
   takeAndDiscard(state, responder, card);
   pushLog(state, 'shan', `${responder.name} 使用了【闪】。`, {
@@ -10416,6 +10488,8 @@ function onRespondFactionCall(
   const card = resolved.card;
   if (card.type !== pending.needType && !canUseAsCard(state, helper, card, pending.needType))
     return err(`只能打出【${CARD_TYPE_NAME[pending.needType]}】`);
+  // 代打时用转化技（护驾里的武圣/龙胆…）
+  announceConversion(state, helper, card, pending.needType);
   revealForConversion(state, helper, card, pending.needType);
   consumeCard(state, helper, card);
   // 施工方案 Step 1 同款：这一问**答完了**（有人代打成功）——先标完成、release-if-mine，
@@ -10463,7 +10537,11 @@ function respondDeathSave(
     return err('【酒】只能由濒死者本人使用');
   if (card.type !== 'tao' && card.type !== 'jiu' && !canUseAsCard(state, saver, card, 'tao'))
     return err('只能用【桃】救人');
-  if (card.type !== 'tao') revealForConversion(state, saver, card, 'tao');
+  // 转化出来的【桃】（华佗·急救：红色牌当桃）；酒当桃救人是牌自己的用法，不算转化
+  if (card.type !== 'tao') {
+    announceConversion(state, saver, card, 'tao');
+    revealForConversion(state, saver, card, 'tao');
+  }
   // 酒当桃救人：限1次/回合（本仓库既有简化，见 docs）
   if (card.type === 'jiu' && saver.flags.taoSaveCountThisTurn > 0) return err('本回合已用过酒救人');
   takeAndDiscard(state, saver, card);

@@ -116,6 +116,20 @@ describe('④ 结算完成 / 事件被清掉：自动收起', () => {
     expect(nextSkillTip(cleared, null, 100 + SKILL_TIP_TAIL_MS)).toBeNull();
   });
 
+  it('播过、已收起的**同一条**事件不许重播（快照里它还留着，但它不是新闻）', () => {
+    // 真机实测到过：15s 兜底收起后，settling 由真变假那一刻同一条提示又冒出来 4.2s
+    const first = nextSkillTip(null, ev({ settling: true }), 0)!;
+    expect(nextSkillTip(first, ev({ settling: true }), SKILL_TIP_MAX_MS), '兜底到点收起').toBeNull();
+    // 引擎那份事件还在快照里（settling 此时已翻成 false）：同一个 seq ⇒ 不播
+    expect(
+      nextSkillTip(null, ev({ settling: false }), SKILL_TIP_MAX_MS + 500, { consumedSeq: 1 }),
+    ).toBeNull();
+    // 新的一次发动（seq 变了）照常播
+    expect(
+      nextSkillTip(null, ev({ seq: 2, settling: false }), SKILL_TIP_MAX_MS + 500, { consumedSeq: 1 }),
+    ).toBeTruthy();
+  });
+
   it('剩余时间给钩子定下一次 tick（没有提示时不需要定时器）', () => {
     expect(skillTipRemainingMs(null, 1234)).toBeNull();
     const tip = nextSkillTip(null, ev(), 0)!;
@@ -163,6 +177,23 @@ describe('描述从哪来：复用武将技能文本，且不泄露暗将', () =
     expect(guozhan).not.toBe('');
     // 国战口径「至多 X 张」（X = 体力上限），身份局无此限制——两份文本必须不同
     expect(guozhan).not.toBe(junzheng);
+  });
+
+  it('**转化技**也有完整描述可看（口径②：转化也是发动技能，点开要有东西读）', () => {
+    const guanyu = [
+      {
+        seatId: 's1',
+        name: '甲',
+        heroId: 'guanyu',
+        deputyHeroId: null,
+        heroRevealed: true,
+        deputyRevealed: true,
+      },
+    ] as unknown as Parameters<typeof skillTipDesc>[1];
+    expect(skillTipDesc('junzheng', guanyu, 's1', '武圣'), '武圣').toContain('红色牌当【杀】');
+    // 借来的/不是自己那张牌的技能照旧按名册兜底（这是既有口径，不是「查错了人」）
+    expect(skillTipDesc('junzheng', guanyu, 's1', '龙胆')).toContain('当【闪】');
+    expect(skillTipDesc('junzheng', guanyu, 's1', '根本没有这个技能')).toBe('');
   });
 
   it('该角色没明置这个技能时按名册兜底（借来的技能也查得到）', () => {
