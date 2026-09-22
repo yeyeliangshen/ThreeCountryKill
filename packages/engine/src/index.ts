@@ -5,6 +5,11 @@ export * from './heroes';
 export * from './markers';
 export * from './config';
 export * from './distance';
+/**
+ * 延时锦囊「合法目标」的**唯一事实来源**（用户 2026-09-22 口径：只有【兵粮寸断】有距离限制，
+ * 【乐不思蜀】没有）。引擎出牌校验（`playDelayedTrick`）与提示下发（`legal.ts` 两处）共用。
+ */
+export * from './delayedTrickTargets';
 export {
   createGame,
   applyIntent,

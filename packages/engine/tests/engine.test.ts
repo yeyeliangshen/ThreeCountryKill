@@ -1617,15 +1617,18 @@ describe('延时锦囊：放置', () => {
     fail(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [A] }));
   });
 
-  it('乐不思蜀：距离>1的目标无效', () => {
-    // 4人圆桌：A 与 C 距离 2（无武器/马）
+  it('乐不思蜀：距离>1的目标**照常有效**（无距离限制，用户 2026-09-22 口径）', () => {
+    // 4人圆桌：A 与 C 基础距离 2（无武器/马）
+    // ⚠️ 改动前 ✗：这条用例原来写的是「距离>1的目标无效」——那正是被修掉的缺陷
+    //    （距离限制只属于【兵粮寸断】）。完整口径见 docs/guozhan-roster.md §5.208。
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'vanilla', hand: [lebu('lb1')] },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
       { seatId: C, name: '丙', heroId: 'vanilla', hand: [] },
       { seatId: D, name: '丁', heroId: 'vanilla', hand: [] },
     ]);
-    fail(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [C] }));
+    ok(act(state, A, { type: 'playCard', cardId: 'lb1', targetIds: [C] }));
+    expect(state.players.find((p) => p.seatId === C)!.judgment.map((c) => c.type)).toEqual(['lebu']);
   });
 
   it('同类延时锦囊：目标判定区上限1张', () => {

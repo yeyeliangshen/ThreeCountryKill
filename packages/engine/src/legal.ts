@@ -44,6 +44,8 @@ import {
   usableCardsOf,
 } from './engine';
 import { distance } from './distance';
+// 延时锦囊「合法目标」的唯一事实来源（乐不思蜀无距离限制；兵粮寸断距离≤1）
+import { delayedTrickTargetLegal } from './delayedTrickTargets';
 
 // 根据 pending 状态，给"被询问的玩家"构建提示（含合法选项）。
 // 其它玩家的 prompt 为 null（他们只是在等待）。
@@ -241,23 +243,19 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       seen.add(card.id);
       continue;
     }
-    // 延时锦囊：闪电→自己判定区无同类即可；乐不思蜀/兵粮寸断→存在可达目标
-    // （目标判定区无同类、且没被帷幕/谦逊这类锁定技挡掉）
+    // 延时锦囊：闪电→自己判定区无同类即可；乐不思蜀/兵粮寸断→存在合法目标
+    // （目标判定区无同类 + 距离那一层：**只有兵粮寸断**有距离限制，见 delayedTrickTargets.ts）
     if (isDelayedTrick(card)) {
       const trickType = card.type as 'lebu' | 'shandian' | 'bingliang';
-      const noDistance = heroIgnoresTrickDistance(heroes, player); // 黄月英·奇才（+ 夙智的动态标记）
       if (trickType === 'shandian') {
         if (!player.judgment.some((t) => t.type === 'shandian')) {
           legalCardIds.push(card.id);
           seen.add(card.id);
         }
       } else {
-        const hasTarget = state.players.some(
-          (p) =>
-            p.alive &&
-            p.seatId !== seatId &&
-            !p.judgment.some((t) => t.type === trickType) &&
-            (noDistance || wenjiMarked(player, card.id) || distance(state, seatId, p.seatId) <= 1),
+        // 合法目标＝存活的其他角色 + 判定区能合法置入（乐不思蜀不看距离；兵粮寸断距离≤1）
+        const hasTarget = state.players.some((p) =>
+          delayedTrickTargetLegal(state, player, trickType, p.seatId, card.id),
         );
         if (hasTarget) {
           legalCardIds.push(card.id);
@@ -400,17 +398,12 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       }
     }
     // 转化延时锦囊：大乔·国色（方块牌当【乐不思蜀】）、徐晃·断粮（黑色基本/装备牌当【兵粮寸断】）
+    // ⚠️ 走**同一个**合法目标判据：转化出来的【乐不思蜀】照样不受距离限制（用户 2026-09-22 口径）
     for (const trickType of ['lebu', 'bingliang'] as const) {
       if (seen.has(card.id)) break;
       if (!canUseAsCard(state, player, card, trickType)) continue;
-      const asTrick = { ...card, type: trickType };
-      const noDistance = heroIgnoresTrickDistance(heroes);
-      const hasTarget = state.players.some(
-        (p) =>
-          p.alive &&
-          p.seatId !== seatId &&
-          !p.judgment.some((t) => t.type === trickType) &&
-          (noDistance || wenjiMarked(player, card.id) || distance(state, seatId, p.seatId) <= 1),
+      const hasTarget = state.players.some((p) =>
+        delayedTrickTargetLegal(state, player, trickType, p.seatId, card.id),
       );
       if (hasTarget) {
         legalCardIds.push(card.id);

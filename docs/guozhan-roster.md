@@ -8301,3 +8301,100 @@ UI 侧：`src/darkSkillAction.test.ts`（判据 7 条 + `Game.tsx` 静态守门�
 种子回归）与 200 局冒烟（`smoke.test.ts`，含「200 局分出胜负」那条）——全绿，**没有**放宽任何断言。
 新增/新建文件单独过了 prettier（仓库级 `pnpm format` 没跑；`engine.test.ts` / `Game.tsx` 等既有
 文件本来就有的格式漂移保持原样，未整片重排）。
+
+---
+
+### 5.208 【乐不思蜀】被错误加入距离限制（用户 2026-09-22 报）
+
+#### 一、用户原文口径（逐字，规则权威）
+
+> 缺陷：【乐不思蜀】被错误加入距离限制。当前【乐不思蜀】只能对一定距离内的角色使用，这是错误的。
+> 【乐不思蜀】的合法目标为**除使用者本人以外的一名其他角色**，本身没有距离限制。因此目标判断
+> 应为：「存活的其他角色 + 其判定区能够合法置入【乐不思蜀】」。**不应额外检查角色间距离、
+> 攻击范围或坐骑修正**。同时需要检查由技能「视为使用【乐不思蜀】」的情况，除非技能文本另有
+> 明确限制，否则也应沿用【乐不思蜀】本身的目标规则，不能错误继承通用距离判断。
+
+**口径依据**：用户（规则权威）的上述转述即权威来源。与之相容的官方文本口径：距离限制属于
+【兵粮寸断】（「距离 1 以内的角色」）；【乐不思蜀】的牌面文本里没有距离字样。
+**本次没有引入任何用户未给的新规则**：兵粮的距离限制、目标数=1、不能是自己、目标须存活、
+判定区同名上限 1 张，全部**保持改动前的行为**。
+
+#### 二、缺陷现场（改动前）
+
+- `packages/engine/src/engine.ts` 的 `playDelayedTrick()`（原 6176–6188 行）把 `lebu` 与
+  `bingliang` **共用**一条 `distance(state, player.seatId, targetId) > 1` 判断，注释还写着
+  「乐不思蜀/兵粮寸断：目标为其他存活玩家，距离≤1」——【乐不思蜀】就是这样被加上距离限制的。
+- `packages/engine/src/legal.ts` 又把同一条判据**各抄了一份**（原 244–268 行「牌面延时锦囊」、
+  原 402–419 行「转化延时锦囊」）——三处抄写，改一处就整体不一致。
+
+#### 三、改了什么（文件:行号）
+
+| 文件:行号 | 改动 |
+|---|---|
+| `packages/engine/src/delayedTrickTargets.ts`（**新文件**，85 行） | 判据的**唯一事实来源**：`delayedTrickDistanceLimit(type)`（`bingliang`→1，`lebu`/`shandian`→`null`）＋ `delayedTrickTargetInRange(...)`（距离那一层，含奇才/问计的豁免）＋ `delayedTrickTargetLegal(...)`（完整合法目标：存活的其他角色 + 判定区能合法置入 + 距离那一层）。模块只依赖 `distance.ts` / `heroes.ts` / `model.ts`，**不反向依赖 engine.ts**（无循环） |
+| `packages/engine/src/engine.ts:55` | 引入 `delayedTrickTargetInRange` |
+| `packages/engine/src/engine.ts:6152`（注释）、`6179–6193` | `playDelayedTrick` 的距离判断改成 `if (!delayedTrickTargetInRange(state, player, type, targetId, card.id)) return err('目标超出距离1')`；**奇才（`heroIgnoresTrickDistance`）/刘琦·问计（`wenjiMarked`）两条豁免保留**，只是收进了唯一事实来源里——它们只对**有距离限制**的【兵粮寸断】起作用 |
+| `packages/engine/src/legal.ts:47-48`、`244–270` | 牌面延时锦囊的「这张牌现在打不打得出」改读 `delayedTrickTargetLegal`（闪电那一支照旧） |
+| `packages/engine/src/legal.ts:402–412` | 转化延时锦囊（大乔·国色→乐不思蜀 / 徐晃·断粮→兵粮寸断）改读同一个函数 |
+| `packages/engine/src/index.ts:7-12` | 导出新模块（`export * from './delayedTrickTargets'`） |
+| `packages/protocol/src/card.ts:439` | 牌面说明文案改掉错误的「（距离≤1）」：`置于一名其他角色的判定区（无距离限制）`——文案经 `cardDescription()` 进界面悬停提示 |
+| `packages/engine/tests/delayed-trick-distance.test.ts`（**新文件**，313 行，12 条） | 本次新增用例（见下） |
+| `packages/engine/tests/engine.test.ts:1620` | 旧用例「距离>1的目标无效」按新口径**改写**为「距离>1的目标**照常有效**」（注释标了改动前 ✗） |
+
+#### 四、一并核对过的地方（用户点名的三条）
+
+| 用户要求核对 | 结论 |
+|---|---|
+| `legal.ts` 的目标列表 | ✅ 两处都改了（牌面 / 转化）。提示里的 `legalTargetIds`（原 434 行）**本来就是「所有存活的其他角色」**、不按距离筛，所以远处角色一直在可点目标里——不需要改，已用用例钉住 |
+| 「视为使用【乐不思蜀】」的技能 / `card.virtual === true` 的虚拟延时锦囊 | ✅ 已 grep 全仓：**仓库里没有「视为使用【乐不思蜀】」的技能**。① `api.castVirtualTrick` / `api.useVirtualTrick` 的全部调用点只产生即时锦囊（奇策/役鬼的 `QICE_TRICKS` 表里没有延时锦囊）；②严白虎·寄篱的「再使用一张同名牌」钩子里有 `if (!isInstantTrick(card)) return;`（`heroes.ts:7368`，注释「只认普通锦囊，延时锦囊不算」），不会造出虚拟延时锦囊；③唯一会「把别的牌当【乐不思蜀】用」的技能是**大乔·国色**（`heroes.ts:2314` 的 `canUseAs`），它走 `playCard` → `onPlayCard` → `playDelayedTrick`（`engine.ts:5949-5952`），**天然共用同一份判据**——已用国色对距离 2 目标的用例覆盖。**如何保证虚拟路径同一判据**：任何想真正落到判定区的延时锦囊只能走 `playDelayedTrick`，而它现在只读 `delayedTrickTargets.ts`；判据里 `lebu` 的距离上限是 `null`，所以「错误继承距离」在结构上不再可能 |
+| 界面层（`packages/ui/src/targetRules.ts`、目标高亮谓词） | ✅ 界面**没有**任何距离/攻击范围谓词：`targetRules.ts` 只判「【火攻】目标必须有手牌」；`Game.tsx` 的目标可点性读服务端下发的 `legalTargetIds`（全存活其他角色）。`packages/ui/src` / `packages/client/src` 里 grep 不到 `distance(` / `attackRange(` 的目标筛选。**所以本次不需要改界面**——但要说明：界面能点≠引擎一定收，最终判据仍是引擎（已按引擎用例验证） |
+| 其他 `distance(...)` 调用点 | ✅ 逐个核过：`legal.ts:232/306`（急袭·田当顺手牵羊 / 顺手牵羊，本来就距离≤1）、`engine.ts:6276`（顺手牵羊）、`heroes.ts:9183`（奇策当顺手牵羊）、`heroes.ts:8623/10721/12104/12112`（【杀】的攻击范围）、`heroes.ts:2252`（狂骨）、`heroes.ts:11906/11917`（凿运）。**没有**第二处给【乐不思蜀】加距离的地方 |
+
+#### 五、用例（新文件 `packages/engine/tests/delayed-trick-distance.test.ts`，12 条）
+
+区分性**实测过**：把缺陷临时塞回 `delayedTrickDistanceLimit`（`lebu` 也返回 1）后重跑——
+**7 条标了「改动前 ✗」的用例全红**（`engine.test.ts:1620` 那条改写过的也红），
+5 条标「回归线」的用例保持绿；把缺陷撤掉后 12/12 全绿 + `engine.test.ts` 全绿。
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| `delayedTrickDistanceLimit`：只有兵粮寸断有上限 | ✗ 红 | 绿 |
+| `delayedTrickTargetLegal`：乐不思蜀看「存活的其他角色 + 判定区」，不看距离 | ✗ 红 | 绿 |
+| 基础距离 2 的【乐不思蜀】可用、牌进判定区（4 人局 A→C=2） | ✗ 红（`目标超出距离1`） | 绿 |
+| 坐骑修正（+1 马）把距离抬到 2 也不影响 | ✗ 红 | 绿 |
+| 距离 2 的【乐不思蜀】在判定阶段照常结算（黑桃 5 → 跳过出牌阶段） | ✗ 红 | 绿 |
+| 提示：只有距离 2 的角色可指时，这张牌照样亮（`legalCardIds` 含它） | ✗ 红 | 绿 |
+| 提示：`legalTargetIds` 含远处的角色 | 绿（本来就不按距离筛，保留为回归线） | 绿 |
+| 大乔·国色：方块牌当【乐不思蜀】可对距离 2 的角色使用（**技能路径**） | ✗ 红 | 绿 |
+| **回归线**：【兵粮寸断】距离 2 仍被拒（4 人局），距离 1 照常可放 | 绿 | 绿 |
+| **回归线**：奇才对【兵粮寸断】的豁免仍有效（黄月英，距离 2 可用） | 绿 | 绿 |
+| **回归线**：目标数=1 / 不能是自己 / 目标存活 / 判定区同名上限 1 张 四条校验不动 | 绿 | 绿 |
+| **回归线**：提示里【兵粮寸断】只剩距离 2 的目标可指时不亮；断粮对距离 2 被拒 | 绿 | 绿 |
+
+#### 六、待核对项（核不到就标，不猜）
+
+1. **【兵粮寸断】的距离限制**：本次**保持**了仓库原有实现与用户给的官方文本口径
+   （「距离 1 以内的角色」），`packages/protocol/src/card.ts:442` 的牌面说明「（距离≤1）」
+   **未改**。待核对：该文本的逐字出处（2019 典藏版 / 2023 改版有无差异）——**没有**核到官方原文，
+   按用户口径沿用。
+2. **【乐不思蜀】的目标是否需要「已明置武将牌」之类的额外前提**：用户口径只给了「其他角色 +
+   判定区能置入」，本实现照此执行（暗置角色也可以是目标）。待核对：无。
+3. **`api.castVirtualTrick` / `api.useVirtualTrick` 收到延时锦囊类型时怎么办**（当前**无消费方**）：
+   `startTrickResolution` 的 `default` 分支会把这类牌**静默收尾**（`endTrickResolution`），
+   既不会进判定区、也不会报错。本次**没有**为此新造一条虚拟延时锦囊的安置路径（没有消费方 ⇒
+   无法用真实技能验证，且会引入「虚拟牌进弃牌堆/判定区」的新区域问题）。**如需支持，应作为
+   独立改动**：把它接到 `playDelayedTrick` 的安置逻辑上，并让 `takeForField` / `toDiscard`
+   对 `virtual` 牌放行。此处如实记为**已知缺口**，不是已验证的行为。
+4. **界面真机验收**：本次只跑了单测 + `typecheck` / `build`，**没有**开浏览器点一遍
+   （「提示里能点远处的目标、点了不再报『目标超出距离1』」这一步没有真机确认）。
+
+#### 七、门禁（真实结果）
+
+- `pnpm test`：全绿（engine 24 文件 / 1183 条；ui 19 文件 / 123 条；server 37 条）。
+  引擎核心结算有改动 ⇒ 模糊测试网与 200 局冒烟都在这一轮里跑过并全绿：
+  `tests/fuzz.test.ts`（6 条，6509ms）、`tests/smoke.test.ts`（53 条，2498ms）。
+  **没有**为了让它们通过而放宽任何断言。
+- `pnpm typecheck`：全绿（protocol / engine / ui / server / client 全部 Done）。
+- `pnpm build`：全绿（server Done、client `✓ built in 1.43s`）。
+- 未跑仓库级 `pnpm format`（避免整片重排既有文件）；只对新文件单独过格式。
+- **未提交**（用户自己来）。

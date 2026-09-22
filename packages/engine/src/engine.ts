@@ -52,6 +52,7 @@ import {
   type TrickContext,
 } from './model';
 import { attackRange, canTarget, distance } from './distance';
+import { delayedTrickTargetInRange } from './delayedTrickTargets';
 import {
   applyQixingSweep,
   armorNullifiesSha,
@@ -6149,7 +6150,8 @@ function playEquip(
 }
 
 /** 延时锦囊：放入目标判定区
- *  闪电→置于自己判定区；乐不思蜀/兵粮寸断→目标为他人且距离≤1
+ *  闪电→置于自己判定区；乐不思蜀→**其他角色，无距离限制**；兵粮寸断→其他角色且距离≤1
+ *  （判据见 `delayedTrickTargets.ts`）
  *  判定区同类延时锦囊上限1张 */
 function playDelayedTrick(
   state: GameState,
@@ -6173,18 +6175,21 @@ function playDelayedTrick(
     runHooksPausable(state, 'useCard', player, { card }, () => {});
     return { ok: true };
   }
-  // 乐不思蜀 / 兵粮寸断：目标为其他存活玩家，距离≤1
+  // 乐不思蜀 / 兵粮寸断：目标为**其他存活玩家**。
+  // ⚠️ 距离限制**只属于【兵粮寸断】**（官方文本「距离 1 以内的角色」）：
+  //    【乐不思蜀】的合法目标就是「除使用者以外的一名其他角色」+「其判定区能合法置入」，
+  //    本身**没有距离限制**，不看距离、不看攻击范围、不看坐骑修正（用户 2026-09-22 口径，
+  //    docs/guozhan-roster.md §5.208）。以前这两张牌共用一条 `distance(...) > 1`，把
+  //    【乐不思蜀】也算进了距离 1 —— 那正是这次修的缺陷。
+  //    判据收在 `delayedTrickTargetInRange`（唯一事实来源，`legal.ts` 也读它）。
   if (targetIds.length !== 1) return err('需指定 1 名目标');
   const targetId = targetIds[0]!;
   if (targetId === player.seatId) return err('不能以自己为目标');
   const target = getPlayer(state, targetId);
   if (!target || !target.alive) return err('目标无效');
   // 奇才：使用锦囊牌无距离限制；刘琦·问计标记的那张实体牌同样无距离限制
-  if (
-    !heroIgnoresTrickDistance(activeHeroes(state, player), player) &&
-    !wenjiMarked(player, card.id) &&
-    distance(state, player.seatId, targetId) > 1
-  )
+  // （两条豁免只对**有距离限制**的【兵粮寸断】起作用，见 delayedTrickTargetInRange）
+  if (!delayedTrickTargetInRange(state, player, type, targetId, card.id))
     return err('目标超出距离1');
   if (target.judgment.some((t) => t.type === type)) return err('目标判定区已有同类延时锦囊');
   // 「成为**唯一目标**时取消并收下」（陆逊·国战·谦逊）：延时锦囊只指定一个目标 ⇒ 也算唯一目标
