@@ -118,7 +118,9 @@ export function cardLocations(state: GameState, id: string): string[] {
     p.yi.forEach((c, i) => chk(c, `${p.seatId}.yi[${i}]`));
     p.quan.forEach((c, i) => chk(c, `${p.seatId}.quan[${i}]`));
   }
-  state.discard.forEach((c, i) => chk(c, `discard[${i}]`));
+  // ⚠️ 弃牌堆在开头那个循环里已经查过了；这里原来又查了一遍，导致「同一张牌在哪些区域」
+  //    对弃牌堆里的牌会**回两条**（`toHaveLength(1)` 这类断言会莫名其妙地红）。
+  //    查重用的 `checkDuplicate` 走 Set，不受影响，所以一直没暴露出来。
   for (const p of state.players) {
     p.hand.forEach((c, i) => chk(c, `${p.seatId}.hand[${i}]`));
     for (const slot of ['weapon', 'armor', 'plusMount', 'minusMount', 'treasure'] as const) {

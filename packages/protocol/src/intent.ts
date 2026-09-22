@@ -81,4 +81,29 @@ export type Intent =
    * 一名势力不同或未确定势力的角色（交给势力不同的角色时摸一张牌）。
    * 它**不是「使用牌」**，所以不触发任何 useCard 钩子。
    */
-  | { type: 'lianheng'; cardId: string; targetSeatId: string };
+  | { type: 'lianheng'; cardId: string; targetSeatId: string }
+  /**
+   * **测试场景布置**（开发工具，不是游戏规则 —— 见 docs §5.206）。
+   *
+   * 只有 `createGame(..., { testScenario: true })` 的对局才接受它（服务端由
+   * `SGS_DEV_TOOLS` / `NODE_ENV` 决定，正式对局一律拒绝）。用途是**构造现场**：
+   * 给指定角色发指定的牌到指定区域，省掉「刷牌刷到为止」的成本。
+   *
+   * 布置**不走技能钩子**（不会触发【谦逊】这类「成为目标时」的询问），但牌的移动
+   * 走引擎既有的搬运逻辑（装备走 `playEquip`、判定区照 `playDelayedTrick` 的校验、
+   * 弃置一律 `toDiscard`），所以布置出来的局面与真打出来的局面**同构**。
+   * 每次布置都会在牌局日志里留 `TEST_DEAL_OVERRIDE` 标记。
+   */
+  | {
+      type: 'testScenario';
+      /** 发牌：谁 / 哪张牌（实例 id）/ 放到哪个区域 */
+      deals?: { seatId: string; cardId: string; zone: TestDealZone }[];
+      /** 给谁几张「节」（陆逊·谦逊收集的牌；测试「度势②」用，上限 3） */
+      jie?: { seatId: string; count: number }[];
+    };
+
+/**
+ * 测试场景布置里能指定的区域。
+ * 手牌谁都能放；装备区只放装备牌；判定区只放延时锦囊（且不能与已有的同名）。
+ */
+export type TestDealZone = 'hand' | 'equip' | 'judge';

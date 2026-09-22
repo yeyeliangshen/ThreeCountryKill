@@ -2611,3 +2611,155 @@ select:focus-visible,
   font-size: 8px;
   padding: 0 3px;
 }
+
+/* ===== 测试场景编辑器（开发工具，docs §5.206）=====
+   只在开发模式渲染（Game 页里 `import.meta.env.DEV && lobby.devTools`），
+   正式对局看不到。做成固定浮层：不挤占牌桌布局，手机上可滚动。 */
+.dev-setup-toggle {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+}
+.dev-setup {
+  position: fixed;
+  right: 12px;
+  top: 64px;
+  z-index: 320;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(78vh, 640px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.ds-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ds-title {
+  font-size: 13px;
+  color: var(--gold);
+}
+.ds-close {
+  font-size: 12px;
+}
+.ds-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ds-label {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 56px;
+}
+.ds-seats,
+.ds-zones {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ds-seat,
+.ds-zone,
+.ds-card {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+.ds-seat.picked,
+.ds-zone.picked,
+.ds-card.picked {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(212, 175, 55, 0.16);
+}
+.ds-zone:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.ds-filter,
+.ds-count {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text);
+}
+.ds-filter {
+  flex: 1;
+  min-width: 160px;
+}
+.ds-count {
+  width: 56px;
+}
+.ds-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 176px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.ds-copies {
+  margin-left: 3px;
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+.ds-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ds-deal {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(212, 175, 55, 0.22);
+  border: 1px solid var(--gold);
+  color: var(--gold);
+}
+.ds-deal:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ds-jie .ds-hint {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 120px;
+}
+.ds-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ds-note code {
+  color: var(--gold);
+}
+@media (max-width: 480px) {
+  .dev-setup {
+    top: auto;
+    bottom: 8px;
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: 62vh;
+  }
+}

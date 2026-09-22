@@ -7,6 +7,7 @@ import type {
   GameMode,
   Intent,
   RoleId,
+  TestDealZone,
   TrickType,
 } from '@sgs/protocol';
 import type { GuozhanExtensions, GuozhanRoomConfig } from './config';
@@ -5727,6 +5728,9 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
   // ⚠️ 选将期间只有**选将本身**的意图归 onPickHero；否则选将阶段里挂起的询问
   //    （例如双势力的「选势力」）永远答不了——任何意图都会被塞进 onPickHero 然后被它拒绝。
   if (state.draft && intent.type === 'pickHero') return onPickHero(state, seatId, intent);
+  // 测试场景布置（开发工具）：与「当前轮到谁」无关，所以在 pending 检查之前处理。
+  // 它不动 pending、不结束回合，只是给指定角色布置牌（日志留 TEST_DEAL_OVERRIDE）。
+  if (intent.type === 'testScenario') return applyTestScenario(state, intent);
   const pending = state.pending;
   if (!pending) return err('当前无需行动');
 
@@ -11893,6 +11897,233 @@ const JUNZHENG_ROLES: Record<number, RoleId[]> = {
   8: ['lord', 'loyal', 'loyal', 'rebel', 'rebel', 'rebel', 'rebel', 'renegade'],
 };
 
+/**
+ * 扩展开关的归一化（**单一事实来源**）：`createGame` 用它决定牌堆/选将池，
+ * `testScenarioCatalog` 用它决定「测试场景编辑器」列出哪些牌 —— 两处必须是同一份口径，
+ * 否则编辑器会列出正式牌堆里没有的牌（或漏掉有的）。
+ *
+ * 没传 config 时全开（历史行为）；旧的 `shibei: boolean` 参数向后兼容；
+ * 非国战模式一律全关（那些牌本来就不在牌堆里）。
+ */
+export function resolveExtensions(
+  mode: GameMode,
+  config?: GuozhanRoomConfig,
+  shibei?: boolean,
+): GuozhanExtensions {
+  if (mode !== 'guozhan') {
+    return {
+      shibei: 'off',
+      buchen: 'off',
+      junlintianxia: 'off',
+      zhen: 'off',
+      shi: 'off',
+      bian: 'off',
+      quan: 'off',
+    };
+  }
+  return {
+    shibei: config?.extensions.shibei ?? (shibei ? 'current' : shibei === false ? 'off' : 'current'),
+    buchen: config?.extensions.buchen ?? 'current',
+    junlintianxia: config?.extensions.junlintianxia ?? '2026',
+    zhen: config?.extensions.zhen ?? 'current',
+    shi: config?.extensions.shi ?? 'current',
+    bian: config?.extensions.bian ?? 'current',
+    quan: config?.extensions.quan ?? 'current',
+  };
+}
+
+// ===================== 测试场景布置（开发工具，见 docs §5.206） =====================
+//
+// ⚠️ **这不是游戏规则**：它是给人工真机验收用的现场构造器（给谁发哪张牌、放进哪个区域），
+// 让「寒冰剑 / 度势② / 分区面板三栏」这类验证不必再靠刷牌刷到为止。
+// 三条边界（用户 2026-09-23 给定）：
+//   ① 只有 `createGame(..., { testScenario: true })` 的对局才接受（正式对局直接拒）；
+//   ② 牌的移动走引擎既有的搬运逻辑（装备走 `playEquip`、判定区照 `playDelayedTrick` 的校验、
+//      牌只从它**当前所在的那个区域**取走），不另造一套状态写法；
+//   ③ 每次布置都往牌局日志写 `TEST_DEAL_OVERRIDE`，免得把测试局面误当成自然随机局。
+// 有意**不派发技能钩子**（不会触发【谦逊】这类「成为目标时」的询问）——布置是场景初始化，
+// 不是一次「使用牌」；装备顶掉旧牌那条仍走 `playEquip` 自己的逻辑。
+
+/** 一张牌能被布置到哪些区域：界面拿它决定按钮可用性、引擎拿它校验（同一份规则） */
+export function testDealZonesFor(card: Pick<Card, 'type'>): TestDealZone[] {
+  if (isDelayedTrick(card as Card)) return ['hand', 'judge'];
+  if (isEquipCard(card as Card)) return ['hand', 'equip'];
+  return ['hand'];
+}
+
+export interface TestScenarioCard {
+  /** 牌堆里的实例 id（`buildDeck` 是确定性的，所以服务端那一局的 id 与这里一致） */
+  id: string;
+  /** 显示名（装备显示具体牌名，如「寒冰剑」；杀按属性显示「火杀」） */
+  name: string;
+  /** 主区域（`hand` 之外的牌会在界面上标注它能去装备区/判定区） */
+  zone: TestDealZone;
+  type: CardType;
+  /** 同名同区域的牌有几张（界面上只列一条） */
+  copies: number;
+}
+
+/**
+ * 「测试场景编辑器」的选牌目录：**当前模式实际牌堆里**的每一张牌
+ * （装备名 / 火杀雷杀等显示名都跟正式牌局一致）。
+ */
+export function testScenarioCatalog(opts?: {
+  mode?: GameMode;
+  config?: GuozhanRoomConfig;
+}): TestScenarioCard[] {
+  const mode: GameMode = opts?.mode ?? 'guozhan';
+  const deck = applyDeckExtensions(buildDeck(mode), resolveExtensions(mode, opts?.config));
+  const byKey = new Map<string, TestScenarioCard>();
+  for (const card of deck) {
+    // 虚拟牌（技能造出来的）不进目录：它们没有实体牌面
+    if (card.virtual) continue;
+    const name = cardShortName(card);
+    const zone = testDealZonesFor(card)[0]!;
+    const key = `${name}|${zone}`;
+    const hit = byKey.get(key);
+    if (hit) hit.copies += 1;
+    else byKey.set(key, { id: card.id, name, zone, type: card.type, copies: 1 });
+  }
+  return [...byKey.values()].sort(
+    (a, b) => a.zone.localeCompare(b.zone) || a.name.localeCompare(b.name, 'zh'),
+  );
+}
+
+/** 一张牌现在在哪儿（**只读**，校验用） */
+function findCardForScenario(state: GameState, id: string): { card: Card; from: string } | string {
+  const di = state.deck.findIndex((c) => c.id === id);
+  if (di >= 0) return { card: state.deck[di]!, from: '牌堆' };
+  const ci = state.discard.findIndex((c) => c.id === id);
+  if (ci >= 0) return { card: state.discard[ci]!, from: '弃牌堆' };
+  for (const p of state.players) {
+    const hi = p.hand.findIndex((c) => c.id === id);
+    if (hi >= 0) return { card: p.hand[hi]!, from: `${p.name}的手牌` };
+    for (const slot of EQUIP_SLOTS) {
+      if (p.equipment[slot]?.id === id)
+        return { card: p.equipment[slot]!, from: `${p.name}的装备区` };
+    }
+    const ji = p.judgment.findIndex((c) => c.id === id);
+    if (ji >= 0) return { card: p.judgment[ji]!, from: `${p.name}的判定区` };
+  }
+  return `牌不在场上：${id}`;
+}
+
+/** 把一张牌从它**当前所在的那个区域**取走（牌只会在一个区域里，取出失败即退出） */
+function takeCardForScenario(state: GameState, id: string): { card: Card; from: string } | string {
+  const probe = findCardForScenario(state, id);
+  if (typeof probe === 'string') return probe;
+  if (state.deck.some((c) => c.id === id)) {
+    const i = state.deck.findIndex((c) => c.id === id);
+    return { card: state.deck.splice(i, 1)[0]!, from: '牌堆' };
+  }
+  if (state.discard.some((c) => c.id === id)) {
+    const i = state.discard.findIndex((c) => c.id === id);
+    return { card: state.discard.splice(i, 1)[0]!, from: '弃牌堆' };
+  }
+  for (const p of state.players) {
+    const hi = p.hand.findIndex((c) => c.id === id);
+    if (hi >= 0) return { card: p.hand.splice(hi, 1)[0]!, from: `${p.name}的手牌` };
+    for (const slot of EQUIP_SLOTS) {
+      if (p.equipment[slot]?.id === id) {
+        const eq = p.equipment[slot]!;
+        p.equipment[slot] = null;
+        return { card: eq, from: `${p.name}的装备区` };
+      }
+    }
+    const ji = p.judgment.findIndex((c) => c.id === id);
+    if (ji >= 0) return { card: p.judgment.splice(ji, 1)[0]!, from: `${p.name}的判定区` };
+  }
+  return probe;
+}
+
+const TEST_DEAL_ZONE_LABEL: Record<TestDealZone, string> = {
+  hand: '手牌',
+  equip: '装备区',
+  judge: '判定区',
+};
+
+/** 执行测试场景布置：**先全部校验、再动手**，避免布置到一半失败留下半成品场面 */
+function applyTestScenario(state: GameState, intent: Intent): ApplyResult {
+  if (intent.type !== 'testScenario') return err('意图类型不对');
+  if (!state.testScenario) return err('测试场景布置未开启（仅开发模式可用）');
+  if (state.gameOver) return err('游戏已结束');
+  const deals = intent.deals ?? [];
+  const jieSpecs = intent.jie ?? [];
+  if (deals.length === 0 && jieSpecs.length === 0) return err('没有要布置的内容');
+
+  // —— 校验（只读，不改变任何状态）——
+  const seen = new Set<string>();
+  for (const d of deals) {
+    const target = getPlayer(state, d.seatId);
+    if (!target || !target.alive) return err(`目标无效：${d.seatId}`);
+    if (seen.has(d.cardId)) return err(`同一张牌在一次布置里出现了两次：${d.cardId}`);
+    seen.add(d.cardId);
+    const probe = findCardForScenario(state, d.cardId);
+    if (typeof probe === 'string') return err(probe);
+    const card = probe.card;
+    const zones = testDealZonesFor(card);
+    if (!zones.includes(d.zone)) {
+      return err(
+        `【${cardShortName(card)}】不能放进${TEST_DEAL_ZONE_LABEL[d.zone]}（只能放${zones
+          .map((z) => TEST_DEAL_ZONE_LABEL[z])
+          .join('/')}）`,
+      );
+    }
+    if (d.zone === 'judge' && target.judgment.some((t) => t.type === card.type)) {
+      return err(`${target.name} 的判定区已有【${cardShortName(card)}】`);
+    }
+  }
+  for (const j of jieSpecs) {
+    const target = getPlayer(state, j.seatId);
+    if (!target || !target.alive) return err(`目标无效：${j.seatId}`);
+    if (!Number.isInteger(j.count) || j.count <= 0) return err('「节」的张数必须是正整数');
+    if (target.jie.length + j.count > 3) {
+      return err(`${target.name} 的「节」最多 3 张（当前 ${target.jie.length}，要发 ${j.count}）`);
+    }
+  }
+
+  // —— 执行 ——
+  for (const d of deals) {
+    const target = getPlayerOrThrow(state, d.seatId);
+    const probe = takeCardForScenario(state, d.cardId);
+    if (typeof probe === 'string') return err(probe); // 校验通过后不该发生，兜底
+    const { card, from } = probe;
+    if (d.zone === 'hand') {
+      target.hand.push(card);
+    } else if (d.zone === 'equip') {
+      // 走正式装备路径：先入手牌，再交给 playEquip（它负责顶掉旧装备、旧装备进弃牌堆）
+      target.hand.push(card);
+      const equipped = playEquip(state, target, card);
+      if (!equipped.ok) return equipped;
+    } else {
+      // 判定区：与 playDelayedTrick 同一套校验，只是不派「成为目标」的技能钩子
+      target.judgment.push(card);
+    }
+    pushLog(
+      state,
+      'testOverride',
+      `TEST_DEAL_OVERRIDE：${target.name} 从${from}取【${cardShortName(card)}】放入${TEST_DEAL_ZONE_LABEL[d.zone]}。`,
+      { seat: target.seatId, action: 'testOverride' },
+    );
+  }
+  for (const j of jieSpecs) {
+    const target = getPlayerOrThrow(state, j.seatId);
+    const drawn: Card[] = [];
+    for (let i = 0; i < j.count; i++) {
+      const c = drawOne(state);
+      if (c) drawn.push(c);
+    }
+    target.jie.push(...drawn);
+    pushLog(
+      state,
+      'testOverride',
+      `TEST_DEAL_OVERRIDE：${target.name} 获得 ${drawn.length} 张「节」（当前 ${target.jie.length}/3）。`,
+      { seat: target.seatId, action: 'testOverride' },
+    );
+  }
+  return { ok: true };
+}
+
 export function createGame(
   seats: SeatSetup[],
   roomCode: string,
@@ -11935,6 +12166,13 @@ export function createGame(
      * 不能让用例去赌随机（历史用例就是靠「座次 0 先手」这个隐含前提写的）。
      */
     firstSeat?: string;
+    /**
+     * **开发工具**：本局接受「测试场景布置」意图（见 `applyTestScenario` 与 docs §5.206）。
+     *
+     * 正式对局一律不传（服务端由 `SGS_DEV_TOOLS` / `NODE_ENV` 决定），
+     * fuzz / smoke / 常规回归也都不开——只有人工真机验收才打开。
+     */
+    testScenario?: boolean;
   },
 ): GameState {
   const mode: GameMode = opts?.mode ?? 'melee';
@@ -12005,27 +12243,7 @@ export function createGame(
   // 池子先按模式筛（国战专属武将不带进军争/混战），国战再排除中立武将；
   // 每人需拿到 ≥2 名同阵营武将才能选将，k=7 时按鸽巢原理在 ≤4 个阵营中必有 ≥2 同阵营，恒可满足。
   // 扩展开关的归一化：没传 config 时全开（历史行为）；旧的 `shibei: boolean` 兼容
-  const ext: GuozhanExtensions = isGuozhan
-    ? {
-        shibei:
-          opts?.config?.extensions.shibei ??
-          (opts?.shibei ? 'current' : opts?.shibei === false ? 'off' : 'current'),
-        buchen: opts?.config?.extensions.buchen ?? 'current',
-        junlintianxia: opts?.config?.extensions.junlintianxia ?? '2026',
-        zhen: opts?.config?.extensions.zhen ?? 'current',
-        shi: opts?.config?.extensions.shi ?? 'current',
-        bian: opts?.config?.extensions.bian ?? 'current',
-        quan: opts?.config?.extensions.quan ?? 'current',
-      }
-    : {
-        shibei: 'off',
-        buchen: 'off',
-        junlintianxia: 'off',
-        zhen: 'off',
-        shi: 'off',
-        bian: 'off',
-        quan: 'off',
-      };
+  const ext = resolveExtensions(mode, opts?.config, opts?.shibei);
   // 选将池：先按模式筛，再交给各扩展模块调整（君主将进不进池由君临天下扩展决定）
   // 见 extensions.ts——**不要在引擎里撒 `if (ext.xxx)`**（用户给定的架构）
   const poolHeroes = applyPoolExtensions(
@@ -12068,6 +12286,7 @@ export function createGame(
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
     forcedFirstSeat: opts?.firstSeat ?? null,
+    testScenario: opts?.testScenario ?? false,
     roundStartSeat: 0,
     pending: null,
     draft: { deals, pendingSeats: seatOrder.slice() },

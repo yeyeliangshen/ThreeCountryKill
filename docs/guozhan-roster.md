@@ -8091,3 +8091,58 @@ run2  · 本局由 许褚 先手。        run4  · 本局由 许褚 先手。
   2v2 的具体规则我没核到），**待核对**——若官方另有规定，改 `finishDraft` 里那一处分派即可。
 - 引擎改动，**没有** UI 截图（血条/回合指示器本来就跟着 `state.turn` 走）；
   要看「先手」在界面上是否够醒目，等下一轮真机时一并看。
+
+### 5.206 测试场景编辑器 / Test Scenario Setup（开发工具，用户 2026-09-23 拍板）
+
+用户原文：「**加。做成纯开发测试工具，默认关闭，不进入正式规则路径。**」并且建议名字叫
+「测试场景编辑器 / Test Scenario Setup」而不是「发牌自选」——以后还要直接设体力、势力、
+明暗将、装备、判定区、连环/濒死状态，先把入口做通。本次做的是**发牌**那一块。
+
+#### 一、它是什么、不是什么
+
+- **是**：给人工真机验收用的现场构造器——「给谁 / 发哪张牌 / 放进哪个区域」，让寒冰剑、
+  度势②、分区面板三栏这类验证不必再靠刷牌刷到为止。
+- **不是**游戏规则：不参与胜负、不进正式对局、不写进任何规则判据。
+
+#### 二、用户给的六条边界，逐条落实在哪
+
+| 边界（用户原文） | 落实 |
+| --- | --- |
+| 仅测试/开发模式可见，正式对局与生产构建中不可出现 | 服务端 `SGS_DEV_TOOLS`（缺省：**非 production 即开**，pm2 的 `NODE_ENV=production` 即关）→ `lobby.devTools`；前端还要 `import.meta.env.DEV`，**双条件**才渲染面板 |
+| 只允许改变「发到什么测试牌」，不绕过正常规则流程 | 布置意图只做搬运：加牌进区域，不结束回合、不改 pending、不跳阶段（分派写在 `pending` 检查**之前**，所以谁都能随时用） |
+| 走正式的 `moveCard / equip / judgeArea` 逻辑 | 装备走 `playEquip`（顶掉旧装备、旧装备 `toDiscard`）；判定区照 `playDelayedTrick` 的校验（同名不可重复）；牌**只从它当前所在的那个区域取走**（手牌/装备区/判定区/牌堆/弃牌堆），所以「一张牌只能在一个区域」这条不变量不被破坏 |
+| 支持指定「发给谁、发什么、发到哪个区域」 | 意图 `{ type: 'testScenario', deals: [{ seatId, cardId, zone }] }`，`zone ∈ hand/equip/judge` |
+| 每次使用在日志里打明确标记 | 引擎往牌局日志写 `TEST_DEAL_OVERRIDE：X 从Y取【Z】放入W。`（kind 为 `testOverride`） |
+| fuzz / smoke / 正式回归默认关闭 | `createGame` 的 `testScenario` 默认 false；只有服务端开发模式下传 true；fuzz/smoke 的 `riskyGame` 不传它 |
+
+区域规则（用户给的约束，落在 `testDealZonesFor` 这一个纯函数里，引擎与界面**共用**）：
+装备牌 → 手牌/装备区；延时锦囊 → 手牌/判定区；普通牌 → 只能手牌。界面上不合法的区域是灰按钮，
+标题里写明「可放：手牌/装备区」。
+
+#### 三、落点（代码地图）
+
+| 层 | 改动 |
+| --- | --- |
+| 协议 | `intent.ts` 新增 `testScenario` 意图 + `TestDealZone`；`message.ts` 的 `lobby` 新增 `devTools` |
+| 引擎 | `GameState.testScenario` / `createGame({ testScenario })`；`applyTestScenario`（**先全部校验再动手**，失败不留半成品）；`testScenarioCatalog`（选牌目录：当前模式**实际牌堆**去重后的每张牌，装备显示具体牌名）；`testDealZonesFor`（区域判据）；顺手把扩展开关归一化抽成 `resolveExtensions`——`createGame` 与目录共用，避免「编辑器列出的牌与实际牌堆不一致」 |
+| 服务端 | `index.ts` 判定 `SGS_DEV_TOOLS`；`Room` 新增 `devTools`（构造参数），开局时传给 `createGame`、并在 `lobby` 里回传 |
+| 前端 | `components/TestScenarioPanel.tsx`（哑组件：玩家/目录/回调都由 Game 页注入）；Game 页右栏加「测试场景」按钮 + 就地条件渲染的面板；`store.devTools` |
+
+**刻意不做的一件事**：布置**不派发技能钩子**——不会因为给陆逊塞牌而触发【谦逊】之类
+「成为目标时」的询问。布置是场景初始化，不是一次「使用牌」；`playEquip` 顶掉旧装备时
+那两条（旧牌进弃牌堆、失去装备的钩子）照旧走，因为那是「搬运」本身的规则。
+
+#### 四、用例
+
+- 引擎 `tests/test-scenario.test.ts`（19 条）：开关没开一律拒且牌局零改动 / 发牌进手牌且
+  全场只有这一张 / 装装备走正式路径（进 weapon 槽、顶掉旧武器进弃牌堆）/ 判定区放乐与闪电 /
+  同名延时锦囊被拒 / 跨角色挪牌 / **区域规则**（寒冰剑进判定区被拒、闪进装备区被拒、
+  乐与闪电可进判定区）/ 「节」上限 3 / 非法张数 / 空布置 / 不存在的牌 id / 同一次布置重复用
+  同一张牌被拒 / **目录与正式牌堆同口径**（抽查八种牌都能真发出去；关掉扩展包后目录变小）。
+- 服务端 `tests/room.test.ts`（+3 条）：默认房间拒绝布置；devTools 房间接受并写日志；
+  `lobby` 消息带 `devTools`。
+- 前端 `components/TestScenarioPanel.test.tsx`（8 条）：面板结构 + **源码守卫**
+  （入口必须是 `import.meta.env.DEV && lobby.devTools` 双条件，且发放只发意图、界面不自己改牌）。
+- 顺手修了 `fuzzHarness.cardLocations`：它把弃牌堆查了两遍，导致「某张牌在哪些区域」对弃牌堆
+  里的牌**回两条**（`toHaveLength(1)` 这类断言会莫名红）。查重用的 `checkDuplicate` 走 Set，
+  所以一直没暴露；删掉重复那一遍即可（fuzz / smoke 复跑全绿）。

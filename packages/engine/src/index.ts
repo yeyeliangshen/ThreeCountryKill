@@ -24,6 +24,14 @@ export {
   FenceBlockedError,
   /** 施工方案 Step 4.7：还没被唤醒的等待者数量（`blockedContinuationNeverResumed` 的探测器） */
   pendingWaiterCount,
+  /**
+   * 开发工具（「测试场景编辑器」，docs §5.206）：选牌目录 + 每个区域的可用性规则。
+   * 正式规则路径不使用它们；前端面板与它共用同一份「哪些牌能放哪个区域」的判据。
+   */
+  resolveExtensions,
+  testScenarioCatalog,
+  testDealZonesFor,
+  type TestScenarioCard,
   type SeatSetup,
   type ApplyResult,
 } from './engine';

@@ -406,3 +406,49 @@ describe('Room · 已开局的房间进不去', () => {
     });
   });
 });
+
+describe('Room · 开发工具（测试场景布置，docs §5.206）', () => {
+  it('默认房间不开：开局的牌局拒绝测试场景布置', () => {
+    const room = newRoom();
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    expect(room.startGame('1', 'melee').ok).toBe(true);
+    const res = room.handleIntent('1', {
+      type: 'testScenario',
+      deals: [{ seatId: '1', cardId: room.game!.deck[0]!.id, zone: 'hand' }],
+    });
+    expect(res.ok).toBe(false);
+    expect(res.ok === false && res.error).toMatch(/未开启/);
+  });
+
+  it('devTools 房间：开局的牌局接受布置，并往牌局日志写 TEST_DEAL_OVERRIDE', () => {
+    const room = new Room('7777', 8, true);
+    room.claimSeat('1', fakeWs(), '甲');
+    room.claimSeat('2', fakeWs(), '乙');
+    expect(room.startGame('1', 'melee').ok).toBe(true);
+    const cardId = room.game!.deck[0]!.id;
+    const res = room.handleIntent('1', {
+      type: 'testScenario',
+      deals: [{ seatId: '1', cardId, zone: 'hand' }],
+    });
+    expect(res.ok).toBe(true);
+    expect(room.game!.players[0]!.hand.map((c) => c.id)).toContain(cardId);
+    expect(room.game!.log.map((e) => e.message).join('')).toMatch(/TEST_DEAL_OVERRIDE/);
+  });
+
+  it('大厅消息带上 devTools：前端据此决定显示不显示「测试场景编辑器」', () => {
+    const dev = new Room('6666', 8, true);
+    const sent: string[] = [];
+    dev.claimSeat('1', fakeWs(sent), '甲');
+    dev.broadcastLobby();
+    const lobby = sent.map((raw) => JSON.parse(raw) as { type: string; devTools?: boolean });
+    expect(lobby.find((m) => m.type === 'lobby')?.devTools).toBe(true);
+
+    const plain = newRoom();
+    const sent2: string[] = [];
+    plain.claimSeat('1', fakeWs(sent2), '甲');
+    plain.broadcastLobby();
+    const lobby2 = sent2.map((raw) => JSON.parse(raw) as { type: string; devTools?: boolean });
+    expect(lobby2.find((m) => m.type === 'lobby')?.devTools).toBe(false);
+  });
+});

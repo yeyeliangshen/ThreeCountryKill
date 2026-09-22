@@ -33,9 +33,11 @@ import {
   MARKER_DESC,
   type Hero,
   type ActiveSkill,
+  testScenarioCatalog,
 } from '@sgs/engine';
 import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
+import { TestScenarioPanel } from '../components/TestScenarioPanel';
 import { specialZoneChips } from '../specialZones';
 import { cardUses, useActionOf, type CardUse } from '../cardUses';
 import { PindianTable } from '../components/PindianTable';
@@ -224,6 +226,15 @@ export function Game() {
   const sendPickCards = useStore((s) => s.pickCards);
   const sendFactionCall = useStore((s) => s.factionCall);
   const leaveRoom = useStore((s) => s.leaveRoom);
+  const lobby = useStore((s) => s.lobby);
+  // 「测试场景编辑器」只在**开发模式**出现：服务端开了 devTools + 本地是 dev 构建
+  //（正式构建里 `import.meta.env.DEV` 是 false，面板整段不会渲染）。见 docs §5.206。
+  const devTools = Boolean(lobby?.devTools) && import.meta.env.DEV;
+  const [devOpen, setDevOpen] = useState(false);
+  const devCatalog = useMemo(
+    () => (devTools && lobby ? testScenarioCatalog({ mode: lobby.mode, config: lobby.config }) : []),
+    [devTools, lobby],
+  );
 
   // 出牌阶段：选中一张需目标的牌后，再选目标
   const [selected, setSelected] = useState<{
@@ -1860,6 +1871,29 @@ export function Game() {
           窄屏时两层容器消失，按 order 排成单列 */}
       <aside className="side">
         <SkillButtons skills={skillRows} />
+
+        {/* 测试场景编辑器（开发工具）：入口只在开发模式出现，正式对局看不到 */}
+        {devTools ? (
+          <button
+            className="ghost dev-setup-toggle"
+            title="开发工具：给指定角色发指定的牌（场景构造，日志里会打 TEST_DEAL_OVERRIDE）"
+            onClick={() => setDevOpen((v) => !v)}
+          >
+            测试场景
+          </button>
+        ) : null}
+        {devTools && devOpen ? (
+          <TestScenarioPanel
+            players={snapshot.players.map((p) => ({ seatId: p.seatId, name: p.name }))}
+            defaultSeatId={snapshot.seatId}
+            catalog={devCatalog}
+            onDeal={(seatId, cardId, zone) =>
+              sendIntent({ type: 'testScenario', deals: [{ seatId, cardId, zone }] })
+            }
+            onJie={(seatId, count) => sendIntent({ type: 'testScenario', jie: [{ seatId, count }] })}
+            onClose={() => setDevOpen(false)}
+          />
+        ) : null}
 
         <div className="side-main">
           {/* 出牌记录 */}

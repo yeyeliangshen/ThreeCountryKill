@@ -1267,6 +1267,13 @@ export interface GameState {
    */
   forcedFirstSeat: string | null;
   /**
+   * **开发工具开关**：本局是否接受「测试场景布置」意图（`createGame` 的 `testScenario`）。
+   *
+   * 正式对局恒为 false —— 服务端只在开发模式（`SGS_DEV_TOOLS` / 非 production）下开启，
+   * fuzz / smoke / 常规回归都不开。见 docs §5.206。
+   */
+  testScenario: boolean;
+  /**
    * **当前这一轮的起点座位**（`seatOrder` 的下标）＝本局先手所在的位置。
    *
    * 「一轮」是座次环上从先手走一圈，所以判「是否进入新一轮」必须**相对它**算，
