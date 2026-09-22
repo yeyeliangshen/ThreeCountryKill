@@ -1608,16 +1608,31 @@ const ZHOUYU: Hero = {
           'skill',
           `${player.name} 发动【反间】，向 ${target.name} 展示 ${cardLabel(shownCard)}。`,
         );
-        // 目标自动响应：找一张不同类型的手牌交给周瑜
-        const diffTypeCard = target.hand.find((c) => c.type !== shownCard.type);
-        if (diffTypeCard) {
-          removeCard(target.hand, diffTypeCard.id);
-          player.hand.push(diffTypeCard);
-          target.hand.push(shownCard);
-          pushLog(
+        // 目标交给周瑜哪张牌由**目标自己**挑（用户 2026-09-25 口径：没写「随机」就得让玩家选；
+        // 这里只有「交牌人选牌」这一层选择，花色猜选仍是本仓库既有的简化）。
+        // ⚠️ 改动前是 `target.hand.find(...)` 直接取第一张类别相异的手牌——替目标做了决定。
+        const eligible = target.hand.filter((c) => c.type !== shownCard.type);
+        if (eligible.length > 0) {
+          api.askPickCards(
             state,
-            'skill',
-            `${target.name} 交给 ${player.name} ${cardLabel(diffTypeCard)}，并获得 ${cardLabel(shownCard)}。`,
+            target.seatId,
+            `【反间】：交给 ${player.name} 一张手牌（不能是${CARD_TYPE_NAME[shownCard.type]}）`,
+            eligible.slice(),
+            1,
+            1,
+            (st2, target2, picked) => {
+              const give = picked[0];
+              const zhouyu = getPlayer(st2, player.seatId);
+              if (!give || !zhouyu) return;
+              removeCard(target2.hand, give.id);
+              zhouyu.hand.push(give);
+              target2.hand.push(shownCard);
+              pushLog(
+                st2,
+                'skill',
+                `${target2.name} 交给 ${zhouyu.name} ${cardLabel(give)}，并获得 ${cardLabel(shownCard)}。`,
+              );
+            },
           );
         } else {
           pushLog(state, 'skill', `${target.name} 无不同类型手牌，受到 1 点伤害。`);
@@ -4894,6 +4909,15 @@ function fengshiDiscard(
               );
             });
           },
+          // ⚠️ 候选里混着**别人的手牌**：必须按盲选下发（只给 id、界面画牌背），
+          //    否则对方手牌会跟着快照漏给选择者。装备区是公开区，照常给牌面。
+          {
+            hidden: true,
+            ownerSeatId: o.seatId,
+            visibleIds: EQUIP_SLOTS.map((sl) => o.equipment[sl]?.id).filter(
+              (id): id is string => !!id,
+            ),
+          },
         );
       });
     },
@@ -7668,7 +7692,13 @@ export function targetCardOptions(
   opts2?: { noJudgment?: boolean; noHand?: boolean },
 ): { id: string; label: string }[] {
   // 选项与布局**同一份数据**派生：布局给界面画多栏分区，选项给引擎解析
-  return targetCardZone(target, verb, opts2).zones.flatMap((z) => z.labels);
+  return targetCardZone(target, verb, {
+    ...(opts2 ?? {}),
+    // (**用户 2026-09-25 口径**) 操作的是**自己的**牌 ⇒ 手牌对自己是明牌，
+    // 必须让他自己挑，不能按「第 k 张暗牌」处理（缺陷：陈武董袭【奋命】弃自己的牌时
+    // 玩家挑不了）。别人的手牌照旧只给牌背（那是暗信息）。
+    selfHand: actorSeatId === target.seatId,
+  }).zones.flatMap((z) => z.labels);
 }
 
 /**
@@ -7685,15 +7715,24 @@ export function targetCardOptions(
 function targetCardZone(
   target: Player,
   verb: '弃置' | '获得',
-  opts2?: { noJudgment?: boolean; noHand?: boolean },
+  opts2?: { noJudgment?: boolean; noHand?: boolean; selfHand?: boolean },
 ): { zones: { zone: 'hand' | 'equip' | 'judge'; labels: { id: string; label: string }[] }[] } {
   const zones: { zone: 'hand' | 'equip' | 'judge'; labels: { id: string; label: string }[] }[] = [];
+  /** 自己的手牌：给**真牌面**（自己有哪种牌自己知道），选项按牌 id 走 */
+  const ownHandItem = (c: Card): { id: string; label: string } => ({
+    id: `card:${c.id}`,
+    label: `${verb}你的【${cardLabel(c)}】`,
+  });
   const handItem = (i: number): { id: string; label: string } => ({
     id: `hand:${i}`,
     label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）`,
   });
   // 手牌在最上（界面上部＝手牌）
-  if (!opts2?.noHand) zones.push({ zone: 'hand', labels: target.hand.map((_c, i) => handItem(i)) });
+  if (!opts2?.noHand)
+    zones.push({
+      zone: 'hand',
+      labels: target.hand.map((c, i) => (opts2?.selfHand ? ownHandItem(c) : handItem(i))),
+    });
   // 装备区在中间
   const equips = EQUIP_SLOTS.map((sl) => target.equipment[sl]).filter((c): c is Card => !!c);
   if (equips.length > 0)
@@ -7868,6 +7907,9 @@ export function findTargetCardByChoice(
   }
   if (choiceId.startsWith('card:')) {
     const id = choiceId.slice('card:'.length);
+    // 手牌：只在**自己操作自己的牌**时以真牌面出现（见 targetCardZone 的 selfHand）
+    const hc = target.hand.find((c) => c.id === id);
+    if (hc) return canOperateTargetCard(state, actorSeatId, target, hc) ? hc : null;
     for (const slot of EQUIP_SLOTS) {
       const c = target.equipment[slot];
       if (c?.id === id) return canOperateTargetCard(state, actorSeatId, target, c) ? c : null;
@@ -7892,6 +7934,13 @@ export function takeTargetCardByChoice(
   }
   if (choiceId.startsWith('card:')) {
     const id = choiceId.slice('card:'.length);
+    // 手牌：只在**自己操作自己的牌**时以真牌面出现（见 targetCardZone 的 selfHand）
+    const hi = target.hand.findIndex((c) => c.id === id);
+    if (hi >= 0) {
+      const [c] = target.hand.splice(hi, 1);
+      if (c && !canOperateTargetCard(state, actorSeatId, target, c)) return null;
+      return c ? { card: c, from: 'hand' } : null;
+    }
     for (const slot of EQUIP_SLOTS) {
       const c = target.equipment[slot];
       if (c?.id === id) {
@@ -9166,11 +9215,22 @@ const XUNYOU: Hero = {
             if (colors.size !== 1) return; // 颜色均相同才继续
             const src = sourceId ? getPlayer(st, sourceId) : undefined;
             if (!src || !src.alive || src.seatId === p.seatId || src.hand.length === 0) return;
-            const idx = Math.floor(st.rng() * src.hand.length);
-            const card = src.hand[idx];
-            if (!card) return;
-            ctx.api.discardCard(src.seatId, card);
-            pushLog(st, 'skill', `${src.name} 因【智愚】弃置了一张手牌。`);
+            // 弃哪张是**来源自己**的事（用户 2026-09-25 口径：没写「随机弃置」就由该玩家选）。
+            // ⚠️ 改动前这里是 `st.rng()` 随机抽一张——来源对自己该弃哪张毫无参与。
+            ctx.api.askPickCards(
+              st,
+              src.seatId,
+              '【智愚】：弃置你的一张手牌',
+              src.hand.slice(),
+              1,
+              1,
+              (st2, src2, picked) => {
+                const card = picked[0];
+                if (!card) return;
+                ctx.api.discardCard(src2.seatId, card);
+                pushLog(st2, 'skill', `${src2.name} 因【智愚】弃置了一张手牌。`);
+              },
+            );
           },
         );
       },
@@ -9465,22 +9525,46 @@ const YUJI: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            const gone = p.qianhuan.shift();
-            if (!gone) return;
-            toDiscard(st, gone);
-            pushLog(st, 'skill', `${p.name} 移去一张「千幻」，取消了这张牌。`);
-            const a2 = payload?.attack;
-            if (a2) {
-              a2.dodged = true;
+            /** 移去之后那套「取消」的收尾（移去哪张由下面的选择决定） */
+            const cancelWith = (gone: Card, st2: GameState, p2: Player): void => {
+              toDiscard(st2, gone);
+              pushLog(st2, 'skill', `${p2.name} 移去一张「千幻」，取消了这张牌。`);
+              const a2 = payload?.attack;
+              if (a2) {
+                a2.dodged = true;
+                return;
+              }
+              // 锦囊：走「抵消」那套（与【无懈可击·国】同一条路——引擎里被抵消的角色是靠
+              // wuxieChain 的奇数张生效来判的，这里记一条只针对该目标的链）
+              const trick = payload?.trickCtx;
+              if (trick) {
+                trick.wuxieChain = { scope: [targetId], count: 1 };
+              }
+              void card;
+            };
+            // 「移去哪一张」由**持有者自己**选（用户 2026-09-25 口径：没写「随机移去」就得让玩家挑）。
+            // ⚠️ 改动前是 `p.qianhuan.shift()` 固定拿最早放上去的那张——而「千幻」的花色集合
+            //    决定之后还能不能再放（放置那一步本来就是问的），取哪张有实质差别。
+            //    只有一张时不必多问一次（与钟会·排异的处理一致）。
+            if (p.qianhuan.length <= 1) {
+              const gone = p.qianhuan.shift();
+              if (gone) cancelWith(gone, st, p);
               return;
             }
-            // 锦囊：走「抵消」那套（与【无懈可击·国】同一条路——引擎里被抵消的角色是靠
-            // wuxieChain 的奇数张生效来判的，这里记一条只针对该目标的链）
-            const trick = payload?.trickCtx;
-            if (trick) {
-              trick.wuxieChain = { scope: [targetId], count: 1 };
-            }
-            void card;
+            ctx.api.askPickCards(
+              st,
+              p.seatId,
+              '【千幻】：移去哪一张「千幻」？',
+              p.qianhuan.slice(),
+              1,
+              1,
+              (st2, p2, picked2) => {
+                const gone = picked2[0];
+                if (!gone) return;
+                removeCard(p2.qianhuan, gone.id);
+                cancelWith(gone, st2, p2);
+              },
+            );
           },
         );
       },
@@ -12928,29 +13012,14 @@ const PANGDE: Hero = {
           `【猛进】：是否弃置 ${target.name} 的一张牌？（他手里 ${target.hand.length} 张）`,
           [
             { id: 'no', label: '不发动' },
-            { id: 'yes', label: '发动（随机弃置其一张牌）' },
+            { id: 'yes', label: '发动（弃置其一张牌）' },
           ],
           (st, _p, picked) => {
             if (picked !== 'yes') return;
-            // 手牌是暗信息：不看内容、随机抽一张（与过河拆桥/顺手牵羊同一套口径）。
-            // 装备牌本来就是明的，抽到谁就是谁。
-            const pool2 = [
-              ...target.hand,
-              ...(EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[]),
-            ];
-            if (pool2.length === 0) return;
-            const card = pool2[Math.floor(st.rng() * pool2.length)]!;
-            const fromHand = target.hand.some((c) => c.id === card.id);
-            st.log.push({
-              id: st.logSeq++,
-              kind: 'skill',
-              message: fromHand
-                ? `${ctx.player.name} 发动【猛进】，弃置了 ${target.name} 的一张手牌。`
-                : `${ctx.player.name} 发动【猛进】，弃置了 ${target.name} 的【${cardLabel(card)}】。`,
-              seat: ctx.player.seatId,
-              action: 'discard',
-            });
-            ctx.api.discardCard(target.seatId, card);
+            // 弃哪张由**发动者**挑：装备这类明牌可选，手牌只能盲选第 k 张
+            // （与过河拆桥/挑衅同一套）。⚠️ 这里原来是 `st.rng()` 随机抽一张，
+            //   等于替玩家做了决定——用户 2026-09-25 口径：没写「随机弃置」就不许随机。
+            pickOneOfTargetCards(st, ctx.player, target, ctx.api, '猛进');
           },
         );
       },
@@ -13250,23 +13319,31 @@ const CAIWENJI: Hero = {
                         break;
                       }
                       case 'club': {
-                        // 伤害来源弃置两张牌（手牌随机，与仓库口径一致）。
+                        // 伤害来源弃置两张牌：**哪两张由来源自己挑**（用户 2026-09-25 口径——
+                        // 没写「随机弃置」就不许替玩家随机）。「两张牌」按文本含手牌与装备区。
+                        // ⚠️ 改动前这里是两次 `st.rng()` 随机抽。
                         // 这是**一个动作**，所以用 discardCards 一次交出去——里面的装备牌
                         // 算同一次「失去装备」事件（旋略只触发一次）。
                         if (!source) break;
-                        const picks: Card[] = [];
-                        for (let i = 0; i < 2; i++) {
-                          const pool2 = [
-                            ...source.hand,
-                            ...(EQUIP_SLOTS.map((slot) => source.equipment[slot]).filter(
-                              Boolean,
-                            ) as Card[]),
-                            ...picks,
-                          ];
-                          if (pool2.length === 0) break;
-                          picks.push(pool2[Math.floor(st2.rng() * pool2.length)]!);
-                        }
-                        if (picks.length > 0) ctx.api.discardCards(source.seatId, picks);
+                        const pool2 = [
+                          ...source.hand,
+                          ...(EQUIP_SLOTS.map((slot) => source.equipment[slot]).filter(
+                            Boolean,
+                          ) as Card[]),
+                        ];
+                        if (pool2.length === 0) break;
+                        ctx.api.askPickCards(
+                          st2,
+                          source.seatId,
+                          '【悲歌】梅花：弃置你的两张牌',
+                          pool2,
+                          Math.min(2, pool2.length),
+                          2,
+                          (_st3, _p3, picked2) => {
+                            if (picked2.length > 0)
+                              ctx.api.discardCards(source.seatId, picked2.slice());
+                          },
+                        );
                         pushLog(
                           st2,
                           'skill',
@@ -13572,23 +13649,9 @@ const TIANFENG: Hero = {
               (st2, _p2, targetSeatId) => {
                 const target = getPlayer(st2, targetSeatId);
                 if (!target) return;
-                const pool = [
-                  ...target.hand,
-                  ...(EQUIP_SLOTS.map((s) => target.equipment[s]).filter(Boolean) as Card[]),
-                ];
-                if (pool.length === 0) return;
-                // 手牌随机不看内容（与猛进/过河拆桥同一口径）
-                const card = pool[Math.floor(st.rng() * pool.length)]!;
-                const fromHand = target.hand.some((c) => c.id === card.id);
-                pushLog(
-                  st2,
-                  'skill',
-                  fromHand
-                    ? `${me.name} 发动【死谏】，弃置了 ${target.name} 的一张手牌。`
-                    : `${me.name} 发动【死谏】，弃置了 ${target.name} 的【${cardLabel(card)}】。`,
-                  { seat: me.seatId, action: 'discard' },
-                );
-                ctx.api.discardCard(target.seatId, card);
+                // 弃哪张由**田丰**挑：明牌可选、手牌盲选第 k 张（与猛进/过河拆桥同一套）。
+                // ⚠️ 原来是 `st.rng()` 随机抽一张——替玩家做了决定（用户 2026-09-25 口径）。
+                pickOneOfTargetCards(st2, me, target, ctx.api, '死谏');
               },
             );
           },

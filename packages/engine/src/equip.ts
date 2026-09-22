@@ -33,7 +33,14 @@ let askPickCardsForEquip: (
   min: number,
   max: number,
   resolve: (state: GameState, player: Player, picked: Card[]) => void,
-  opts?: { returnTo?: string; secret?: boolean },
+  opts?: {
+    returnTo?: string;
+    secret?: boolean;
+    /** 盲选（候选里含**别人的未知手牌**时用；与 `SkillApi.askPickCards` 同一套字段） */
+    hidden?: boolean;
+    ownerSeatId?: string;
+    visibleIds?: string[];
+  },
 ) => void = () => {};
 
 /**
@@ -490,6 +497,9 @@ export function feilongAfterShaDamage(
         }
         after();
       },
+      // ⚠️ 候选是**别人的手牌**：按盲选下发（只给 id、界面画牌背），
+      //    否则对方手牌会跟着快照漏给持有者。改动前这里没传 hidden。
+      { hidden: true, ownerSeatId: victim.seatId },
     );
   });
 }
