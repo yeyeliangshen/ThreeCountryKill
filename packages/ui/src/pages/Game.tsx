@@ -40,6 +40,7 @@ import { specialZoneChips } from '../specialZones';
 import { cardUses, useActionOf, type CardUse } from '../cardUses';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
+import { ZonePickPanel } from '../components/ZonePickPanel';
 import { targetNeedsHandCards } from '../targetRules';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
@@ -1340,7 +1341,18 @@ export function Game() {
               {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…）。
                   ⚠️ 选目标区域里的牌时，手牌那几个选项是 `hand:<第几张>`（引擎的「目标区域选牌」
                   原语，docs §5.149）——它们是**暗牌**，只给牌背样式，牌名/花色一律不显示。 */}
-              {prompt.kind === 'choice' && (
+              {prompt.kind === 'choice' && prompt.zonePick && (
+                // 「操作别人区域里的牌」的**分区面板**（用户 2026-09-23）：多角色横向分栏、
+                // 角色内 hand/equip/judge 纵向分区、不写区名。手牌画牌背、装备/判定画牌面。
+                <ZonePickPanel
+                  layout={prompt.zonePick}
+                  players={snapshot.players}
+                  onPick={(optionId) => chooseOption(optionId)}
+                  bindTip={bindTip}
+                />
+              )}
+
+              {prompt.kind === 'choice' && !prompt.zonePick && (
                 <>
                   {prompt.choiceOptions?.map((o) =>
                     o.id.startsWith('hand:') ? (

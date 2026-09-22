@@ -1,6 +1,7 @@
 import { CARD_TYPE_NAME, EQUIP_NAME, FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type {
   GuozhanExtensions,
+  ZonePickLayout,
   Card,
   CardType,
   DamageAttribute,
@@ -797,6 +798,12 @@ export type Pending =
        * 所以由技能发起的「选择一项」都应该填这个。
        */
       returnTo?: string;
+      /**
+       * 「操作**别人区域里的牌**」的**分区布局**（用户 2026-09-23 的口径）：不同角色横向分栏、
+       * 同一角色内部按 hand/equip/judge 纵向分区。
+       * ⚠️ 它**只是布局**——点某一张仍然回 `chooseOption(optionId)`，引擎的解析不变。
+       */
+      zonePick?: ZonePickLayout;
     }
   /**
    * 从一组牌里看/选若干张（选牌原语）。

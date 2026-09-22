@@ -1,4 +1,5 @@
 import type {
+  ZonePickLayout,
   Card,
   CardType,
   DamageAttribute,
@@ -113,6 +114,7 @@ import {
   sameKnownFaction,
   hasOperableTargetCard,
   targetCardOptions,
+  zoneLayoutOf,
   takeTargetCardByChoice,
   findTargetCardByChoice,
   skillOnField,
@@ -382,8 +384,21 @@ export function askChoice(
   options: { id: string; label: string }[],
   resolve: (state: GameState, player: Player, optionId: string) => void,
   returnTo?: string,
+  /**
+   * 「操作别人区域里的牌」的**分区布局**（用户 2026-09-23）：不同角色横向分栏、
+   * 同一角色内部按 hand/equip/judge 纵向分区。只是**布局说明**——回答仍走 `chooseOption(opt.id)`。
+   */
+  zonePick?: ZonePickLayout,
 ): void {
-  setPending(state, { kind: 'choice', seatId, title, options, resolve, returnTo });
+  setPending(state, {
+    kind: 'choice',
+    seatId,
+    title,
+    options,
+    resolve,
+    returnTo,
+    ...(zonePick ? { zonePick } : {}),
+  });
 }
 
 /**
@@ -4633,6 +4648,10 @@ function askDamageWeaponEffects(
             }
             hanbingStep(left - 1);
           },
+          undefined,
+          // 分区布局（用户 2026-09-23）：**手牌 + 装备区**两栏，判定区不出现；
+          // 手牌画牌背、装备画牌面（界面上部手牌、下部装备，不写区名）。
+          { targets: [{ seatId: target.seatId, zones: zoneLayoutOf(target, { noJudgment: true }).zones }] },
         );
       };
       hanbingStep(2);
@@ -6901,6 +6920,8 @@ function askTargetCardPick(
   after: (picked: { card: Card; from: 'hand' | 'equip' | 'judge' } | null) => void,
   /** 调用方**已经**指定了牌（旧路径/引擎内部/测试）→ 只要它此刻仍在原区域就直接用，不弹询问 */
   preset?: string,
+  /** 区域限制（例如【寒冰剑】只动手牌+装备，不含判定区） */
+  zoneOpts?: { noJudgment?: boolean; noHand?: boolean },
 ): void {
   if (preset) {
     const got = takeTargetCardByChoice(state, source.seatId, target, preset);
@@ -6920,7 +6941,7 @@ function askTargetCardPick(
       state,
       source.seatId,
       `【选择区域里的一张牌】${verb} ${target.name} 的一张牌`,
-      targetCardOptions(state, source.seatId, target, verb),
+      targetCardOptions(state, source.seatId, target, verb, zoneOpts),
       (st, _p, picked) => {
         const got = takeTargetCardByChoice(st, source.seatId, target, picked);
         if (!got) {
@@ -6929,6 +6950,17 @@ function askTargetCardPick(
           return;
         }
         after(got);
+      },
+      undefined,
+      // 「操作别人区域里的牌」的分区布局（用户 2026-09-23）：界面按角色分栏 + 区内分区，
+      // 手牌画牌背、装备/判定画牌面。**区域由规则层给**（zoneOpts 决定要不要判定区）。
+      {
+        targets: [
+          {
+            seatId: target.seatId,
+            zones: zoneLayoutOf(target, zoneOpts).zones,
+          },
+        ],
       },
     );
   };

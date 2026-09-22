@@ -134,6 +134,45 @@ export type PromptKind =
   | 'factionCall'; // 势力技：依次问同势力角色是否代打一张牌
 
 // 告诉玩家当前需要做什么 + 合法选项（服务端权威计算后下发）
+/**
+ * 「操作**别人区域里的牌**」的分区布局（用户 2026-09-23 的口径）。
+ *
+ * 结构就按用户画的那张图：**不同角色横向分栏**；同一个角色内部按 `hand / equip / judge`
+ * **纵向分区**（手牌在上、装备在下、判定区只在规则允许操作它时才出现）；**不写区名文字**——
+ * 靠位置区分。隐藏信息一律画牌背。
+ *
+ * ⚠️ 它只是**布局描述**：点某一张仍然发 `chooseOption(item.optionId)`（每个 item 自带 optionId），
+ *    所以引擎侧的解析与既有用例完全不受影响。
+ * ⚠️ 分工：**规则层决定「能操作谁的哪些区、要几张」**（zones/count 由引擎算好），
+ *    **牌面还是牌背由可见性决定**（`item.card` 有没有值就是规则层给的可见性判断，
+ *    技能不许自己决定「这张画牌背」）。
+ */
+export interface ZonePickItem {
+  /** 点这一张要发的 optionId（交给 `chooseOption`） */
+  optionId: string;
+  /** 正面展示的牌（装备/判定/已公开的手牌）；**隐藏的手牌不带它** ⇒ 界面画牌背 */
+  card?: Card;
+}
+
+export interface ZonePickZone {
+  /** 区域名（界面**不显示**这几个字，只用它决定位置与样式） */
+  zone: 'hand' | 'equip' | 'judge';
+  items: ZonePickItem[];
+}
+
+export interface ZonePickTarget {
+  seatId: string;
+  zones: ZonePickZone[];
+}
+
+export interface ZonePickLayout {
+  targets: ZonePickTarget[];
+  /** 已经选了几张（多步选择时由后续询问更新） */
+  picked?: number;
+  /** 还要选几张 */
+  required?: number;
+}
+
 export interface PromptView {
   kind: PromptKind;
   message: string;
@@ -229,6 +268,8 @@ export interface PromptView {
    * 界面不要再画通用的选牌框，改为让玩家**直接点牌桌中央那张牌**（点完立即拿走）。
    */
   pickFromPool?: boolean;
+  /** 「操作别人区域里的牌」的分区布局（见 ZonePickLayout）：界面据此画多栏 + 分区 */
+  zonePick?: ZonePickLayout;
   /**
    * 私密查看（知己知彼）的标题 / 内容。
    * 内容只有发起者本人的快照里有——其他座位即使是同一个 pending 也拿不到。

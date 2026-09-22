@@ -2191,6 +2191,86 @@ select:focus-visible,
   }
 }
 
+/* —— 「操作别人区域里的牌」的分区面板（用户 2026-09-23）——
+   结构照用户画的那张图：不同角色**横向分栏**；同一角色内部按 hand / equip / judge
+   **纵向分区**（手牌在上、装备在中、判定在最下）；**不写区名文字**，靠位置与留白区分。
+   手牌一律牌背（牌面根本没下发），装备/判定是公开区、照常画牌名。 */
+.zone-pick {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+}
+.zp-target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(212, 168, 75, 0.35);
+}
+.zp-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffe6a8;
+}
+.zp-zone {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+/* 三个区之间给一点**留白**当分隔（不写字）：手牌区与装备区之间、装备区与判定区之间 */
+.zp-zone + .zp-zone {
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(212, 168, 75, 0.25);
+}
+.zp-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 5px;
+  border: 1px solid var(--gold);
+  background: #2c2013;
+  color: #e8d9b0;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.1;
+}
+.zp-card:hover {
+  filter: brightness(1.25);
+}
+/* 牌背（隐藏手牌）：只表示「这里有一张看不到的牌」 */
+.zp-back {
+  width: 34px;
+  height: 48px;
+  padding: 0;
+}
+.zp-back-img {
+  width: 32px;
+  height: 46px;
+  border-radius: 4px;
+  object-fit: cover;
+  display: block;
+}
+/* 牌面（装备/判定/已公开）：稍宽，能读出牌名 */
+.zp-face {
+  min-width: 46px;
+  padding: 4px 6px;
+  background: linear-gradient(158deg, #fffdf6 0%, #f3ead5 100%);
+  color: #2b2620;
+  border-color: #8a7048;
+  font-weight: 700;
+}
+
 /* —— 拼点区（牌桌中央，用户 2026-09-23）——
    「等待选择 → 牌背入场 → 双方翻牌 → 比较点数 → 展示胜负」这一条流程全靠下面几段演：
    状态由服务端下发（PindianView），这里只负责过渡与落位。

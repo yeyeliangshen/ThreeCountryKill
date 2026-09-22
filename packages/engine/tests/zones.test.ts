@@ -117,3 +117,93 @@ describe('代价牌的区域：手牌 vs 牌（用户 2026-09-21 口径）', () 
     expect(a.judgment.map((c) => c.id)).toEqual(['j1']);
   });
 });
+
+/**
+ * 「操作别人区域里的牌」的**分区布局**（用户 2026-09-23）：引擎给界面一份
+ * `zonePick`——不同角色横向分栏、同一角色内 hand/equip/judge 纵向分区、**手牌不给牌面**。
+ * 界面照它画（见 ui 的 ZonePickPanel），回答仍走 `chooseOption(optionId)`。
+ */
+describe('区域选牌的分区布局（zonePick）', () => {
+  /** 甲用【过河拆桥】拆乙（乙有 2 手牌 + 1 装备 + 1 判定区的乐） */
+  function guoheGame() {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'guanyu' },
+        { seatId: B, name: '乙', heroId: 'zhangfei' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    for (const p of state.players) {
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.maxHp = 4;
+      p.hp = 4;
+      p.hand = [];
+      p.flags = emptyFlags();
+    }
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    a.hand = [mk('a1', 'guohe', 'spade', 3)];
+    b.hand = [mk('b1', 'sha', 'spade', 5), mk('b2', 'tao', 'heart', 3)];
+    b.equipment.armor = { ...mk('ar1', 'armor', 'club', 2), equipName: 'bagua' } as Card;
+    b.judgment = [mk('lb1', 'lebu', 'spade', 6)];
+    state.turn = { seatIndex: 0, phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    state.log = [];
+    return state;
+  }
+
+  it('拆：布局含 hand / equip / judge 三区；手牌只给 optionId（无牌面）、装备与判定带牌面', () => {
+    const state = guoheGame();
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }), '出拆');
+    const prompt = toSnapshot(state, A).prompt!;
+    expect(prompt.kind).toBe('choice');
+    const layout = prompt.zonePick!;
+    expect(layout).toBeTruthy();
+    expect(layout.targets).toHaveLength(1);
+    expect(layout.targets[0]!.seatId).toBe(B);
+    const zones = layout.targets[0]!.zones;
+    expect(zones.map((z) => z.zone)).toEqual(['hand', 'equip', 'judge']); // 从上到下的顺序
+    // 手牌：两张，都**只有 optionId**（牌面不出服务端）
+    expect(zones[0]!.items.map((i) => i.optionId)).toEqual(['hand:0', 'hand:1']);
+    expect(zones[0]!.items.every((i) => i.card === undefined)).toBe(true);
+    expect(JSON.stringify(zones[0]), '手牌区里不许出现牌面字段').not.toContain('"heart"');
+    // 装备与判定：带牌面（公开区），optionId 与原来的卡牌 id 一致
+    expect(zones[1]!.items.map((i) => i.optionId)).toEqual(['card:ar1']);
+    expect(zones[1]!.items[0]!.card?.equipName).toBe('bagua');
+    expect(zones[2]!.items.map((i) => i.optionId)).toEqual(['card:lb1']);
+    // 选项列表本身没变（布局是额外的一份，不是替代）
+    expect(prompt.choiceOptions!.map((o) => o.id).sort()).toEqual([
+      'card:ar1',
+      'card:lb1',
+      'hand:0',
+      'hand:1',
+    ]);
+  });
+
+  it('寒冰剑：区域限制（不含判定区）会体现在布局里', () => {
+    const state = guoheGame();
+    const a = state.players.find((p) => p.seatId === A)!;
+    const b = state.players.find((p) => p.seatId === B)!;
+    // 甲改拿寒冰剑，砍乙一刀（乙不出闪）→ 发动寒冰剑
+    a.hand = [mk('a2', 'sha', 'spade', 7)];
+    a.equipment.weapon = { ...mk('w1', 'weapon', 'spade', 5), equipName: 'hanbing', range: 2 } as Card;
+    // ⚠️ 乙的防具换成【白银狮子】：原来的【八卦阵】会让这一刀**自动**被判定闪避（判红就出闪），
+    //    于是根本没机会发动寒冰剑——而判定牌来自洗过的牌堆 ⇒ 用例时红时绿（踩过一次）。
+    //    留一件**不干扰普通【杀】**的防具，装备区才有东西可弃（用例要验的就是「装备区在、判定区不在」）。
+    b.equipment.armor = { ...mk('ar2', 'armor', 'club', 6), equipName: 'bailong' } as Card;
+    ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }), '出杀');
+    ok(act(state, B, { type: 'pass' }), '不出闪');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }), '发动寒冰剑');
+    const prompt = toSnapshot(state, A).prompt!;
+    expect(prompt.kind).toBe('choice');
+    const zones = prompt.zonePick!.targets[0]!.zones;
+    expect(zones.map((z) => z.zone)).toEqual(['hand', 'equip']); // 判定区**不出现**
+    expect(prompt.choiceOptions!.some((o) => o.id === 'card:lb1')).toBe(false);
+    // 选第 1 张之后再问第 2 张（依次选两张）
+    ok(act(state, A, { type: 'chooseOption', optionId: 'hand:0' }), '第 1 张');
+    expect(toSnapshot(state, A).prompt!.zonePick!.targets[0]!.zones[0]!.items).toHaveLength(1);
+  });
+});

@@ -7583,25 +7583,82 @@ export function targetCardOptions(
   verb: '弃置' | '获得',
   opts2?: { noJudgment?: boolean; noHand?: boolean },
 ): { id: string; label: string }[] {
-  const z = operableTargetCards(state, actorSeatId, target);
-  const opts: { id: string; label: string }[] = [];
-  for (const c of z.equip)
-    opts.push({ id: `card:${c.id}`, label: `${verb}其装备【${cardLabel(c)}】` });
-  if (opts2?.noJudgment) {
-    // 凌统·旋略：只能弃手牌/装备，不能动判定区
-  } else {
-    for (const c of z.judge)
-      opts.push({ id: `card:${c.id}`, label: `${verb}其判定区【${cardLabel(c)}】` });
-  }
-  if (!opts2?.noHand) {
-    z.hand.forEach((_c, i) =>
-      opts.push({
-        id: `hand:${i}`,
-        label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）`,
-      }),
-    );
-  }
-  return opts;
+  // 选项与布局**同一份数据**派生：布局给界面画多栏分区，选项给引擎解析
+  return targetCardZone(target, verb, opts2).zones.flatMap((z) => z.labels);
+}
+
+/**
+ * 「操作别人的区域里的牌」的**分区布局**（用户 2026-09-23 的口径）。
+ *
+ * - 不同角色**横向分栏**（本函数给**一个**目标的布局；多目标由调用方拼 targets）；
+ * - 同一角色内部按 `hand / equip / judge` **纵向分区**（顺序即界面从上到下）；
+ * - **不写区名文字**（界面靠位置区分）；
+ * - 隐藏信息一律牌背：**手牌那一区的 item 不带 `card`**（牌面不出服务端，规格第九条）。
+ *
+ * ⚠️ 分工：**规则层决定「能操作谁的哪些区」**（`noJudgment` / `noHand` 就是这条），
+ *    **牌面还是牌背由可见性决定**（有没有 `card` 字段）；技能不许自己挑「这张画牌背」。
+ */
+function targetCardZone(
+  target: Player,
+  verb: '弃置' | '获得',
+  opts2?: { noJudgment?: boolean; noHand?: boolean },
+): { zones: { zone: 'hand' | 'equip' | 'judge'; labels: { id: string; label: string }[] }[] } {
+  const zones: { zone: 'hand' | 'equip' | 'judge'; labels: { id: string; label: string }[] }[] = [];
+  const handItem = (i: number): { id: string; label: string } => ({
+    id: `hand:${i}`,
+    label: `${verb}其第 ${i + 1} 张手牌（暗，共 ${target.hand.length} 张）`,
+  });
+  // 手牌在最上（界面上部＝手牌）
+  if (!opts2?.noHand) zones.push({ zone: 'hand', labels: target.hand.map((_c, i) => handItem(i)) });
+  // 装备区在中间
+  const equips = EQUIP_SLOTS.map((sl) => target.equipment[sl]).filter((c): c is Card => !!c);
+  if (equips.length > 0)
+    zones.push({
+      zone: 'equip',
+      labels: equips.map((c) => ({ id: `card:${c.id}`, label: `${verb}其装备【${cardLabel(c)}】` })),
+    });
+  // 判定区在最下（只有规则允许操作它时才出现）
+  if (!opts2?.noJudgment && target.judgment.length > 0)
+    zones.push({
+      zone: 'judge',
+      labels: target.judgment.map((c) => ({
+        id: `card:${c.id}`,
+        label: `${verb}其判定区【${cardLabel(c)}】`,
+      })),
+    });
+  return { zones };
+}
+
+/**
+ * 把一个目标的区域布局翻成**协议层**的形态（`ZonePickLayout.targets[i]`）：
+ * 手牌区只带 optionId（界面画牌背），装备/判定区带上牌面（公开区）。
+ */
+export function zoneLayoutOf(
+  target: Player,
+  opts2?: { noJudgment?: boolean; noHand?: boolean },
+): {
+  seatId: string;
+  zones: { zone: 'hand' | 'equip' | 'judge'; items: { optionId: string; card?: Card }[] }[];
+} {
+  const equips = EQUIP_SLOTS.map((sl) => target.equipment[sl]).filter((c): c is Card => !!c);
+  const zones: {
+    zone: 'hand' | 'equip' | 'judge';
+    items: { optionId: string; card?: Card }[];
+  }[] = [];
+  if (!opts2?.noHand && target.hand.length > 0)
+    zones.push({
+      zone: 'hand',
+      // ⚠️ 手牌**只给 optionId**：牌面一律不出服务端（与盲选同一条规矩）
+      items: target.hand.map((_c, i) => ({ optionId: `hand:${i}` })),
+    });
+  if (equips.length > 0)
+    zones.push({ zone: 'equip', items: equips.map((c) => ({ optionId: `card:${c.id}`, card: c })) });
+  if (!opts2?.noJudgment && target.judgment.length > 0)
+    zones.push({
+      zone: 'judge',
+      items: target.judgment.map((c) => ({ optionId: `card:${c.id}`, card: c })),
+    });
+  return { seatId: target.seatId, zones };
 }
 
 /**

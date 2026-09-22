@@ -109,6 +109,9 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         mustSelectTargetCount: 0,
         choiceTitle: pending.title,
         choiceOptions: pending.options,
+        // 「操作别人区域里的牌」的分区布局（用户 2026-09-23）：界面据此画多栏 + 区内分区。
+        // 没带布局的老询问照旧画成一排按钮。
+        ...(pending.zonePick ? { zonePick: pending.zonePick } : {}),
       };
 
     case 'pickSeats':
