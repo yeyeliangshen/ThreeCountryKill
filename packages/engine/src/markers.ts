@@ -116,7 +116,10 @@ const XIANQU: ActiveSkill = {
   name: '先驱',
   minTargets: 1,
   maxTargets: 1,
-  canUse: () => true,
+  // ⚠️ 按阶段收紧：原文写的是「你可以于**出牌阶段**内…」。写死 `() => true` 会让它在
+  //    弃牌阶段的提示里也冒出来（那个提示现在会下发标记技能，见 legal.buildDiscardPrompt），
+  //    点了才被引擎拒掉——「按钮点不动」的另一种表现。
+  canUse: (state) => state.turn.phase === 'play',
   // 官方原文：「你可以于出牌阶段内选择一名其他角色并弃置一个『先驱』标记，然后你将手牌数摸至
   // 四张并观看其没有明置的副将牌。」（移动版 WIKI 已核；仓库文档 §2 的表述一致）
   // ⚠️ 以前只做了「手牌补至 4 张」，理由是「查看暗将需要私密信息通道，尚未实现」——那个通道
@@ -156,9 +159,19 @@ const YINYANGYU: ActiveSkill = {
   name: '阴阳鱼',
   minTargets: 0,
   maxTargets: 0,
-  canUse: () => true,
+  // 一枚标记两种用法，按**阶段**分流：出牌阶段摸一张、弃牌阶段本回合手牌上限 +2。
+  // （其余阶段不给这个按钮：判定/摸牌阶段用不上，也不该在别人的回合里点。
+  //   ⚠️ 2026-09-21 之前这里写死 `() => true`，而且 execute 永远走「摸一张」——
+  //      弃牌阶段那条用法虽然实现了（useYinyangyuHandLimit），却没有入口。）
+  canUse: (state) => state.turn.phase === 'play' || state.turn.phase === 'discard',
+  alsoUsableInDiscardPhase: true,
   execute: (state, player) => {
     if (!consumeMarker(player, 'yinyangyu')) return '没有【阴阳鱼】标记';
+    if (state.turn.phase === 'discard') {
+      noteMarkerUsed(state, player.seatId, 'yinyangyu', 'handLimit');
+      useYinyangyuHandLimit(state, player, `${player.name} 弃置【阴阳鱼】`);
+      return undefined;
+    }
     noteMarkerUsed(state, player.seatId, 'yinyangyu', 'draw');
     useYinyangyu(state, player, `${player.name} 弃置【阴阳鱼】`);
     return undefined;
@@ -217,7 +230,8 @@ const ZHULIAN: ActiveSkill = {
   name: '珠联璧合',
   minTargets: 0,
   maxTargets: 0,
-  canUse: () => true,
+  // 同上：两种用法都是「出牌阶段弃置」，别在弃牌阶段冒出来
+  canUse: (state) => state.turn.phase === 'play',
   execute: (state, player, _intent, api) => {
     if (!consumeMarker(player, 'zhulian')) return '没有【珠联璧合】标记';
     // 官方两种用法（摸两张牌 / 回复 1 点体力），做成「选择一项」。
@@ -243,18 +257,24 @@ const AMBITIONIST: ActiveSkill = {
   name: '野心家',
   minTargets: 0,
   maxTargets: 0,
-  canUse: () => true,
+  // 它能当作【阴阳鱼】用，而阴阳鱼在**弃牌阶段**还有一种用法（本回合手牌上限 +2）——
+  // 所以这枚标记在弃牌阶段也得能点（另外两枚的用法都写死「出牌阶段」，那边选项中不给）。
+  canUse: (state) => state.turn.phase === 'play' || state.turn.phase === 'discard',
+  alsoUsableInDiscardPhase: true,
   execute: (state, player, _intent, api) => {
     if (markerCount(player, 'ambitionist') <= 0) return '没有【野心家】标记';
+    const inDiscard = state.turn.phase === 'discard';
     api.askChoice(
       state,
       player.seatId,
       '【野心家】标记：当作哪一枚国战标记使用？',
-      [
-        { id: 'yinyangyu', label: '【阴阳鱼】（摸一张牌）' },
-        { id: 'zhulian', label: '【珠联璧合】（摸两张 / 回复 1 点体力）' },
-        { id: 'xianqu', label: '【先驱】（补至四张并观看其未明置的副将）' },
-      ],
+      inDiscard
+        ? [{ id: 'yinyangyu', label: '【阴阳鱼】（本回合手牌上限 +2）' }]
+        : [
+            { id: 'yinyangyu', label: '【阴阳鱼】（摸一张牌）' },
+            { id: 'zhulian', label: '【珠联璧合】（摸两张 / 回复 1 点体力）' },
+            { id: 'xianqu', label: '【先驱】（补至四张并观看其未明置的副将）' },
+          ],
       (st, p, picked) => {
         consumeMarker(p, 'ambitionist');
         const via = `【${p.name}】用【野心家】标记当作`;
@@ -287,7 +307,12 @@ const AMBITIONIST: ActiveSkill = {
           );
           return;
         }
-        // 阴阳鱼（出牌阶段那条：摸一张）
+        // 阴阳鱼：按**阶段**分流（与 YINYANGYU 那条技能同口径）
+        if (st.turn.phase === 'discard') {
+          noteMarkerUsed(st, p.seatId, 'yinyangyu', 'handLimit');
+          useYinyangyuHandLimit(st, p, `${via}【阴阳鱼】`);
+          return;
+        }
         noteMarkerUsed(st, p.seatId, 'yinyangyu', 'draw');
         useYinyangyu(st, p, `${via}【阴阳鱼】`);
       },

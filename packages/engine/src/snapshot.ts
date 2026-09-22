@@ -1,6 +1,6 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
-import { getHeroForMode } from './heroes';
+import { effectiveFaction, getHeroForMode } from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -31,7 +31,11 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     name: p.name,
     heroId: showMain ? p.heroId : null,
     deputyHeroId: showDeputy ? p.deputyHeroId : null,
-    faction: showFaction ? p.faction : null,
+    // 「当前所属势力」（用户 2026-09-21：看别人时要显示他现在属于哪个势力）：
+    // 别人看到的是**已确定势力**——两将全暗 = 未确定（null）、只亮副将的野心家 = 暂时按副将的
+    // 势力、野心家主将明置后 = 野心家（见 effectiveFaction）。本人那一份仍给后台真实势力，
+    // 免得自己的面板在暗置时没有势力可显示（自己知道自己是什么势力，不是泄露）。
+    faction: showFaction ? (isMe ? p.faction : effectiveFaction(state, p)) : null,
     heroRevealed: p.heroRevealed,
     deputyRevealed: p.deputyRevealed,
     // 国战标记是公开信息；只下发持有数量 > 0 的，免得界面渲染一堆 0。
@@ -58,6 +62,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     yi: p.yi.slice(),
     // 界钟会·权（实体牌）与孙綝·戮（武将牌：数量 + 牌名）
     quan: p.quan.slice(),
+    // 陆逊（国战）·谦逊收下的「节」：扣在武将牌上的实体牌，公开信息（度势要看张数）
+    jie: p.jie.slice(),
     luCount: p.lu.length,
     luNames: p.lu.map((e) => getHeroForMode(e.heroId, state.mode)?.name ?? e.heroId),
     // 双雄的判定牌颜色：也是公开的（判定牌大家都看到了），界面据此给出「当【决斗】使用」
@@ -116,5 +122,21 @@ export function toSnapshot(state: GameState, seatId: string): Snapshot {
     prompt: buildPrompt(state, seatId),
     winner: state.winner,
     log: state.log.slice(-50),
+    // 拼点区（公开信息，两边一样）：进行中只有「谁扣好了」，双方扣好之后才有牌面/点数/胜负——
+    // 牌面**由服务端把关**（`pindianView` 里 revealed 之前压根不写 card 字段）
+    pindian: state.pindianView ?? null,
+    // 牌桌上公开摆着的牌池（【五谷丰登】）：整份公开，但「我能不能点」按**观看者**算——
+    // 规则层决定「谁现在可以操作」，界面不猜（与盲选同一条分工）。
+    // ⚠️ 判据是「**这一格现在真的握着那张选牌询问**」，不是「轮到我了」：轮到某人时他可能还在
+    //    处理自己的无懈窗口（那会儿点牌是无效操作）。所以这里直接看 pending。
+    publicPool: state.publicPool
+      ? {
+          ...state.publicPool,
+          interactive:
+            state.pending?.kind === 'pickCards' &&
+            state.pending.fromPool === true &&
+            state.pending.seatId === seatId,
+        }
+      : null,
   };
 }

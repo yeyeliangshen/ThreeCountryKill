@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyIntent,
+  canPairHeroes,
   configFromPreset,
   createGame,
   determineDualFaction,
@@ -33,6 +34,157 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
     });
     // 两张单势力 → 不归它管
     expect(determineDualFaction(guanyu, sunquan, 'guozhan')).toBeNull();
+  });
+
+  /**
+   * 用户 2026-09-21 给的**新版双势力规则**（移动版 2023-08 更新）逐条核对：
+   * 「两张武将至少有一个可兼容势力即可组合；最终势力 = 两张牌可选势力集合的交集，
+   *   1 个自动确定、多个让玩家选」。
+   *
+   * 下面这些就是用户原文里的例子，钉的是**同一条**判据（`canPairHeroes`）——
+   * 引擎的 pickHero 与界面选将槽位分配（ui 的 nextGuozhanSlots）都走它。
+   */
+  it('canPairHeroes：双势力可配任意一个所属势力；组合按「可选势力集合有交集」判', () => {
+    const h = (id: string) => getHero(id)!;
+    // 孟达（魏/蜀）：配魏将、配蜀将都合法
+    expect(canPairHeroes(h('mengda'), h('caocao'))).toBe(true); // 魏
+    expect(canPairHeroes(h('mengda'), h('liubei'))).toBe(true); // 蜀
+    // 双势力放在**副将**位同样合法（2023 起「只能当副将」的旧规则作废）
+    expect(canPairHeroes(h('caocao'), h('mengda'))).toBe(true);
+    // 两张双势力：有唯一共同势力 → 合法
+    expect(canPairHeroes(h('mengda'), h('tangzi'))).toBe(true); // 魏/蜀 × 魏/吴 → 魏
+    // 两张双势力、势力集合完全相同 → 合法（最终势力由玩家选）
+    expect(canPairHeroes(h('mengda'), h('xiahouba'))).toBe(true); // 魏/蜀 × 魏/蜀
+    // 两张双势力、没有任何共同势力 → 不可组合
+    expect(canPairHeroes(h('mengda'), h('shixie'))).toBe(false); // 魏/蜀 × 吴/群
+    // 单势力之间：同势力合法、不同势力不合法
+    expect(canPairHeroes(h('guanyu'), h('zhangfei'))).toBe(true);
+    expect(canPairHeroes(h('guanyu'), h('sunquan'))).toBe(false);
+    // 野心家武将：只能在主将位；在主将位时配任意**非野心家**副将都合法
+    const sunchen = h('sunchen');
+    expect(canPairHeroes(sunchen, h('guanyu'))).toBe(true);
+    expect(canPairHeroes(h('guanyu'), sunchen)).toBe(false);
+    // ⚠️ 野 + 野 **不可以**（用户 2026-09-21 明确：官方只放开了「双势力可主/副将」与
+    //    「双势力遇野心家手动选自身势力」，没有开放野心家 × 野心家）
+    expect(canPairHeroes(h('sp_simazhao'), h('jie_zhonghui'))).toBe(false);
+    expect(canPairHeroes(h('jie_zhonghui'), h('sp_simazhao'))).toBe(false);
+  });
+
+  /**
+   * 野心家武将的**身份**：与野心家武将组合后，整名角色**按野心家处理**——
+   * 主将（野心家）明置之前只明置副将时，暂时按副将的势力算（用户 2026-09-18 口径）；
+   * **主将一明置，身份就是野心家**，不再跟随副将变成魏/蜀/吴/群（用户 2026-09-21 口径）。
+   */
+  it('野心家主将明置前后：临时按副将势力 → 转为野心家', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'vanilla' },
+        { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        { seatId: 'C', name: '丙', heroId: 'vanilla' },
+      ],
+      'T',
+      { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+    );
+    state.draft = null;
+    const a = state.players.find((p) => p.seatId === 'A')!;
+    a.heroId = 'sunchen'; // 野心家主将
+    a.deputyHeroId = 'guanyu'; // 蜀副将
+    a.faction = 'ambitionist';
+    a.determinedFaction = 'shu'; // 抓将时按「只明置副将期间暂时按副将确定势力」写下的
+    for (const p of state.players) {
+      if (p.seatId === 'A') continue;
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+      p.faction = 'wei';
+    }
+    // ① 只明置副将（主将暗置）→ 暂时按副将的蜀算
+    a.heroRevealed = false;
+    a.deputyRevealed = true;
+    expect(effectiveFaction(state, a)).toBe('shu');
+    // ② 主将（野心家）明置 → 身份就是野心家
+    a.heroRevealed = true;
+    expect(effectiveFaction(state, a)).toBe('ambitionist');
+    // ③ 两将都暗置 → 未确定势力
+    a.heroRevealed = false;
+    a.deputyRevealed = false;
+    expect(effectiveFaction(state, a)).toBeNull();
+  });
+
+  /**
+   * 「position」表（用户 2026-09-21 口径）——**野心家武将只能作主将**，普通/双势力武将主副都行：
+   * ```
+   * 野主 + 普通副 ✓   野主 + 双势力副 ✓
+   * 普通主 + 野副 ✗   双势力主 + 野副 ✗   野主 + 野副 ✗
+   * ```
+   * ⚠️ 三条 ✗ 的报错必须是**「野心家武将只能作为主将」**（那条位置限制要排在同阵营校验之前，
+   *    否则会被「国战需选 2 位同阵营武将」盖掉——2026-09-21 修过一次）。
+   */
+  it('pickHero 的 position 表：野心家武将只能作主将（三条 ✗ 都报同一条原因）', () => {
+    const gz = () =>
+      createGame(
+        [
+          { seatId: 'A', name: '甲', heroId: 'vanilla' },
+          { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        ],
+        'T',
+        { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+      );
+    const pick = (state: ReturnType<typeof gz>, main: string, deputy: string) =>
+      act(state, 'A', { type: 'pickHero', heroId: main, deputyHeroId: deputy });
+    // ✓ 野主 + 普通副 / 野主 + 双势力副
+    expect(pick(gz(), 'sp_simazhao', 'zuoci').ok).toBe(true); // 野 + 群
+    expect(pick(gz(), 'sp_simazhao', 'mengda').ok).toBe(true); // 野 + 魏/蜀（引擎再问给孟达选一面）
+    // ✗ 普通主 + 野副 / 双势力主 + 野副 / 野主 + 野副
+    for (const [main, deputy] of [
+      ['guanyu', 'jie_zhonghui'],
+      ['mengda', 'sp_simazhao'],
+      ['jie_zhonghui', 'sp_simazhao'],
+    ] as const) {
+      const res = pick(gz(), main, deputy);
+      expect(res.ok, `${main} + ${deputy} 不该被接受`).toBe(false);
+      if (!res.ok) expect(res.error).toBe('野心家武将只能作为主将');
+    }
+  });
+
+  /**
+   * 对手面板要显示的「**当前所属势力**」（用户 2026-09-21）：别人看到的是**已确定势力**——
+   * 两将全暗 = 未确定（null）、只亮副将的野心家 = 暂时按副将的势力、野心家主将明置后 = 野心家。
+   */
+  it('别人快照里的势力：暗置为 null → 只亮副将的野心家按副将算 → 亮主将转野心家', () => {
+    const state = createGame(
+      [
+        { seatId: 'A', name: '甲', heroId: 'vanilla' },
+        { seatId: 'B', name: '乙', heroId: 'vanilla' },
+        { seatId: 'C', name: '丙', heroId: 'vanilla' },
+      ],
+      'T',
+      { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+    );
+    state.draft = null;
+    const [a, b, c] = state.players as [typeof state.players[0], typeof state.players[0], typeof state.players[0]];
+    a.heroId = 'sunchen'; // 野心家主将
+    a.deputyHeroId = 'guanyu'; // 蜀副将
+    a.faction = 'ambitionist';
+    a.determinedFaction = 'shu';
+    for (const p of [b, c]) {
+      p.heroId = 'vanilla';
+      p.faction = 'wei';
+      p.heroRevealed = true;
+      p.deputyRevealed = true;
+    }
+    const viewOfAFromB = () => toSnapshot(state, 'B').players.find((x) => x.seatId === 'A')!;
+    // ① 两将全暗：未确定势力（别人看不到任何势力）
+    a.heroRevealed = false;
+    a.deputyRevealed = false;
+    expect(viewOfAFromB().faction).toBeNull();
+    // ② 只亮副将（关羽）：暂时按副将的蜀算
+    a.deputyRevealed = true;
+    expect(viewOfAFromB().faction).toBe('shu');
+    // ③ 亮出野心家主将：转为野心家
+    a.heroRevealed = true;
+    expect(viewOfAFromB().faction).toBe('ambitionist');
+    // ④ 自己那一份始终拿后台真实势力（自己知道自己是什么势力，不是泄露）
+    expect(toSnapshot(state, 'A').players.find((x) => x.seatId === 'A')!.faction).toBe('ambitionist');
   });
 
   it('确定过的势力优先于「明置即确定」：会盟/同势力判断都读它', () => {

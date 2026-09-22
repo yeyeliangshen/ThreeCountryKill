@@ -156,18 +156,19 @@ function step(state: GameState, rand: () => number): string {
     case 'factionCall':
       applyIntent(state, p.askQueue[p.askIndex]!, { type: 'pass' });
       return 'factionCall';
-    case 'activeSkill':
-      throw new Error('activeSkill pending 没有驱动方式——这个原语还没接完');
   }
 }
 
 describe('随机对局冒烟：全势备篇牌堆不卡死、不抛错', () => {
-  it('40 局（固定种子）都跑到分出胜负', () => {
+  it('200 局（固定种子）都跑到分出胜负', () => {
     let totalSteps = 0;
-    // ⚠️ 种子范围从 24 扩到 40：黄祖·袭射的钩子接上后随机轨迹变了，原来那 24 个种子里
-    //    【丈八蛇矛】那条路一次都没走到（覆盖率断言从「通过」变成 0 次）。**断言没有放宽**——
-    //    只是换更多固定样本，保证覆盖率断言重新成立（docs §5.117）。
-    for (let seed = 1; seed <= 40; seed++) {
+    // ⚠️ 种子范围扩过两次，**都是因为随机轨迹变了**（不是断言松动）：
+    //    ① 24 → 40：黄祖·袭射的钩子接上后，原来那 24 个种子里【丈八蛇矛】那条路一次都没走到；
+    //    ② 40 → 200：修「野心家主将明置后身份就是野心家」（`effectiveFaction`，docs §5.174）
+    //       之后轨迹又变了——40/60 局里丈八路径 0 次、100 局仅 1 次；200 局 5 次、无懈 341 次。
+    //    **覆盖率断言（丈八/无懈 > 0）没有放宽**，只是换更多固定样本让它们重新成立。
+    //    200 局整条用例约 2.5s，成本可接受。
+    for (let seed = 1; seed <= 200; seed++) {
       const rand = rng(seed);
       const n = 5 + (seed % 3);
       const setup: SeatSetup[] = Array.from({ length: n }, (_, i) => ({

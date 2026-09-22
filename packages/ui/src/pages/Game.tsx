@@ -30,18 +30,31 @@ import {
   heroCanUseAs,
   ROLE_NAME,
   FACTION_NAME,
+  MARKER_DESC,
   type Hero,
   type ActiveSkill,
 } from '@sgs/engine';
+import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
+import { specialZoneChips } from '../specialZones';
+import { cardUses, useActionOf, type CardUse } from '../cardUses';
+import { PindianTable } from '../components/PindianTable';
+import { PublicPoolTable } from '../components/PublicPoolTable';
+import { ZonePickPanel } from '../components/ZonePickPanel';
+import { targetNeedsHandCards } from '../targetRules';
+import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { cardBack } from '../components/cardBack';
+import { blindPickOwnerText, pickIsFaceDown } from '../blindPick';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
+import { nextGuozhanSlots } from '../draftSlots';
+import { skillEntryShown } from '../skillPhase';
 import { useStore } from '../store';
 
 const PHASE_NAME: Record<string, string> = {
+  prepare: '准备',
   judgment: '判定',
   draw: '摸牌',
   play: '出牌',
@@ -50,19 +63,6 @@ const PHASE_NAME: Record<string, string> = {
   gameOver: '游戏结束',
   draft: '选将',
 };
-
-/** 国战：武将显示——亮将后显示名，未亮显示「暗将」 */
-function heroDisplay(p: PlayerView, mode: GameMode): string {
-  if (mode === 'guozhan') {
-    const main = p.heroRevealed && p.heroId ? getHero(p.heroId)?.name : null;
-    const deputy = p.deputyRevealed && p.deputyHeroId ? getHero(p.deputyHeroId)?.name : null;
-    if (main && deputy) return `${main} / ${deputy}`;
-    if (main) return `${main} · 暗将`;
-    if (deputy) return `暗将 · ${deputy}`;
-    return '暗将';
-  }
-  return getHero(p.heroId)?.name ?? '?';
-}
 
 /** 把服务端 winner 字符串转成人类可读的胜方文案 */
 function winnerText(mode: GameMode, winner: string, players: PlayerView[]): string {
@@ -172,16 +172,6 @@ function targetRange(
   return { min: 1, max: 1, self: false }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
 }
 
-/** 这张牌能否在出牌阶段直接使用（无需转化） */
-function isDirectlyPlayable(card: Card): boolean {
-  if (card.type === 'sha' || card.type === 'tao' || card.type === 'jiu') return true;
-  if (isEquipCard(card)) return true;
-  if (isDelayedTrick(card)) return true;
-  // 无懈可击（含国战版）只能在响应时打出，出牌阶段点不动
-  if (isInstantTrick(card) && !isWuxieLike(card)) return true;
-  return false;
-}
-
 /** 从快照获取当前玩家的活跃武将（国战：已亮将；其他：主将） */
 function getMyActiveHeroes(me: PlayerView, mode: GameMode): Hero[] {
   const isGuozhan = mode === 'guozhan';
@@ -212,90 +202,6 @@ function isAoyuMode(snapshot: Snapshot): boolean {
     alive.map((p) => p.faction).filter((f): f is Faction => !!f && f !== 'ambitionist'),
   );
   return factions.size === 2;
-}
-
-/** 转化技可能出现的所有目标类型，顺序即优先级 */
-const CONVERSION_TYPES: CardType[] = [
-  'sha',
-  'guohe',
-  'tao',
-  'shan',
-  'lebu',
-  'bingliang',
-  'huogong',
-  'tiesuo',
-];
-
-/** 能靠转化技把别的牌变成可重铸牌型的技能目标（庞统·连环 →【铁索连环】） */
-const RECAST_VIA_TYPES: CardType[] = ['tiesuo', 'zhibi'];
-
-/** 一种用法：`as` 为空表示「按牌面本身使用」 */
-interface CardUse {
-  as?: CardType;
-  /** 转化后的伤害属性（朱雀羽扇：普通【杀】当火【杀】） */
-  asAttribute?: DamageAttribute;
-  /** 重铸：不指定目标，把牌弃掉再摸一张（不是「使用」） */
-  recast?: boolean;
-  /** 连横（势备篇）：把手牌交给一名势力不同或未确定势力的角色 */
-  lianheng?: boolean;
-  /** 【丈八蛇矛】：这张牌当【杀】的**第一张**，还要再点一张手牌凑成两张 */
-  zhangba?: boolean;
-  label: string;
-}
-
-/**
- * 列出这张牌在出牌阶段有哪几种用法。
- *
- * 以前这里只返回**一个**转化类型，而且**牌面能直接用就不给转化**——
- * 于是徐晃拿黑色【杀】时没法选择「当兵粮寸断用」（甘宁·奇袭、大乔·国色同样受影响）。
- * 现在把「牌面本身」和各种转化都列出来，多于一种时由玩家选。
- */
-function cardUses(
-  card: Card,
-  heroes: Hero[],
-  aoyu: boolean,
-  hasZhuque: boolean,
-  lianhengTargets: string[],
-  zhangbaOk: boolean,
-  shuangxiongColor: 'red' | 'black' | null,
-): CardUse[] {
-  const uses: CardUse[] = [];
-  if (isDirectlyPlayable(card)) {
-    uses.push({ label: `按【${cardShortName(card)}】使用` });
-  }
-  for (const type of CONVERSION_TYPES) {
-    if (heroes.some((h) => heroCanUseAs(h, card, type))) {
-      uses.push({ as: type, label: `当【${CARD_TYPE_NAME[type]}】使用` });
-    }
-  }
-  if (aoyu && card.type === 'tao' && !uses.some((u) => u.as === 'sha')) {
-    uses.push({ as: 'sha', label: '当【杀】使用（鏖战）' });
-  }
-  // 连横（势备篇）：带标记的手牌可以交出去——「交给谁」的合法性由服务端算好
-  if (card.lianheng && lianhengTargets.length > 0) {
-    uses.push({ lianheng: true, label: '连横（交给一名势力不同或未确定势力的角色）' });
-  }
-  // 朱雀羽扇：普通【杀】可以当火【杀】使用（同一张牌换属性，不是换牌型）
-  if (hasZhuque && card.type === 'sha' && !card.attribute) {
-    uses.push({ asAttribute: 'fire', label: '当火【杀】使用（朱雀羽扇）' });
-  }
-  // 颜良文丑·双雄：本回合可以把与判定牌**颜色不同**的手牌当【决斗】使用
-  if (shuangxiongColor && (isRed(card) ? 'red' : 'black') !== shuangxiongColor) {
-    uses.push({ as: 'juedou', label: '当【决斗】使用（双雄）' });
-  }
-  // 【丈八蛇矛】：两张手牌当【杀】。这里只是「第一张」，点完还要再选一张
-  if (zhangbaOk && !uses.some((u) => u.zhangba)) {
-    uses.push({ zhangba: true, label: '两张手牌当【杀】使用（丈八蛇矛）' });
-  }
-  // 可重铸的牌（铁索连环 / 知己知彼）多一条「重铸」用法；
-  // 庞统·连环那种「梅花牌当【铁索连环】使用**或重铸**」也要给这一条
-  if (
-    isRecastable(card) ||
-    RECAST_VIA_TYPES.some((t) => card.type !== t && heroes.some((h) => heroCanUseAs(h, card, t)))
-  ) {
-    uses.push({ recast: true, label: '重铸（弃置此牌，摸一张）' });
-  }
-  return uses;
 }
 
 /** 从武将列表中查找技能定义 */
@@ -397,7 +303,22 @@ export function Game() {
   // 主动技能交互模式
   const [skillMode, setSkillMode] = useState<{
     skillId: string;
-    skill: ActiveSkill;
+    /**
+     * 技能定义。武将技能直接给 `ActiveSkill`（本地有对象、maxCards 是函数）；
+     * **标记技能**（阴阳鱼/先驱/珠联璧合/野心家）不属于任何武将，用服务端在提示里
+     * 下发的形状（见 protocol 的 `legalSkills`）——`maxCards` 缺省即可（这几枚都不吃牌）。
+     */
+    skill: {
+      id: string;
+      name: string;
+      desc?: string;
+      needsCards?: boolean;
+      minTargets: number;
+      maxTargets: number;
+      maxCards?: ActiveSkill['maxCards'];
+      /** 代价能取自哪个区（'handEquip' ＝自己装备区的牌也可点；见 protocol 的 legalSkills） */
+      costFrom?: 'hand' | 'handEquip';
+    };
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
@@ -454,6 +375,21 @@ export function Game() {
     if (box) box.scrollTop = box.scrollHeight;
   }, [snapshot?.log]);
 
+  // 多选座位的提示换了一轮（候选变了）→ 清空上一轮点亮的。
+  //
+  // ⚠️ **这个 hook 必须放在下面那条 `if (!snapshot) return …` 之前**——那是一条**提前 return**：
+  //    「已开局但快照还没到」时会先渲染一帧「加载中…」（重连 / 刷新 / 手机切屏回来必经这一帧），
+  //    随后快照到达再渲染一次。hook 要是排在那条 return 后面，第二帧就会**多调用一个 hook** →
+  //    React 抛 "Rendered more hooks than during the previous render" → 整棵树被卸载 →
+  //    界面全空。在深色底（body #070a0d）上就是用户看到的**黑屏**（2026-09-21 实测复现）。
+  const seatPickKey =
+    snapshot?.prompt?.kind === 'pickSeats'
+      ? (snapshot.prompt.seatCandidates ?? []).join(',') + '|' + snapshot.prompt.pickMax
+      : '';
+  useEffect(() => {
+    setSeatPick([]);
+  }, [seatPickKey]);
+
   if (!snapshot) return <div className="game loading">加载中…</div>;
 
   const me = snapshot.players.find((p) => p.seatId === snapshot.seatId)!;
@@ -462,12 +398,6 @@ export function Game() {
   const myDeputyHero = getHeroForMode(me.deputyHeroId, snapshot.mode);
   const others = snapshot.players.filter((p) => p.seatId !== snapshot.seatId);
   const prompt = snapshot.prompt;
-  // 多选座位的提示换了一轮（候选变了）→ 清空上一轮点亮的
-  const seatPickKey =
-    prompt?.kind === 'pickSeats' ? (prompt.seatCandidates ?? []).join(',') + '|' + prompt.pickMax : '';
-  useEffect(() => {
-    setSeatPick([]);
-  }, [seatPickKey]);
   const legalSet = new Set(prompt?.legalCardIds ?? []);
   const targetSet = new Set(prompt?.legalTargetIds ?? []);
   const myTurn = snapshot.turn.seatId === snapshot.seatId;
@@ -475,7 +405,12 @@ export function Game() {
   const isGuozhan = snapshot.mode === 'guozhan';
   const aoyu = isAoyuMode(snapshot);
   const myHeroes = getMyActiveHeroes(me, snapshot.mode);
-  const skillIds = prompt?.kind === 'play' ? (prompt.legalSkillIds ?? []) : [];
+  // ⚠️ **出牌阶段与弃牌阶段都要读**：国战标记技能不属于任何武将，只能靠服务端下发的
+  // `legalSkillIds` / `legalSkills` 补出来；而【阴阳鱼】在弃牌阶段是「弃置 → 手牌上限 +2」
+  // 这一支（引擎的 `buildDiscardPrompt` 会把这几个标记一起下发）。以前这里写死
+  // `kind === 'play'`，于是**弃牌阶段那几枚标记按钮根本不渲染**（用户报的「点了没用」里
+  // 最典型的一种）——详见 docs §5.177。
+  const skillIds = skillEntryShown(prompt?.kind) ? (prompt!.legalSkillIds ?? []) : [];
   // 【木牛流马】下扣置的牌「如手牌般使用或打出」，所以自己的可用牌 = 手牌 + 辎。
   // 对手的那一份快照里只有 `cargoCount`（扣置是暗信息），拿到的 cargo 是空的。
   // 【丈八蛇矛】：这一轮能不能「两张手牌当【杀】」完全由服务端算（zhangbaOk）
@@ -709,9 +644,27 @@ export function Game() {
 
   // —— 主动技能交互 ——
   function enterSkillMode(skillId: string) {
-    const skill = findSkill(myHeroes, skillId);
-    if (!skill) return;
-    setSkillMode({ skillId, skill, cardIds: [], targetIds: [] });
+    // 先找**自己武将**的主动技；找不到就用**服务端下发**的那份定义。
+    //
+    // ⚠️ 这一步是「阴阳鱼按钮点不动」的修复（用户 2026-09-21）：标记技能不属于任何武将，
+    //    findSkill(myHeroes, …) 必然查不到 —— 以前这里直接 `return`，于是按钮点了毫无反应
+    //    （连「不可用」的提示都没有）。
+    const heroSkill = findSkill(myHeroes, skillId);
+    const given = (prompt?.legalSkills ?? []).find((x) => x.id === skillId);
+    if (!heroSkill && !given) return;
+    setSkillMode({
+      skillId,
+      skill: heroSkill ?? {
+        id: skillId,
+        name: given!.name,
+        desc: given!.desc,
+        needsCards: given!.needsCards,
+        minTargets: given!.minTargets,
+        maxTargets: given!.maxTargets,
+      },
+      cardIds: [],
+      targetIds: [],
+    });
   }
   function toggleSkillCard(cardId: string) {
     if (!skillMode) return;
@@ -745,32 +698,14 @@ export function Game() {
   }
 
   // —— 国战选将：点击武将分配主将/副将槽位 ——
+  // 槽位怎么变是纯函数（`nextGuozhanSlots`，单测在 draftSlots.test.ts）——判定必须与引擎的
+  // `pickHero` 同口径（`canPairHeroes`），否则「界面拼不出来、引擎却收」的组合会再出现。
   function pickGuozhanHero(id: string) {
-    if (id === mainPick) {
-      setMainPick(null);
-      return;
-    } // 取消主将
-    if (id === deputyPick) {
-      setDeputyPick(null);
-      return;
-    } // 取消副将
-    if (!mainPick) {
-      setMainPick(id);
-      return;
-    } // 主将空 → 设主将
-    if (!deputyPick) {
-      // 副将空 → 检查同阵营
-      const mainHero = getHero(mainPick);
-      const h = getHero(id);
-      if (mainHero && h && mainHero.faction === h.faction) {
-        setDeputyPick(id);
-      } else {
-        setMainPick(id); // 不同阵营：替换主将，清空副将
-      }
-      return;
-    }
-    setMainPick(id); // 两槽满 → 替换主将，清空副将
-    setDeputyPick(null);
+    // 槽位判定只需要**势力**（`canPairHeroes` 读 faction/secondFaction），两个版本一致，
+    // 所以这里用不带模式的 getHero 就够（技能展示在渲染那一层用 getHeroForMode）。
+    const next = nextGuozhanSlots({ main: mainPick, deputy: deputyPick }, id, (hid) => getHero(hid));
+    setMainPick(next.main);
+    setDeputyPick(next.deputy);
   }
 
   // 判定当前选中牌的目标提示文案
@@ -843,12 +778,18 @@ export function Game() {
               <div className="hero-list">
                 {options.map((dealtId) => {
                   const id = shownHeroId(dealtId);
-                  const h = getHero(id);
+                  // ⚠️ 技能列表要按**本局模式**取：国战与身份局的同名武将技能不同
+                  //    （陆逊：国战＝谦逊+度势、身份局＝谦逊+连营）。这里以前用 getHero，
+                  //    于是国战选将卡上写着身份局的技能，与实际打出来的技能对不上。
+                  const h = getHeroForMode(id, snapshot.mode);
                   if (!h) return null;
                   const isMain = mainPick === id;
                   const isDeputy = deputyPick === id;
                   const variantId = lordVariantOf(id);
-                  const variant = variantId && canSwapTo(variantId) ? getHero(variantId) : undefined;
+                  const variant =
+                    variantId && canSwapTo(variantId)
+                      ? getHeroForMode(variantId, snapshot.mode)
+                      : undefined;
                   // 君主将只能作主将：这张牌正选在副将位、要换成君主版时是不合法的组合，
                   // 与其让玩家确认时被引擎拒掉，不如直接禁用并说明怎么换
                   const swapBlocked = isDeputy && !!variant?.isLord;
@@ -907,7 +848,7 @@ export function Game() {
                 }}
               >
                 {guozhanCanConfirm
-                  ? `确认：${getHero(mainPick)?.name ?? ''} + ${getHero(deputyPick)?.name ?? ''}`
+                  ? `确认：${getHeroForMode(mainPick, snapshot.mode)?.name ?? ''} + ${getHeroForMode(deputyPick, snapshot.mode)?.name ?? ''}`
                   : '请选择 2 位同阵营武将'}
               </button>
             </>
@@ -926,7 +867,7 @@ export function Game() {
           <>
             <div className="hero-list">
               {options.map((id) => {
-                const h = getHero(id);
+                const h = getHeroForMode(id, snapshot.mode);
                 if (!h) return null;
                 const isPicked = pickedHero === id;
                 const art = heroArt(id);
@@ -1036,6 +977,18 @@ export function Game() {
 
   // 是否处于"选目标"或"技能模式"的交互态
   const targeting = !!selected || !!skillMode || !!lianhengCard || !!zhangbaMode;
+  /**
+   * 当前选中的牌要的「目标门槛」——**必须与引擎的校验同一口径**，否则界面会把
+   * 引擎一定拒绝的目标画成可点（点了才报错）。
+   *
+   * 【火攻】（用户 2026-09-22 报的缺陷）：目标要展示一张手牌，**没有手牌的角色不能被指定**。
+   * 引擎侧在 `resolvePlayedCard` 的校验里同样拦（见那里的注释），两边是同一个判据。
+   */
+  const selectedTargetNeedsHand = (() => {
+    if (!selected) return null;
+    const eff = selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type;
+    return targetNeedsHandCards(eff) ? true : null;
+  })();
 
   // 判断某对手是否可被点击（选目标 / 技能选目标）
   function canClickTarget(p: PlayerView): boolean {
@@ -1054,6 +1007,8 @@ export function Game() {
     }
     if (selected) {
       if (selected.picked.includes(p.seatId)) return true;
+      // 【火攻】的目标必须有手牌：没手牌的角色**不进可点目标**（与引擎同一口径）
+      if (selectedTargetNeedsHand && (p.handCount ?? 0) === 0) return false;
       return targetSet.has(p.seatId) && selected.picked.length < selected.max;
     }
     return false;
@@ -1091,7 +1046,8 @@ export function Game() {
     myTurn &&
     !skillMode &&
     !selected &&
-    (phase === 'judgment' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
+    // 主动明置只在**准备阶段**（判定阶段是另一个阶段了，不能亮）
+    (phase === 'prepare' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
   const canRevealNow = canRevealSlot(myHero);
   // 铁索连环可以把「自己」选成目标：这时自己的武将面板整体可点
   const canPickSelf =
@@ -1143,7 +1099,8 @@ export function Game() {
   // - 主动技：点一下就等于「明置该武将并发动」（引擎会先明置）；
   // - 锁定技 / 转化技（马术、咆哮、武圣…）：只能靠亮将，这里显示成不可点。
   // 「哪些技能可预亮」由服务端下发（prompt.prelitableSkills），界面不自己判断。
-  const legalSkills = prompt?.kind === 'play' ? (prompt.legalSkills ?? []) : [];
+  // 出牌阶段 / 弃牌阶段的服务端技能定义（含不属于任何武将的**国战标记**，见上面 skillIds 的注释）
+  const legalSkills = skillEntryShown(prompt?.kind) ? (prompt!.legalSkills ?? []) : [];
   // 可预亮的名单在快照上（随时可预亮，不必等自己的出牌阶段）
   const prelitable = new Set(me.prelitableSkills ?? []);
   const prelit = new Set(me.prelitSkills ?? []);
@@ -1218,7 +1175,7 @@ export function Game() {
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
-            const art = heroArt(p.heroId);
+            const zoneChips = specialZoneChips(p);
             return (
               <button
                 key={p.seatId}
@@ -1227,15 +1184,9 @@ export function Game() {
                 disabled={!isTarget}
               >
                 <div className="p-top">
-                  {/* 画像占位框，和我自己的武将面板同一套视觉 */}
-                  {/* 小头像：对手原画（没原画时回退成武将名） */}
-                  <span className={`portrait small ${factionClass}`}>
-                    {art ? (
-                      <img className="portrait-photo" src={art} alt="" />
-                    ) : (
-                      <span className="portrait-name">{heroDisplay(p, snapshot.mode)}</span>
-                    )}
-                  </span>
+                  {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
+                      悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
+                  <HeroChips chips={heroChipsOf(p, snapshot.mode)} />
                   <span className="p-info">
                     <span className="p-name">
                       {p.name}
@@ -1258,19 +1209,44 @@ export function Game() {
                     <span className="p-hand">手 {p.handCount}</span>
                   </span>
                 </div>
-                {/* 装备区 */}
+                {/* 装备区（花色 + 点数 + 牌名，与自己的面板同一个组件） */}
                 {p.equipment.length > 0 && (
                   <div className="p-equip">
                     {p.equipment.map((c) => (
+                      <EquipChip key={c.id} card={c} mode={snapshot.mode} bind={bindTip} />
+                    ))}
+                  </div>
+                )}
+                {/* 国战标记（公开信息，用户 2026-09-21 要求）：看得到对手手上还有哪些标记 */}
+                {p.markers && p.markers.length > 0 && (
+                  <div className="p-markers">
+                    {p.markers.map((m) => (
                       <span
-                        key={c.id}
-                        className={`equip-icon equip-${c.type}`}
-                        title={`${cardShortName(c)}\n${cardDescription(c, snapshot.mode)}${
-                          c.cargoCount ? `（下有扣置的牌 ${c.cargoCount} 张）` : ''
-                        }`}
+                        key={m.id}
+                        className={`marker-chip mark-${m.id}`}
+                        {...bindTip(
+                          `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
+                          MARKER_DESC[m.id] ?? '',
+                        )}
                       >
-                        {cardShortName(c)}
-                        {c.cargoCount ? `·辎${c.cargoCount}` : ''}
+                        {m.label}
+                        {m.count > 1 && <span className="marker-count">{m.count}</span>}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {/* 武将牌上的牌区（公开信息，与自己的面板**同一份列表**）：田/权/创/节…
+                    以前对手这里看不到，于是「对方陆逊有几张节（满 3 就不再被谦逊挡）」这类
+                    关键信息只能靠日志猜（真机验收时发现）。 */}
+                {zoneChips.length > 0 && (
+                  <div className="p-zones">
+                    {zoneChips.map((c) => (
+                      <span
+                        key={c.key}
+                        className="zone-chip"
+                        {...bindTip(c.label.split('·')[0]!, c.tip)}
+                      >
+                        {c.label}
                       </span>
                     ))}
                   </div>
@@ -1282,7 +1258,7 @@ export function Game() {
                       <span
                         key={c.id}
                         className="judge-icon"
-                        title={`${cardShortName(c)}\n${cardDescription(c, snapshot.mode)}`}
+                        {...bindTip(cardShortName(c), cardDescription(c, snapshot.mode))}
                       >
                         {cardShortName(c)}
                       </span>
@@ -1294,6 +1270,28 @@ export function Game() {
             );
           })}
         </div>
+
+        {/* 牌桌上公开摆着的牌池（【五谷丰登】，用户 2026-09-23）：固定顺序平铺、依次点牌拿走、
+            拿走的留在原位标上「谁拿走」。所有人都看得到；能不能点由快照的 interactive 说了算。 */}
+        {snapshot.publicPool && (
+          <PublicPoolTable
+            pool={snapshot.publicPool}
+            players={snapshot.players}
+            onPick={(cardId) => sendPickCards([cardId])}
+            bindTip={bindTip}
+          />
+        )}
+
+        {/* 拼点区（**牌桌中央**，用户 2026-09-23）：等待扣置 → 牌背入场 → 双方翻牌 → 点数与胜负。
+            放在主列（对手行与手牌之间）——那是牌桌正中；右侧日志栏只是记录，不是中央。
+            数据由服务端把关：双方扣好之前连牌面字段都没有（见 PindianView）。 */}
+        {snapshot.pindian && (
+          <PindianTable
+            pindian={snapshot.pindian}
+            players={snapshot.players}
+            meSeatId={snapshot.seatId}
+          />
+        )}
 
         {/* 操作区 + 手牌绑成一块（.dock）：窄屏时整块吸附在屏幕底部，
             按钮与自己的牌永远在眼前；宽屏时靠 CSS 把它压到牌桌底部 */}
@@ -1343,7 +1341,18 @@ export function Game() {
               {/* 通用「选择一项」：技能令你二选一（反间/铁骑/除疠…）。
                   ⚠️ 选目标区域里的牌时，手牌那几个选项是 `hand:<第几张>`（引擎的「目标区域选牌」
                   原语，docs §5.149）——它们是**暗牌**，只给牌背样式，牌名/花色一律不显示。 */}
-              {prompt.kind === 'choice' && (
+              {prompt.kind === 'choice' && prompt.zonePick && (
+                // 「操作别人区域里的牌」的**分区面板**（用户 2026-09-23）：多角色横向分栏、
+                // 角色内 hand/equip/judge 纵向分区、不写区名。手牌画牌背、装备/判定画牌面。
+                <ZonePickPanel
+                  layout={prompt.zonePick}
+                  players={snapshot.players}
+                  onPick={(optionId) => chooseOption(optionId)}
+                  bindTip={bindTip}
+                />
+              )}
+
+              {prompt.kind === 'choice' && !prompt.zonePick && (
                 <>
                   {prompt.choiceOptions?.map((o) =>
                     o.id.startsWith('hand:') ? (
@@ -1371,11 +1380,40 @@ export function Game() {
 
               {/* 从一组牌里选若干张（观星看牌堆顶、刚烈弃两张、仁德送牌…）。
               候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
-              {prompt.kind === 'pickCards' && prompt.pickCards && (
+              {/* ⚠️ `pickFromPool`（五谷那类「从牌桌上那排牌里拿」）不画这个通用框——
+                  牌桌中央的牌池那排牌**就是**选择界面，避免同一个选择出现两套 UI */}
+              {prompt.kind === 'pickCards' && prompt.pickCards && !prompt.pickFromPool && (
                 <div className="pick-cards">
+                  {/*
+                    **盲选**（`pickHidden`，用户 2026-09-22 的通用机制）：候选来自其他角色的
+                    未知手牌 ⇒ 一律画**牌背**——只体现张数与可选位置，不给牌名/花色/点数，
+                    点牌背按 id 选择、**不翻开**（规则要求公开时才由结算流程翻开）。
+                    其中 `pickVisibleIds` 命中的那几张是**已因其他效果公开**的，照常画牌面
+                    （可见性由规则层判定，界面不猜）。
+                  */}
+                  {prompt.pickHidden && (
+                    <div className="pick-owner-hint">
+                      {blindPickOwnerText(
+                        snapshot.players.find((p) => p.seatId === prompt.pickOwnerSeatId)?.name,
+                      )}
+                    </div>
+                  )}
                   <div className="pick-cards-row">
                     {prompt.pickCards.map((card) => {
                       const on = pickSel.includes(card.id);
+                      if (pickIsFaceDown(prompt, card.id)) {
+                        // 未知手牌：只画牌背
+                        return (
+                          <button
+                            key={card.id}
+                            className={`card-back-option ${on ? 'picked' : ''}`}
+                            aria-label="对方的一张手牌（看不到牌面）"
+                            onClick={() => togglePickCard(card.id)}
+                          >
+                            {cardBack ? <img className="card-back-img" src={cardBack} alt="牌背" /> : '🂠'}
+                          </button>
+                        );
+                      }
                       // 选牌是**有序**的（诸葛亮·观星要按点击顺序摆牌堆），所以给选中的牌标个序号
                       const order = pickSel.indexOf(card.id) + 1;
                       const name = cardShortName(card);
@@ -1483,9 +1521,23 @@ export function Game() {
                         const card = myUsableCards.find((c) => c.id === usePick.cardId);
                         setUsePick(null);
                         if (!card) return;
-                        if (u.recast) beginRecast(card);
-                        else if (u.zhangba) beginZhangba(card);
-                        else beginPlay(card, u.as);
+                        // 四种用法各有各的去处——⚠️ 连横以前**没有这一支**：
+                        // 它掉进 play（`u.as` 是 undefined）⇒ 把牌当「使用」打出去了，
+                        // 于是「连横」永远进不去（用户 2026-09-23 报的正是这个）。
+                        switch (useActionOf(u)) {
+                          case 'recast':
+                            beginRecast(card);
+                            break;
+                          case 'zhangba':
+                            beginZhangba(card);
+                            break;
+                          case 'lianheng':
+                            setLianhengCard(card.id);
+                            setLianhengPick(null);
+                            break;
+                          default:
+                            beginPlay(card, u.as);
+                        }
                       }}
                     >
                       {u.label}
@@ -1506,14 +1558,16 @@ export function Game() {
                 </>
               )}
 
-              {/* 技能交互模式 */}
-              {prompt.kind === 'play' && skillMode && (
+              {/* 技能交互模式。⚠️ 弃牌阶段也要渲染：【阴阳鱼】在那儿是「弃置 → 手牌上限 +2」
+                  那一支（引擎的 useSkill 对 `alsoUsableInDiscardPhase` 的技能放行弃牌阶段），
+                  只判 'play' 的话点了没反应——见 docs §5.177 */}
+              {skillEntryShown(prompt.kind) && skillMode && (
                 <div className="skill-mode">
                   <span className="hint">
                     <b>【{skillMode.skill.name}】</b>
                     {/* 把「要选几张、已经选了几张」写全：只说「请选择手牌」看不出选上没有 */}
                     {skillMode.skill.needsCards &&
-                      ` 手牌 ${skillMode.cardIds.length} 张${
+                      ` 已选 ${skillMode.cardIds.length} 张${
                         skillMode.skill.maxCards
                           ? ` / 至多 ${skillMode.skill.maxCards({ maxHp: me.maxHp, handCount: me.handCount })}`
                           : ''
@@ -1522,7 +1576,11 @@ export function Game() {
                       ` · 目标 ${skillMode.targetIds.length} / ${
                         skillMode.skill.maxTargets >= 99 ? '不限' : skillMode.skill.maxTargets
                       }`}
-                    {skillMode.skill.needsCards && skillMode.cardIds.length === 0 && ' · 请点手牌'}
+                    {skillMode.skill.needsCards &&
+                      skillMode.cardIds.length === 0 &&
+                      (skillMode.skill.costFrom === 'handEquip'
+                        ? ' · 请点手牌或装备区的牌'
+                        : ' · 请点手牌')}
                     {skillMode.skill.minTargets > 0 &&
                       skillMode.targetIds.length < skillMode.skill.minTargets &&
                       ' · 请点角色'}
@@ -1567,7 +1625,7 @@ export function Game() {
               {lianhengCard && prompt.kind === 'play' && (
                 <>
                   <span className="hint">
-                    连横：点一名同势力角色
+                    连横：点一名**势力不同或未确定势力**的角色
                     {lianhengPick
                       ? `（已选 ${snapshot?.players.find((p) => p.seatId === lianhengPick)?.name ?? '?'}）`
                       : ''}
@@ -1799,6 +1857,21 @@ export function Game() {
             targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
             picked={!!selected?.picked.includes(me.seatId)}
             onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
+            // 装备牌自带可用主动技（木牛流马）→ 点这张装备牌＝发动它（用户 2026-09-22 报的缺口）
+            equipUse={{
+              skillIds: skillIds,
+              onUse: (id) => enterSkillMode(id),
+            }}
+            // 「弃置一张**牌**」的技能（costFrom: 'handEquip'）→ 自己装备区里的牌也可点当代价
+            equipPick={
+              skillMode && skillMode.skill.needsCards && skillMode.skill.costFrom === 'handEquip'
+                ? {
+                    selectable: true,
+                    selectedIds: skillMode.cardIds,
+                    onPick: (id) => toggleSkillCard(id),
+                  }
+                : undefined
+            }
           />
         </div>
       </aside>

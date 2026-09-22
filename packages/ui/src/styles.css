@@ -649,13 +649,16 @@ button:disabled {
   gap: 6px;
 }
 .hi-name {
-  /* 武将名竖排 */
-  writing-mode: vertical-rl;
+  /* 武将名**横排**（用户 2026-09-21：「名字不要竖着，横过来」）。
+     左列本来就窄，所以允许折行、不写死宽度；两个武将用「 + 」连起来。 */
   color: var(--gold);
   font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 2px;
+  font-size: 14px;
+  line-height: 1.25;
+  letter-spacing: 1px;
   text-align: center;
+  max-width: 100%;
+  word-break: break-all;
 }
 /* 血量：竖排勾玉 */
 .hi-hp {
@@ -1505,13 +1508,33 @@ button:disabled {
   gap: 3px;
   justify-content: center;
 }
+/*
+ * 一个装备槽：**花色 + 点数 + 牌名**（用户 2026-09-21：「显示得再大一点儿，要把装备的
+ * 花色和点数显示出来」）。自己的面板与对手面板共用（见 components/EquipChip.tsx）。
+ */
 .equip-icon {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 2px 7px;
+  border-radius: 4px;
   background: var(--panel-2);
   color: var(--text);
   white-space: nowrap;
+}
+/* 花色点数：单独加粗一点，一眼能读出红黑与大小 */
+.equip-icon .e-rank {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+.equip-icon.suit-red .e-rank {
+  color: #e06a6a;
+}
+.equip-icon.suit-black .e-rank {
+  color: #cfcfd6;
 }
 .equip-weapon {
   background: #3a3020;
@@ -1528,6 +1551,72 @@ button:disabled {
 .equip-minusMount {
   background: #3a1e20;
   color: #d47a6a;
+}
+/*
+ * 「弃置一张**牌**」的技能正在选代价时的装备槽：点亮成可点按钮（用户 2026-09-21 口径——
+ * 文本写「牌」时装备区里的那张也是合法选择，界面必须明确呈现，别让玩家以为只能用手里那几张）。
+ * 选中的那格加金色实线，未选中的用虚线 + 轻微呼吸感提示「这里也能点」。
+ */
+.equip-slot-pick {
+  background: transparent;
+  padding: 0;
+  border: 1px dashed var(--gold);
+  border-radius: 6px;
+  cursor: pointer;
+  animation: equip-slot-hint 1.6s ease-in-out infinite;
+}
+.equip-slot-pick.picked {
+  border-style: solid;
+  animation: none;
+  box-shadow: 0 0 0 2px rgba(214, 178, 106, 0.35);
+}
+@keyframes equip-slot-hint {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+/*
+ * 装备牌**自带可用主动技**时的装备槽（目前只有【木牛流马】）：点它＝发动那个技能。
+ * 与「选代价」那种虚线不同，这里用实线金边表示「这是一次可发动的动作」。
+ */
+.equip-slot-use {
+  background: transparent;
+  padding: 0;
+  border: 1px solid var(--gold);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(214, 178, 106, 0.2);
+}
+.equip-slot-use:hover {
+  box-shadow: 0 0 0 2px rgba(214, 178, 106, 0.45);
+}
+
+/* 对手那边的标记行（国战标记是公开信息，用户 2026-09-21 要求显示） */
+.p-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+}
+/* 武将牌上的牌区（田/权/创/节…）：与自己的面板同一份列表，字号跟标记行一样小 */
+.p-zones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+}
+.p-zones .zone-chip {
+  font-size: 10px;
+  padding: 1px 4px;
+}
+.p-markers .marker-chip {
+  font-size: 10px;
+  padding: 1px 4px;
 }
 /*
  * 键盘/手柄可达性：所有可交互元素在键盘 tab 时都要看得见焦点。
@@ -1746,6 +1835,36 @@ select:focus-visible,
 .pick-cards .card {
   position: relative;
 }
+/* —— 盲选（从其他角色的未知手牌里挑）：只画牌背 ——
+   牌面绝不下发（legal.ts 把候选剥成 {id}），所以这里也没有可显示的名字/花色；
+   选中的牌背给金框 + 高亮，多选时标出点击序号，和选牌面时的 .c-order 一致。 */
+.pick-owner-hint {
+  font-size: 12px;
+  color: #6b4f2a;
+}
+.pick-cards .card-back-option {
+  position: relative;
+}
+.pick-cards .card-back-option.picked {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(200, 164, 92, 0.55);
+  filter: brightness(1.2);
+}
+.pick-cards .card-back-option .c-order {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #2a2118;
+  color: #f3d9a4;
+  border: 1px solid #c8a45c;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
 
 /* —— 私密查看（知己知彼）：内容只有本人看得到 —— */
 .view-cards {
@@ -1822,6 +1941,9 @@ select:focus-visible,
 }
 .hover-tip-desc {
   color: #d8d0c0;
+  /* 技能/说明是一条一行拼出来的，要保留换行（原来只写一行时无所谓） */
+  white-space: pre-line;
+  line-height: 1.45;
 }
 
 /* 声音开关（固定右上角，各界面都在） */
@@ -1966,6 +2088,407 @@ select:focus-visible,
   }
 }
 
+/* —— 牌桌上公开摆着的牌池（【五谷丰登】）——
+   固定顺序平铺；被拿走的**留在原位**、压暗并标「谁拿走」；轮到我时那张牌可点（金框 + 呼吸）。
+   与拼点区同一处（牌桌主列中部），所以两块区域的视觉语言保持一致：深色面板 + 金边。 */
+.pool-table {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(24, 18, 12, 0.94) 0%, rgba(38, 28, 16, 0.94) 100%);
+  border: 1px solid var(--gold);
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 24px rgba(212, 168, 75, 0.12);
+}
+.pool-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--gold);
+}
+.pool-title .pool-progress {
+  font-weight: 400;
+  color: #cdbf9a;
+}
+.pool-title .pool-turn {
+  font-weight: 400;
+  color: #ffe6a8;
+}
+.pool-title .pool-turn.done {
+  color: #cdbf9a;
+}
+.pool-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+/* 一张亮出的牌：牌面朝上（五谷亮出来的本来就是明牌） */
+.pool-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 58px;
+  height: 84px;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid #8a7048;
+  background: linear-gradient(158deg, #fffdf6 0%, #f3ead5 100%);
+  color: #2b2620;
+  font-weight: 700;
+}
+.pool-card .pc-name {
+  writing-mode: vertical-rl;
+  font-size: 12px;
+  max-height: 66px;
+  overflow: hidden;
+}
+.pool-card .pc-taken {
+  font-size: 9px;
+  line-height: 1;
+  color: #6d5736;
+}
+.pool-card.red {
+  color: #b3352a;
+}
+/* 被我拿走不了（不是我的轮次）或已被拿走的：安静一点 */
+.pool-card.taken {
+  opacity: 0.42;
+  filter: grayscale(0.7);
+}
+/* 轮到我、且这张还没被拿走：金框 + 轻微呼吸，明确「点它就拿走」 */
+.pool-card.clickable {
+  cursor: pointer;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(212, 168, 75, 0.45);
+  animation: pool-hint 1.5s ease-in-out infinite;
+}
+.pool-card.clickable:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+@keyframes pool-hint {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(212, 168, 75, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(212, 168, 75, 0.22);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pool-card.clickable {
+    animation: none !important;
+  }
+}
+
+/* —— 「操作别人区域里的牌」的分区面板（用户 2026-09-23）——
+   结构照用户画的那张图：不同角色**横向分栏**；同一角色内部按 hand / equip / judge
+   **纵向分区**（手牌在上、装备在中、判定在最下）；**不写区名文字**，靠位置与留白区分。
+   手牌一律牌背（牌面根本没下发），装备/判定是公开区、照常画牌名。 */
+.zone-pick {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+}
+.zp-target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(212, 168, 75, 0.35);
+}
+.zp-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffe6a8;
+}
+.zp-zone {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+/* 三个区之间给一点**留白**当分隔（不写字）：手牌区与装备区之间、装备区与判定区之间 */
+.zp-zone + .zp-zone {
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(212, 168, 75, 0.25);
+}
+.zp-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 5px;
+  border: 1px solid var(--gold);
+  background: #2c2013;
+  color: #e8d9b0;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.1;
+}
+.zp-card:hover {
+  filter: brightness(1.25);
+}
+/* 牌背（隐藏手牌）：只表示「这里有一张看不到的牌」 */
+.zp-back {
+  width: 34px;
+  height: 48px;
+  padding: 0;
+}
+.zp-back-img {
+  width: 32px;
+  height: 46px;
+  border-radius: 4px;
+  object-fit: cover;
+  display: block;
+}
+/* 牌面（装备/判定/已公开）：稍宽，能读出牌名 */
+.zp-face {
+  min-width: 46px;
+  padding: 4px 6px;
+  background: linear-gradient(158deg, #fffdf6 0%, #f3ead5 100%);
+  color: #2b2620;
+  border-color: #8a7048;
+  font-weight: 700;
+}
+
+/* —— 拼点区（牌桌中央，用户 2026-09-23）——
+   「等待选择 → 牌背入场 → 双方翻牌 → 比较点数 → 展示胜负」这一条流程全靠下面几段演：
+   状态由服务端下发（PindianView），这里只负责过渡与落位。
+   布局用**容器 + 居中**（不写绝对坐标），窄屏/桌面同一套。 */
+.pindian-table {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  /* 压在羊皮纸桌布上：用深色面板把它「端出来」，一眼看出这是牌桌中央的一次事件 */
+  background: linear-gradient(180deg, rgba(24, 18, 12, 0.94) 0%, rgba(38, 28, 16, 0.94) 100%);
+  border: 1px solid var(--gold);
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 24px rgba(212, 168, 75, 0.12);
+}
+.pd-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--gold);
+}
+.pd-title .pd-progress {
+  font-weight: 400;
+  color: #cdbf9a;
+}
+.pd-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.pd-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.pd-name {
+  font-size: 12px;
+  color: #e8dcc0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pd-side.mine .pd-name {
+  color: #ffe6a8;
+}
+.pd-tag {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--gold);
+  color: #1a1208;
+}
+/* 牌位：空位是虚线框，扣置后solid并放卡背 */
+.pd-slot {
+  width: 62px;
+  height: 88px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.pd-slot.empty {
+  border: 1px dashed rgba(212, 168, 75, 0.5);
+  background: rgba(255, 255, 255, 0.03);
+}
+.pd-wait {
+  font-size: 11px;
+  color: #b9a97f;
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+}
+/* 牌背入场：从「立着」翻进来（rotateY 90° → 0），末段轻微回弹（game-feel：动效要有缓动） */
+.pd-slot.filled {
+  border: 1px solid var(--gold);
+  background: #2c2013;
+  animation: pd-back-in 0.28s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+.pd-back,
+.pd-back-img {
+  display: block;
+  width: 58px;
+  height: 84px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.pd-back {
+  font-size: 34px;
+  line-height: 84px;
+  text-align: center;
+  color: #e8d9b0;
+}
+@keyframes pd-back-in {
+  from {
+    transform: perspective(600px) rotateY(88deg) translateY(-6px);
+    opacity: 0.2;
+  }
+  to {
+    transform: perspective(600px) rotateY(0deg) translateY(0);
+    opacity: 1;
+  }
+}
+/* 翻牌：两张同时（同一个 class、同一个 delay）翻到正面 + 一次金色闪光 */
+.pd-slot.filled .pd-face {
+  animation: pd-flip 0.42s ease-out both;
+}
+@keyframes pd-flip {
+  0% {
+    transform: perspective(700px) rotateY(88deg);
+    filter: brightness(1.6);
+  }
+  55% {
+    filter: brightness(1.25);
+  }
+  100% {
+    transform: perspective(700px) rotateY(0deg);
+    filter: brightness(1);
+  }
+}
+.pd-face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 58px;
+  height: 84px;
+  border-radius: 5px;
+  background: linear-gradient(158deg, #fffdf6 0%, #f3ead5 100%);
+  color: #2b2620;
+  border: 1px solid #8a7048;
+}
+.pd-card-name {
+  font-size: 11px;
+  font-weight: 700;
+  writing-mode: vertical-rl;
+  max-height: 60px;
+  overflow: hidden;
+}
+/* 点数：拼点比的数，放大、描金，一眼看得出谁大 */
+.pd-point {
+  font-size: 20px;
+  font-weight: 800;
+  color: #8a5a12;
+}
+/* 比大小符号：翻牌后出现，落在两张牌中间 */
+.pd-vs {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--gold);
+  animation: pd-vs-in 0.3s ease-out 0.34s both;
+}
+@keyframes pd-vs-in {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+/* 结果条：压在翻牌之后出现（delay 比翻牌稍晚），一次轻微「弹一下」 */
+.pd-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  animation: pd-result-in 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) 0.42s both;
+}
+.pd-result.decided {
+  background: rgba(212, 168, 75, 0.18);
+  border: 1px solid var(--gold);
+}
+.pd-result.tie {
+  background: rgba(180, 180, 180, 0.14);
+  border: 1px solid #9a9a9a;
+}
+.pd-points {
+  font-size: 18px;
+  font-weight: 800;
+  color: #ffe6a8;
+  letter-spacing: 1px;
+}
+.pd-result.tie .pd-points {
+  color: #dedede;
+}
+.pd-verdict {
+  font-size: 13px;
+  color: #f0e6cd;
+}
+@keyframes pd-result-in {
+  from {
+    transform: scale(0.86);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 无障碍（game-feel 的「必须能关掉」）：系统开了「减少动态效果」时，所有拼点动画只保留结果 */
+@media (prefers-reduced-motion: reduce) {
+  .pd-slot.filled,
+  .pd-slot.filled .pd-face,
+  .pd-vs,
+  .pd-result {
+    animation: none !important;
+  }
+}
+
 /* 特殊牌区（权 / 异 / 函 / 戮）：紧挨武将名的一条小徽章行 */
 .special-zones {
   display: flex;
@@ -1981,4 +2504,60 @@ select:focus-visible,
   border-radius: 3px;
   opacity: 0.9;
   white-space: nowrap;
+}
+
+/* —— 渲染错误兜底页（ErrorBoundary）——
+   没有它时 React 会把整棵树卸载，深色底上就是一块黑屏（用户报的「切屏回来黑屏」）。 */
+.crash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  background: #070a0d;
+  color: var(--text);
+  text-align: center;
+}
+.crash-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--gold);
+}
+.crash-msg {
+  max-width: 640px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #e8b4b4;
+  word-break: break-all;
+}
+.crash-hint {
+  max-width: 520px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* —— 对手的武将小卡（国战两张：主将 / 副将）—— */
+.p-heroes {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+/* 长按出提示的元素：别让系统弹出「选择文字/复制」菜单抢走长按 */
+.p-heroes .portrait,
+.p-equip .equip-icon,
+.p-judge .judge-icon,
+.hand .card {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* 小卡上的「主将/副将」角标：编号小一点，别盖住立绘的脸 */
+.p-heroes .portrait-tag {
+  font-size: 8px;
+  padding: 0 3px;
 }

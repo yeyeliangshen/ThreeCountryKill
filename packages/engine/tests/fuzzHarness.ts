@@ -84,6 +84,8 @@ export function allCardIds(state: GameState): string[] {
     for (const c of p.han) push(c);
     for (const c of p.yi) push(c);
     for (const c of p.quan) push(c);
+    // 陆逊·谦逊收下的「节」（当前移动版国战）：扣在武将牌上的**实体牌**，最容易漏进网
+    for (const c of p.jie) push(c);
     // 国战【空城】第二段的暂存牌（0 手牌诸葛回合外被「交给」的牌，扣在武将牌上）
     for (const c of p.kongcheng) push(c);
   }
@@ -107,7 +109,8 @@ export function cardLocations(state: GameState, id: string): string[] {
   };
   state.deck.forEach((c, i) => chk(c, `deck[${i}]`));
   state.discard.forEach((c, i) => chk(c, `discard[${i}]`));
-  if (state.judgmentInFlight) state.judgmentInFlight.cards.forEach((c, i) => chk(c, `inFlight[${i}]`));
+  if (state.judgmentInFlight)
+    state.judgmentInFlight.cards.forEach((c, i) => chk(c, `inFlight[${i}]`));
   state.pendingFactionTricks.forEach((c, i) => chk(c, `factionTrick[${i}]`));
   state.exiled.forEach((c, i) => chk(c, `exiled[${i}]`));
   for (const p of state.players) {
@@ -124,6 +127,7 @@ export function cardLocations(state: GameState, id: string): string[] {
     }
     p.judgment.forEach((c, i) => chk(c, `${p.seatId}.judg[${i}]`));
     p.tian.forEach((c, i) => chk(c, `${p.seatId}.tian[${i}]`));
+    p.jie.forEach((c, i) => chk(c, `${p.seatId}.jie[${i}]`));
     p.qianhuan.forEach((c, i) => chk(c, `${p.seatId}.qh[${i}]`));
     p.kongcheng.forEach((c, i) => chk(c, `${p.seatId}.kongcheng[${i}]`));
   }
@@ -176,7 +180,10 @@ export function step(state: GameState, rand: () => number): void {
           cardId,
           targetIds: targets.slice(0, n),
         });
-        if (!r.ok && !applyIntent(state, p.seatId, { type: 'playCard', cardId, targetIds: [] }).ok) {
+        if (
+          !r.ok &&
+          !applyIntent(state, p.seatId, { type: 'playCard', cardId, targetIds: [] }).ok
+        ) {
           applyIntent(state, p.seatId, { type: 'endPhase' });
         }
         return;
@@ -211,9 +218,7 @@ export function step(state: GameState, rand: () => number): void {
     case 'pickCards':
       applyIntent(state, p.seatId, {
         type: 'pickCards',
-        cardIds: p.cards
-          .slice(0, Math.min(p.max, p.min + (rand() < 0.5 ? 1 : 0)))
-          .map((c) => c.id),
+        cardIds: p.cards.slice(0, Math.min(p.max, p.min + (rand() < 0.5 ? 1 : 0))).map((c) => c.id),
       });
       return;
     case 'viewCards':
@@ -278,7 +283,6 @@ export function riskyGame(seed: number): GameState {
   return state;
 }
 
-
 /**
  * 「牌不在任何区域」的守望器：跨步统计每张牌的缺席时长。
  *
@@ -322,4 +326,3 @@ export function makeCardWatch(ids0: string[], limit = 5) {
     },
   };
 }
-

@@ -13,7 +13,7 @@
 // 不显示玩家自己的名字（甲/乙），只显示武将信息。
 //
 // 原画按 <武将 id>.jpg 放在 packages/ui/assets/heroes/ 下，见 heroArt.ts。
-import { ROLE_NAME, FACTION_NAME, MARKER_DESC } from '@sgs/engine';
+import { ROLE_NAME, FACTION_NAME } from '@sgs/engine';
 import {
   cardDescription,
   cardShortName,
@@ -22,6 +22,9 @@ import {
   type GameMode,
   type PlayerView,
 } from '@sgs/protocol';
+import { EquipChip } from './EquipChip';
+import { equipSkillButtonOf } from '../equipSkill';
+import { specialZoneChips } from '../specialZones';
 import { heroArt } from './heroArt';
 import { useHoverTip } from './HoverTip';
 
@@ -47,6 +50,29 @@ export interface HeroPanelProps {
   onSelect?: () => void;
   targetable?: boolean;
   picked?: boolean;
+  /**
+   * **装备区的牌可以当代价**时（技能声明了 `costFrom: 'handEquip'`，用户 2026-09-21 口径），
+   * 把已装备的牌**点亮成可点按钮**：点一下就是选中它当代价。
+   *
+   * 为什么要单独开一个口：文本写「弃置一张**牌**」的技能，装备区里的那张也是合法选择——
+   * 以前界面只让点手牌，玩家根本不知道装备能用（更别提去点它）。
+   */
+  equipPick?: {
+    /** 现在能不能点（技能正在等着选代价牌） */
+    selectable: boolean;
+    /** 已经选中的牌 id（高亮用） */
+    selectedIds: string[];
+    onPick: (cardId: string) => void;
+  };
+  /**
+   * 装备牌**自带可用主动技**时（目前只有【木牛流马】）：点这张装备牌＝发动那个技能。
+   * 缺口背景见 `equipSkillButtonOf` 的注释（用户 2026-09-22：装了木牛流马点它没反应）。
+   */
+  equipUse?: {
+    /** 服务端下发的可用技能 id 列表（`prompt.legalSkillIds`） */
+    skillIds: readonly string[];
+    onUse: (skillId: string) => void;
+  };
 }
 
 function Portrait({
@@ -86,12 +112,22 @@ function Portrait({
   );
 }
 
-export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: HeroPanelProps) {
+export function HeroPanel({
+  me,
+  mode,
+  slots,
+  onSelect,
+  targetable,
+  picked,
+  equipPick,
+  equipUse,
+}: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
   const faction = mode === 'guozhan' ? me.faction : (slots[0]?.faction ?? null);
   const factionClass = mode === 'guozhan' && me.faction ? `faction-${me.faction}` : '';
+  const zoneChips = specialZoneChips(me);
 
   return (
     <div
@@ -100,68 +136,13 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
     >
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
-        {/* 特殊牌区（公开信息）：权 / 异 / 函 是**实体牌**，戮是**武将牌**（只显示牌名），
-            田 / 千幻 / 魂 / 创 / 【空城】暂存牌 只公开**张数**（田与空城那批的内容是暗的）。
-            没有明细的用 tianCount 那几个计数，避免把暗牌摊开。 */}
-        {me.quan?.length ||
-        me.yi?.length ||
-        me.han?.length ||
-        me.luCount ||
-        me.tianCount ||
-        me.qianhuanCount ||
-        me.hunCount ||
-        me.wounds?.length ||
-        me.kongchengCount ? (
+        {/* 特殊牌区（公开信息）：口径统一在 specialZones.ts —— 自己的面板与**对手那一行**
+            共用同一份列表（以前只有自己的面板画，对手有几张「节」看不到）。 */}
+        {zoneChips.length > 0 ? (
           <div className="special-zones">
-            {me.tianCount ? (
-              <span className="zone-chip" {...bind('田', '邓艾·屯田放在武将牌上的牌：距离 -X')}>
-                田·{me.tianCount}
-              </span>
-            ) : null}
-            {me.qianhuanCount ? (
-              <span className="zone-chip" {...bind('千幻', '于吉·千幻放在武将牌上的牌')}>
-                幻·{me.qianhuanCount}
-              </span>
-            ) : null}
-            {me.hunCount ? (
-              <span className="zone-chip" {...bind('魂', '左慈·役鬼扣在武将牌上的武将牌')}>
-                魂·{me.hunCount}
-              </span>
-            ) : null}
-            {me.wounds?.length ? (
-              <span
-                className="zone-chip"
-                {...bind('创', '周泰·不屈扣在武将牌上的牌（点数都不同才挡得住死）')}
-              >
-                创·{me.wounds.length}
-              </span>
-            ) : null}
-            {me.kongchengCount ? (
-              <span
-                className="zone-chip"
-                {...bind('城', '国战【空城】暂存牌：下个摸牌阶段开始时一次性获得')}
-              >
-                城·{me.kongchengCount}
-              </span>
-            ) : null}
-            {me.quan?.map((c) => (
-              <span key={`quan-${c.id}`} className="zone-chip">
-                权·{c.type}
-              </span>
-            ))}
-            {me.yi?.map((c) => (
-              <span key={`yi-${c.id}`} className="zone-chip">
-                异·{c.type}
-              </span>
-            ))}
-            {me.han?.map((c) => (
-              <span key={`han-${c.id}`} className="zone-chip">
-                函·{c.type}
-              </span>
-            ))}
-            {me.luNames?.map((n, i) => (
-              <span key={`lu-${i}`} className="zone-chip">
-                戮·{n}
+            {zoneChips.map((c) => (
+              <span key={c.key} className="zone-chip" {...bind(c.label.split('·')[0]!, c.tip)}>
+                {c.label}
               </span>
             ))}
           </div>
@@ -171,21 +152,8 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
             <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
           )}
           {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
-          {/* 国战标记（公开信息）：先驱 / 阴阳鱼 / 珠联璧合 */}
-          {me.markers?.map((m) => (
-            <span
-              key={m.id}
-              className={`marker-chip mark-${m.id}`}
-              {...bind(
-                `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
-                MARKER_DESC[m.id] ?? '',
-              )}
-            >
-              {m.label}
-              {m.count > 1 && <span className="marker-count">{m.count}</span>}
-            </span>
-          ))}
-          {/* 武将牌翻面朝上（公开信息）：会跳过下一个回合 */}
+          {/* ⚠️ 国战标记**不在这里放**（用户 2026-09-21）：它们已经和技能一起排在技能条上，
+              在武将框里再放一份是重复信息。这里的「翻/横」是**状态**不是标记，留着。 */}
           {me.flipped && (
             <span
               className="marker-chip mark-flip"
@@ -213,20 +181,43 @@ export function HeroPanel({ me, mode, slots, onSelect, targetable, picked }: Her
         <div className="hero-info-foot">
           {(me.equipment.length > 0 || me.judgment.length > 0) && (
             <span className="hero-zones">
-              {me.equipment.map((c: Card) => (
-                <span
-                  key={c.id}
-                  className={`equip-icon equip-${c.type}`}
-                  title={`${cardShortName(c)}\n${cardDescription(c, mode)}`}
-                >
-                  {cardShortName(c)}
-                </span>
-              ))}
+              {me.equipment.map((c: Card) => {
+                // 「自带可用主动技」的装备牌（木牛流马）：点它＝发动那个技能
+                const useSkillId = equipUse
+                  ? equipSkillButtonOf(c.equipName, equipUse.skillIds)
+                  : null;
+                if (useSkillId && !equipPick?.selectable) {
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="equip-slot-use"
+                      onClick={() => equipUse!.onUse(useSkillId)}
+                    >
+                      <EquipChip card={c} mode={mode} bind={bind} />
+                    </button>
+                  );
+                }
+                if (!equipPick?.selectable) {
+                  return <EquipChip key={c.id} card={c} mode={mode} bind={bind} />;
+                }
+                const on = equipPick.selectedIds.includes(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={`equip-slot-pick ${on ? 'picked' : ''}`}
+                    onClick={() => equipPick.onPick(c.id)}
+                  >
+                    <EquipChip card={c} mode={mode} bind={bind} />
+                  </button>
+                );
+              })}
               {me.judgment.map((c: Card) => (
                 <span
                   key={c.id}
                   className="judge-icon"
-                  title={`${cardShortName(c)}\n${cardDescription(c, mode)}`}
+                  {...bind(cardShortName(c), cardDescription(c, mode))}
                 >
                   {cardShortName(c)}
                 </span>

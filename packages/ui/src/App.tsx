@@ -6,6 +6,7 @@ import { Lobby } from './pages/Lobby';
 import { Game } from './pages/Game';
 import { SoundToggle, useGameAudio } from './audio';
 import { FullscreenToggle } from './components/FullscreenToggle';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './styles.css';
 
 /** 构建版本戳（由 client 的 vite 注入）。开发模式下没有，显示占位 */
@@ -32,10 +33,13 @@ export function App() {
       <SoundToggle />
       <FullscreenToggle />
 
-      {screen === 'join' && <JoinPage />}
-      {screen === 'hall' && <Hall />}
-      {screen === 'lobby' && <Lobby />}
-      {screen === 'game' && <Game />}
+      {/* 渲染异常必须让玩家看得见（否则深色底上就是一块黑屏），见 ErrorBoundary 的注释 */}
+      <ErrorBoundary>
+        {screen === 'join' && <JoinPage />}
+        {screen === 'hall' && <Hall />}
+        {screen === 'lobby' && <Lobby />}
+        {screen === 'game' && <Game />}
+      </ErrorBoundary>
 
       {/* 版本戳：判断「浏览器看到的是不是最新那份构建」用，出问题先看这里 */}
       <div className="build-stamp" title="前端构建版本（commit · 构建时间）">

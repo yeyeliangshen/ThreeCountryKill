@@ -354,7 +354,18 @@ export interface SkillApi {
     min: number,
     max: number,
     resolve: (state: GameState, player: Player, picked: Card[]) => void,
-    opts?: { returnTo?: string; secret?: boolean },
+    opts?: {
+      returnTo?: string;
+      secret?: boolean;
+      /**
+       * **盲选**：候选来自**其他角色的未知手牌**时置 true（用户 2026-09-22 的通用机制）——
+       * 下发给选择者的快照只留 id（牌面不出服务端）、界面画牌背；`ownerSeatId` 标注在看谁的手牌，
+       * `visibleIds` 是其中已因其他效果公开的那几张（照常画牌面）。
+       */
+      hidden?: boolean;
+      ownerSeatId?: string;
+      visibleIds?: string[];
+    },
   ) => void;
   /**
    * 一次**选多名角色**（多选座位原语）：候选、至多/至少几个，回答给选中的座位 id 列表。
@@ -432,6 +443,24 @@ export interface SkillApi {
    *    这是 `docs/guozhan-roster.md` 里 #9「统一的牌移动语义」的第一块落地。
    */
   giveCard: (fromSeatId: string, card: Card, toSeatId: string, after?: () => void) => void;
+  /**
+   * 令某人**视为使用一张锦囊**（虚拟牌）——走**正常的锦囊流程**：开无懈窗口、派
+   * `trickTargeted` / `othersBecomeTarget` 钩子、按正常路径结算与收尾。
+   *
+   * 为什么必须有这个口子（而不是在 heroes 里手搓一个 `respondTrick` 假 pending）：
+   * 「视为使用一张锦囊」出来的东西**本身就是一张锦囊**——它要能被无懈、能被「成为目标时」
+   * 的技能响应。手搓的假 pending 会把这些**全部绕过去**。
+   *
+   * 目前的使用者：貂蝉·离间（生成那张【决斗】，用户 2026-09-21 口径）。
+   * `sourceSeatId` 是**视为使用这张牌的人**（不一定是技能的拥有者）。
+   */
+  useVirtualTrick: (
+    sourceSeatId: string,
+    card: Card,
+    targetIds: string[],
+    /** 结算完把控制权还给谁（缺省＝`sourceSeatId`）；离间要还给出牌阶段的貂蝉 */
+    resumeSeatId?: string,
+  ) => void;
   /**
    * 让某人弃置自己的一张牌（手牌或装备区）。失去装备会触发那类技能。
    * after 在结算完成后调用。

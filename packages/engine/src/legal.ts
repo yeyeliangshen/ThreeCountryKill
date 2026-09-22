@@ -109,6 +109,9 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         mustSelectTargetCount: 0,
         choiceTitle: pending.title,
         choiceOptions: pending.options,
+        // 「操作别人区域里的牌」的分区布局（用户 2026-09-23）：界面据此画多栏 + 区内分区。
+        // 没带布局的老询问照旧画成一排按钮。
+        ...(pending.zonePick ? { zonePick: pending.zonePick } : {}),
       };
 
     case 'pickSeats':
@@ -135,8 +138,22 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         legalTargetIds: [],
         mustSelectTargetCount: 0,
         pickTitle: pending.title,
-        // 下发的牌面可能是牌堆顶这种不在手牌里的牌，所以整份发过去
-        pickCards: pending.cards.slice(),
+        // 下发的牌面可能是牌堆顶这种不在手牌里的牌，所以整份发过去。
+        // ⚠️ 但**盲选**（从别人未知手牌里挑，用户 2026-09-22）只发 id：牌面绝不出服务端，
+        //    界面按 pickHidden 画牌背；其中「已公开」的那几张由规则层放进 pickVisibleIds。
+        // 盲选：**只有 id** 发下去（牌面绝不出服务端）。其中 `visibleIds` 命中的那几张
+        // 已经因别的效果公开过（例如刚被【火攻】展示），照常发牌面——「已公开的手牌
+        // 按可见性显示」是规格第 9 条，判定在规则层，界面只管画。
+        pickCards: pending.hidden
+          ? pending.cards.map((c) =>
+              pending.visibleIds?.includes(c.id) ? c : ({ id: c.id } as Card),
+            )
+          : pending.cards.slice(),
+        ...(pending.hidden ? { pickHidden: true } : {}),
+        // 「从牌桌上公开摆着的牌池里拿」（五谷）：界面画牌池、直接点牌，不画通用选牌框
+        ...(pending.fromPool ? { pickFromPool: true } : {}),
+        ...(pending.ownerSeatId ? { pickOwnerSeatId: pending.ownerSeatId } : {}),
+        ...(pending.visibleIds?.length ? { pickVisibleIds: pending.visibleIds.slice() } : {}),
         pickMin: pending.min,
         pickMax: pending.max,
       };
@@ -167,10 +184,6 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
     case 'wuxieQueue':
       if (pending.askQueue[pending.askIndex] !== seatId) return null;
       return buildWuxiePrompt(state, seatId, pending.ctx);
-
-    case 'activeSkill':
-      // 多步技能交互的提示由具体技能构建（Step 6 实现）
-      return null;
   }
   return null;
 }
@@ -357,9 +370,13 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
               effectiveFaction(state, p) !== myFaction,
           );
       } else {
-        // 决斗 / 火攻 / 过河拆桥 / 知己知彼：只要有一个其他存活玩家就能用 ——
+        // 决斗 / 过河拆桥 / 知己知彼：只要有一个其他存活玩家就能用 ——
         // 帷幕/空城那类是「成为目标时取消之」，不是「选不了他」（用户 2026-09-21 口径）。
         legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+        // ⚠️ 例外：【火攻】的目标必须**有手牌**（要对方展示一张手牌）——
+        //    全场其他人都空手时这张牌**根本用不出去**，不该在界面上亮着（用户 2026-09-23 复报）。
+        if (card.type === 'huogong')
+          legal = state.players.some((p) => p.alive && p.seatId !== seatId && p.hand.length > 0);
       }
       if (legal) {
         legalCardIds.push(card.id);
@@ -371,7 +388,10 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     for (const it of ['guohe', 'huogong', 'juedou'] as const) {
       if (seen.has(card.id)) break;
       if (!canUseAsCard(state, player, card, it)) continue;
-      const legal = state.players.some((p) => p.alive && p.seatId !== seatId);
+      // 转化出来的【火攻】同样要求**有人有手牌**（卧龙·火计）
+      const legal = state.players.some(
+        (p) => p.alive && p.seatId !== seatId && (it !== 'huogong' || p.hand.length > 0),
+      );
       if (legal) {
         legalCardIds.push(card.id);
         seen.add(card.id);
@@ -414,7 +434,7 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
     .map((p) => p.seatId);
   // 可用主动技能：武将主动技 + 标记技能
   const legalSkillIds: string[] = [];
-  const legalSkills: { id: string; name: string; desc: string }[] = [];
+  const legalSkills: NonNullable<ReturnType<typeof buildPlayPrompt>['legalSkills']> = [];
   // 国战：暗置武将的主动技也列出来——点了就等于「明置该武将 + 发动」
   // （规则：发动技能时必须明置该武将）。技能说明要连暗置的武将一起找。
   const darkHeroes = state.mode === 'guozhan' ? unrevealedHeroes(state.mode, player) : [];
@@ -439,7 +459,14 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       !(skill.oncePerGame && player.usedOncePerGame[skill.id])
     ) {
       legalSkillIds.push(skill.id);
-      legalSkills.push({ id: skill.id, name: skill.name, desc: skillDescFor(descPool, skill) });
+      legalSkills.push({
+        id: skill.id,
+        name: skill.name,
+        desc: skillDescFor(descPool, skill),
+        needsCards: skill.needsCards === true,
+        minTargets: skill.minTargets,
+        maxTargets: skill.maxTargets,
+      });
     }
   }
   return {
@@ -598,12 +625,53 @@ function buildRespondDeathPrompt(state: GameState, seatId: string, dyingId: stri
 
 function buildDiscardPrompt(state: GameState, seatId: string, count: number): PromptView {
   const player = getPlayerOrThrow(state, seatId);
+  // 弃牌阶段也会用到「主动技能」：国战标记【阴阳鱼】在这里弃置＝本回合手牌上限 +2。
+  // （标记技能不属于任何武将，界面必须靠这份 list 才画得出按钮——见 legalSkillsOf。）
+  const markers = markerActiveSkills(state, player).filter((s) => s.canUse(state, player));
   return {
     kind: 'discard',
     message: `弃牌阶段：请弃 ${count} 张牌`,
     legalCardIds: player.hand.map((c) => c.id),
     legalTargetIds: [],
     mustSelectTargetCount: count,
+    ...(markers.length > 0
+      ? {
+          legalSkillIds: markers.map((s) => s.id),
+          legalSkills: markers.map((s) => legalSkillView(state, player, s)),
+        }
+      : {}),
+  };
+}
+
+/**
+ * 下发给界面的技能定义：**带上选择参数**（要不要选牌、至少/至多几个目标）。
+ *
+ * 为什么不只发 id/name/desc：界面的「点技能 → 选牌/选目标 → 确认」这条路要用这些参数
+ * （见 ui 的 enterSkillMode），而**标记技能**（阴阳鱼/先驱/珠联璧合/野心家）不属于任何武将，
+ * 界面在本地武将表里查不到定义 —— 所以参数必须由服务端给。
+ */
+function legalSkillView(
+  state: GameState,
+  player: Player,
+  skill: ActiveSkill,
+): {
+  id: string;
+  name: string;
+  desc: string;
+  needsCards: boolean;
+  minTargets: number;
+  maxTargets: number;
+  costFrom?: 'hand' | 'handEquip';
+} {
+  return {
+    id: skill.id,
+    name: skill.name,
+    desc: skillDescFor(activeHeroes(state, player), skill),
+    needsCards: skill.needsCards === true,
+    minTargets: skill.minTargets,
+    maxTargets: skill.maxTargets,
+    // 代价能取自哪个区（界面据此决定要不要把装备区也点亮）——见 ActiveSkill.costFrom
+    ...(skill.costFrom ? { costFrom: skill.costFrom } : {}),
   };
 }
 

@@ -1,8 +1,12 @@
 import { CARD_TYPE_NAME, EQUIP_NAME, FACTION_TRICK_TYPES } from '@sgs/protocol';
 import type {
+  GuozhanExtensions,
+  ZonePickLayout,
   Card,
   CardType,
   DamageAttribute,
+  PindianView,
+  PublicPoolView,
   Faction,
   GameMode,
   LogEntry,
@@ -448,6 +452,12 @@ export interface Player {
    */
   tian: Card[];
   /**
+   * **「节」**（陆逊·谦逊，当前移动版国战）：被他【谦逊】收掉的**单目标锦囊牌**，扣在武将牌上。
+   * 最多 3 张（满了【谦逊】就不再触发），可以被【度势】选项二「三张节当一张火焰牌」消耗。
+   * 与「田/创/魂」同一类**实体牌区**（牌真的在这里，不是计数），所以模糊扫描要认得它。
+   */
+  jie: Card[];
+  /**
    * 国战【空城】第二段的**暂存牌**：0 手牌的空城诸葛在自己回合外被其他角色「交给」牌时，
    * 这些牌改为置于其**武将牌上**（**不进手牌**，所以空城照旧成立），到他的下一个
    * 摸牌阶段开始时**一次性获得**（见 heroes.ts 的 kongchengStash 与 engine 的 giveCard）。
@@ -511,7 +521,12 @@ export interface Player {
    * 一切「是不是同势力」的判断都走 `heroes.factionGroupKey`（它优先读这个字段）。
    */
   forceId?: string;
-  lordGrant?: { skillHeroId: string; skillName: string; blockedHeroId: string; lordSeatId: string } | null;
+  lordGrant?: {
+    skillHeroId: string;
+    skillName: string;
+    blockedHeroId: string;
+    lordSeatId: string;
+  } | null;
 }
 
 // 一次"杀"的结算上下文（贯穿 使用→成为目标→结算）
@@ -600,6 +615,11 @@ export interface AttackContext {
    */
   afterSettled?: () => void;
   /**
+   * 这次**攻击流程**的起点快照（施工方案 Step 3a.1）：`startAttack`/`resolvePlayedSha` 刚拿到
+   * 控制权时拍的槽快照，收尾 `resumePlay` 时当围栏用（判「我这段时间里有没有人创建更新一代」）。
+   */
+  pendingFence?: { requestId: number | null; slotVersion: number };
+  /**
    * 这次【杀】摆上槽的那个「求闪询问」（`{kind:'respondSha'}`）对象本身。
    *
    * 用途是「**谁建谁清**」：自动响应（八卦阵/护驾那类代打）会在**同一个 intent 里**
@@ -626,6 +646,14 @@ export interface AttackContext {
 // 即时锦囊结算上下文（贯穿：打出→无懈可击询问→结算→响应）
 export interface TrickContext {
   sourceId: string;
+  /**
+   * **结算完把控制权还给谁**——缺省＝`sourceId`（谁用的牌就还给谁）。
+   *
+   * 只有「**在别人的回合里，替别人造一张牌**」那种技能才需要它：貂蝉·离间是貂蝉出牌阶段
+   * 发动的，虚拟【决斗】的“使用者”是关羽（他要跟张飞决斗），但**回合还是貂蝉的**——
+   * 收尾必须还给出牌阶段的貂蝉，不能把控制权交给关羽（用户 2026-09-21 口径）。
+   */
+  resumeSeatId?: string;
   card: Card;
   // 过河拆桥/顺手牵羊：目标与指定的明牌区牌
   targetId?: string;
@@ -728,8 +756,14 @@ export type Pending =
        */
       done: () => void;
     }
-  // 弃牌阶段：弃到上限
-  | { kind: 'discard'; seatId: string; count: number }
+  /**
+   * 弃牌阶段：弃到上限。
+   *
+   * `thrown`＝**本阶段到此刻为止已经弃掉的牌**（跨轮累加）：弃牌阶段里被技能塞回来的牌
+   * 也要接着弃（用户 2026-09-21 口径），所以这一格可能被摆上多次；账本给
+   * `othersDiscardPhaseEnd` 的 payload 用（「该角色此阶段弃置的牌」）。
+   */
+  | { kind: 'discard'; seatId: string; count: number; thrown?: Card[] }
   // 锦囊响应：出杀(南蛮/决斗/借刀)/出闪(万箭)/展示牌(火攻)/弃牌(火攻)
   | { kind: 'respondTrick'; responderId: string; ctx: TrickContext }
   /**
@@ -747,8 +781,6 @@ export type Pending =
       askIndex: number;
       onDone?: () => void;
     }
-  // 主动技能：出牌阶段使用主动技能（多步交互时暂停）
-  | { kind: 'activeSkill'; seatId: string; skillId: string }
   /**
    * 通用「选择一项」：某角色在若干选项里选一个。
    * resolve 是选完之后怎么继续——引擎的 GameState 常驻内存、不做序列化
@@ -766,6 +798,12 @@ export type Pending =
        * 所以由技能发起的「选择一项」都应该填这个。
        */
       returnTo?: string;
+      /**
+       * 「操作**别人区域里的牌**」的**分区布局**（用户 2026-09-23 的口径）：不同角色横向分栏、
+       * 同一角色内部按 hand/equip/judge 纵向分区。
+       * ⚠️ 它**只是布局**——点某一张仍然回 `chooseOption(optionId)`，引擎的解析不变。
+       */
+      zonePick?: ZonePickLayout;
     }
   /**
    * 从一组牌里看/选若干张（选牌原语）。
@@ -781,13 +819,31 @@ export type Pending =
       cards: Card[];
       min: number;
       max: number;
+      /**
+       * 候选对**选择者**是否隐藏（「从其他角色未知手牌中选牌」的通用盲选，用户 2026-09-22）。
+       * 为 true 时下发给选择者的快照里**只留 id**（见 legal 的 buildPrompt）——牌面不出服务端。
+       */
+      hidden?: boolean;
+      /**
+       * 这一手选牌是**从牌桌上公开摆着的牌池里拿**（【五谷丰登】）：界面不画通用选牌框，
+       * 改为直接点牌桌中央那张牌（点完立即拿走）。见 `GameState.publicPool`。
+       */
+      fromPool?: boolean;
+      /** 这些牌属于谁（盲选时界面标注「在看谁的手牌」） */
+      ownerSeatId?: string;
+      /** 其中已因其他效果公开的牌 id（由规则层给，界面照它画牌面） */
+      visibleIds?: string[];
       /** 选完怎么继续。收到的是被选中的**牌对象**，不用再去找 */
       resolve: (state: GameState, player: Player, picked: Card[]) => void;
       /**
        * 选完把控制权还给谁。钩子发起的不传（走续接队列）；技能发起的必须传。
        */
       returnTo?: string;
-      /** 选牌内容是不是秘密（观星）：是则日志只记张数，不记牌名 */
+      /**
+       * 选牌内容是不是秘密（观星）：是则日志只记张数，不记牌名。
+       * ⚠️ 盲选（`hidden`）**同样**不记牌名——见 `onPickCards` 的日志分支：
+       *    日志是**发给全场**的，选了哪张写进去就等于把对手的手牌公开了。
+       */
       secret?: boolean;
     }
   /**
@@ -855,8 +911,8 @@ export interface DraftState {
 
 /**
  * 铁索连环蔓延的待续状态。
- * 被濒死打断时暂存在 GameState 上，等濒死结算完由 resumePlay 接着跑
- * ——和 AOE 锦囊用 ongoingTrick 是同一个套路。
+ * 被濒死打断时暂存在 GameState 上，等濒死结算完由**可挂起钩子链**（`resumeQueue` /
+ * `drainResume`）接着跑——旧的那条「resumePlay 看见它就补跑」的跳转已在 Step 5.2 删除。
  */
 export interface ChainPending {
   attack: AttackContext;
@@ -866,9 +922,69 @@ export interface ChainPending {
   index: number;
 }
 
+/**
+ * takeover 打点记录（施工方案 Step 0.1：**所有** takeover 都记完整上下文）。
+ *
+ * 「takeover」＝一次收尾把**别人的**询问从槽里换掉。两种来源：
+ * - `probe: 'fence'`：带 checkpoint 的收尾（围栏判「本来会挡住」）——一直开着，成本只是一次入队；
+ * - `probe: 'clobber'`：把**还没人回答**的询问顶掉（更严重，只在 `SGS_PROBE_CLOBBER=1` 时记，
+ *   因为要抓调用栈）。
+ */
+export interface TakeoverRecord {
+  probe: 'fence' | 'clobber';
+  /** 收尾点（clobber 用调用栈顶帧） */
+  site: string;
+  phase: string;
+  turnSeat: string | null;
+  /** 被换掉的那一格（fence 下是「当前槽」；clobber 下是「被顶掉的未答询问」） */
+  oldPending: {
+    kind: string;
+    owner: string | null;
+    seq: number;
+    answered: boolean;
+    completed: boolean;
+  } | null;
+  /**
+   * 收尾**原本打算**安装的那一格（目前都是出牌阶段的占位）。
+   * ⚠️ Step 4 之后它不再真的被覆盖：被挡的收尾改成「登记等待」，所以看 `outcome` 更准。
+   */
+  newPendingKind: string;
+  /**
+   * 这一步的**处置**：
+   * - `'overwritten'`：照旧覆盖（Step 4 之前的老行为；`SGS_FENCE_ENFORCE=1` 时不会出现）
+   * - `'deferred'`：登记等待，等挡住它的那条询问走完再回来（Step 4 起的默认行为）
+   * - `'threw'`：当场 fail-fast（`SGS_FENCE_ENFORCE=1`，Step 3b 的诊断模式）
+   */
+  outcome?: 'overwritten' | 'deferred' | 'threw';
+  checkpoint: { requestId: number | null; slotVersion: number; useId?: number | null } | null;
+  currentSeq: number;
+  inDying: boolean;
+  /** 老机制三跳的当时状态（Step 5 靠数据判断能不能删；三跳已全清，剩这两项的是活着的队列） */
+  ongoing: { skillChain: number; chain: boolean };
+  resumeQueue: number;
+  sameUse: string;
+  caller?: string;
+}
+
 export interface GameState {
   roomCode: string;
   mode: GameMode; // 当前对局模式
+  /**
+   * **拼点区**（用户 2026-09-23 要求牌桌中央有一块独立的拼点 UI）。
+   *
+   * 只放**公开信息**：双方都扣好之前，`sides[].card` / `point` 连**字段都不写**——
+   * 「扣好了先显示牌背、双方都扣好才翻牌」这条不是界面演出来的，是服务端就**没给**牌面
+   * （与盲选 `Pending.pickCards.hidden` 同一条规矩）。
+   *
+   * 结算完不立刻清：下一次**任何 intent**（谁行动都行）时清空，让玩家看清点数与胜负。
+   */
+  pindianView?: PindianView | null;
+  /**
+   * **牌桌上公开摆着的牌池**（【五谷丰登】）：亮出的牌平铺在牌桌中央，按座次依次点牌拿走，
+   * 拿走的立刻从展示区消失（位置留痕 + 谁拿的）。公开信息 ⇒ 整份下发。
+   * 与拼点不同，它**跨多个 intent 存活**（每人一次选牌），所以不能在 applyIntent 里清。
+   */
+  publicPool?: PublicPoolView | null;
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];
@@ -901,6 +1017,13 @@ export interface GameState {
   deferredEndOfIntentHooks: (() => void)[];
   pendingFactionTricks: Card[];
   /**
+   * **本局归一化后的扩展开关**（`createGame` 里算好后存下来）。
+   *
+   * 存它的理由：有些**规则**要看「当前模式实际开放了哪些牌」（例如【度势】② 的候选、
+   * 势备篇独有的【火烧连营】）——不能在引擎里撒 `if (ext.xxx)`，所以把这份开关交给规则层读。
+   */
+  extensions: GuozhanExtensions;
+  /**
    * **移出游戏**的牌（不是弃牌堆、也不会再回到任何牌区）：
    * 势力锦囊用/弃后进这里；君主专属装备「离开装备区即销毁」也进这里。
    * 单独记一份是为了让「牌不会凭空消失」这类守恒检查能如实核对（模糊测试网要看得到它们）。
@@ -910,8 +1033,6 @@ export interface GameState {
   turn: { seatIndex: number; phase: Phase };
   pending: Pending | null;
   draft: DraftState | null; // 非空表示处于选将阶段
-  // AOE锦囊(南蛮/万箭)被濒死中断时暂存上下文，near-death结算后继续下一个响应者
-  ongoingTrick: TrickContext | null;
   /** 铁索连环蔓延被濒死中断时暂存，濒死结算后继续 */
   ongoingChain: ChainPending | null;
   /**
@@ -999,8 +1120,9 @@ export interface GameState {
    *    0 体力却永远不死，回合还照常往下走）；
    * ② 也不能只靠 `resumeQueue`——那条队列在「出牌阶段占位 pending」下不会被排空
    *    （见 `isIdlePending` 的注释），链会一直搁在队列里。
-   * 所以挂到 state 上，由 `resumePlay` 在「控制权该还回去的时候」按**挂上的先后**依次惊醒，
-   * 与 `ongoingTrick`（AOE 锦囊）/ `ongoingChain`（铁索蔓延）同一档。
+   * 所以挂到 state 上，由 `resumePlay` 在「控制权该还回去的时候」按**挂上的先后**依次惊醒。
+   * （历史上与它同档的还有 `ongoingTrick`（AOE 锦囊）/ `ongoingChain`（铁索蔓延）两条旧跳转，
+   *   Step 5 已把 `resumePlay` 顶部的三跳全部删除，只剩这一条队列。）
    */
   ongoingSkillChain: (() => void)[];
   /**
@@ -1059,17 +1181,32 @@ export interface GameState {
    * 聚类（是「恢复交互入口」还是「提交不可延迟的状态迁移」），而不是按函数名猜。
    * 只记不改行为（当前仍照旧强制覆盖），所以开着它不会有任何行为变化。
    */
-  blockedTakeovers: {
-    finalizer: string;
-    checkpointSeq: number;
-    currentSeq: number;
-    checkpointKind: string | null;
-    currentKind: string | null;
-    phase: string;
-    turnSeat: string | null;
-    inDying: boolean;
-    resumeQueueLength: number;
-  }[];
+  blockedTakeovers: TakeoverRecord[];
+  /**
+   * 续接执行计数（施工方案 Step 1.4）：`continuationId` → 执行次数。
+   * **同一个 id 被执行超过一次**就是「多执行」类失败（窗口自己推进了一次、旧的三跳又推一次），
+   * 必须停下来查——所以它不是普通统计，是硬指标（目标：不允许出现 > 1 的条目）。
+   */
+  continuationRuns: Map<string, number>;
+  /**
+   * 不变量 B（施工方案 Step 2.3）：**一条 pending 最多完成一次**。
+   * key = `pendingIdOf(pending)`，value = 它被「确认完成」过几次；出现 > 1 就是重复完成。
+   */
+  pendingCompletions: Map<number, number>;
+  /**
+   * 不变量 D（施工方案 Step 2.3）：`releaseIfMine` 因为「槽里已经是更新一代」而**拒绝释放**的次数。
+   *
+   * 拒绝本身是**正确行为**（说明有流程收尾晚了、控制权已经交出去），但这个数字是 Step 4
+   * 接 waiter 的输入：每一条拒绝将来都要变成「登记等待」而不是「什么都不做」。
+   */
+  refusedReleases: { id: number; kind: string }[];
+  /**
+   * 施工方案 Step 4（4.2 幂等）：已经登记等待的续接 id 集合——同一条续接只登记一次，
+   * 不许因为多个唤醒点重复注册而在询问走完后跑两遍（那正是「多执行」类的失败）。
+   */
+  deferredContinuations: Set<string>;
+  /** 施工方案 Step 4.4：嵌套 drain 的次数（诊断用；正常应该很小） */
+  pendingDrainReentry: number;
   cardUseSeq: number;
   useDamages: { useId: number; targetId: string; amount: number }[];
   /**
