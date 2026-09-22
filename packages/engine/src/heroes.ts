@@ -17533,6 +17533,29 @@ export function heroDuelShaRequired(hero: Hero): number {
 }
 
 /**
+ * 这张武将牌上的 `skillName` 是不是**锁定技**。
+ *
+ * 三种落法都要看（与 `nullifyHero` 的「非锁定技失效」同一口径）：
+ * - 钩子：`HookRegistration.locked`（无双、会盟、雉盗…）；
+ * - 主动技：`ActiveSkill.locked`；
+ * - 字段技：技能名 → 字段（`skillFields`），且该字段列在 `lockedFields` 里（空城、红颜…）。
+ *   兜底：`skillFields` **只在该技能会被借走时才填**（马超·马术就没填），所以再加一条
+ *   「技能描述以『锁定技』开头」的判据——`skills[].desc` 是官方原文，锁定技都以那三个字开头。
+ *
+ * 认它的地方（用户 2026-09-22 口径）：
+ * - `prelitableSkills` —— 暗置武将的锁定技**可以预亮**（时机到了自动明置 + 结算）；
+ * - intent `revealBySkill` —— **自己的出牌阶段**点锁定技＝主动明置该武将牌（不是发动技能）；
+ * - 界面据此决定 chip 点下去是「明置」还是「预亮」（`packages/ui` 的 darkSkillAction）。
+ */
+export function isLockedSkillOf(hero: Hero, skillName: string): boolean {
+  if ((hero.hooks ?? []).some((h) => h.skillId === skillName && h.locked === true)) return true;
+  if ((hero.activeSkills ?? []).some((s) => s.name === skillName && s.locked === true)) return true;
+  const lockedFields = new Set(hero.lockedFields ?? []);
+  if ((hero.skillFields?.[skillName] ?? []).some((f) => lockedFields.has(f))) return true;
+  return (hero.skills.find((s) => s.name === skillName)?.desc ?? '').startsWith('锁定技');
+}
+
+/**
  * 珠联璧合：两名武将是否构成官方组合。
  * 内部两个方向都查了，所以调用方一次调用即可，不必再反向调一遍。
  */

@@ -7889,10 +7889,20 @@ describe('国战预亮（暗置武将的技能声明）', () => {
     expect(b.prelitSkills).toEqual([]);
   });
 
-  it('可预亮的只有触发技与转化技：锁定技、常驻字段技、主动技都被拒', () => {
-    // 张飞·咆哮（锁定技，实现成 shaLimit 字段）；黄盖·苦肉（主动技）；关羽·武圣（转化技）
+  it('可预亮的只有触发技与转化技（含**锁定技**）：常驻字段技、主动技被拒', () => {
+    // 甲＝张飞（国战版·咆哮是**锁定技**、带 useCard 钩子）/马超（马术＝常驻字段技，没有钩子）；
+    // 乙＝黄盖·苦肉（主动技）+ 关羽·武圣（转化技）。
+    // ⚠️ 用户 2026-09-22 口径：锁定技**可以**预亮（预亮只是登记意向，本身不明置）——
+    //    这条断言改动前是反的（那时 `lockedNames` 把锁定技整类 continue 掉了）。
     const state = makeGz([
-      { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [] },
+      {
+        seatId: A,
+        name: '甲',
+        heroId: 'zhangfei',
+        deputyHeroId: 'machao',
+        faction: 'shu',
+        hand: [],
+      },
       {
         seatId: B,
         name: '乙',
@@ -7902,7 +7912,9 @@ describe('国战预亮（暗置武将的技能声明）', () => {
         hand: [],
       },
     ]);
-    expect(act(state, A, { type: 'prelightSkill', skillName: '咆哮' }).ok).toBe(false);
+    expect(act(state, A, { type: 'prelightSkill', skillName: '咆哮' }).ok).toBe(true);
+    // 常驻字段技（马术：没有钩子、没有时机可挂）不能预亮
+    expect(act(state, A, { type: 'prelightSkill', skillName: '马术' }).ok).toBe(false);
     expect(act(state, B, { type: 'prelightSkill', skillName: '苦肉' }).ok).toBe(false);
     // 转化技可以预亮（暗置时先用，用出去时明置）
     expect(act(state, B, { type: 'prelightSkill', skillName: '武圣' }).ok).toBe(true);
@@ -7910,7 +7922,9 @@ describe('国战预亮（暗置武将的技能声明）', () => {
     const me = toSnapshot(state, B).players.find((x) => x.seatId === B)!;
     expect(me.prelitableSkills).toContain('武圣');
     expect(me.prelitableSkills).not.toContain('苦肉');
-    expect(me.prelitableSkills).not.toContain('咆哮');
+    const him = toSnapshot(state, A).players.find((x) => x.seatId === A)!;
+    expect(him.prelitableSkills).toContain('咆哮');
+    expect(him.prelitableSkills).not.toContain('马术');
     // 对手看不到这份名单
     expect(
       toSnapshot(state, A).players.find((x) => x.seatId === B)?.prelitableSkills,

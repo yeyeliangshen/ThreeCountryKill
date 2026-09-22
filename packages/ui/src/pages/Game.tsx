@@ -28,6 +28,7 @@ import {
   lordVariantOf,
   getHeroForMode,
   heroCanUseAs,
+  isLockedSkillOf,
   ROLE_NAME,
   FACTION_NAME,
   MARKER_DESC,
@@ -49,6 +50,7 @@ import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { cardBack } from '../components/cardBack';
 import { blindPickOwnerText, pickIsFaceDown } from '../blindPick';
+import { darkSkillAction } from '../darkSkillAction';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { nextGuozhanSlots } from '../draftSlots';
@@ -1108,13 +1110,19 @@ export function Game() {
   // 国战暗置的武将牌：技能不生效，但界面要给出**预亮**入口——
   // - 触发技：点一下预亮/取消预亮，等它自己的时机到来时引擎会问是否发动；
   // - 主动技：点一下就等于「明置该武将并发动」（引擎会先明置）；
-  // - 锁定技 / 转化技（马术、咆哮、武圣…）：只能靠亮将，这里显示成不可点。
-  // 「哪些技能可预亮」由服务端下发（prompt.prelitableSkills），界面不自己判断。
+  // - **锁定技**（用户 2026-09-22 口径）：自己的出牌阶段点它＝**主动明置该武将**
+  //   （intent `revealBySkill`，只是明置、不是发动技能）；其余时机退回预亮开关。
+  //   不能因为它是锁定技、或因为它已经预亮，就把这个亮将入口去掉。
+  // - 常驻字段技（马术那类没有钩子的）：不能预亮，只能靠出牌阶段点它明置（或在准备阶段亮将）。
+  // 「哪些技能可预亮」由服务端下发（prompt.prelitableSkills），界面不自己判断；
+  // 「哪些算锁定技」与引擎共用 `isLockedSkillOf`（三种落法 + 描述兜底）。
   // 出牌阶段 / 弃牌阶段的服务端技能定义（含不属于任何武将的**国战标记**，见上面 skillIds 的注释）
   const legalSkills = skillEntryShown(prompt?.kind) ? (prompt!.legalSkills ?? []) : [];
   // 可预亮的名单在快照上（随时可预亮，不必等自己的出牌阶段）
   const prelitable = new Set(me.prelitableSkills ?? []);
   const prelit = new Set(me.prelitSkills ?? []);
+  // 锁定技的亮将入口只在**我的出牌阶段**（引擎侧同一判据：onRevealBySkill 的时机守卫）
+  const myPlayPhase = myTurn && phase === 'play';
   const skillRows: SkillRow[] = [];
   const coveredSkillIds = new Set<string>();
   for (const hero of isGuozhan ? [myHero, myDeputyHero] : [myHero]) {
@@ -1124,6 +1132,43 @@ export function Game() {
       const act = hero.activeSkills?.find((a) => a.name === s.name);
       if (act) coveredSkillIds.add(act.id);
       const active = !!act && skillMode?.skillId === act.id;
+      if (hidden && isLockedSkillOf(hero, s.name)) {
+        // 锁定技：出牌阶段的空闲窗口＝明置该武将；其余时机＝原来的预亮开关
+        const clickAction = darkSkillAction({
+          locked: true,
+          prelitable: prelitable.has(s.name),
+          myPlayPhase,
+          busy: !!selected || !!skillMode,
+        });
+        const on = prelit.has(s.name);
+        skillRows.push({
+          name: s.name,
+          desc: s.desc,
+          usable: clickAction !== 'none',
+          active: clickAction === 'prelight' && on,
+          state:
+            clickAction === 'reveal'
+              ? 'reveal'
+              : clickAction === 'prelight' && on
+                ? 'prelit'
+                : 'dark',
+          // 同一个 chip 两条路，文案必须说清点下去是「明置」还是「预亮」
+          action:
+            clickAction === 'reveal'
+              ? '点击＝明置该武将（锁定技）'
+              : clickAction === 'prelight'
+                ? on
+                  ? '已预亮，点击取消'
+                  : '点击＝预亮'
+                : undefined,
+          onClick: () => {
+            if (clickAction === 'reveal') sendIntent({ type: 'revealBySkill', skillName: s.name });
+            else if (clickAction === 'prelight')
+              sendIntent({ type: 'prelightSkill', skillName: s.name });
+          },
+        });
+        continue;
+      }
       if (hidden && prelitable.has(s.name)) {
         // 可预亮的触发技
         const on = prelit.has(s.name);

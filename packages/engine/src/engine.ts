@@ -89,6 +89,7 @@ import {
   fangyuanHandLimitDelta,
   heroIgnoresTrickDistance,
   heroShaLimit,
+  isLockedSkillOf,
   EQUIP_SLOTS,
   armorCancelsFireTrick,
   bigFactions,
@@ -1033,8 +1034,13 @@ function prelitHooks(
     for (const h of hero.hooks ?? []) {
       if (h.timing !== timing) continue;
       if (!h.skillId || !player.prelitSkills.includes(h.skillId)) continue;
-      // 锁定技没有「询问是否发动」这回事，自然也不能预亮
-      if (h.locked) continue;
+      // 锁定技（用户 2026-09-22 口径）：预亮后时机一到就**自动明置并结算**——
+      // 锁定技没有「是否发动」这一步，所以不能走 askRevealHook 那类询问；
+      // 挂不起询问的同步时机本来就走这条路，两者合流。
+      if (h.locked) {
+        out.push(autoRevealHook(state, player, hero, h));
+        continue;
+      }
       out.push(
         sync ? autoRevealHook(state, player, hero, h) : askRevealHook(state, player, hero, h),
       );
@@ -5777,6 +5783,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       return onDiscard(state, seatId, intent);
     case 'revealHero':
       return onRevealHero(state, seatId, intent);
+    case 'revealBySkill':
+      return onRevealBySkill(state, seatId, intent);
     case 'useSkill':
       return onUseSkill(state, seatId, intent);
     case 'pickCards':
@@ -10509,9 +10517,10 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
   if (!pending) return err('当前不能亮将');
   const player = getPlayerOrThrow(state, seatId);
   // 主动亮将**只有准备阶段开始时**这一个时机（出牌阶段不算——那时只能靠「发动技能」
-  // 顺带明置）。准备阶段的询问会正常给「明置主将/副将/全部」，这个意图是同一时机内的
-  // 补充入口（选过「暂不明置」之后又改主意）。⚠️ 只在**准备阶段**（'prepare'）——
-  // 判定阶段是另一个阶段了，那时不能再主动明置（用户 2026-09-21 口径）。
+  // 顺带明置，或者**点锁定技**主动明置，见下面的 `onRevealBySkill`）。准备阶段的询问会
+  // 正常给「明置主将/副将/全部」，这个意图是同一时机内的补充入口（选过「暂不明置」之后
+  // 又改主意）。⚠️ 只在**准备阶段**（'prepare'）——判定阶段是另一个阶段了，那时不能再
+  // 主动明置（用户 2026-09-21 口径）。
   const isMyTurn = state.seatOrder[state.turn.seatIndex] === seatId;
   if (intent.heroId !== player.heroId && intent.heroId !== player.deputyHeroId)
     return err('该武将不是你的武将');
@@ -10534,10 +10543,60 @@ function onRevealHero(state: GameState, seatId: string, intent: Intent): ApplyRe
 }
 
 /**
+ * 国战：**用锁定技主动明置该武将牌**（intent `revealBySkill`）。
+ *
+ * 用户 2026-09-22 口径：
+ * > 拥有锁定技的暗置武将在自己的出牌阶段内，应允许玩家主动点击对应锁定技，将该武将牌
+ * > 主动明置。不能因为技能属于锁定技，或已经存在「预亮」机制，就取消主动亮将入口。
+ *
+ * 所以这条意图**只是明置，不是发动技能**——锁定技本来就没有「是否发动」这一步，
+ * 明置之后它按明置后的正常状态结算。时机只有**自己的出牌阶段**（准备阶段那条主动亮将
+ * 入口是 `revealHero`，其余时机要发动技能/触发技能才会顺带明置）。
+ *
+ * 明置本身走 `revealHeroCard`（**所有明置的唯一入口**），所以邹氏·祸水与君主旗【建安】
+ * 那两道既有封锁照旧生效，不在这里另写一份。
+ */
+function onRevealBySkill(
+  state: GameState,
+  seatId: string,
+  intent: Extract<Intent, { type: 'revealBySkill' }>,
+): ApplyResult {
+  if (state.mode !== 'guozhan') return err('非国战模式不能亮将');
+  const player = getPlayerOrThrow(state, seatId);
+  const name = intent.skillName;
+  const pending = state.pending;
+  const isMyTurn = state.seatOrder[state.turn.seatIndex] === seatId;
+  // 「出牌阶段的空闲窗口」：手头还有别的选择要做时不放行（与 recast / lianheng 同一条守卫）
+  const inPlayWindow = !!pending && pending.kind === 'play' && pending.seatId === seatId;
+  if (!isMyTurn || state.turn.phase !== 'play' || !inPlayWindow)
+    return err('只能在你的出牌阶段用锁定技明置武将牌（此刻还有别的选择要做）');
+  // 按模式取将：国战的小乔/邹氏多一句「出牌阶段，你可明置此武将牌」——这条入口与那句无关，
+  // 它认的是**技能本身是不是锁定技**。
+  const candidates = [
+    getHeroForMode(player.heroId, state.mode),
+    getHeroForMode(player.deputyHeroId, state.mode),
+  ];
+  const holder = candidates.find((h) => !!h && h.skills.some((s) => s.name === name));
+  if (!holder) return err(`你的武将牌里没有【${name}】`);
+  if (!isLockedSkillOf(holder, name)) return err(`【${name}】不是锁定技，请用它的发动/触发入口`);
+  const revealed = holder.id === player.heroId ? player.heroRevealed : player.deputyRevealed;
+  if (revealed) return err(`【${holder.name}】已经明置了`);
+  // 被君主旗「暂时不能明置」封着（君曹操·建安 → 五子良将纛的代价）——与准备阶段那条路同一句文案
+  if (revealBlocked(state, player, holder.id))
+    return err(`【${holder.name}】被【建安】封着，暂时不能明置`);
+  // 祸水（canRevealNow）在 revealHeroCard 里面拦，这里只需给出「没亮成」的说明
+  if (!revealHeroCard(state, player, holder)) return err('该武将此刻不能明置');
+  return { ok: true };
+}
+
+/**
  * 明置某张武将牌（国战）。返回是否真的亮了。
  *
  * 两条路径都用它：主动亮将（onRevealHero）、以及**发动技能时**必须明置
  * （预亮确认后 / 主动技点击后 / 用转化技时）。君主将亮一张等于两张。
+ *
+ * 第三条路径是 intent `revealBySkill`（出牌阶段点锁定技**主动明置**，用户 2026-09-22 口径），
+ * 也走这里——所以「所有明置都经过 revealHeroCard」这句话仍然成立。
  *
  * 亮将后要跑 `onHeroRevealed`（先驱 / 阴阳鱼 / 珠联璧合的发放都挂在那里），
  * 所以**不要**直接改 heroRevealed 字段。
@@ -10708,12 +10767,14 @@ function runFactionDetermined(state: GameState, player: Player): void {
 /**
  * 国战「预亮」：暗置时声明某个技能的发动意图（再发一次就是取消）。
  *
- * 只接受**自己暗置武将牌上的非锁定技**：
+ * 只接受**自己暗置武将牌上、能预亮**的技能（见 `prelitableSkills`：触发技——含锁定技——与转化技）：
  * - 已明置武将的技能不需要预亮（它们本来就生效）；
- * - 锁定技没有「询问是否发动」这回事，预亮没有意义，直接拒绝。
+ * - 主动技不用预亮（点一下就是「明置 + 发动」）；
+ * - 常驻字段技（马术那类没有钩子的）没有时机可挂，预亮无从生效。
  *
- * 这个意图不推进流程，也不产生询问——它只是把意图记在 `Player.prelitSkills` 上，
- * 等对应时机到来时由 `prelitHooks` 读它。
+ * 这个意图**绝不明置武将牌**（用户 2026-09-22 口径：预亮只是「意向登记」），它不推进流程、
+ * 也不产生询问——只是把意图记在 `Player.prelitSkills` 上，等对应时机到来时由 `prelitHooks` 读它。
+ * 想在出牌阶段**立刻**明置，用 intent `revealBySkill`（下一段）。
  */
 function onPrelightSkill(
   state: GameState,
@@ -10796,12 +10857,17 @@ function onLianheng(
 
 /**
  * 这名玩家现在可以预亮的技能：**暗置**武将牌上的
- * ①触发技（有钩子、非锁定）②转化技（skillFields 里带 canUseAs）。
+ * ①触发技（有钩子，含**锁定技**）②转化技（skillFields 里带 canUseAs）。
  *
- * 被排除的两类各有理由：
+ * 用户 2026-09-22 口径：**「预亮」与「明置」是两件事**——预亮只是表示「这个技能满足条件时
+ * 我要进入亮将/技能流程」，它本身**绝不明置**武将牌。所以锁定技也能预亮：锁定技只是没有
+ * 「是否发动」这一步，时机到了由 `prelitHooks` 自动明置并结算（见那里的注释）。
+ * 想**现在就**明置，用 intent `revealBySkill`（自己的出牌阶段点锁定技）或准备阶段的亮将入口。
+ *
+ * 唯一被排除的一类：
  * - 主动技：不用预亮，出牌阶段点一下就明置并发动；
- * - 锁定技与常驻字段技（马术、咆哮、红颜这类）：它们没有「询问是否发动」这一步，
- *   要生效只能主动明置武将牌——线上也是「这些将必须回合开始时亮将」。
+ * 而**常驻字段技**（马术这类既没有钩子、也没有 canUseAs 的）没有「时机」可挂钩，预亮无从生效，
+ * 也一并排除——它们只能靠主动明置武将牌才生效。
  */
 export function prelitableSkills(
   state: GameState,
@@ -10810,16 +10876,12 @@ export function prelitableSkills(
   const out: { name: string; desc: string }[] = [];
   for (const hero of unrevealedHeroes(state.mode, player)) {
     const activeNames = new Set((hero.activeSkills ?? []).map((s) => s.name));
-    const lockedNames = new Set(
-      (hero.hooks ?? []).filter((h) => h.locked).map((h) => h.skillId ?? ''),
-    );
     const hookedNames = new Set((hero.hooks ?? []).map((h) => h.skillId ?? ''));
     for (const s of hero.skills) {
       if (activeNames.has(s.name)) continue; // 主动技：点击即明置发动
-      if (lockedNames.has(s.name)) continue; // 锁定技：没有「是否发动」
       const isHookSkill = hookedNames.has(s.name);
       const isConversion = (hero.skillFields?.[s.name] ?? []).includes('canUseAs');
-      if (!isHookSkill && !isConversion) continue; // 常驻字段技（马术/咆哮）
+      if (!isHookSkill && !isConversion) continue; // 常驻字段技（马术这类没有钩子的）
       out.push({ name: s.name, desc: s.desc });
     }
   }

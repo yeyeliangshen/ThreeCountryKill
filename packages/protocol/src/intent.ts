@@ -58,6 +58,18 @@ export type Intent =
   | { type: 'pickHero'; heroId: string; deputyHeroId?: string }
   // 国战：出牌阶段主动亮将（传入要亮的武将 id）
   | { type: 'revealHero'; heroId: string }
+  /**
+   * 国战：**用锁定技主动明置该武将牌**（skillName 是技能中文名）。
+   *
+   * 用户 2026-09-22 口径：锁定技也能被点击亮将——「不能因为技能属于锁定技，或已经存在
+   * 「预亮」机制，就取消主动亮将入口」。语义是**明置，不是发动技能**：
+   * 在自己的出牌阶段，某张**暗置**武将牌上的这个技能只要是**锁定技**，就明置那张牌
+   * （锁定的触发效果此后按明置后的正常状态结算）。
+   *
+   * 时机只有**自己的出牌阶段**；准备阶段另有 `revealHero`（亮将询问那个入口）。
+   * 邹氏·祸水「其回合内其他角色不能明置」与君主旗【建安】的封锁照旧生效。
+   */
+  | { type: 'revealBySkill'; skillName: string }
   // 主动技能：出牌阶段使用武将主动技能（制衡/苦肉/离间等）
   | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] } // 通用「选择一项」：技能要求某个角色在若干选项里选一个（反间/铁骑/除疠…）
   | { type: 'chooseOption'; optionId: string }

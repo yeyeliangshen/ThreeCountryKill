@@ -739,7 +739,8 @@ button:disabled {
 /* —— 国战暗置的技能 ——
    暗置：虚线边 + 墨字，表示「技能还没生效，点一下预亮」。
    预亮：虚线金边 + 墨底金字，表示「时机到了引擎会问你发不发动」。
-   这两种都还得能点（预亮开关），所以不靠 aria-disabled 表达。 */
+   明置（锁定技自己的出牌阶段）：金底 + 虚线边 + 「明置」小标，表示「点它＝亮出这张武将牌」。
+   这三种都还得能点，所以不靠 aria-disabled 表达。 */
 .skill-chip.dark {
   border-style: dashed;
   color: var(--ink);
@@ -749,6 +750,19 @@ button:disabled {
   border-color: var(--gold);
   background: #2a2110;
   color: #f0c96a;
+}
+.skill-chip.reveal {
+  border-style: dashed;
+  border-color: #8a6a1a;
+  background: var(--gold);
+  color: #2a2110;
+}
+/* chip 上的动作小标（「明置」）：手机上要长按才看得到悬停说明，所以把动作写进 chip */
+.chip-action {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.8;
 }
 
 /* —— 牌桌 ——
