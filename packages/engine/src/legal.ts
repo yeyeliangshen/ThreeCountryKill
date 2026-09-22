@@ -612,13 +612,20 @@ function buildFactionCallPrompt(
 function buildRespondDeathPrompt(state: GameState, seatId: string, dyingId: string): PromptView {
   const player = getPlayerOrThrow(state, seatId);
   const dying = getPlayerOrThrow(state, dyingId);
-  // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
+  // 接受【桃】，或武将可转化的红牌（华佗·急救：红牌当桃）；
+  // 【酒】**只有濒死者本人**能用来自救（官方文本：「当你处于濒死状态时，对自己使用」）——
+  // 与引擎的 respondDeathSave 同一口径，界面不该把不能出的牌画成可点。
+  const selfSaving = seatId === dyingId;
   const legalCardIds = handLikeOf(player)
-    .filter((c) => c.type === 'tao' || c.type === 'jiu' || canUseAsCard(state, player, c, 'tao'))
+    .filter(
+      (c) => c.type === 'tao' || (selfSaving && c.type === 'jiu') || canUseAsCard(state, player, c, 'tao'),
+    )
     .map((c) => c.id);
   return {
     kind: 'respondDeath',
-    message: `${dying.name} 濒死：出【桃】（或【酒】当桃）救援，或弃权`,
+    message: selfSaving
+      ? `${dying.name} 濒死：出【桃】或【酒】自救，或弃权`
+      : `${dying.name} 濒死：出【桃】救援，或弃权`,
     legalCardIds,
     legalTargetIds: [],
     mustSelectTargetCount: 0,

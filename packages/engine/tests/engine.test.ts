@@ -2663,34 +2663,31 @@ describe('装备与距离（Step 10 补充）', () => {
 });
 
 describe('酒限1次救人（Step 10 补充）', () => {
-  it('同一回合酒救人仅限1次', () => {
+  /**
+   * ⚠️ 【酒】的救人用法是「**当你处于濒死状态时，对自己使用**」——
+   * 所以这条只能在**濒死者自己**身上验（用户 2026-09-23 的口径：
+   * 其他角色不能用【酒】救濒死的人，见 death-save.test.ts）。
+   */
+  it('同一回合里，濒死者**自己**用【酒】自救限 1 次', () => {
     const state = makeGame([
-      {
-        seatId: A,
-        name: '甲',
-        heroId: 'zhangfei',
-        hand: [sha('a1'), sha('a2'), jiu('j1'), jiu('j2')],
-      },
-      { seatId: B, name: '乙', heroId: 'vanilla', hand: [], hp: 1 },
+      { seatId: A, name: '甲', heroId: 'zhangfei', hand: [sha('a1'), sha('a2')] },
+      { seatId: B, name: '乙', heroId: 'vanilla', hand: [jiu('j1'), jiu('j2')], hp: 1 },
     ]);
     const b = state.players.find((p) => p.seatId === B)!;
-    // A 出杀 → B 不闪 → B 濒死
+    // A 出杀 → B 不闪 → B 濒死（0 体力）
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' })); // 弃权不闪
-    // 濒死救援队列从濒死者起 → B 先被询问，B 弃权后轮到 A
     expect(state.pending!.kind).toBe('respondDeath');
-    ok(act(state, B, { type: 'pass' })); // B 自己先弃权
-    // A 用酒救人（第1次）→ 成功
-    ok(act(state, A, { type: 'respondCard', cardId: 'j1' }));
+    // 救援队列从濒死者起 ⇒ 乙自己先被问；用【酒】自救：0 → 1
+    ok(act(state, B, { type: 'respondCard', cardId: 'j1' }));
     expect(b.hp).toBe(1);
     expect(b.alive).toBe(true);
     // A 再次出杀（张飞可出多杀）→ B 再濒死
     ok(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' })); // 弃权不闪
-    ok(act(state, B, { type: 'pass' })); // B 弃权 death save
-    // A 再用酒救人（第2次）→ 应失败（限1次/回合）
     expect(state.pending!.kind).toBe('respondDeath');
-    fail(act(state, A, { type: 'respondCard', cardId: 'j2' }));
+    // 再用【酒】自救 → 失败（同一回合限 1 次）
+    fail(act(state, B, { type: 'respondCard', cardId: 'j2' }));
   });
 });
 

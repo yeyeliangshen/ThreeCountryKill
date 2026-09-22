@@ -10340,11 +10340,15 @@ function respondDeathSave(
     const tianErr = tianBlocked(card);
     if (tianErr) return err(tianErr);
   }
-  // 接受【桃】/【酒】，或武将可转化的红牌（华佗·急救：红牌当桃）
+  // 接受【桃】，或武将可转化的红牌（华佗·急救：红牌当桃）；【酒】只允许**濒死者本人**用
+  // 官方文本：【酒】的救人用法是「**当你处于濒死状态时**，对自己使用，回复 1 点体力」——
+  // 所以其他角色拿【酒】救不了人（用户 2026-09-23 报的第二个缺陷）。
+  if (card.type === 'jiu' && saver.seatId !== pending.dyingId)
+    return err('【酒】只能由濒死者本人使用');
   if (card.type !== 'tao' && card.type !== 'jiu' && !canUseAsCard(state, saver, card, 'tao'))
-    return err('只能用【桃】（或【酒】当桃）救人');
+    return err('只能用【桃】救人');
   if (card.type !== 'tao') revealForConversion(state, saver, card, 'tao');
-  // 酒当桃救人：限1次/回合
+  // 酒当桃救人：限1次/回合（本仓库既有简化，见 docs）
   if (card.type === 'jiu' && saver.flags.taoSaveCountThisTurn > 0) return err('本回合已用过酒救人');
   takeAndDiscard(state, saver, card);
   if (card.type === 'jiu') saver.flags.taoSaveCountThisTurn++;
@@ -10363,7 +10367,10 @@ function respondDeathSave(
       pushLog(state, 'skill', `${dying.name} 的【救援】生效，额外回复 ${extra} 点体力。`);
     }
   }
-  dying.hp = Math.max(dying.hp, 0) + heal;
+  // ⚠️ **逐点回复**：体力可能已经降到 0 以下（1 体力受 2 点伤害 ⇒ -1），要一点一点补回来
+  //    （1 体力受 2 点伤害需要 2 张【桃】）。以前这里写成 `Math.max(hp, 0) + heal`，
+  //    等于把负体力当成 0 ⇒ 一张桃就把人救活了（用户 2026-09-23 报的第一个缺陷）。
+  dying.hp += heal;
   pushLog(
     state,
     'tao',
@@ -10399,6 +10406,13 @@ function respondDeathSave(
         action: 'tao',
       });
     });
+  }
+  // **还没补到 >0 ⇒ 仍在濒死**：不结束、不推进队列（同一个人可以接着出下一张【桃】）。
+  // 官方流程是「进入濒死 → 循环询问合法救援 → 每次实际回复体力 → 重新检查体力值 →
+  // 体力 > 0 才结束濒死，否则继续求桃」（用户 2026-09-23 的口径）。
+  if (dying.hp <= 0) {
+    pushLog(state, 'nearDeath', `${dying.name} 还需 ${1 - dying.hp} 点体力才能脱离濒死。`);
+    return { ok: true };
   }
   // 救活：先派发「濒死结算结束后」（左慈·汲魂 / 吴国太·补益），再把控制权还回去
   // 同上：被【桃】救回（黩武的第二个「被救回」出口）
