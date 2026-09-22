@@ -765,6 +765,19 @@ button:disabled {
   opacity: 0.8;
 }
 
+/* 已生效的锁定技（用户 2026-09-25 口径：【红颜】这类是**持续生效**、没有「是否发动」这一步）。
+   一枚小「锁」标：与 .chip-action 的「明置」同款位置，但换成边框样式，表示是状态而不是动作。 */
+.chip-lock {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.9;
+}
+
 /* —— 牌桌 ——
    窄屏：两层容器用 display: contents "消失"，子元素直接排成单列，
    靠 order 保证顺序是 对手 → 记录 → 武将 → 操作 → 手牌。

@@ -1270,6 +1270,10 @@ export function Game() {
         active,
         // 暗置但可以点（主动技点了就明置发动）
         state: hidden ? 'dark' : undefined,
+        // **已生效的锁定技**（用户 2026-09-25 口径）：武将已明置、技能有效 ⇒ 它一直在生效，
+        // 不是「点了才发动」。chip 上标「锁」、悬停/点击的说明里写明「持续生效」。
+        // 判定用引擎的 isLockedSkillOf（界面不另写一份，见 darkSkillAction.test 的同款守门）。
+        always: !hidden && isLockedSkillOf(hero, s.name),
         onClick: () => {
           if (!act) return;
           if (active) setSkillMode(null);

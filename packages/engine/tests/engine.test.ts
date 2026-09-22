@@ -34,6 +34,7 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
   getHero,
   getHeroForMode,
   hasCombo,
+  isLockedSkillOf,
   poolForMode,
   pushLog,
   toSnapshot,
@@ -13136,7 +13137,76 @@ describe('国战标准版 · 小乔（天香 / 红颜）', () => {
     ok(act(state, B, { type: 'chooseOption', optionId: 'loseHp' }));
     expect(b.hp).toBe(b.maxHp); // 闪电的 3 点伤害被防止
   });
+  /**
+   * **用户 2026-09-25 口径确认：【红颜】是锁定技**——「只要对应武将牌已经明置并且技能有效，
+   * 【红颜】就应持续按照技能文本自动修改相关牌的花色判定，不需要玩家每次选择是否发动」。
+   *
+   * 这两条钉的就是「**没有询问**」这件事本身：上面那些用例钉的是花色算得对，这里钉的是
+   * 整个过程里**一次都不会弹出「是否发动【红颜】」**（锁定技＝没有「是否发动」这一步）。
+   * 明置就生效、暗置不生效，两侧都不问。
+   */
+  describe('国战 · 红颜是锁定技：持续生效、从不询问（用户 2026-09-25 确认口径）', () => {
+    /** 打出一张黑桃【杀】打装备仁王盾的甲：红颜生效 ⇒ 破盾；不生效 ⇒ 被挡 */
+    function spadeShaAgainstRenwang(revealed: boolean) {
+      const state = gz(
+        [
+          { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', armor: 'renwang' },
+          {
+            seatId: B,
+            name: '乙',
+            heroId: 'xiaoqiao',
+            faction: 'wu',
+            hand: [mk('b1', 'sha', 'spade', 7)],
+            revealed,
+          },
+        ],
+        B,
+      );
+      state.deck = [mk('d1', 'sha', 'club', 9)];
+      // 打出前后的 pending 快照：全程只该出现「出牌阶段占位」与「问甲出闪」两种，
+      // 中间不许插进任何一次「是否发动【红颜】」的询问
+      const seenPending: string[] = [state.pending?.kind ?? 'null'];
+      ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+      seenPending.push(state.pending?.kind ?? 'null');
+      if (state.pending?.kind === 'respondSha') ok(act(state, A, { type: 'pass' }));
+      seenPending.push(state.pending?.kind ?? 'null');
+      return { state, seenPending, a: state.players.find((p) => p.seatId === A)! };
+    }
+
+    it('已明置：黑桃【杀】按红桃算（破仁王盾），且**全程没有任何「是否发动红颜」的询问**', () => {
+      const { state, seenPending, a } = spadeShaAgainstRenwang(true);
+      expect(a.hp, '红颜生效 ⇒ 黑桃杀是红的 ⇒ 仁王盾挡不住').toBe(3);
+      expect(seenPending, '只有出牌阶段与问闪，没有中间那次「是否发动」').toEqual([
+        'play',
+        'respondSha',
+        'play',
+      ]);
+      expect(
+        state.log.some((l) => (l.message ?? '').includes('是否发动【红颜】')),
+        '锁定技没有「是否发动」这一步',
+      ).toBe(false);
+    });
+
+    it('暗置：红颜不生效（黑桃还是黑桃，被仁王盾挡住），同样**不询问**——它不会自己冒出来问', () => {
+      const { state, a } = spadeShaAgainstRenwang(false);
+      expect(a.hp, '暗置 ⇒ 红颜不生效 ⇒ 黑杀被仁王盾挡下').toBe(4);
+      expect(state.log.some((e) => e.message.includes('仁王盾'))).toBe(true);
+      expect(
+        state.log.some((l) => (l.message ?? '').includes('是否发动【红颜】')),
+        '暗置也不会问「要不要发动红颜」——它只是不生效（要生效得先明置）',
+      ).toBe(false);
+    });
+
+    it('「哪些技能算锁定技」用引擎的 isLockedSkillOf 判（界面共用同一份，不另写）', () => {
+      const xiaoqiao = getHero('xiaoqiao')!;
+      expect(isLockedSkillOf(xiaoqiao, '红颜'), '锁定字段技：spadeAsHeart 列在 lockedFields 里').toBe(
+        true,
+      );
+    });
+  });
+
 });
+
 
 /** 「出牌阶段，你可明置此武将牌」是按**张**算的（小乔·红颜 / 邹氏·祸水） */
 describe('国战 · 出牌阶段明置（按武将牌判）', () => {
@@ -26122,4 +26192,5 @@ describe('弃牌阶段：弃完再查一次（阶段内拿到的牌也要弃）'
     expect(a.hand.length, '结束阶段摸的牌不再触发弃牌').toBe(2);
     expect(state.pending?.kind).not.toBe('discard');
   });
+
 });

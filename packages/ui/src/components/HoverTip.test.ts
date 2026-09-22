@@ -13,7 +13,7 @@
  * ⚠️ 带「改动前 ✗」的用例在本轮修复前必红。
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tipPlacement, HOVER_TIP_WIDTH } from './HoverTip';
 
@@ -99,6 +99,35 @@ describe('点一下即开、再点即收（口径①）', () => {
       'if (openRef.current && mineRef.current === el) hide();',
     );
     expect(hover, '长按仍然可用（用户 2026-09-21 的要求）').toContain('LONG_PRESS_MS');
+  });
+});
+
+describe('信息浮层只有一套（用户 2026-09-25 口径：别每个技能各自做一套弹窗）', () => {
+  const roots = [join(__dirname, '..', 'components'), join(__dirname, '..', 'pages')];
+  const sources: { file: string; text: string }[] = [];
+  for (const root of roots) {
+    for (const name of readdirSync(root)) {
+      if (!name.endsWith('.tsx') || name.endsWith('.test.tsx')) continue;
+      sources.push({ file: name, text: readFileSync(join(root, name), 'utf8') });
+    }
+  }
+
+  it('渲染 `.hover-tip` 的只有 HoverTip.tsx 一个组件（别处不许自己造浮层）', () => {
+    const renderers = sources
+      .filter((s) => s.text.includes('hover-tip'))
+      .map((s) => s.file)
+      .sort();
+    expect(renderers, '只有这一个组件渲染那层说明 DOM').toEqual(['HoverTip.tsx']);
+  });
+
+  it('技能 chip / 装备 chip / 手牌都走同一个 useHoverTip（不各写一套）', () => {
+    const byName = new Map(sources.map((s) => [s.file, s.text]));
+    for (const file of ['SkillButtons.tsx', 'HeroChips.tsx', 'EquipChip.tsx', 'HeroPanel.tsx']) {
+      expect(byName.get(file), `${file} 应复用 useHoverTip`).toContain('useHoverTip');
+    }
+    // 手牌（在 Game.tsx 里）：走 bindTip，而且必须是**整套**（只挂鼠标那一半的话手机点不开也关不掉）
+    expect(byName.get('Game.tsx')).toContain('useHoverTip');
+    expect(byName.get('Game.tsx')).toContain('{...bindTip(');
   });
 });
 
