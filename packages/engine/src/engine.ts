@@ -2433,10 +2433,15 @@ function afterTurnEnd(state: GameState): void {
     forceEnd();
     return;
   }
-  // 「一轮」走完的标志：下一个回合的座次比当前**靠前**（正常推进只会往后跳，
-  // 跳过已阵亡者也是往后；绕回首位才会变小）。君主·励众在「每轮结束时」结算，
-  // 所以在这里先派发 roundEnd，再清账本、开新回合。
-  if (next < state.turn.seatIndex) {
+  // 「一轮」走完的标志：座次环**绕过了本轮起点**（见 `roundStartSeat`）。
+  //   写法上要相对起点算：`rel(next) <= rel(current)` 等价于「环上绕回去了」——
+  //   从前写死成 `next < current` 时，起点只能是座次 0（先手随机之后，
+  //   从座次 2 开局的牌局会整轮判不出新一轮，励众/荐才这类每轮技能就废了）。
+  //   跳过已阵亡者也是往后；只有绕回起点才会相等/变小。
+  // 君主·励众在「每轮结束时」结算，所以在这里先派发 roundEnd，再清账本、开新回合。
+  const seatCount = state.seatOrder.length;
+  const rel = (i: number) => (i - state.roundStartSeat + seatCount) % seatCount;
+  if (rel(next) <= rel(state.turn.seatIndex)) {
     dispatchRoundEnd(state, () => {
       // 新一轮：轮号先 +1，再派发「每轮开始时」（徐庶·荐才的获知挂在它上面），
       // 都走完才开这一轮的第一个回合。
@@ -11921,6 +11926,15 @@ export function createGame(
      * 牌序仍然随运行顺序变，同一颗种子会跑出不同结果（随机冒烟测试踩过这个坑）。
      */
     rng?: () => number;
+    /**
+     * 指定本局先手（seatId）。**不传**就按模式规则确定：
+     * 军争（身份局）→ 主公先手；国战等其余模式 → **本局随机**一名角色先手
+     * （见 docs §5.205：先手不能写死成某个座位）。
+     *
+     * 这个口子是给用例和工具的——「先手是谁」在测试里必须是**显式**的，
+     * 不能让用例去赌随机（历史用例就是靠「座次 0 先手」这个隐含前提写的）。
+     */
+    firstSeat?: string;
   },
 ): GameState {
   const mode: GameMode = opts?.mode ?? 'melee';
@@ -12053,6 +12067,8 @@ export function createGame(
     exiled: [],
     discard: [],
     turn: { seatIndex: 0, phase: 'draft' },
+    forcedFirstSeat: opts?.firstSeat ?? null,
+    roundStartSeat: 0,
     pending: null,
     draft: { deals, pendingSeats: seatOrder.slice() },
     started: true,
@@ -12260,11 +12276,27 @@ function finishDraft(state: GameState): void {
     }
   }
   pushLog(state, 'deal', '选将结束，发放初始手牌。');
-  // 军争：主公先手；其余模式：座次 0 先手
-  let firstSeat = 0;
-  if (state.mode === 'junzheng') {
+  // 先手（用户 2026-09-23 报的缺陷：原来固定「座次 0」先手 ⇒ 房主/1 号位永远先手）：
+  //   军争（身份局）→ 主公先手（官方规则，行为不变）；
+  //   国战等其余模式 → 本局**随机**一名角色先手（先手要由本局确定，不是写死某个座位）。
+  // 随机源取 `state.rng`：生产环境是 `Math.random`（每局真随机），
+  // 测试传了固定种子就能复现（见 tests/first-seat.test.ts）。
+  // ⚠️ 这一次 rng 调用刻意放在**发牌之后**：同一颗种子下的牌序与改动前完全一致，
+  //   历史用例不会因为多抽一次随机数而整片漂移。
+  let firstSeat: number;
+  if (state.forcedFirstSeat !== null) {
+    const idx = state.seatOrder.indexOf(state.forcedFirstSeat);
+    if (idx < 0) throw new Error(`firstSeat 不是本局座位：${state.forcedFirstSeat}`);
+    firstSeat = idx;
+  } else if (state.mode === 'junzheng') {
     const lord = state.players.find((p) => p.role === 'lord');
-    if (lord) firstSeat = state.seatOrder.indexOf(lord.seatId);
+    firstSeat = lord ? state.seatOrder.indexOf(lord.seatId) : 0;
+  } else {
+    firstSeat = Math.floor(state.rng() * state.players.length);
   }
+  const firstPlayer = state.players.find((p) => p.seatId === state.seatOrder[firstSeat])!;
+  // 「一轮」的起点就落在本局先手身上（他阵亡了也照样按这个位置划圈）
+  state.roundStartSeat = firstSeat;
+  pushLog(state, 'turn', `本局由 ${firstPlayer.name} 先手。`);
   startTurn(state, firstSeat);
 }

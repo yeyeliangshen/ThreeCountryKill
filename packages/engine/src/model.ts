@@ -1258,6 +1258,23 @@ export interface GameState {
   gameOver: boolean;
   winner: string | null; // 胜方标识（阵营/队伍/身份方），未结束时为 null
   log: LogEntry[];
+  /**
+   * **本局先手**：`createGame` 的 `opts.firstSeat` 指定的座位（没有就是 null）。
+   *
+   * 只在选将结束时用一次——没有指定时按模式规则定：军争=主公、其余模式=**随机**一名角色
+   * （用户 2026-09-23 报的缺陷：原来写死「座次 0 先手」，等于房主永远先手）。见 docs §5.205。
+   * 存这一份是因为定先手的时机在 `finishDraft`，那里拿不到 `createGame` 的 opts。
+   */
+  forcedFirstSeat: string | null;
+  /**
+   * **当前这一轮的起点座位**（`seatOrder` 的下标）＝本局先手所在的位置。
+   *
+   * 「一轮」是座次环上从先手走一圈，所以判「是否进入新一轮」必须**相对它**算，
+   * 不能拿绝对的 `next < current` 去比——那个写法其实是把「座次 0」当成了每轮的起点
+   * （先手变成随机座位之后，从座次 2 开局就会出现「一圈走完了却判不出新一轮」）。
+   * 见 docs §5.205。
+   */
+  roundStartSeat: number;
   /** 日志自增序号：快照只带最近若干条，客户端靠它判断哪些是新事件 */
   logSeq: number;
   /** 国战：全场第一个明置武将的座次（先驱标记发给它），无人明置时为 null */

@@ -293,7 +293,7 @@ while (step++ < MAX_STEPS) {
   for (const m of P1.log) {
     if (seenLogs.has(m)) continue;
     seenLogs.add(m);
-    if (/还需|濒死|阵亡|回复|酒/.test(m)) log('  ·', m);
+    if (/还需|濒死|阵亡|回复|酒|先手|摸牌/.test(m)) log('  ·', m);
   }
   for (const m of P0.log) {
     if (seenLogs.has(m)) continue;

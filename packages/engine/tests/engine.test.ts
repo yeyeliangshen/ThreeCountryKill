@@ -3982,7 +3982,8 @@ describe('国战标记（阶段 2）', () => {
         { seatId: B, name: '乙' },
       ],
       'TEST',
-      { mode: 'guozhan', freePick: true },
+      // 先手在测试里必须显式（引擎默认是随机的，见 docs §5.205）
+      { mode: 'guozhan', freePick: true, firstSeat: A },
     );
     ok(act(state, A, { type: 'pickHero', heroId: 'lvbu', deputyHeroId: 'diaochan' }));
     ok(act(state, B, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
@@ -4449,7 +4450,7 @@ describe('新增武将（按最新国战标准）', () => {
   //    把这几条规则继续盖住，等真做君主时它们自然生效。
 
   it('曹操/刘备是普通武将：可以作副将、也不白拿珠联璧合', () => {
-    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true });
+    const state = createGame(seats2, 'TEST', { mode: 'guozhan', freePick: true, firstSeat: A });
     // 曹操/刘备作副将 → 允许（官方：他们不是君主）
     ok(act(state, A, { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'caocao' }));
     ok(act(state, B, { type: 'pickHero', heroId: 'guanyu', deputyHeroId: 'liubei' }));
@@ -6409,7 +6410,8 @@ describe('军令与劝进', () => {
         { seatId: B, name: '乙' },
       ],
       'TEST',
-      { mode: 'guozhan', freePick: true },
+      // 先手在测试里必须显式（引擎默认是随机的，见 docs §5.205）
+      { mode: 'guozhan', freePick: true, firstSeat: A },
     );
     ok(act(state, A, { type: 'pickHero', heroId: 'dongzhao', deputyHeroId: 'xuchu' }));
     ok(act(state, B, { type: 'pickHero', heroId: 'sunquan', deputyHeroId: 'ganning' }));
@@ -23211,7 +23213,12 @@ describe('国战 · 君主将（特性）', () => {
           { seatId: 'D', name: '丁', heroId: 'zhenji' },
         ],
         'TEST',
-        { mode: 'guozhan', freePick: true, config: configFromPreset('full2026') },
+        {
+          mode: 'guozhan',
+          freePick: true,
+          config: configFromPreset('full2026'),
+          firstSeat: 'A',
+        },
       );
       // 其他三家先选完（选将阶段不结束的话，buildPrompt 不给对局提示，验不了标记技能）
       ok(act(state, 'B', { type: 'pickHero', heroId: 'xuchu', deputyHeroId: 'zhenji' }));
