@@ -2754,12 +2754,17 @@ select:focus-visible,
   color: var(--gold);
 }
 @media (max-width: 480px) {
+  /* 窄屏是单列布局：固定浮层必然会压住点什么。压到 38vh 以内、自己可滚，
+     真要清空视野就点「关闭」——开发工具，不跟对局界面抢地方 */
   .dev-setup {
     top: auto;
-    bottom: 8px;
-    right: 8px;
-    left: 8px;
+    bottom: 6px;
+    right: 6px;
+    left: 6px;
     width: auto;
-    max-height: 62vh;
+    max-height: min(38vh, 320px);
+  }
+  .ds-cards {
+    max-height: 96px;
   }
 }
