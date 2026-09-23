@@ -196,6 +196,10 @@ describe('【火攻】的目标必须有手牌：技能路径也要拦（用户 
     ok(applyIntent(state, A, { type: 'useSkill', skillId: 'yigui_use', targetIds: [] }));
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind !== 'choice') return;
+    // ⚠️ 2026-09-25 起：役鬼**先问移去哪张「魂」**（由左慈自己挑），再问视为使用哪张牌
+    ok(act(state, A, { type: 'chooseOption', optionId: '0' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind !== 'choice') return;
     const hg = state.pending.options.find((o) => o.id === 'huogong');
     expect(hg, '役鬼应能当【火攻】').toBeTruthy();
     ok(act(state, A, { type: 'chooseOption', optionId: 'huogong' }));

@@ -337,6 +337,8 @@ export interface SkillApi {
     options: { id: string; label: string }[],
     resolve: (state: GameState, player: Player, optionId: string) => void,
     returnTo?: string,
+    /** 回答内容保密（选项里带隐藏信息时用，如左慈·役鬼的「魂」） */
+    secret?: boolean,
   ) => void;
   /**
    * 让某个角色从给定的一组牌里选若干张。

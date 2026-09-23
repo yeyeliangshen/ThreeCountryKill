@@ -151,6 +151,11 @@ export interface PlayerFlags {
    */
   hunUsedNames: string[];
   /**
+   * 【役鬼】「每种牌名每回合限一次」记的是**哪个回合**（`state.turnSeq`）——
+   * 「每回合」＝当前回合，不是左慈自己的回合（与 `hookUsedTurnSeq` 同一条口径）。
+   */
+  hunUsedTurnSeq: number;
+  /**
    * 吕范·典财：本**出牌阶段**你失去了几张牌（cardsLost 那个公共事件上累加，
    * 出牌阶段结束时清零）。「其他角色的出牌阶段结束时」按它跟体力值比。
    */
@@ -317,6 +322,7 @@ export function emptyFlags(): PlayerFlags {
     hengjiangTarget: null,
     lostCardsThisPhase: 0,
     hunUsedNames: [],
+    hunUsedTurnSeq: -1,
     targetedOtherFactionThisTurn: false,
     targetedOtherThisTurn: false,
     wenjiCardId: null,
@@ -814,6 +820,14 @@ export type Pending =
        * 所以由技能发起的「选择一项」都应该填这个。
        */
       returnTo?: string;
+      /**
+       * **回答内容保密**：选完之后日志只写「谁做出了一项选择」，不写选项文案。
+       *
+       * 给「选项本身就含隐藏信息」的询问用（左慈·役鬼的「魂」是私有资源：选项里带着
+       * 是哪张武将牌、什么势力，写进公开日志等于把所有玩家的信息差抹平）。
+       * 与 `askPickCards` 的 `secret` 同一条口径。
+       */
+      secret?: boolean;
       /**
        * 「操作**别人区域里的牌**」的**分区布局**（用户 2026-09-23 的口径）：不同角色横向分栏、
        * 同一角色内部按 hand/equip/judge 纵向分区。

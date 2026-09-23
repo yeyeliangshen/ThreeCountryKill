@@ -16452,19 +16452,118 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
-    // 魂里放一张**群**势力的武将（张角）→ 只能打群势力或未确定势力的角色（丙）
+    // 魂里放一张**群**势力的武将（张角）→ 只能打群势力 / 未确定势力 / 野心家的角色（丙）
     a.hun = ['zhangjiao'];
     ok(act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] }));
+    // 只有一张「魂」时不必多问一次「选哪张魂」，直接问牌名（与钟会·排异同一处理）
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.title).toContain('役鬼');
     ok(act(state, A, { type: 'chooseOption', optionId: 'sha' }));
-    // 候选只有丙（群）；乙是蜀，不能用「魂」打
+    // ③ 候选只有丙（群）；乙是蜀，不能用这张「魂」打
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id)).toEqual([C]);
     ok(act(state, A, { type: 'chooseOption', optionId: C }));
     expect(a.hun).toHaveLength(0);
     expect(state.pending?.kind).toBe('respondSha'); // 丙要出闪
-    expect(state.log.some((e) => e.message.includes('张角'))).toBe(true); // 魂牌亮出来了
+    // ⚠️ 用户 2026-09-25 口径：**「魂」是私有信息**，日志里不许出现那张武将牌的名字
+    expect(
+      state.log.some((e) => e.message.includes('张角')),
+      '日志不能泄露「魂」是哪张武将牌',
+    ).toBe(false);
+    expect(state.log.some((e) => e.message.includes('移去一张「魂」'))).toBe(true);
+  });
+
+  it('役鬼：目标可以是**野心家**（用户 2026-09-25 口径：未确定势力 / 野心家 / 与魂同势力）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      // 丙是**野心家**：与魂的势力（群）不同，但按口径仍然合法
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'ambitionist' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hun = ['zhangjiao']; // 群
+    ok(act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'sha' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id), '野心家可以，蜀不行').toEqual([C]);
+    }
+  });
+
+  it('役鬼：「每种牌名每回合限一次」按**全局当前回合**记账（换回合即重置）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'qun' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hun = ['zhangjiao'];
+    // 「本回合已经用役鬼产生过【杀】」——直接摆账（真实流程由上面那条用例覆盖）
+    a.flags.hunUsedNames = ['sha'];
+    a.flags.hunUsedTurnSeq = state.turnSeq;
+    ok(act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id), '同一回合内此牌名已用过').not.toContain('sha');
+    }
+    // 换一个**全局回合**（下一次回合交接时引擎做的正是 `state.turnSeq++`）⇒ 重置
+    state.turnSeq += 1;
+    // 上面那条询问还挂着 → 先按「取消了/重来」把它清掉，再重新发动
+    state.pending = { kind: 'play', seatId: A };
+    ok(act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id), '新回合重置后【杀】回来了').toContain('sha');
+    }
+  });
+
+  it('役鬼：有多张「魂」时**由左慈自己挑**移去哪张（用户 2026-09-25 校对：原来随机移去）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hun = ['zhangjiao', 'zhouyu']; // 群 + 吴
+    ok(act(state, A, { type: 'useSkill', skillId: 'yigui_use', cardIds: [], targetIds: [] }));
+    // ① 选魂：选项里**只有左慈本人**看得到的武将名与势力
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.title).toContain('魂');
+      expect(state.pending.options.map((o) => o.label)).toEqual(['张角（群）', '周瑜（吴）']);
+    }
+    // 挑那张**吴**的魂 → 只能打吴势力 / 未确定势力 / 野心家 ⇒ 候选是丙（吴），乙（蜀）不在
+    ok(act(state, A, { type: 'chooseOption', optionId: '1' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'sha' }));
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.options.map((o) => o.id)).toEqual([C]);
+    ok(act(state, A, { type: 'chooseOption', optionId: C }));
+    expect(a.hun, '只移去挑中的那张').toEqual(['zhangjiao']);
+    expect(
+      state.log.some((e) => e.message.includes('周瑜') || e.message.includes('张角')),
+      '「魂」的武将名不许出现在日志里（私有信息）',
+    ).toBe(false);
+  });
+
+  it('汲魂：**每一次**受到伤害后都能发动（文本里没有「每回合/每局一次」——用户 2026-09-25 校对）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+        // 乙用**张飞**（咆哮：出【杀】无次数限制）连打两刀
+        { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [sha('b1'), sha('b2')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      ['zhangliao', 'zhouyu', 'xuchu', 'simayi'],
+      B,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    // 乙用两张【杀】打甲，甲都不闪 → 两次「受到伤害后」⇒ 两张魂
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(a.hun, '第一次受伤 → 一张魂').toHaveLength(1);
+    ok(act(state, B, { type: 'playCard', cardId: 'b2', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(a.hun, '第二次受伤还能再补一张（不受「每回合/每局一次」限制）').toHaveLength(2);
   });
 
   it('汲魂：受到伤害后补一张「魂」；同势力的濒死结束不给', () => {
@@ -16484,16 +16583,16 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     expect(state.log.some((e) => e.message.includes('汲魂'))).toBe(true);
   });
 
-  it('汲魂②：与你势力不同的角色脱离濒死后补一张「魂」；同势力的不给', () => {
+  it('汲魂②：与你势力**相同**的角色脱离濒死后补一张「魂」；不同势力的不给（用户 2026-09-25 校对：原来写反了）', () => {
     // 这条以前是**空跑**的：nearDeathResolved 只有声明和消费方、没有派发点。
     // 现在三个出口（技能救回 / 桃救回 / 阵亡）都会派发，这条用例才真的在验东西。
     const pool = ['zhangliao', 'zhouyu', 'xuchu'];
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
-        // 乙是蜀（与左慈的群**不同势力**）→ 脱离濒死后应补魂
-        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), tao('b2')] },
-        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
+        // 乙是群（与左慈**同势力**）→ 脱离濒死后应补魂
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'qun', hand: [sha('b1'), tao('b2')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [], hp: 1 },
       ],
       pool,
       B,
@@ -16509,15 +16608,15 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     ok(act(state, A, { type: 'pass' })); // 左慈不出桃
     ok(act(state, B, { type: 'respondCard', cardId: 'b2' })); // 乙用桃救
     expect(c.hp).toBe(1);
-    expect(a.hun).toHaveLength(1); // 与左慈势力不同 + 存活 → 补一张魂
+    expect(a.hun).toHaveLength(1); // 与左慈**同势力** + 存活 → 补一张魂
     expect(pool).toHaveLength(2);
 
-    // 对照组：濒死的是**同势力**（群）的角色 → 不给
+    // 对照组：濒死的是**不同势力**（蜀）的角色 → 不给
     const same = gz(
       [
         { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
         { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1'), tao('b2')] },
-        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'qun', hand: [], hp: 1 },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'shu', hand: [], hp: 1 },
       ],
       ['zhangliao', 'zhouyu', 'xuchu'],
       B,

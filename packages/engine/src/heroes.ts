@@ -8584,14 +8584,12 @@ const ZUOCI: Hero = {
     {
       timing: 'afterDamage',
       skillId: '汲魂',
-      applies: (ctx) =>
-        damagedPositive(ctx) &&
-        !ctx.player.usedOncePerGame.jihunDamage &&
-        ctx.state.heroPool.length > 0,
+      applies: (ctx) => damagedPositive(ctx) && ctx.state.heroPool.length > 0,
       handler: (ctx) => {
         const me = ctx.player;
-        if (me.usedOncePerGame.jihunDamage) return; // 「受伤害后」每回合一次（flag 随回合清）
-        me.usedOncePerGame.jihunDamage = true;
+        // 用户 2026-09-25 口径：文本是「当你受到伤害后，**可以**…」——**每次**受到伤害都能发动，
+        // 没有「每回合/每局一次」的限制（一次 3 点伤害也只按这一次伤害事件处理一次，
+        // 因为它就是 `afterDamage` 这一个事件）。参见 docs §5.222。
         const id = ctx.state.heroPool.shift();
         if (!id) return;
         me.hun.push(id);
@@ -8609,7 +8607,10 @@ const ZUOCI: Hero = {
         const dying = payload?.dyingSeatId ? getPlayer(ctx.state, payload.dyingSeatId) : undefined;
         if (!dying || !payload?.alive) return; // 「存活」才给
         if (dying.seatId === ctx.player.seatId) return;
-        if (sameKnownFaction(ctx.state, ctx.player, dying)) return; // 「与你势力不同」
+        // 用户 2026-09-25 口径（当前移动版国战）：**与你势力相同**的角色脱离濒死才触发。
+        // ⚠️ 改动前这里是反的（`sameKnownFaction` 为真就 return ⇒ 只对**不同**势力触发）——
+        //    与技能文本完全相反，是本次校对里最严重的一处。
+        if (!sameKnownFaction(ctx.state, ctx.player, dying)) return;
         const id = ctx.state.heroPool.shift();
         if (!id) return;
         ctx.player.hun.push(id);
@@ -8627,29 +8628,44 @@ const ZUOCI: Hero = {
       minTargets: 0,
       maxTargets: 0,
       needsCards: false,
-      canUse: (state, player) => player.hun.length > 0 && hunOptions(state, player).length > 0,
+      canUse: (state, player) => player.hun.length > 0 && hunOptions(state, player, null).length > 0,
       execute: (state, player, _intent, api) => {
-        const options = hunOptions(state, player);
-        if (options.length === 0) return '当前没有可以这样使用的牌';
-        api.askChoice(
-          state,
-          player.seatId,
-          '【役鬼】：移去一张「魂」，视为使用哪张牌？',
-          options,
-          (st, p, picked) => {
-            // 移去一张「魂」（暗置 → 随机），并把那张武将牌亮出来（牌面与势力公开）
-            const idx = Math.floor(state.rng() * p.hun.length);
-            const heroId = p.hun.splice(idx, 1)[0]!;
-            const hero = getHeroForMode(heroId, st.mode);
-            p.flags.hunUsedNames.push(picked);
+        /**
+         * ① 先选一张「魂」——**由左慈自己挑**（用户 2026-09-25 口径 §七）。
+         *
+         * ⚠️ 改动前是「随机移去一张」并把那张武将牌**写进牌局日志**（所有人可见）——
+         *    与「「魂」是私有信息、别人只知道数量」这条口径直接冲突（见 `hunCount` 的下发）。
+         *    现在：选项只发给左慈本人（询问本来就是按座位下发的），日志只写「移去一张「魂」」。
+         */
+        const soulOptions = player.hun.map((id, i) => {
+          const hero = getHeroForMode(id, state.mode);
+          const fac = printedFactionsOf(id)
+            .map((f) => FACTION_NAME[f] ?? f)
+            .join('/');
+          return { id: String(i), label: `${hero?.name ?? id}（${fac || '未确定'}）` };
+        });
+        const afterSoul = (idx: number): void => {
+          const heroId = player.hun[idx];
+          if (heroId === undefined) return;
+          // ⚠️ §5.121：双势力「魂」= 两个牌面势力**都算**（集合，不是单值）
+          const factions = printedFactionsOf(heroId);
+          const options = hunOptions(state, player, factions);
+          if (options.length === 0) {
             pushLog(
-              st,
+              state,
               'skill',
-              `${p.name} 发动【役鬼】，移去一张「魂」（${hero?.name ?? heroId}，势力 ${hero?.faction ?? '未确定'}）。`,
-              { seat: p.seatId, action: 'skill' },
+              `${player.name} 发动【役鬼】：这张「魂」当下没有可以视为使用的牌。`,
+              { seat: player.seatId },
             );
-            // ⚠️ §5.121：双势力「魂」= 两个牌面势力**都算**（集合，不是单值）
-            const factions = hero ? printedFactionsOf(hero.id) : null;
+            return;
+          }
+          api.askChoice(state, player.seatId, '【役鬼】：视为使用哪张牌？', options, (st, p, picked) => {
+            p.hun.splice(idx, 1);
+            hunMarkUsed(st, p, picked);
+            pushLog(st, 'skill', `${p.name} 发动【役鬼】：移去一张「魂」，视为使用【${CARD_TYPE_NAME[picked as CardType] ?? picked}】。`, {
+              seat: p.seatId,
+              action: 'skill',
+            });
             if (picked === 'sha' || picked === 'jiu' || picked === 'tao') {
               if (picked === 'jiu') {
                 p.flags.jiuActive = true;
@@ -8706,7 +8722,22 @@ const ZUOCI: Hero = {
               );
             };
             step([]);
-          },
+          });
+        };
+        if (soulOptions.length <= 1) {
+          afterSoul(0);
+          return undefined;
+        }
+        api.askChoice(
+          state,
+          player.seatId,
+          '【役鬼】：选择要移去的一张「魂」',
+          soulOptions,
+          (_st, _p, picked) => afterSoul(Number(picked)),
+          undefined,
+          // ⚠️ 回答**保密**：选项文案里带着「是哪张武将牌、什么势力」，而「魂」是私有资源
+          //    （别人只知道数量）——不保密的话，`chooseOption` 那条公开日志会把它写出来。
+          true,
         );
         return undefined;
       },
@@ -8719,14 +8750,18 @@ const ZUOCI: Hero = {
     },
     {
       name: '汲魂',
-      desc: '当你受到伤害后，你可以从剩余武将牌堆中扣置一张牌加入「魂」牌；当一名角色的濒死结算结束后，若其与你势力不同且存活，你可以从剩余武将牌堆中扣置一张牌加入「魂」牌。',
+      desc: '当你受到伤害后，或与你势力相同的角色脱离濒死状态后，你可以从剩余武将牌堆中随机扣置一张武将牌加入「魂」牌。',
     },
   ],
 };
 
 /** 役鬼能视为使用的牌名（基本牌只列能在出牌阶段主动用的；锦囊排除无懈可击） */
-function hunOptions(state: GameState, player: Player): { id: string; label: string }[] {
-  const used = new Set(player.flags.hunUsedNames);
+function hunOptions(
+  state: GameState,
+  player: Player,
+  factions: Faction[] | null,
+): { id: string; label: string }[] {
+  const used = new Set(hunUsedNames(state, player));
   const out: { id: string; label: string }[] = [];
   for (const [id, name] of [
     ['sha', '杀'],
@@ -8739,10 +8774,11 @@ function hunOptions(state: GameState, player: Player): { id: string; label: stri
   for (const spec of QICE_TRICKS) {
     if (spec.type === 'wuxie') continue;
     if (used.has(spec.type)) continue;
-    // 群体锦囊：如果场上有人不符合势力限制，就不能用（它会自动指定所有人）
-    if (spec.min === 0 && spec.max === 0) {
+    // 群体锦囊会自动指定所有人 ⇒ 场上只要有一个人不符合**这张魂的**势力限制，就用不了
+    // （`factions` 为 null 时是「还没选魂」的可用性预判，这时不按势力过滤）
+    if (spec.min === 0 && spec.max === 0 && factions) {
       const all = state.players.filter((p) => p.alive && p.seatId !== player.seatId);
-      const bad = all.some((p) => !hunFactionOk(state, p, player, null));
+      const bad = all.some((p) => !hunFactionOk(state, p, player, factions));
       if (bad) continue;
     }
     out.push({ id: spec.type, label: CARD_TYPE_NAME[spec.type] });
@@ -8750,7 +8786,13 @@ function hunOptions(state: GameState, player: Player): { id: string; label: stri
   return out;
 }
 
-/** 势力限制：目标的势力与「魂」牌相同，或者**未确定势力** */
+/**
+ * 【役鬼】的目标限制（用户 2026-09-25 口径）：
+ * **未确定势力**的角色、**野心家**、以及与被移去的那张「魂」**势力相同**的角色。
+ *
+ * ⚠️ 只读**当前公开**的势力（`effectiveFaction`：只有明置才算）——绝不能去看暗将底下
+ * 真实是哪张牌：那会让「这个暗将被点灰/点不灰」泄露他的身份（用户口径 §三）。
+ */
 function hunFactionOk(
   state: GameState,
   target: Player,
@@ -8759,8 +8801,25 @@ function hunFactionOk(
 ): boolean {
   const tf = effectiveFaction(state, target);
   if (!tf) return true; // 未确定势力 → 可以
+  if (tf === 'ambitionist') return true; // 野心家 → 可以
   if (!factions) return true;
   return factions.includes(tf); // 双势力「魂」= 两个牌面势力都算（§5.121）
+}
+
+/**
+ * 【役鬼】「每种牌名每回合限一次」——**按全局当前回合**记账（用户 2026-09-25 口径 §四：
+ * 「每回合」指当前回合，不是左慈自己的回合）。与吴国太·补益同一套做法（`hookUsedTurnSeq`）。
+ */
+function hunUsedNames(state: GameState, player: Player): string[] {
+  return player.flags.hunUsedTurnSeq === state.turnSeq ? player.flags.hunUsedNames : [];
+}
+
+function hunMarkUsed(state: GameState, player: Player, name: string): void {
+  if (player.flags.hunUsedTurnSeq !== state.turnSeq) {
+    player.flags.hunUsedNames = [];
+    player.flags.hunUsedTurnSeq = state.turnSeq;
+  }
+  player.flags.hunUsedNames.push(name);
 }
 
 /** 役鬼的候选目标（势力限制 + 距离等既有合法性） */

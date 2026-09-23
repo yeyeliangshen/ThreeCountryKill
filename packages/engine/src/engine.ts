@@ -400,9 +400,14 @@ export function askChoice(
   options: { id: string; label: string }[],
   resolve: (state: GameState, player: Player, optionId: string) => void,
   returnTo?: string,
+  /** 回答内容保密（选项里带隐藏信息时用；见 Pending.secret） */
+  secret?: boolean,
   /**
    * 「操作别人区域里的牌」的**分区布局**（用户 2026-09-23）：不同角色横向分栏、
    * 同一角色内部按 hand/equip/judge 纵向分区。只是**布局说明**——回答仍走 `chooseOption(opt.id)`。
+   *
+   * ⚠️ 它在 `secret` **之后**：`SkillApi.askChoice` 只声明到 `returnTo, secret`，
+   *    顺序一致才可能把本函数赋给那个类型（多出来的可选参数不影响可赋值性）。
    */
   zonePick?: ZonePickLayout,
 ): void {
@@ -414,6 +419,7 @@ export function askChoice(
     resolve,
     returnTo,
     ...(zonePick ? { zonePick } : {}),
+    ...(secret ? { secret: true } : {}),
   });
 }
 
@@ -4796,6 +4802,7 @@ function askDamageWeaponEffects(
             hanbingStep(left - 1);
           },
           undefined,
+          undefined, // secret（这两处回答的是明牌，不需要保密）
           // 分区布局（用户 2026-09-23）：**手牌 + 装备区**两栏，判定区不出现；
           // 手牌画牌背、装备画牌面（界面上部手牌、下部装备，不写区名）。
           { targets: [{ seatId: target.seatId, zones: zoneLayoutOf(target, { noJudgment: true }).zones }] },
@@ -5891,7 +5898,9 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       state.log.push({
         id: state.logSeq++,
         kind: 'skill',
-        message: `${player.name} 选择了「${picked.label}」。`,
+        message: pending.secret
+          ? `${player.name} 做出了一项选择（内容不公开）。`
+          : `${player.name} 选择了「${picked.label}」。`,
       });
       // 回答回调算「续接」：它里面再入队的续接要插队首（见 pushResume）
       runResume(() => pending.resolve(state, player, picked.id));
@@ -7138,6 +7147,7 @@ function askTargetCardPick(
         after(got);
       },
       undefined,
+      undefined, // secret
       // 「操作别人区域里的牌」的分区布局（用户 2026-09-23）：界面按角色分栏 + 区内分区，
       // 手牌画牌背、装备/判定画牌面。**区域由规则层给**（zoneOpts 决定要不要判定区）。
       {
