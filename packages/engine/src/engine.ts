@@ -3101,9 +3101,14 @@ function playSha(
     const noDistanceToTarget = activeHeroes(state, source).some(
       (h) => h.ignoreShaDistanceTo?.(state, source, targetId) === true,
     );
+    // **牌级**的无距离限制（关羽·武圣②：你使用方块【杀】无距离限制）——看的是这张牌本身，与目标无关
+    const distanceFreeCard = activeHeroes(state, source).some(
+      (h) => h.shaIgnoresDistance?.(state, source, card) === true,
+    );
     if (
       !source.flags.ignoreShaDistanceThisTurn &&
       !wenji &&
+      !distanceFreeCard &&
       !noDistanceToTarget &&
       !canTarget(state, source.seatId, targetId)
     )

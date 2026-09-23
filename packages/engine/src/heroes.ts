@@ -610,6 +610,14 @@ export interface Hero {
    */
   ignoreShaDistanceTo?: (state: GameState, owner: Player, targetId: string) => boolean;
   /**
+   * **牌级**的「使用【杀】无视距离」：判据看的是**这张【杀】本身**（花色/属性…），与目标无关。
+   * 关羽·【武圣】②（现行移动版文本）：你使用**方块**【杀】无距离限制。
+   *
+   * ⚠️ 只在这张牌真的按【杀】用出去时才被读到（`playSha` 的距离校验里）——所以不必自己再判牌型；
+   *    转化来的【杀】照常算（武圣把一张 ♦ 牌当【杀】用出去，看的是**那张牌的花色**）。
+   */
+  shaIgnoresDistance?: (state: GameState, owner: Player, card: Card) => boolean;
+  /**
    * 袁术·庸肆（锁定技）：**若场上没有【玉玺】**，你视为装备着【玉玺】。
    *
    * 两处消费方都走 `hasYuxi()`（equip.ts 的摸牌加成 + engine 的出牌阶段开始时视为使用
@@ -648,6 +656,8 @@ export type FieldSkill =
   | 'shaBypassLimit'
   | 'fangyuan'
   | 'ignoreShaDistanceTo'
+  /** 关羽·武圣②：你使用**方块**【杀】无距离限制（牌级豁免） */
+  | 'shaIgnoresDistance'
   | 'extraDraw'
   | 'handLimit'
   | 'cannotBeTargetOf'
@@ -742,9 +752,18 @@ const GUANYU: Hero = {
   maxHp: 4,
   gender: 'male',
   canUseAs: (card, type) => type === 'sha' && isRed(card),
+  // 武圣②（现行移动版文本）：**你使用方块【杀】无距离限制**。
+  // 判据是**这张牌（对关羽而言）的花色**：♦牌（含被武圣转化成【杀】用出去的那些）都放行；
+  // 虚拟牌没有实体花色（丈八/寄篱造的无色杀）自然不算。见 docs §5.233。
+  shaIgnoresDistance: (state, owner, card) => cardAsSeenBy(state, owner, card).suit === 'diamond',
   combos: ['zhangfei'],
-  skillFields: { 武圣: ['canUseAs'] },
-  skills: [{ name: '武圣', desc: '你可以将一张红色牌当【杀】使用或打出。' }],
+  skillFields: { 武圣: ['canUseAs', 'shaIgnoresDistance'] },
+  skills: [
+    {
+      name: '武圣',
+      desc: '你可以将一张红色牌当【杀】使用或打出。你使用方块【杀】无距离限制。',
+    },
+  ],
 };
 
 const ZHANGFEI: Hero = {
