@@ -10214,5 +10214,5 @@ targetIds.length` ⇒ 「目标不能重复」），一次覆盖所有多目标�
 
 ### 五、门禁（真实结果）
 
-- `pnpm test`：全绿（engine **1342** / ui **240** / server 37；含 fuzz 与冒烟）。
+- `pnpm test`：全绿（engine **1342** / ui **241** / server 37；含 fuzz 与冒烟）。
 - `pnpm typecheck` / `pnpm build`：全绿（提交前显式过闸）。
