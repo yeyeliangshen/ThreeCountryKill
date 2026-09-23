@@ -1842,7 +1842,9 @@ describe('武将技能（Step 6）', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     // A 出杀后手牌 0，B 手牌 2 ≥ 0 → 不可闪避
     const b = state.players.find((p) => p.seatId === B)!;
-    expect(b.hp).toBe(3);
+    // ⚠️ 口径更新（用户 2026-09-26）：现行【烈弓】还带 **【乘势】**——发动后此【杀】对该目标伤害 +1
+    //    ⇒ 这里从掉 1 点（3）改成掉 2 点（2）。旧口径见 docs §5.237。
+    expect(b.hp).toBe(2);
     expect(b.hand).toHaveLength(2); // 未使用闪
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });

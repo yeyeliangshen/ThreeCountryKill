@@ -879,7 +879,15 @@ const HUANGZHONG: Hero = {
         if (!target) return;
         if (target.hand.length >= ctx.player.hand.length || target.hp <= ctx.player.hp) {
           payload.attack.requiredShan = Infinity;
-          pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避！`);
+          // 【乘势】（现行文本，用户 2026-09-26 口径）：发动【烈弓】后，此【杀】对**该目标**伤害 +1。
+          // ⚠️ 改的是**这一份** attack 上下文（引擎对每个目标各建一份）⇒ 只影响这个目标。
+          //    与「界徐盛那类」同一条写法：挂在这张【杀】的基础伤害上，酒/防具/其它技能照常叠。
+          payload.attack.damage += 1;
+          pushLog(
+            ctx.state,
+            'skill',
+            `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避，且对其伤害 +1！`,
+          );
         }
       },
     },
@@ -887,7 +895,7 @@ const HUANGZHONG: Hero = {
   skills: [
     {
       name: '烈弓',
-      desc: '当你使用【杀】指定目标后，若目标手牌数≥你或体力≤你，此【杀】不可被闪避。',
+      desc: '当你使用【杀】指定目标后，若目标手牌数≥你或体力≤你，此【杀】不可被闪避，且【乘势】：此【杀】对该角色造成的伤害 +1。',
     },
   ],
   // 国战：烈弓的判定条件与身份局不同——
@@ -906,7 +914,13 @@ const HUANGZHONG: Hero = {
           const hand = target.hand.length;
           if (hand >= ctx.player.hp || hand <= attackRange(ctx.state, ctx.player)) {
             payload.attack.requiredShan = Infinity;
-            pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避！`);
+            // 【乘势】：与身份版同一条（发动后此【杀】对该目标伤害 +1）
+            payload.attack.damage += 1;
+            pushLog(
+              ctx.state,
+              'skill',
+              `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避，且对其伤害 +1！`,
+            );
           }
         },
       },
@@ -914,7 +928,7 @@ const HUANGZHONG: Hero = {
     skills: [
       {
         name: '烈弓',
-        desc: '当你于出牌阶段内使用【杀】指定一名角色为目标后，若该角色手牌数不小于你的体力值或不大于你的攻击范围，你可以令其不能使用【闪】响应此【杀】。（国战版）',
+        desc: '当你于出牌阶段内使用【杀】指定一名角色为目标后，若该角色手牌数不小于你的体力值或不大于你的攻击范围，你可以令其不能使用【闪】响应此【杀】，且【乘势】：此【杀】对该角色造成的伤害 +1。（国战版）',
       },
     ],
   },
