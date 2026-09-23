@@ -486,6 +486,13 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
       // 技能**自己的**目标过滤（貂蝉·离间只认男性）：界面据此把其他人置灰。
       // 引擎在 execute 里照样再校验一遍——这份只是「别让玩家点一个必然被拒的人」。
       const targetOk = skill.targetOk;
+      // 技能自己的可点目标池：声明了 selfTarget 的技能（青囊那类「一名角色」）**要带上自己**，
+      // 否则哪天给这类技能加 targetOk，界面会悄悄少掉「选自己」这个合法选项
+      // （引擎照收、界面却点不到）。没声明的不含自己（与 legalTargetIds 同一口径）。
+      const poolForSkill =
+        skill.selfTarget === true
+          ? state.players.filter((p) => p.alive && !p.flags.cannotBeTargetThisTurn)
+          : targetablePlayers;
       legalSkills.push({
         id: skill.id,
         name: skill.name,
@@ -494,7 +501,11 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         minTargets: skill.minTargets,
         maxTargets: skill.maxTargets,
         ...(targetOk
-          ? { legalTargets: targetablePlayers.filter((t) => targetOk(state, player, t)).map((t) => t.seatId) }
+          ? {
+              legalTargets: poolForSkill
+                .filter((t) => targetOk(state, player, t))
+                .map((t) => t.seatId),
+            }
           : {}),
         ...(skill.targetSlotLabels ? { targetSlotLabels: skill.targetSlotLabels } : {}),
         ...(skill.targetPreview ? { targetPreview: skill.targetPreview } : {}),

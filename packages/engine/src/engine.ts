@@ -12241,6 +12241,12 @@ function onUseSkill(
   //    （通用 UI 决定了规则，正是用户点名的缺陷）。
   if (skill.selfTarget !== true && targetIds.includes(seatId))
     return err('该技能不能以自己为目标');
+  // 目标**不能重复**：技能文本里的目标一律是「不同的角色」（离间「两名男性其他角色」、
+  // 甘露「两名角色」…）。牌那几处（势力锦囊等）早就有这条，**技能这里以前没有**——
+  // 于是绕过界面直接发 `[同一个座位, 同一个座位]` 会被放行：离间会造出
+  // 「关羽 视为对 关羽 使用【决斗】」这种自己打自己的结算（用户 2026-09-25 报的同类缺陷
+  // 整理时发现的，见 docs §5.229）。界面靠 toggle 点不出重复，但引擎才是判据。
+  if (new Set(targetIds).size !== targetIds.length) return err('目标不能重复');
   // 代价牌校验：**手牌**（缺省）或**手牌＋自己装备区**（技能声明了 costFrom: 'handEquip'）。
   // ⚠️ 口径见 ActiveSkill.costFrom：文本写「手牌」的绝不能拿装备区凑数，「一张牌」的才放开。
   if (skill.needsCards) {

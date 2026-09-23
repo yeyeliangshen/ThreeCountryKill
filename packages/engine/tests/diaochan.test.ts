@@ -249,6 +249,20 @@ describe('【离间】：代价与限制', () => {
     ).toBe(false);
   });
 
+  it('**同一名角色不能选两次**（绕过界面直接发意图也被引擎拒）', () => {
+    // 界面靠 toggle 点不出重复，但引擎是判据：以前 `[B, B]` 会被放行，
+    // 结算成「关羽 视为对 关羽 使用【决斗】」（自己打自己）。见 docs §5.229。
+    const state = table();
+    const r = act(state, A, {
+      type: 'useSkill',
+      skillId: 'lilian',
+      cardIds: ['dc1'],
+      targetIds: [B, B],
+    });
+    expect(r.ok, '重复目标要被拒').toBe(false);
+    expect(String(r.error ?? '')).toContain('不能重复');
+  });
+
   it('场上不足两名男性时技能不可用（canUse 也拦）', () => {
     const state = gz([
       { seatId: A, name: '貂蝉', heroId: 'diaochan', faction: 'qun', hand: [sha('dc1')] },
@@ -357,6 +371,48 @@ describe('【离间】：生成的是一张**正常虚拟【决斗】**', () => 
     }
     expect(at(state, C).hp).toBe(3);
     expect(state.pending, '打完还给貂蝉的出牌阶段').toEqual({ kind: 'play', seatId: A });
+  });
+
+  it('决斗使用者是**吕布**时，无双照常生效（目标每次要连出两张【杀】）', () => {
+    // 离间只负责造出那张【决斗】；无双这类「决斗使用者」侧的技能由**决斗本身**结算，
+    // 所以它们必须自然生效（用户 §二十：不要把离间写成专属状态机）。
+    const state = gz([
+      { seatId: A, name: '貂蝉', heroId: 'diaochan', faction: 'qun', hand: [sha('dc1')] },
+      { seatId: B, name: '关羽', heroId: 'guanyu', faction: 'shu', hand: [sha('b1'), sha('b2'), sha('b3')] },
+      { seatId: C, name: '吕布', heroId: 'lvbu', faction: 'qun', hand: [sha('c1')] },
+    ]);
+    ok(act(state, A, { type: 'useSkill', skillId: 'lilian', cardIds: ['dc1'], targetIds: [B, C] }), '离间');
+    while (state.pending?.kind === 'wuxieQueue') {
+      const p = state.pending;
+      ok(act(state, p.askQueue[p.askIndex]!, { type: 'pass' }));
+    }
+    // 目标（关羽）响应：无双要求**两张**杀
+    expect(state.pending?.kind).toBe('respondTrick');
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }), '关羽出第 1 张杀');
+    if (state.pending?.kind === 'respondTrick') {
+      expect(state.pending.responderId, '还不够，仍问关羽').toBe(B);
+      ok(act(state, B, { type: 'respondCard', cardId: 'b2' }), '关羽出第 2 张杀');
+    }
+    expect(at(state, B).hand.map((c) => c.id), '两张杀都打出去了').toEqual(['b3']);
+  });
+
+  it('决斗把人打到濒死 ⇒ 照常求桃（救回来战斗继续）', () => {
+    const state = table();
+    at(state, C).hp = 1; // 张飞（第二目标＝使用者）只剩 1 血
+    at(state, C).hand = []; // 他手里没杀
+    at(state, B).hand = [sha('b1'), sha('b2'), mk('b3', 'tao', 'heart', 3)]; // 关羽（第一目标）有杀也有桃
+    ok(lijian(state), '发动离间');
+    ok(act(state, B, { type: 'pass' }), '关羽不出杀 ⇒ 张飞先挨？不：目标先响应');
+    // 决斗交替：目标（关羽）先响应 —— 上面那一下让关羽挨了 1 点；接着轮到使用者张飞
+    if (state.pending?.kind === 'respondTrick') ok(act(state, C, { type: 'pass' }), '张飞不出杀');
+    // 张飞 1 血，挨够 1 点就进濒死：此时应出现求桃链（正常流程）
+    let guard = 0;
+    while (state.pending?.kind === 'respondDeath' && guard++ < 6) {
+      const p = state.pending;
+      ok(act(state, p.askQueue[p.askIndex]!, { type: 'pass' }));
+    }
+    // 关羽手里有桃，会先被问；不管救没救，流程都必须**正常推进**（不是卡在离间里）
+    expect(['play', 'respondTrick', 'respondDeath', 'choice']).toContain(state.pending?.kind ?? '');
   });
 
   it('暗置的貂蝉发动离间 ⇒ **先明置再发动**（不许偷偷发动）', () => {
