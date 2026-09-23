@@ -11847,23 +11847,22 @@ describe('国战标准版 · 庞德 / 丁奉 / 纪灵', () => {
     expect(act(state, A, { type: 'playCard', cardId: 'a2', targetIds: [B, C, D] }).ok).toBe(false);
   });
 
-  it('丁奉：奋迅——弃一张牌，本回合到某人的距离视为 1', () => {
+  it('丁奉：奋迅——**出牌阶段开始时**可选一名其他角色，本回合到他的距离视为 1（不弃牌）', () => {
+    // ⚠️ 口径更新（用户 2026-09-26）：旧版是「出牌阶段限一次，弃一张牌 + 选一人」的**主动技**；
+    //    现行是**出牌阶段开始时**的触发技、**不需要弃牌**。旧口径见 docs §5.238。
     const state = gz([
       { seatId: A, name: '甲', heroId: 'dingfeng', faction: 'wu', hand: [sha('a1'), sha('a2')] },
       { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu' },
       { seatId: C, name: '丙', heroId: 'guanyu', faction: 'shu' },
     ]);
     const a = state.players.find((p) => p.seatId === A)!;
-    // 三人局里丙本来就在距离 1 之外吗？距离是环上的最小值，这里用 4 人局更保险——
-    // 直接断言标记与距离：先看没有标记时的距离
-    ok(act(state, A, { type: 'useSkill', skillId: 'fenxun', cardIds: ['a2'], targetIds: [C] }));
-    expect(a.flags.distanceToOneThisTurn).toBe(C);
+    // 它已经不是主动技了：直接 useSkill 会被拒（要走「出牌阶段开始时」那一问）
+    expect(act(state, A, { type: 'useSkill', skillId: 'fenxun', targetIds: [C] }).ok).toBe(false);
+    expect(a.flags.distanceToOneThisTurn).toBeNull();
+    // 手工把这一问摆出来（真实流程由 playPhase 钩子发起，见 tests/dingfeng.test.ts）
+    a.flags.distanceToOneThisTurn = C;
     expect(distance(state, A, C)).toBe(1);
-    expect(a.hand.map((c) => c.id)).toEqual(['a1']); // 弃掉了一张
-    // 限一次
-    expect(
-      act(state, A, { type: 'useSkill', skillId: 'fenxun', cardIds: ['a1'], targetIds: [C] }).ok,
-    ).toBe(false);
+    expect(a.hand.map((c) => c.id), '不弃牌').toEqual(['a1', 'a2']);
   });
 
   it('纪灵：双刃拼点赢 → 视为对其同势力的另一名角色使用【杀】', () => {

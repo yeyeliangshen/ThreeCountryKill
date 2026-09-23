@@ -13373,35 +13373,55 @@ const DINGFENG: Hero = {
   shaExtraTargetAtRange1: true,
   lockedFields: ['shaExtraTargetAtRange1'],
   skillFields: { 短兵: ['shaExtraTargetAtRange1'] },
-  activeSkills: [
+  // 奋迅（**现行文本**，用户 2026-09-26 口径）：**出牌阶段开始时**，你可以选择一名其他角色，
+  // 本回合你计算与其的距离视为 1。
+  //
+  // ⚠️ 与旧文本的两处差别（这一轮改掉）：
+  //    ① 触发时机：旧版是「出牌阶段限一次」的**主动技**（要自己点技能）⇒ 现在是**出牌阶段开始时**自动询问；
+  //    ② **不再需要弃置一张牌**（旧版 `needsCards` + `oncePerTurn` + 弃一张牌，代价整条删掉）。
+  //    距离效果仍用现成的 `flags.distanceToOneThisTurn`（`distance()` 读它、回合结束清）。
+  hooks: [
     {
-      id: 'fenxun',
-      name: '奋迅',
-      oncePerTurn: true,
-      minTargets: 1,
-      maxTargets: 1,
-      needsCards: true,
-      maxCards: () => 1,
-      canUse: (state, player) =>
-        player.hand.length > 0 && state.players.some((p) => p.alive && p.seatId !== player.seatId),
-      execute: (state, player, intent) => {
-        const cardId = intent.cardIds?.[0];
-        const card = cardId ? player.hand.find((c) => c.id === cardId) : undefined;
-        if (!card) return '请选择要弃置的一张牌';
-        const targetId = intent.targetIds[0];
-        const target = targetId ? getPlayer(state, targetId) : undefined;
-        if (!target || !target.alive || target.seatId === player.seatId) return '目标无效';
-        removeCard(player.hand, card.id);
-        toDiscard(state, card);
-        // 「本回合你计算与其的距离视为 1」——distance() 读这个字段，回合结束清掉
-        player.flags.distanceToOneThisTurn = target.seatId;
-        pushLog(
-          state,
-          'skill',
-          `${player.name} 发动【奋迅】，弃置【${cardLabel(card)}】：本回合至 ${target.name} 的距离视为 1。`,
-          { seat: player.seatId, action: 'skill' },
+      timing: 'playPhase',
+      skillId: '奋迅',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== me.seatId);
+        if (others.length === 0) return; // 没有别人 ⇒ 不产生无意义询问
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '【奋迅】：选择一名其他角色（本回合你计算与其的距离视为 1）？',
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const cands = st.players.filter((q) => q.alive && q.seatId !== me.seatId);
+            if (cands.length === 0) return;
+            // 目标在**牌桌上点**（与死谏/甘露同一个「多选座位」原语）
+            ctx.api.askPickSeats(
+              st,
+              me.seatId,
+              '【奋迅】：选择一名其他角色',
+              cands.map((q) => q.seatId),
+              1,
+              1,
+              (st2, p2, seatIds) => {
+                const t = seatIds[0] ? getPlayer(st2, seatIds[0]) : undefined;
+                if (!t || !t.alive) return;
+                p2.flags.distanceToOneThisTurn = t.seatId;
+                pushLog(
+                  st2,
+                  'skill',
+                  `${p2.name} 发动【奋迅】：本回合计算与 ${t.name} 的距离视为 1。`,
+                  { seat: p2.seatId, action: 'skill' },
+                );
+              },
+            );
+          },
         );
-        return undefined;
       },
     },
   ],
@@ -13409,7 +13429,7 @@ const DINGFENG: Hero = {
     { name: '短兵', desc: '你使用【杀】可以多选择一名距离为1的角色为目标。' },
     {
       name: '奋迅',
-      desc: '出牌阶段限一次，你可以弃置一张牌并选择一名其他角色，然后本回合你计算与其的距离视为1。',
+      desc: '出牌阶段开始时，你可以选择一名其他角色：本回合你计算与其的距离视为 1。',
     },
   ],
 };

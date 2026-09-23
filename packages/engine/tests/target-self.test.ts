@@ -384,7 +384,10 @@ describe('⑤ 技能自己的目标规则（ActiveSkill.selfTarget）', () => {
       paiyi: true, // 一名角色
       cunsi: true, // 一名角色…若其不为你
       qiangxi: false, // 一名**其他**角色
-      fenxun: false, // 一名**其他**角色
+      // ⚠️ fenxun（丁奉·奋迅）**本轮从主动技改成了「出牌阶段开始时」的触发技**（用户 2026-09-26 口径：
+      //    不再弃牌、不再限一次），所以它不再出现在这张「主动技声明表」里；
+      //    它的目标规则仍是「一名**其他**角色」（钩子里 `q.seatId !== me.seatId` 过滤 + askPickSeats 候选），
+      //    与这里的原判据一致。见 docs §5.238。
       zhijian: false, // 一名**其他**角色
       tiaoxin: false, // 一名攻击范围内包含你的角色（文本待核对，本轮保持排除）
       lilian: false, // 两名男性角色（性别条件本就排除貂蝉自己）
