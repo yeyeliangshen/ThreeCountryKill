@@ -12504,6 +12504,17 @@ const JIANGWEI: Hero = {
  * 队列用 `formationQueue`（连续相邻的同势力角色，与鸟翔/鹤翼同一份判据），所以别人亮将、
  * 被【调虎离山】移出座次、角色阵亡导致队列断开时，形态**自动**跟着变。
  */
+/** 这个角色现在有没有【天覆】（已生效的那一份武将牌上带着它） */
+export function hasTianfu(state: GameState, player: Player): boolean {
+  // `activeHeroes` 是 engine 的薄包装（用 effectiveHeroes）；heroes 层直接用后者
+  return effectiveHeroes(state, player).some((h) => heroHasSkillNamed(h, '天覆'));
+}
+
+/** 给界面用的薄包装（下发给本人，让技能说明跟着形态变） */
+export function tianfuModeOf(state: GameState, player: Player): 'normal' | 'formation' {
+  return tianfuMode(state, player);
+}
+
 function tianfuMode(state: GameState, player: Player): 'normal' | 'formation' {
   const turnSeat = state.seatOrder[state.turn.seatIndex];
   const queue = formationQueue(state, player);

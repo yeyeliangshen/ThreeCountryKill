@@ -3430,3 +3430,18 @@ select:focus-visible,
   color: #d8d0c0;
   font-size: 11px;
 }
+
+/* —— 队列标记（用户 2026-09-24 口径 §六）——
+   连续相邻的同势力角色（≥2 人）组成「队列」，是阵法技的前提。表现要**很轻**：
+   一枚小徽标，不加动画、不连线（国战牌桌本来就挤）。判据由引擎下发 `PlayerView.inFormation`。 */
+.queue-badge {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.9;
+  vertical-align: middle;
+}

@@ -1,6 +1,6 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
-import { effectiveFaction, getHeroForMode } from './heroes';
+import { effectiveFaction, formationQueue, getHeroForMode, hasTianfu, tianfuModeOf } from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -61,6 +61,10 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     ...(isMe
       ? { hunNames: p.hun.map((id) => getHeroForMode(id, state.mode)?.name ?? id) }
       : {}),
+    // 队列（公开信息）：与天覆/鸟翔/鹤翼同一份判据
+    inFormation: formationQueue(state, p).length >= 2,
+    // 【天覆】的形态只发给本人（技能栏里的说明要跟着变）
+    ...(isMe && hasTianfu(state, p) ? { tianfuMode: tianfuModeOf(state, p) } : {}),
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
     wounds: p.wounds.slice(),
     han: p.han.slice(),

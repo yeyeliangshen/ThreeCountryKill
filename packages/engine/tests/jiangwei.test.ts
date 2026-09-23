@@ -324,6 +324,122 @@ describe('【挑衅】：目标条件与既有交互（回归，防止写成反�
   });
 });
 
+describe('暗将（国战）：技能必须「先明置再发动」，不许偷偷用', () => {
+  it('暗置姜维：点了【挑衅】会**先明置**（主动技那条路），而不是暗中发动', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'jiangwei', deputy: 'liubei', faction: 'shu' },
+        { seatId: B, name: '乙', heroId: 'caocao', deputy: 'xuchu', faction: 'wei' },
+      ],
+      A,
+      { revealed: false },
+    );
+    const a = at(state, A);
+    expect(a.heroRevealed, '开局是暗的').toBe(false);
+    b_weapon: {
+      at(state, B).equipment.weapon = {
+        id: 'w1',
+        type: 'weapon',
+        suit: 'spade',
+        rank: 6,
+        equipName: 'qinglong',
+        range: 3,
+      };
+    }
+    // 暗置时【挑衅】就能点（主动技点了就明置发动，见 §5.207/§5.209 的通路）
+    ok(act(state, A, { type: 'useSkill', skillId: 'tiaoxin', cardIds: [], targetIds: [B] }));
+    expect(a.heroRevealed, '发动的同时明置了').toBe(true);
+    expect(state.log.some((e) => e.message.includes('亮将'))).toBe(true);
+  });
+
+  it('暗置姜维：**没预亮**时【天覆】不可用（不许暗中把黑桃当无懈）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'jiangwei', deputy: 'liubei', faction: 'shu' },
+        { seatId: B, name: '乙', heroId: 'caocao', deputy: 'xuchu', faction: 'wei' },
+      ],
+      A,
+      { revealed: false },
+    );
+    const a = at(state, A);
+    expect(canUseAsCard(state, a, mk('h1', 'sha', 'spade'), 'wuxie'), '没预亮 ⇒ 不可用').toBe(
+      false,
+    );
+  });
+
+  it('暗置姜维：**预亮【天覆】**后，自己的回合里可以打出黑桃当【无懈】，并在这一刻明置', () => {
+    // ⚠️ 场景要选对：暗置角色没有「已确定势力」⇒ 没有队列 ⇒ 常规形态**只在自己回合**可用。
+    //    所以「别人的回合里用天覆」本来就是非法的（这正是实现口径，不是 bug）。
+    //    这里用「自己用锦囊 → 乙打无懈 → **反无懈轮问回我**」这条真实路径。
+    const state = gz(
+      [
+        {
+          seatId: A,
+          name: '甲',
+          heroId: 'jiangwei',
+          deputy: 'liubei',
+          faction: 'shu',
+          hand: [mk('h1', 'wuzhong', 'club'), mk('h2', 'sha', 'spade')],
+        },
+        { seatId: B, name: '乙', heroId: 'caocao', deputy: 'xuchu', faction: 'wei', hand: [mk('b1', 'wuxieguo', 'club', 2)] },
+      ],
+      A,
+      { revealed: false },
+    );
+    const a = at(state, A);
+    const b = at(state, B);
+    a.prelitSkills = ['天覆'];
+    // 甲（暗置）用自己的锦囊 —— 牌本身不受明置限制
+    ok(act(state, A, { type: 'playCard', cardId: 'h1', targetIds: [A] }), '甲用无中生有');
+    expect(state.pending?.kind, '无懈窗口').toBe('wuxieQueue');
+    while (state.pending?.kind === 'wuxieQueue' && state.pending.askQueue[state.pending.askIndex] !== B) {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    ok(act(state, B, { type: 'respondCard', cardId: 'b1' }), '乙打无懈');
+    // 抵消轮：问回**发起者甲**（他自己的回合 + 黑桃 ⇒ 天覆合法）
+    while (state.pending?.kind === 'wuxieQueue' && state.pending.askQueue[state.pending.askIndex] !== A) {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    expect(state.pending?.kind, '反无懈轮问到甲').toBe('wuxieQueue');
+    ok(act(state, A, { type: 'respondCard', cardId: 'h2' }), '甲用黑桃当【无懈可击】');
+    expect(a.heroRevealed, '用出去的那一刻明置（用转化技必须明置）').toBe(true);
+    expect(state.log.some((e) => e.message.includes('亮将') || e.message.includes('明置'))).toBe(true);
+  });
+});
+
+describe('界面要用的两个字段：队列标记 + 天覆形态（引擎下发，界面不自己算）', () => {
+  it('inFormation：连续相邻同势力 ≥2 才为真；断开后立刻为假', () => {
+    // 甲(蜀) 乙(蜀) 丙(魏) ⇒ 甲、乙在同一个队列里
+    const state = jwMain([], 3);
+    const snap = toSnapshot(state, A);
+    const pv = (seat: string) => snap.players.find((p) => p.seatId === seat)!;
+    expect(pv(A).inFormation, '甲与乙相邻同势力').toBe(true);
+    expect(pv(B).inFormation, '乙与甲相邻同势力').toBe(true);
+    expect(pv(C).inFormation, '丙是魏，两边都不是魏').toBe(false);
+    // 乙换成魏 ⇒ 队列断开（⚠️ `effectiveFaction` 读的是明置时定下的 `p.faction`，
+    //    只改 heroId 不改它是**测试夹具的错**，不是引擎的错）
+    const b = at(state, B);
+    b.heroId = 'caocao';
+    b.deputyHeroId = 'xuchu';
+    b.faction = 'wei';
+    expect(toSnapshot(state, A).players.find((p) => p.seatId === A)!.inFormation).toBe(false);
+  });
+
+  it('tianfuMode：**只发给本人**，且随回合/队列变（别人看不到这个字段）', () => {
+    const state = jwMain([], 3);
+    const snapA = toSnapshot(state, A);
+    const mine = snapA.players.find((p) => p.seatId === A)!;
+    expect(mine.tianfuMode, '甲有【天覆】⇒ 下发他当前的形态').toBe('formation');
+    // 换成丙（魏）的回合：甲与丙不同队列 ⇒ 常规形态
+    state.turn = { seatIndex: state.seatOrder.indexOf(C), phase: 'play' };
+    state.pending = { kind: 'play', seatId: C };
+    expect(toSnapshot(state, A).players.find((p) => p.seatId === A)!.tianfuMode).toBe('normal');
+    // 别人的快照里没有这个字段（它只描述「我的技能说明该怎么写」）
+    const asB = toSnapshot(state, B).players.find((p) => p.seatId === A)!;
+    expect(asB.tianfuMode, '别人的快照不带').toBeUndefined();
+  });
+});
+
 describe('回归守门：旧口径不许回来', () => {
   const src = readFileSync(join(__dirname, '..', 'src', 'heroes.ts'), 'utf8');
   it('国战姜维的钩子是空的（【志继】觉醒技只在身份场）', () => {

@@ -951,8 +951,13 @@ function announceConversion(state: GameState, player: Player, card: Card, as: Ca
 function revealForConversion(state: GameState, player: Player, card: Card, as: CardType): void {
   if (state.mode !== 'guozhan') return;
   for (const hero of unrevealedHeroes(state.mode, player)) {
-    if (!hero.canUseAs?.(card, as)) continue;
-    const skillName = conversionSkillName(hero);
+    // ⚠️ 用**包装谓词** `heroCanUseAs`（会把 state/player 传进去），与 canUseAsCard 的合法性
+    //    判据同一个入口：有些转化判据要看当前局面（姜维·天覆要按「现在是谁的回合、有没有队列」
+    //    决定黑桃还是黑色牌），只传 (card, as) 的裸谓词会一律判 false ⇒ **暗置姜维用天覆时不会被明置**
+    //    （＝「偷偷发动技能」，用户 2026-09-24 口径 §十四 明确不许）。顺带也修了「小乔·红颜
+    //    按使用者口径看牌」在明置这条路上没生效的老问题。
+    if (!heroCanUseAs(hero, card, as, state, player)) continue;
+    const skillName = conversionSkillName(hero, as);
     if (!skillName || !player.prelitSkills.includes(skillName)) continue;
     revealHeroCard(state, player, hero);
   }
@@ -12932,7 +12937,10 @@ function finishDraft(state: GameState): void {
          * 体力那半（减少半个阴阳鱼）走的是 `deputySlotHalfYang`（上面那两行），与魂殇/荐才同一条路。
          */
         if (state.mode === 'guozhan' && deputy.id === 'jiangwei') {
-          if (heroHasSkillNamed(main, '观星')) p.guanxingFixed = 5;
+          // ⚠️ 查技能要用**国战口径**那一份（`getHero` 是身份版：同名武将在两个模式的技能可能不同；
+          //    上面的体力上限用 getHero 是仓库约定——阴阳鱼按身份牌面存——但技能不能这么查）
+          const mainGz = getHeroForMode(p.heroId, 'guozhan') ?? main;
+          if (heroHasSkillNamed(mainGz, '观星')) p.guanxingFixed = 5;
           else if (!p.grantedSkills.some((g) => g.skillName === '观星')) {
             p.grantedSkills.push({ heroId: 'zhugeliang', skillName: '观星' });
           }

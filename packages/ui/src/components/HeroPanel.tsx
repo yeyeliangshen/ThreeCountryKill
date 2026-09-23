@@ -207,6 +207,15 @@ export function HeroPanel({
               用户 2026-09-24：这枚徽标抽成了 `ChainBadge`（对手那一行现在也画同一枚），
               文案与提示词只有一处（ui/src/chainState.ts）。 */}
           {me.chained && <ChainBadge bind={bind} />}
+        {/* 队列标记（与对手那一行同款）：自己也在队列里时要一眼看得出来 */}
+        {me.inFormation && (
+          <span
+            className="queue-badge"
+            {...bind('队列', '与相邻的同势力角色组成队列（阵法技的前提）')}
+          >
+            队
+          </span>
+        )}
           <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
         </div>
 

@@ -1289,7 +1289,15 @@ export function Game() {
       }
       skillRows.push({
         name: s.name,
-        desc: s.desc,
+        // 【天覆】的说明跟着**当前形态**走（形态由引擎下发 `me.tianfuMode`，界面不自己算）：
+        // 队列＝同队列角色的回合内黑色手牌；常规＝自己回合内黑桃手牌。
+        desc:
+          s.name === '天覆' && me.tianfuMode
+            ? `${s.desc}
+——当前形态：${
+                me.tianfuMode === 'formation' ? '队列（黑色手牌 → 无懈可击）' : '常规（你的回合内：黑桃手牌 → 无懈可击）'
+              }`
+            : s.desc,
         usable: !!act && skillIds.includes(act.id) && !selected && (!skillMode || active),
         active,
         // 暗置但可以点（主动技点了就明置发动）
@@ -1387,6 +1395,16 @@ export function Game() {
                             以前对手这一行**没有任何横置标识**——「谁被铁索连上了」只能靠日志认
                             （用户 2026-09-24 报的正是这条）。 */}
                         {p.chained && <ChainBadge bind={bindTip} />}
+                        {/* 队列（连续相邻同势力 ≥ 2 人）：很轻的一枚「队」标，不带动画
+                            （用户 2026-09-24 口径 §六：国战桌面信息本来就多） */}
+                        {p.inFormation && (
+                          <span
+                            className="queue-badge"
+                            {...bindTip('队列', '与相邻的同势力角色组成队列（阵法技的前提）')}
+                          >
+                            队
+                          </span>
+                        )}
                       </span>
                       <span className="p-hp">
                         {Array.from({ length: p.maxHp }).map((_, i) => (
