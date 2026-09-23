@@ -4734,7 +4734,10 @@ describe('新增武将（按最新国战标准）', () => {
     expect(a.hand.map((c) => c.id)).toEqual(['d1']); // 摸了一张
   });
 
-  it('狂骨：多点伤害逐点问（酒杀 2 点可以一点回血、一点摸牌）', () => {
+  it('狂骨：**一次伤害事件只问一次**（酒杀 2 点 ⇒ 问一次、最多回 1 点）', () => {
+    // ⚠️ 口径替换（用户 2026-09-26）：现行文本是「当你对一名角色**造成伤害后**…」——
+    //    已从「每造成 **1 点**伤害后」改成**按事件**触发。旧实现按 payload.damage 逐点循环，
+    //    酒杀 2 点会问两次、最多回 2 点（旧用例就写在下面那条注释里，见 docs §5.236）。
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'weiyan', hand: [sha('a1'), jiu('a2')], hp: 2 },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
@@ -4746,13 +4749,10 @@ describe('新增武将（按最新国战标准）', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' })); // 挨 2 点
     expect(state.players.find((p) => p.seatId === B)!.hp).toBe(2);
-    // 第一点：回血
     ok(act(state, A, { type: 'chooseOption', optionId: 'heal' }));
-    expect(a.hp).toBe(3);
-    // 第二点：摸牌
-    expect(state.pending?.kind).toBe('choice');
-    ok(act(state, A, { type: 'chooseOption', optionId: 'draw' }));
-    expect(a.hand.map((c) => c.id)).toEqual(['d1']);
+    expect(a.hp, '只回 1 点（不是 2 点）').toBe(3);
+    // 答完就结束：**没有第二问**（旧实现在这里还会再问一次）
+    expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
   it('狂骨：距离大于 1 就不问', () => {

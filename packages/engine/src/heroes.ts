@@ -2381,20 +2381,27 @@ const ZHUGELIANG: Hero = {
  * 「扣减体力前」的距离：距离只跟座次与装备有关、跟体力无关，而这个时机仍在阵亡结算
  * 之前（受伤者 hp<=0 但还没被移出座次），所以此刻算出来的就是官方要的那个距离。
  */
-function askKuanggu(ctx: HookContext, left?: number): void {
+/**
+ * 【狂骨】（**现行文本**，用户 2026-09-26 口径）：**一次伤害事件触发一次**——
+ * 已从「每造成 1 点伤害后」（逐点）改成「造成伤害后」（按事件）。
+ *
+ * 例：酒【杀】造成 2 点 ⇒ **只问一次**、最多回 1 点（旧实现按 `payload.damage` 循环，
+ * 会问两次、最多回 2 点）。两次独立的伤害事件 ⇒ 各问一次。
+ */
+function askKuanggu(ctx: HookContext): void {
   const state = ctx.state;
   const me = ctx.player;
   const payload = ctx.payload as { attack?: AttackContext; damage?: number } | undefined;
   const attack = payload?.attack;
-  const times = left ?? payload?.damage ?? 0;
-  if (!attack || times <= 0) return;
+  if (!attack) return;
+  if ((payload?.damage ?? 0) <= 0) return; // 伤害被减到 0 / 防止掉的不触发
   if (attack.sourceId !== me.seatId) return;
   if (attack.targetId === me.seatId) return; // 自伤不触发
   if (distance(state, me.seatId, attack.targetId) > 1) return;
   ctx.api.askChoice(
     state,
     me.seatId,
-    times > 1 ? `【狂骨】：选择一项（本次伤害还有 ${times} 点没结算）` : '【狂骨】：选择一项',
+    '【狂骨】：选择一项',
     [
       { id: 'heal', label: '回复 1 点体力' },
       { id: 'draw', label: '摸一张牌' },
@@ -2409,8 +2416,6 @@ function askKuanggu(ctx: HookContext, left?: number): void {
         if (c) p.hand.push(c);
         pushLog(st, 'skill', `${p.name} 发动【狂骨】，摸了 1 张牌。`);
       }
-      // 多点伤害逐点问：这一点的选择不影响下一点
-      if (times > 1) askKuanggu(ctx, times - 1);
     },
   );
 }
@@ -2422,13 +2427,16 @@ const WEIYAN: Hero = {
   maxHp: 4,
   gender: 'male',
   combos: ['huangzhong'], // 黄忠 ❤ 魏延
-  // 狂骨（2019 国标 / 界魏延文本，已核）：当你对一名角色造成 1 点伤害后，若其**扣减体力前**
+  // 狂骨（**现行文本**，用户 2026-09-26 口径）：当你对一名角色**造成伤害后**，若其**扣减体力前**
   // 你计算与其的距离不大于 1，你可以选择一项：①回复 1 点体力；②摸一张牌。
   //
-  // ⚠️ 与旧国战文本的差别：旧版是**锁定技**、只能回血（「每当你对距离1以内的一名角色
+  // ⚠️ 触发粒度（用户点名的「按点 / 按事件」问题）：**一次伤害事件触发一次**——
+  //    2025-09-19 那批调整把它从「每造成 **1 点**伤害后」改成「造成伤害后」，
+  //    所以酒【杀】2 点只问一次、最多回 1 点（旧实现在 `askKuanggu` 里按 payload.damage 逐点循环，
+  //    见 docs §5.236 的存底）。
+  //
+  // ⚠️ 与更早的旧国战文本的差别：旧版是**锁定技**、只能回血（「每当你对距离1以内的一名角色
   //    造成1点伤害后，你回复1点体力」）；新版多了「或摸一张牌」，所以它不是锁定技。
-  //    多点伤害**逐点结算**（官方 FAQ：酒杀造成 2 点可以一点回血、一点摸牌），
-  //    所以按 payload.damage 的次数循环问。
   hooks: [
     {
       // 注意是 afterDamageDealt（派给伤害来源），不是 afterDamage（那是派给受伤者的）
@@ -2440,7 +2448,7 @@ const WEIYAN: Hero = {
   skills: [
     {
       name: '狂骨',
-      desc: '当你对一名角色造成1点伤害后，若其扣减体力前你计算与其的距离不大于1，你可以选择一项：1.回复1点体力；2.摸一张牌。',
+      desc: '当你对一名角色造成伤害后，若其扣减体力前你计算与其的距离不大于1，你可以选择一项：1.回复1点体力；2.摸一张牌。',
     },
   ],
 };
