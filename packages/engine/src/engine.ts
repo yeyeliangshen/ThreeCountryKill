@@ -5826,9 +5826,14 @@ function attributeDeckGains(state: GameState, ownedBefore: string[][]): void {
 }
 
 /**
- * 「你于**回合外**失去牌后」（邓艾·屯田）：比对意图前后的「手牌 + 装备区」，
- * 少掉的牌就是这一手失去的。只派人**自己的回合之外**的那一条（官方条件），
- * 交给技能自己判断要不要发动。
+ * 「你**失去牌**后」：比对意图前后的「手牌 + 装备区」，少掉的牌就是这一手失去的。
+ *
+ * ⚠️ 派发**不再区分是不是自己的回合**（2026-09-26 改）：原来只派「回合外」那一条，
+ * 因为当时的唯一用户邓艾·屯田写的正是「回合外失去牌」。现在多了一个用户
+ * （甘夫人·淑慎：「一次失去的牌数大于你的体力值」——**弃牌阶段**一次弃好几张就是她的主场），
+ * 所以改成都派发，payload 里带上 `turnSeatId`，是不是「回合外」由技能自己判。
+ *
+ * ⚠️ 覆盖面：这里只比对**手牌 + 装备区**（`ownedCardIds`）——判定区的牌被拆**不算**在 `cardIds` 里。
  */
 /**
  * 「这一手意图的收尾钩子」的统一入口：**槽里已经在等回答时先排队**，等那串流程跑完再派。
@@ -5877,11 +5882,13 @@ function checkCardsLost(state: GameState, ownedBefore: string[][]): void {
     if (lost.length === 0) return;
     // 「你于此阶段失去了几张牌」（吕范·典财）：不管是不是自己的回合都累加
     p.flags.lostCardsThisPhase += lost.length;
-    if (p.seatId === turnSeat) return; // 屯田那种「回合外失去牌」才派发
-    // 失去牌的名单是**此刻**算出来的快照，派发时机交给统一入口（槽被占就先排队）
+    // ⚠️ 以前这里对**回合玩家自己**直接 return（因为当时的唯一用户屯田只要「回合外」）。
+    //    但「一次失去 N 张牌」这类触发在**自己的回合**里同样会发生——甘夫人·淑慎面对的
+    //    就是最典型的一种：**弃牌阶段一次弃掉好几张**。所以现在改成**都派发**，
+    //    「回合外」由技能自己按 payload.turnSeatId 判断（用户 2026-09-26 口径，见 §5.239）。
     fireEndOfIntentHooks(state, () => {
       if (!p.alive) return;
-      runHooksPausable(state, 'cardsLost', p, { cardIds: lost }, () => {});
+      runHooksPausable(state, 'cardsLost', p, { cardIds: lost, turnSeatId: turnSeat }, () => {});
     });
   });
 }

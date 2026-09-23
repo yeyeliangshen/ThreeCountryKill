@@ -3861,6 +3861,10 @@ const DENGAI: Hero = {
       timing: 'cardsLost',
       skillId: '屯田',
       handler: (ctx) => {
+        // 「**回合外**失去牌」是屯田的官方条件——引擎现在把本回合玩家自己的失牌也一并派发
+        // （甘夫人·淑慎要用），所以这一条由技能自己按 payload 判。
+        const turnSeatId = (ctx.payload as { turnSeatId?: string } | undefined)?.turnSeatId;
+        if (turnSeatId === ctx.player.seatId) return;
         // 一张「田」都没有时也要问（判定可以只是一次判定），所以这里不做前置过滤
         ctx.api.askChoice(
           ctx.state,
@@ -12880,6 +12884,64 @@ const GANFUREN: Hero = {
       },
     },
     {
+      // 淑慎②（现行文本，用户 2026-09-26 口径）：**一次失去的牌数大于你的体力值**时，
+      // 你可以令一名**与你势力相同的其他角色**摸一张牌。
+      //
+      // ⚠️ 两个要紧处：
+      //   ① 比的是**当前体力**（不是体力上限）；
+      //   ② 走 `cardsLost` 的 `cardIds.length`——引擎按「这一手意图前后少了几张牌」算，
+      //      所以**弃牌阶段一次弃好几张**这种（在她自己回合里）也算一次事件（见 §5.239 的引擎改动）。
+      //   ③ 目标限「与你势力相同」⇒ 用统一的势力键 `sameKnownFaction`（暗将不算、野心家互不相认），
+      //      与补益/随势同一口径；没有合法的同势力对象时就**不产生无意义询问**。
+      timing: 'cardsLost',
+      skillId: '淑慎',
+      handler: (ctx) => {
+        const me = ctx.player;
+        const lost = (ctx.payload as { cardIds?: string[] } | undefined)?.cardIds?.length ?? 0;
+        if (lost <= me.hp) return; // 「大于当前体力值」——相等不触发
+        const allies = ctx.state.players.filter(
+          (p) => p.alive && p.seatId !== me.seatId && sameKnownFaction(ctx.state, me, p),
+        );
+        if (allies.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `【淑慎】：你一次失去了 ${lost} 张牌（当前体力 ${me.hp}），是否令一名同势力角色摸一张牌？`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, _p, picked) => {
+            if (picked !== 'yes') return;
+            const cands = st.players.filter(
+              (q) => q.alive && q.seatId !== me.seatId && sameKnownFaction(st, me, q),
+            );
+            if (cands.length === 0) return;
+            ctx.api.askPickSeats(
+              st,
+              me.seatId,
+              '【淑慎】：选择一名与你势力相同的其他角色',
+              cands.map((q) => q.seatId),
+              1,
+              1,
+              (st2, p2, seatIds) => {
+                const t = seatIds[0] ? getPlayer(st2, seatIds[0]) : undefined;
+                if (!t || !t.alive) return;
+                const c = drawOne(st2);
+                if (c) t.hand.push(c);
+                pushLog(
+                  st2,
+                  'skill',
+                  `${p2.name} 发动【淑慎】，令 ${t.name} 摸一张牌。`,
+                  { seat: p2.seatId },
+                );
+              },
+            );
+          },
+        );
+      },
+    },
+    {
       timing: 'turnStart',
       skillId: '神智',
       handler: (ctx) => {
@@ -12916,7 +12978,10 @@ const GANFUREN: Hero = {
     },
   ],
   skills: [
-    { name: '淑慎', desc: '当你回复 1 点体力后，你可以令一名其他角色摸一张牌。' },
+    {
+      name: '淑慎',
+      desc: '当你回复 1 点体力后，你可以令一名其他角色摸一张牌；当你一次失去的牌数大于你的体力值时，你可以令一名与你势力相同的其他角色摸一张牌。',
+    },
     {
       name: '神智',
       desc: '准备阶段，你可以弃置所有手牌，若你以此法弃置的手牌数不小于 X，你回复 1 点体力（X 为你当前的体力值）。',
