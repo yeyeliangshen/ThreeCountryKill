@@ -2679,7 +2679,13 @@ function tianxiangClassic(ctx: HookContext): void {
  */
 /**
  * **队列**：存活座次里「连续相邻、势力相同」的一段。返回某人所在的那一段（含他自己）。
- * 用于阵法技（曹洪·鹤翼「与你处于同一队列的其他角色视为拥有飞影」）。
+ * 用于阵法技（曹洪·鹤翼「与你处于同一队列的其他角色视为拥有飞影」、姜维·天覆）。
+ *
+ * ⚠️ 「同势力」用 `factionGroupKey`（**不是**直接比 `effectiveFaction`）：用户 2026-09 口径
+ *    「每一个野心家各自是一种势力，**野心家之间也不同势力**」（§5.137），用户 2026-09-25
+ *    又强调了一次「不应该粗暴把所有野心家看成同一个『野势力队伍』」。所以两个野心家
+ *    相邻**不构成队列**（与此前实现不同：以前 effectiveFaction 都返回 'ambitionist'，
+ *    两人会被当成同势力连起来；真机验收时看到过这个现象，见 §5.225 的待核对项）。
  */
 export function formationQueue(state: GameState, player: Player): Player[] {
   const alive = state.seatOrder
@@ -2691,7 +2697,7 @@ export function formationQueue(state: GameState, player: Player): Player[] {
   if (n < 2) return [];
   const idx = alive.findIndex((p) => p.seatId === player.seatId);
   if (idx < 0) return [];
-  const faction = effectiveFaction(state, player);
+  const faction = factionGroupKey(state, player);
   if (!faction) return [player];
   const out: Player[] = [player];
   // 往两边各走一圈，直到遇到不同势力（或绕回自己）
@@ -2699,7 +2705,7 @@ export function formationQueue(state: GameState, player: Player): Player[] {
     for (let k = 1; k < n; k++) {
       const p = alive[(((idx + step * k) % n) + n) % n]!;
       if (p.seatId === player.seatId) break;
-      if (effectiveFaction(state, p) !== faction) break;
+      if (factionGroupKey(state, p) !== faction) break;
       out.push(p);
     }
   }
@@ -7788,7 +7794,7 @@ function targetCardZone(
  */
 export function zoneLayoutOf(
   target: Player,
-  opts2?: { noJudgment?: boolean; noHand?: boolean },
+  opts2?: { noJudgment?: boolean; noHand?: boolean; selfHand?: boolean },
 ): {
   seatId: string;
   zones: { zone: 'hand' | 'equip' | 'judge'; items: { optionId: string; card?: Card }[] }[];
@@ -7801,8 +7807,12 @@ export function zoneLayoutOf(
   if (!opts2?.noHand && target.hand.length > 0)
     zones.push({
       zone: 'hand',
-      // ⚠️ 手牌**只给 optionId**：牌面一律不出服务端（与盲选同一条规矩）
-      items: target.hand.map((_c, i) => ({ optionId: `hand:${i}` })),
+      // ⚠️ 手牌**只给 optionId**：牌面一律不出服务端（与盲选同一条规矩）。
+      //    例外：**操作自己的牌**（selfHand）时那是自己的已知信息，照常给牌面——
+      //    与 `targetCardZone` 的 selfHand 同一口径（自己挑自己的牌必须看得见牌名）。
+      items: target.hand.map((c, i) =>
+        opts2?.selfHand ? { optionId: `card:${c.id}`, card: c } : { optionId: `hand:${i}` },
+      ),
     });
   if (equips.length > 0)
     zones.push({ zone: 'equip', items: equips.map((c) => ({ optionId: `card:${c.id}`, card: c })) });
@@ -8045,8 +8055,10 @@ const WUGUOTAI: Hero = {
         const dying = getPlayer(ctx.state, payload.dyingSeatId);
         const source = getPlayer(ctx.state, payload.sourceId);
         if (!dying || !source || !source.alive) return;
-        const mine = effectiveFaction(ctx.state, me);
-        if (!mine || effectiveFaction(ctx.state, dying) !== mine) return; // 只对同势力
+        // 只对**同势力**：一律走统一的势力键 `sameKnownFaction`（用户 2026-09-25 §十三：
+        // 「统一调用 isSameCurrentFaction」）。它要求双方都**已明置**（暗置＝没势力，不偷看底牌），
+        // 而且**野心家之间不算同势力**——`effectiveFaction` 直接相比会把两个野心家判成同势力。
+        if (!sameKnownFaction(ctx.state, me, dying)) return;
         if (dying.seatId === me.seatId) return; // 「与你势力相同的角色」是**别人**
         ctx.api.askChoice(
           ctx.state,
@@ -12334,6 +12346,19 @@ function pickOneOfTargetCards(
       }
       api.discardTargetCard(target.seatId, card.id, after);
     },
+    undefined,
+    undefined,
+    // 「操作别人区域里的牌」的**分区面板**（用户 2026-09-23 口径，界面照布局画：
+    // 手牌牌背在上、装备牌面在中；规则不许动的判定区**根本不出现在布局里**）。
+    // 挂在共用原语上 ⇒ 死谏/挑衅/猛进/旋略/奋命/护援一起换到面板 UI，不用各自画一套。
+    {
+      targets: [
+        zoneLayoutOf(target, {
+          ...(opts?.noJudgment ? { noJudgment: true } : {}),
+          selfHand: picker.seatId === target.seatId,
+        }),
+      ],
+    },
   );
 }
 
@@ -13802,14 +13827,31 @@ const TIANFENG: Hero = {
   modes: ['guozhan'],
   hooks: [
     {
-      // 死谏：当你失去最后的手牌时，你可以弃置一名其他角色的一张牌。
-      // handEmptied 是「你失去最后一张手牌」的时机（连营用的那个）。
+      // 死谏：当你**失去最后一张手牌后**，你可以弃置一名其他角色的一张牌。
+      //
+      // ⚠️ 触发点用 `handEmptied`——它**不是**「弃牌」事件：引擎在**每一条意图收尾时**比对
+      //    各家手牌数（`前 > 0 && 后 === 0`，见 engine.checkHandEmptied）。所以使用 / 打出 /
+      //    弃置 / 交出 / 被顺走最后一张**全都触发**，而且**一次移动丢掉多张（3 张 → 0）只触发
+      //    一次**（比的是张数，不是牌数）。这正是用户 2026-09-25 给的口径
+      //    （「核心判断应该是一次牌移动完成以后」）。已知局限与连营同一条：同一段结算里
+      //    「先清空、又摸回来」检测不到（原因写在 checkHandEmptied 上）。
+      //
+      // 【没有「每回合限一次」】：空手之后又拿到牌、再失去，可以**再次**触发（用户口径）。
       timing: 'handEmptied',
       skillId: '死谏',
       handler: (ctx) => {
         const me = ctx.player;
-        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== me.seatId);
-        if (others.length === 0) return;
+        // 「检测场上是否存在有合法牌的其他角色」：手牌或**装备区**有牌（**不含判定区**——
+        // 用户 2026-09-25 口径：文本只写「一张牌」，不能顺手把判定区也加进去）。
+        // 判据与选项**同一份派生**（targetCardOptions）⇒ 不会出现「问了却没有可选项」。
+        const legal = ctx.state.players.filter(
+          (p) =>
+            p.alive &&
+            p.seatId !== me.seatId &&
+            targetCardOptions(ctx.state, me.seatId, p, '弃置', { noJudgment: true }).length > 0,
+        );
+        // 一个合法目标都没有 ⇒ **不产生无意义的询问**（用户口径）
+        if (legal.length === 0) return;
         ctx.api.askChoice(
           ctx.state,
           me.seatId,
@@ -13820,19 +13862,22 @@ const TIANFENG: Hero = {
           ],
           (st, _p, picked) => {
             if (picked !== 'yes') return;
-            ctx.api.askChoice(
+            // 目标在**牌桌上点**（多选座位原语：只高亮「有合法牌的其他角色」，自己不在候选里）
+            ctx.api.askPickSeats(
               st,
               me.seatId,
               '【死谏】：弃置谁的牌？',
-              others
-                .filter((p) => p.hand.length > 0 || EQUIP_SLOTS.some((s) => p.equipment[s]))
-                .map((p) => ({ id: p.seatId, label: p.name })),
-              (st2, _p2, targetSeatId) => {
-                const target = getPlayer(st2, targetSeatId);
-                if (!target) return;
-                // 弃哪张由**田丰**挑：明牌可选、手牌盲选第 k 张（与猛进/过河拆桥同一套）。
-                // ⚠️ 原来是 `st.rng()` 随机抽一张——替玩家做了决定（用户 2026-09-25 口径）。
-                pickOneOfTargetCards(st2, me, target, ctx.api, '死谏');
+              legal.map((p) => p.seatId),
+              1,
+              1,
+              (st2, _p2, seatIds) => {
+                const target = seatIds[0] ? getPlayer(st2, seatIds[0]) : undefined;
+                if (!target || !target.alive) return;
+                // 弃哪张由**田丰**挑：装备点牌名、手牌点牌背（第 k 张），**绝不随机**。
+                // 判定区不可选（noJudgment）——与上面筛目标同一口径。
+                pickOneOfTargetCards(st2, me, target, ctx.api, '死谏', undefined, {
+                  noJudgment: true,
+                });
               },
             );
           },
@@ -13840,32 +13885,100 @@ const TIANFENG: Hero = {
       },
     },
     {
-      // 随势（锁定技）：当一名**其他**角色进入濒死状态时，若其体力上限与你相同，你摸一张牌。
-      // otherNearDeath 是给「旁人」的濒死通知（nearDeath 只发给濒死者本人）。
+      // 随势①（锁定技）：其他角色**进入濒死**时，若**伤害来源与你势力相同**，你摸一张牌。
+      //
+      // 2025-09-19 官方改版后的文本（用户 2026-09-25 提供；官网静态武将页仍显示旧文本）。
+      // 旧实现的条件是「其体力上限与你相同」——**已按新版替换**。
       timing: 'otherNearDeath',
       skillId: '随势',
       locked: true,
       handler: (ctx) => {
-        const dyingId = (ctx.payload as { dyingId?: string } | undefined)?.dyingId;
-        const dying = dyingId ? getPlayer(ctx.state, dyingId) : undefined;
-        if (!dying || dying.seatId === ctx.player.seatId) return;
-        if (dying.maxHp !== ctx.player.maxHp) return;
+        const payload = ctx.payload as { dyingId?: string; attack?: AttackContext } | undefined;
+        const me = ctx.player;
+        const dying = payload?.dyingId ? getPlayer(ctx.state, payload.dyingId) : undefined;
+        if (!dying || dying.seatId === me.seatId) return; // 「其他角色」
+        // 「**伤害来源**」：失去体力 / 闪电这类**无来源**的濒死不算（用户 §七）。
+        // ⚠️ 合成 attack 与真实伤害同构（失去体力那条的 sourceId 甚至是濒死者自己），
+        //    所以用引擎的 `state.lastDamageSourceId` 来区分：`loseHp` 会把它清空
+        //    （engine 里写明了「免得陈旧值被当成致死原因」），闪电那条的 sourceId 也是空。
+        //    两处对不上就一律不认（保守：宁可漏一个边缘伤害来源，也不误触发）。
+        const sourceId = payload?.attack?.sourceId ?? '';
+        if (!sourceId || sourceId !== ctx.state.lastDamageSourceId) return;
+        const source = getPlayer(ctx.state, sourceId);
+        // 「与你势力相同」＝ 双方**都已明置**且势力键相同：不偷看暗将底牌、野心家之间不算
+        // 同势力（用户 §十三：统一用「当前规则上已经确定的势力」判断）
+        if (!source || !sameKnownFaction(ctx.state, me, source)) return;
+        // 锁定技：**不问**「是否发动」（用户 §十四），直接摸一张
         const c = drawOne(ctx.state);
-        if (c) ctx.player.hand.push(c);
+        if (c) me.hand.push(c);
         pushLog(
           ctx.state,
           'skill',
-          `${ctx.player.name} 的【随势】生效（${dying.name} 与其体力上限同为 ${dying.maxHp}），摸一张牌。`,
-          { seat: ctx.player.seatId, action: 'draw' },
+          `${me.name} 触发【随势】：${dying.name} 进入濒死，伤害来源 ${source.name} 与其势力相同，摸一张牌。`,
+          { seat: me.seatId, action: 'draw' },
+        );
+      },
+    },
+    {
+      // 随势②（锁定技）：其他**与你势力相同**的角色**死亡**时，你**选择一项**：
+      //   ① 失去 1 点体力；② 弃置所有手牌。
+      //
+      // 用户 2026-09-25 口径：这是 2025-09-19 改版新增的分支（旧文本是直接失去 1 点体力）。
+      // 锁定技 ⇒ **不问「是否发动」**，但技能**内部有玩家选择**——「没有『是否发动』」
+      // 不等于「没有选择」（用户 §十一 明确点出的两件事）。
+      timing: 'playerDied',
+      skillId: '随势',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const victimId = (ctx.payload as { victimId?: string } | undefined)?.victimId;
+        const victim = victimId ? getPlayer(ctx.state, victimId) : undefined;
+        // 「**其他**与你势力相同的角色」（自己死亡不触发自己的随势，用户 §十二）
+        if (!victim || victim.seatId === me.seatId) return;
+        if (!sameKnownFaction(ctx.state, me, victim)) return;
+        const handCount = me.hand.length;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `【随势】（锁定技）：与你势力相同的 ${victim.name} 死亡。请选择一项：`,
+          [
+            { id: 'hp', label: '失去 1 点体力' },
+            { id: 'hand', label: `弃置所有手牌（当前 ${handCount} 张）` },
+          ],
+          (st, p, picked) => {
+            // ⚠️ 两条分支都走**引擎既有的流程**，技能里不自己重新实现任何东西：
+            //    · 失去体力 ⇒ `api.loseHp`（不是伤害：没有来源、不触发卖血技，但**照常进濒死**、
+            //      照常求桃——用户 §十七）
+            //    · 弃置所有手牌 ⇒ `api.discardCards` 一次搬走（全体一起进弃牌堆，不逐张问）。
+            //      手牌由 >0 变 0 会被 checkHandEmptied 认出来 ⇒ **自然接上【死谏】**
+            //      （用户 §十六 点名的那条嵌套链；不要在技能里手写「然后触发死谏」）。
+            if (picked === 'hp') {
+              pushLog(st, 'skill', `${p.name} 的【随势】：失去 1 点体力。`, { seat: p.seatId });
+              ctx.api.loseHp(p, 1);
+              return;
+            }
+            const cards = p.hand.slice();
+            if (cards.length === 0) {
+              pushLog(st, 'skill', `${p.name} 的【随势】：没有手牌可弃。`, { seat: p.seatId });
+              return;
+            }
+            pushLog(st, 'skill', `${p.name} 的【随势】：弃置所有手牌（${cards.length} 张）。`, {
+              seat: p.seatId,
+            });
+            ctx.api.discardCards(p.seatId, cards);
+          },
         );
       },
     },
   ],
   skills: [
-    { name: '死谏', desc: '当你失去最后的手牌时，你可以弃置一名其他角色的一张牌。' },
+    {
+      name: '死谏',
+      desc: '当你失去最后一张手牌后，你可以弃置一名其他角色的一张牌。',
+    },
     {
       name: '随势',
-      desc: '锁定技，当一名其他角色进入濒死状态时，若其体力上限与你相同，你摸一张牌。',
+      desc: '锁定技，当其他角色进入濒死状态时，若伤害来源与你势力相同，你摸一张牌；当其他与你势力相同的角色死亡时，你选择一项：①失去 1 点体力；②弃置所有手牌。',
     },
   ],
 };

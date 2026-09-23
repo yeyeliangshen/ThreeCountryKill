@@ -339,6 +339,13 @@ export interface SkillApi {
     returnTo?: string,
     /** 回答内容保密（选项里带隐藏信息时用，如左慈·役鬼的「魂」） */
     secret?: boolean,
+    /**
+     * 「操作别人区域里的牌」的**分区布局**（用户 2026-09-23 口径）：不同角色横向分栏、
+     * 同一角色内部按 hand/equip/judge 纵向分区。只是布局说明——回答仍走 `chooseOption(opt.id)`。
+     * 手牌那一区只给 optionId（界面画牌背），装备/判定区带牌面。
+     * 判据与选项同源（`targetCardOptions` / `zoneLayoutOf` 派生自同一份 `targetCardZone`）。
+     */
+    zonePick?: ZonePickLayout,
   ) => void;
   /**
    * 让某个角色从给定的一组牌里选若干张。

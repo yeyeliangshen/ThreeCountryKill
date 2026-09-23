@@ -409,8 +409,8 @@ export function askChoice(
    * 「操作别人区域里的牌」的**分区布局**（用户 2026-09-23）：不同角色横向分栏、
    * 同一角色内部按 hand/equip/judge 纵向分区。只是**布局说明**——回答仍走 `chooseOption(opt.id)`。
    *
-   * ⚠️ 它在 `secret` **之后**：`SkillApi.askChoice` 只声明到 `returnTo, secret`，
-   *    顺序一致才可能把本函数赋给那个类型（多出来的可选参数不影响可赋值性）。
+   * ⚠️ 它在 `secret` **之后**：`SkillApi.askChoice` 的声明顺序必须与这里一致
+   *    （两边都声明了这个可选参数；顺序不一致就赋不上那个类型）。
    */
   zonePick?: ZonePickLayout,
 ): void {
@@ -12202,8 +12202,12 @@ function onUseSkill(
   )
     return err(`该技能本阶段已使用 ${skill.perPhaseLimit} 次`);
   if (skill.oncePerGame && player.usedOncePerGame[skill.id]) return err('该限定技本局已使用');
+  // ⚠️ 意图是从**网络**来的，字段可能整块缺失：`targetIds` 缺了就当空数组。
+  //    以前这里直接读 `intent.targetIds.length` —— 一条不带 targetIds 的 useSkill
+  //    就能把服务端进程打崩（TypeError），属于把「内部调用约定」当成了外部契约。
+  const targetIds = intent.targetIds ?? [];
   // 目标数校验
-  if (intent.targetIds.length < skill.minTargets || intent.targetIds.length > skill.maxTargets)
+  if (targetIds.length < skill.minTargets || targetIds.length > skill.maxTargets)
     return err(`目标数量不符（需 ${skill.minTargets}-${skill.maxTargets}）`);
   // 「能不能拿自己当目标」＝**技能自己的**目标规则（`ActiveSkill.selfTarget`，用户 2026-09-24 口径）：
   // 文本写「一名**其他**角色」的技能都不声明 ⇒ 在这**一处**统一拦；写「一名角色」的技能
@@ -12211,7 +12215,7 @@ function onUseSkill(
   // ⚠️ 这条以前不存在——以前全靠**界面**兜着（legal.ts 下发的候选不含自己），
   //    于是「绕过界面就能指定自己」，而反过来界面又因此无法让【火攻】那类牌选自己
   //    （通用 UI 决定了规则，正是用户点名的缺陷）。
-  if (skill.selfTarget !== true && intent.targetIds.includes(seatId))
+  if (skill.selfTarget !== true && targetIds.includes(seatId))
     return err('该技能不能以自己为目标');
   // 代价牌校验：**手牌**（缺省）或**手牌＋自己装备区**（技能声明了 costFrom: 'handEquip'）。
   // ⚠️ 口径见 ActiveSkill.costFrom：文本写「手牌」的绝不能拿装备区凑数，「一张牌」的才放开。

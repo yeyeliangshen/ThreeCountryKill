@@ -12355,7 +12355,10 @@ describe('国战标准版 · 张昭张纮 / 田丰 / 邹氏', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // ✅ 2026-09-25（田丰口径）：目标改成**在牌桌上点**（多选座位原语，只高亮有合法牌的其他人）
+    expect(state.pending?.kind, '由田丰在牌桌上点目标').toBe('pickSeats');
+    if (state.pending?.kind === 'pickSeats') expect(state.pending.candidates).toEqual([B]);
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B] }));
     // ✅ 新口径（用户 2026-09-25）：**弃乙的哪一张由田丰挑**——乙的手牌对田丰是暗的，
     //    所以给的是「第 k 张手牌（暗）」这种盲选选项；改动前这里是 `st.rng()` 随机抽一张。
     expect(state.pending?.kind, '要问田丰弃哪一张').toBe('choice');
@@ -12367,31 +12370,48 @@ describe('国战标准版 · 张昭张纮 / 田丰 / 邹氏', () => {
     expect(b.hand).toHaveLength(1); // 被弃掉一张
   });
 
-  it('田丰·随势：体力上限相同的其他角色进濒死时摸一张（不同则不摸）', () => {
-    // 甄姬 3 上限，与田丰同为 3 → 摸
-    // 给田丰留一张别的牌：否则他打出最后一张手牌会触发【死谏】（排在杀结算之后），跑到别的询问上
+  it('田丰·随势①：**伤害来源**与田丰同势力 ⇒ 摸一张（不同则不摸）', () => {
+    // 2026-09-25 改版口径：旧实现看的是「濒死者的体力上限与田丰是否相同」，
+    // 现在是「**这次伤害的来源**与田丰是否同势力」（用户给的 2025-09-19 官方改版）。
+    // ⚠️ 本块的 gz 固定由 0 号位先手，所以把「出杀的人」放在 0 号位，
+    //    田丰与「被看的那个人」放后面。
+    // ① 来源是群（与田丰同势力）⇒ 摸
     const same = gz([
-      { seatId: A, name: '甲', heroId: 'tianfeng', faction: 'qun', hand: [sha('a1'), tao('a9')] },
+      { seatId: A, name: '甲', heroId: 'zhangjiao', faction: 'qun', hand: [sha('a1'), tao('a9')] },
       { seatId: B, name: '乙', heroId: 'zhenji', faction: 'wei', hand: [], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'tianfeng', faction: 'qun', hand: [tao('c9')] },
     ]);
-    const a1 = same.players.find((p) => p.seatId === A)!;
+    const tf1 = same.players.find((p) => p.seatId === C)!;
     same.deck = [mk('d1', 'sha', 'spade', 7), mk('d2', 'sha', 'spade', 8)];
     ok(act(same, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(same, B, { type: 'pass' })); // 不闪 → 血归 0 → 进入濒死
-    expect(a1.hand.map((c) => c.id)).toContain('d2'); // 随势摸了一张
+    expect(tf1.hand.map((c) => c.id), '同势力来源 ⇒ 随势摸 1').toContain('d2');
+    expect(same.pending?.kind, '锁定技：不该冒出「是否发动」').toBe('respondDeath');
     passDeathSaves(same);
 
-    // 张飞 4 上限 → 上限不同，不摸
+    // ② 来源是魏（与群不同）⇒ 不摸（被看的人仍然是群，说明判断的是**来源**）
     const diff = gz([
-      { seatId: A, name: '甲', heroId: 'tianfeng', faction: 'qun', hand: [sha('a1'), tao('a9')] },
-      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [], hp: 1 },
+      { seatId: A, name: '甲', heroId: 'zhenji', faction: 'wei', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangjiao', faction: 'qun', hp: 1, hand: [] },
+      { seatId: C, name: '丙', heroId: 'tianfeng', faction: 'qun', hand: [tao('c9')] },
     ]);
-    const a2 = diff.players.find((p) => p.seatId === A)!;
+    const tf2 = diff.players.find((p) => p.seatId === C)!;
     diff.deck = [mk('d1', 'sha', 'spade', 7), mk('d2', 'sha', 'spade', 8)];
     ok(act(diff, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(diff, B, { type: 'pass' }));
-    expect(a2.hand.map((c) => c.id)).not.toContain('d2');
+    expect(tf2.hand.map((c) => c.id), '来源是魏 ⇒ 不摸').not.toContain('d2');
     passDeathSaves(diff);
+
+    // ③ **失去体力**（无伤害来源）：苦肉把自己打空 ⇒ 也不摸
+    const lose = gz([
+      { seatId: A, name: '甲', heroId: 'huanggai', faction: 'wu', hand: [tao('a9')], hp: 1 },
+      { seatId: C, name: '丙', heroId: 'tianfeng', faction: 'qun', hand: [tao('c9')] },
+    ]);
+    const tf3 = lose.players.find((p) => p.seatId === C)!;
+    lose.deck = [mk('d1', 'shan', 'heart', 2), mk('d2', 'shan', 'heart', 3)];
+    ok(act(lose, A, { type: 'useSkill', skillId: 'kurou', cardIds: ['a9'], targetIds: [] }));
+    expect(tf3.hand.map((c) => c.id), '失去体力不是伤害来源 ⇒ 不摸').not.toContain('d2');
+    passDeathSaves(lose);
   });
 
   it('邹氏·祸水：她的回合内其他角色不能明置（连暗置时用转化技也不行）', () => {
@@ -26634,4 +26654,43 @@ describe('弃牌阶段：弃完再查一次（阶段内拿到的牌也要弃）'
     expect(state.pending?.kind).not.toBe('discard');
   });
 
+});
+
+describe('通用意图校验：字段缺失不许把进程打崩', () => {
+  it('useSkill 不带 targetIds ⇒ 给一句有意义的拒绝（不是 TypeError）', () => {
+    // 意图是从**网络**来的：`{ type: 'useSkill', skillId }` 这种缺字段的消息
+    // 以前会读 `intent.targetIds.length` 直接抛 TypeError（服务端进程崩，
+    // 一局里的其他人全掉线）。现在缺字段当空数组处理，照常走目标数校验。
+    // ⚠️ 用国战模式：苦肉是**国战版**技能（身份模式里黄盖根本没有它，
+    //    那样会先撞在「你没有这个技能」上，验不到目标数这条分支）
+    const state = createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'huanggai' },
+        { seatId: B, name: '乙', heroId: 'zhangfei' },
+      ],
+      'TEST',
+      { mode: 'guozhan' },
+    );
+    state.draft = null;
+    const a = state.players.find((p) => p.seatId === A)!;
+    // ⚠️ 国战开局的 createGame 把武将留在选将池里（`heroId` 还是 null，要选将阶段才落下来），
+    //    这里跳过选将直接指派（与其它国战用例同一做法）
+    a.heroId = 'huanggai';
+    a.hand = [mk('h1', 'sha', 'spade', 1)];
+    a.heroRevealed = true; // 暗置＝技能不生效，那样会先撞在「你没有这个技能」上
+    a.deputyRevealed = true;
+    a.faction = 'wu'; // 选将阶段被跳过了（state.draft = null），势力要自己定下来
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    const r = applyIntent(state, A, {
+      type: 'useSkill',
+      skillId: 'kurou',
+      cardIds: ['h1'],
+    } as never);
+    expect(r.ok, '要么按规则拒绝、要么按缺字段拒绝，就是不许抛异常').toBe(false);
+    // 具体落在哪一条校验上不重要（技能可用性 / 目标数 / 代价…），
+    // 关键是**给了一句人话的错误**而不是 TypeError 崩掉整个进程
+    expect(typeof r.error).toBe('string');
+    expect((r.error ?? '').length).toBeGreaterThan(0);
+  });
 });
