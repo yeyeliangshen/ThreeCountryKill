@@ -2314,6 +2314,13 @@ describe('国战进阶（Step 7）', () => {
     // 会沿用发起者那个 id，见 §5.137
     expect(p('C').forceId).toBeTruthy();
     expect(p('A').forceId, '留在原势力的人没有 forceId').toBeUndefined();
+    // 日志口径（2026-09-25 修）：判据与日志**共用同一个数**（含他自己）。
+    // 以前日志是在 `faction = 'ambitionist'` **之后**才算的人头 ⇒ 打印出来比判定依据少 1，
+    // 真机日志里出现过「已有 1 人（超过全场 3 人的一半）」这种自相矛盾的话（1 > 1.5 不成立）。
+    expect(
+      state.log.some((e) => e.message.includes('该势力将有 3 人')),
+      '日志要说清「加上他会有几人」',
+    ).toBe(true);
   });
 
   // 3. 鏖战桃当杀
@@ -26657,6 +26664,31 @@ describe('弃牌阶段：弃完再查一次（阶段内拿到的牌也要弃）'
 });
 
 describe('通用意图校验：字段缺失不许把进程打崩', () => {
+  it('playCard 不带 targetIds ⇒ 干净地拒绝，而且后续正常意图不受影响', () => {
+    const state = createGame(
+      [
+        { seatId: A, name: '甲', heroId: 'zhangfei' },
+        { seatId: B, name: '乙', heroId: 'xuchu' },
+      ],
+      'TEST',
+      { mode: 'identity' },
+    );
+    state.draft = null;
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hand = [mk('h1', 'sha', 'spade', 1), mk('h2', 'tao', 'heart', 2)];
+    state.deck = [mk('d1', 'shan', 'heart', 3)];
+    state.turn = { seatIndex: state.seatOrder.indexOf(A), phase: 'play' };
+    state.pending = { kind: 'play', seatId: A };
+    state.log = [];
+    // 缺 targetIds 的杀：以前会在 playCard 分支读 `intent.targetIds.length` 抛 TypeError
+    const bad = applyIntent(state, A, { type: 'playCard', cardId: 'h1' } as never);
+    expect(bad.ok, '要么拒绝要么当无目标处理，就是不许抛').toBe(false);
+    expect(typeof bad.error).toBe('string');
+    expect(a.hand.map((c) => c.id), '状态没被改坏').toEqual(['h1', 'h2']);
+    // 同一局里紧接着发一条**正常**意图（同一张杀，这次带上目标）：兜底不该把状态搞脏
+    const good = applyIntent(state, A, { type: 'playCard', cardId: 'h1', targetIds: [B] });
+    expect(good.ok, `正常出牌仍应成功：${good.error ?? ''}`).toBe(true);
+  });
   it('useSkill 不带 targetIds ⇒ 给一句有意义的拒绝（不是 TypeError）', () => {
     // 意图是从**网络**来的：`{ type: 'useSkill', skillId }` 这种缺字段的消息
     // 以前会读 `intent.targetIds.length` 直接抛 TypeError（服务端进程崩，

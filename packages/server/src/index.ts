@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ClientMessage, RoomSummary, ServerMessage } from '@sgs/protocol';
+import type { ApplyResult } from '@sgs/engine';
 import { Room } from './room';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -413,7 +414,17 @@ wss.on('connection', (ws: WebSocket) => {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.handleIntent(seatId, msg.intent);
+        // ⚠️ 兜底：意图是**外部输入**。引擎里已经把缺字段补齐了（applyIntent 的边界），
+        //    但任何一处没料到的异常/断言都不该把整个服务端进程带走——那会同时干掉所有房间。
+        //    这里只对这一条消息负责：报错给这个客户端，游戏继续。
+        let res: ApplyResult;
+        try {
+          res = room.handleIntent(seatId, msg.intent);
+        } catch (e) {
+          console.error('[三国杀] 处理意图时抛异常（已吞掉，房间继续）:', msg.intent, e);
+          send(ws, { type: 'error', message: '这条操作无法处理（内部错误）' });
+          break;
+        }
         if (!res.ok) send(ws, { type: 'error', message: res.error });
         else room.broadcastSnapshots();
         break;

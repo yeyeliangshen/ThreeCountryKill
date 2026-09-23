@@ -13841,15 +13841,16 @@ const TIANFENG: Hero = {
       skillId: '死谏',
       handler: (ctx) => {
         const me = ctx.player;
-        // 「检测场上是否存在有合法牌的其他角色」：手牌或**装备区**有牌（**不含判定区**——
-        // 用户 2026-09-25 口径：文本只写「一张牌」，不能顺手把判定区也加进去）。
-        // 判据与选项**同一份派生**（targetCardOptions）⇒ 不会出现「问了却没有可选项」。
-        const legal = ctx.state.players.filter(
-          (p) =>
-            p.alive &&
-            p.seatId !== me.seatId &&
-            targetCardOptions(ctx.state, me.seatId, p, '弃置', { noJudgment: true }).length > 0,
-        );
+        // 「检测场上是否存在有合法牌的其他角色」：手牌或**装备区**有可操作的牌
+        // （**不含判定区**——用户 2026-09-25 口径：文本只写「一张牌」，不能顺手把判定区加进去）。
+        // ⚠️ 「可操作」用 `operableTargetCards`（与【过河拆桥】的合法目标同一份判据）：
+        //    吴景·风扬那类**保护装备区**的效果会让装备区的牌不可被弃置，只数张数会给出
+        //    「点得到但弃不掉」的假目标。
+        const legal = ctx.state.players.filter((p) => {
+          if (!p.alive || p.seatId === me.seatId) return false;
+          const z = operableTargetCards(ctx.state, me.seatId, p);
+          return z.hand.length + z.equip.length > 0; // 判定区不计（见上）
+        });
         // 一个合法目标都没有 ⇒ **不产生无意义的询问**（用户口径）
         if (legal.length === 0) return;
         ctx.api.askChoice(
@@ -13914,7 +13915,7 @@ const TIANFENG: Hero = {
         pushLog(
           ctx.state,
           'skill',
-          `${me.name} 触发【随势】：${dying.name} 进入濒死，伤害来源 ${source.name} 与其势力相同，摸一张牌。`,
+          `${me.name} 触发【随势】：${dying.name} 进入濒死，伤害来源 ${source.name} 与 ${me.name} 势力相同，摸一张牌。`,
           { seat: me.seatId, action: 'draw' },
         );
       },

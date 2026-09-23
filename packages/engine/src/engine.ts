@@ -5683,7 +5683,27 @@ setEquipAskHooks({
   discardCards: discardOwnCards,
 });
 
+/**
+ * 把意图里**可能整块缺失的数组字段**补齐（只补不覆盖）。
+ *
+ * ⚠️ 意图是**从网络来的**：客户端 bug 或恶意消息完全可以发一条
+ * `{ type: 'playCard', cardId: 'x' }`（没有 `targetIds`）。引擎里读 `intent.targetIds.length`
+ * 的地方有几十处，逐处加 `?? []` 必漏（而且会把这层防御散到规则代码里）。
+ * 所以在**引擎边界**统一补齐一次，下游一律可以安全地按「字段一定在」写。
+ * （服务端那边还有一层 try/catch 兜底，见 packages/server/src/index.ts。）
+ */
+function normalizeIntent(intent: Intent): Intent {
+  const raw = intent as { targetIds?: unknown; cardIds?: unknown };
+  return {
+    ...intent,
+    ...(Array.isArray(raw.targetIds) ? {} : { targetIds: [] }),
+    ...(Array.isArray(raw.cardIds) ? {} : { cardIds: [] }),
+  } as Intent;
+}
+
 export function applyIntent(state: GameState, seatId: string, intent: Intent): ApplyResult {
+  // 意图先过一遍「缺字段兜底」（网络来的东西先按不可信处理）
+  const safeIntent = normalizeIntent(intent);
   // 手牌清空检测要在任何变更之前取快照，否则拿不到「原来是几张」
   const handBefore = state.players.map((p) => p.hand.length);
   // 「失去牌」也走快照比对：把每个人「手牌 + 装备区」的牌 id 记下来，意图跑完再看少了谁
@@ -5693,7 +5713,7 @@ export function applyIntent(state: GameState, seatId: string, intent: Intent): A
   // 这一枪回答的是哪一格：答完的**不许再被钩子链收尾时「还回去」**（见 runHooksPausable
   // 的 ambient）。占位空位（出牌/弃牌）不算「在等回答」，不受这条约束。
   const answering = state.pending;
-  const result = applyIntentInner(state, seatId, intent);
+  const result = applyIntentInner(state, seatId, safeIntent);
   if (result.ok) {
     if (answering && !isPlaceholderPending(answering)) answeredPendings.add(answering);
     // 「这条询问处理完了」：唤醒在等它的那些待办（`pendingWaiters: Map<requestId, waiter[]>`，
@@ -10986,7 +11006,14 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
     const joinFaction = player.determinedFaction ?? player.faction;
     if (state.mode === 'guozhan' && !wasDetermined && !isLordPair && joinFaction) {
       const total = state.players.length;
-      if (knownFactionCount(state, joinFaction) > total / 2) {
+      // ⚠️ 这一刻玩家**已经明置**（上面刚设过 heroRevealed），所以这个数**含他自己**：
+      //    语义是「若他加入，该势力将有 N 人」——判据是 N 超过全场半数。
+      //    以前判据与日志各算一次，而日志在 `player.faction = 'ambitionist'` **之后**才算，
+      //    于是打印出来的人数比他实际的判定依据**少 1**（真机日志里出现过
+      //    「已有 1 人（超过全场 3 人的一半）」这种自相矛盾的句子——1 > 1.5 显然不成立）。
+      //    现在算一次、判断与日志共用，措辞也改成「将有」。
+      const withHim = knownFactionCount(state, joinFaction);
+      if (withHim > total / 2) {
         const from = joinFaction;
         player.faction = 'ambitionist';
         // 野心家**各自是一种势力**（用户 2026-09 的官方口径）：给他一个独立的归属势力 id。
@@ -10995,7 +11022,7 @@ function revealHeroCard(state: GameState, player: Player, hero: Hero): boolean {
         pushLog(
           state,
           'faction',
-          `${player.name} 明置时【${FACTION_NAME[from] ?? from}】已有 ${knownFactionCount(state, from)} 人（超过全场 ${total} 人的一半），他不加入该势力、成为野心家。`,
+          `${player.name} 明置时若加入【${FACTION_NAME[from] ?? from}】，该势力将有 ${withHim} 人（超过全场 ${total} 人的一半），他改为野心家。`,
           { seat: player.seatId },
         );
       }
@@ -12202,11 +12229,8 @@ function onUseSkill(
   )
     return err(`该技能本阶段已使用 ${skill.perPhaseLimit} 次`);
   if (skill.oncePerGame && player.usedOncePerGame[skill.id]) return err('该限定技本局已使用');
-  // ⚠️ 意图是从**网络**来的，字段可能整块缺失：`targetIds` 缺了就当空数组。
-  //    以前这里直接读 `intent.targetIds.length` —— 一条不带 targetIds 的 useSkill
-  //    就能把服务端进程打崩（TypeError），属于把「内部调用约定」当成了外部契约。
-  const targetIds = intent.targetIds ?? [];
-  // 目标数校验
+  // 目标数校验（`targetIds` 一定在：缺字段已在 `applyIntent` 的边界兜底补齐）
+  const targetIds = intent.targetIds;
   if (targetIds.length < skill.minTargets || targetIds.length > skill.maxTargets)
     return err(`目标数量不符（需 ${skill.minTargets}-${skill.maxTargets}）`);
   // 「能不能拿自己当目标」＝**技能自己的**目标规则（`ActiveSkill.selfTarget`，用户 2026-09-24 口径）：
