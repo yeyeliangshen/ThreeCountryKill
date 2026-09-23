@@ -120,6 +120,7 @@ import {
   draftAllowsHero,
   factionGrantedActiveSkills,
   heroCanonicalId,
+  heroHasSkillNamed,
   knownFactionCount,
   sameHeroBody,
   soulOptionsOf,
@@ -12922,6 +12923,20 @@ function finishDraft(state: GameState): void {
         // 副将技写着「减少半个阴阳鱼」的（孙策·魂殇）同理，减在副将那半
         const deputyHp = deputy.maxHp - (deputy.deputySlotHalfYang ? 1 : 0);
         p.maxHp = Math.floor((mainHp + deputyHp) / 2);
+        /**
+         * 姜维·【遗志】（副将技，用户 2026-09-24 口径）——它的另一半在**组合层**处理：
+         * - 主将**已有**【观星】⇒ 把它的 **X 固定为 5**（哪怕场上只剩 3 人也观 5 张）；
+         * - 主将**没有**⇒ 视为拥有【观星】（借诸葛亮的那个准备阶段钩子）。
+         *
+         * ⚠️ 两支**互斥**：主将有观星时**绝不再挂一个**，否则会出现两个【观星】入口。
+         * 体力那半（减少半个阴阳鱼）走的是 `deputySlotHalfYang`（上面那两行），与魂殇/荐才同一条路。
+         */
+        if (state.mode === 'guozhan' && deputy.id === 'jiangwei') {
+          if (heroHasSkillNamed(main, '观星')) p.guanxingFixed = 5;
+          else if (!p.grantedSkills.some((g) => g.skillName === '观星')) {
+            p.grantedSkills.push({ heroId: 'zhugeliang', skillName: '观星' });
+          }
+        }
       } else {
         p.maxHp = main?.maxHp ?? 4;
       }

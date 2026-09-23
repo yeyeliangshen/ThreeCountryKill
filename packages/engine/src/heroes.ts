@@ -11,6 +11,7 @@ import {
   isEquipCard,
   isInstantTrick,
   isRed,
+  isWuxieLike,
 } from '@sgs/protocol';
 import type {
   Card,
@@ -207,6 +208,13 @@ export interface HeroVariant {
   virtualYuxi?: Hero['virtualYuxi'];
   fengyang?: Hero['fengyang'];
   jili?: Hero['jili'];
+  /** 【天覆】这类国战专属的转化技表（与 canUseAs 配套，见卧龙诸葛亮的两个转化技） */
+  conversionTypes?: Hero['conversionTypes'];
+  /** 主将技 / 副将技的名单（国战版可能只在这里声明，例如姜维·天覆） */
+  mainSlotSkills?: Hero['mainSlotSkills'];
+  deputySlotSkills?: Hero['deputySlotSkills'];
+  /** 副将技的「减少半个阴阳鱼」（姜维·遗志） */
+  deputySlotHalfYang?: Hero['deputySlotHalfYang'];
 }
 
 export interface Hero {
@@ -2001,7 +2009,10 @@ const HUANGYUEYING: Hero = {
  * 本来就是对的——用户 2026-09-21 明确要求按这个口径（FAQ：牌堆耗尽立即重洗，然后继续结算）。
  */
 function guanxing(state: GameState, player: Player, api: SkillApi): void {
-  const count = Math.min(5, alivePlayers(state).length);
+  // 【遗志】（姜维副将 + 主将有观星）：把观星的 X **固定为 5**——哪怕场上只剩 3 人
+  // ⚠️ 读的是 **Player 字段**而不是 flags：flags 会在**每个回合开始时**被 emptyFlags 清掉，
+  //    而「遗志把 X 固定为 5」是整局有效的组合层参数（踩过：放进 flags 被清，观星又变回 3 张）。
+  const count = player.guanxingFixed ?? Math.min(5, alivePlayers(state).length);
   const top: Card[] = [];
   for (let i = 0; i < count; i++) {
     const c = drawOne(state);
@@ -12427,6 +12438,10 @@ const JIANGWEI: Hero = {
       },
     },
   ],
+  // ⚠️ 「减少 1 个单独的阴阳鱼」＝组合体力上限 -1（本引擎的体力是阴阳鱼×2 的口径），
+  //    由**组合层**在选将结束时统一算（与孙策·魂殇、徐庶·荐才同一条路，见 engine 的
+  //    「双将体力上限」那一段）——不是发动时扣血，也不是游戏中途失去上限。
+  deputySlotHalfYang: true,
   skills: [
     {
       name: '志继',
@@ -12437,7 +12452,72 @@ const JIANGWEI: Hero = {
       desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的角色对你使用一张【杀】，否则你弃置其一张牌。',
     },
   ],
+  /**
+   * **国战变体**（用户 2026-09-24 口径，按 2026-08-28 阵法技改版后的当前移动版）：
+   * 【挑衅】+【天覆】（主将技·阵法技）+【遗志】（副将技）。
+   *
+   * ⚠️ 与身份场**不是一套技能**：身份是【挑衅】+【志继】（觉醒技），所以这里用模式变体分开，
+   *    `getHeroForMode` 合并；`hooks: []` 明确把【志继】挡在国战之外。
+   */
+  guozhan: {
+    hooks: [],
+    // 天覆（主将技）：**转化技**——把黑桃（队列形态下是任意黑色）手牌当【无懈可击】用。
+    // 与卧龙诸葛亮的【看破】走同一套地基（canUseAs + skillFields + conversionTypes），
+    // 所以「无懈窗口里直接把那张牌当无懈选」这套 UI / 合法性判断自动复用，不另写一套。
+    canUseAs: (card, type, state, player) => {
+      if (type !== 'wuxie' || !state || !player) return false;
+      if (isWuxieLike(card)) return false; // 实体【无懈】本来就能打，不算转化
+      if (tianfuMode(state, player) === 'formation') return cardColor(card) === 'black';
+      // 常规形态：**你的回合内**、且是**黑桃**手牌（文本第一句）
+      const turnSeat = state.seatOrder[state.turn.seatIndex];
+      return turnSeat === player.seatId && card.suit === 'spade';
+    },
+    skillFields: { 天覆: ['canUseAs'] },
+    conversionTypes: { 天覆: ['wuxie'] },
+    // 主将技：只有姜维在**主将**位时才有【天覆】（副将位时这一条自然失效）
+    mainSlotSkills: ['天覆'],
+    skills: [
+      {
+        name: '挑衅',
+        desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的角色对你使用一张【杀】，否则你弃置其一张牌。',
+      },
+      {
+        name: '天覆',
+        desc: '主将技，阵法技。你的回合内，你可以将一张黑桃手牌当【无懈可击】使用；与你处于同一队列的角色的回合内，你可以将一张黑色手牌当【无懈可击】使用。',
+      },
+      {
+        name: '遗志',
+        desc: '副将技，你计算体力上限时减少1个单独的阴阳鱼。若你的主将拥有【观星】，则将其【观星】描述中的X固定为5，否则你视为拥有【观星】。',
+      },
+    ],
+  },
 };
+
+/**
+ * 【天覆】此刻是哪种形态（用户 2026-09-24 口径）——**由当前桌面上的公开势力和座次实时算**，
+ * 不需要任何「阵法召唤」那一类手动动作（官方 2026-08-28 已删除阵法召唤）。
+ *
+ * - `formation`：我与**同一队列**里有人（队列 ≥ 2 人），且**当前回合属于队列成员**（含我自己）
+ *   ⇒ 黑色手牌都能当【无懈可击】；
+ * - `normal`：其余情况 ⇒ 只有**我自己的回合**、且**黑桃**手牌可以。
+ *
+ * 队列用 `formationQueue`（连续相邻的同势力角色，与鸟翔/鹤翼同一份判据），所以别人亮将、
+ * 被【调虎离山】移出座次、角色阵亡导致队列断开时，形态**自动**跟着变。
+ */
+function tianfuMode(state: GameState, player: Player): 'normal' | 'formation' {
+  const turnSeat = state.seatOrder[state.turn.seatIndex];
+  const queue = formationQueue(state, player);
+  if (queue.length >= 2 && queue.some((p) => p.seatId === turnSeat)) return 'formation';
+  return 'normal';
+}
+
+/** 这张武将牌上有没有名叫 `name` 的技能（看展示列表、钩子、主动技三处） */
+export function heroHasSkillNamed(hero: Hero, name: string): boolean {
+  if ((hero.skills ?? []).some((s) => s.name === name)) return true;
+  if ((hero.hooks ?? []).some((h) => h.skillId === name)) return true;
+  if ((hero.activeSkills ?? []).some((s) => s.name === name)) return true;
+  return false;
+}
 
 const LIUSHAN: Hero = {
   id: 'liushan',
