@@ -11374,7 +11374,12 @@ const DIANWEI: Hero = {
   faction: 'wei',
   maxHp: 4,
   gender: 'male',
-  // 强袭：出牌阶段限一次，弃一张武器牌或失去 1 点体力，然后对攻击范围内的一名其他角色造成 1 点伤害
+  // 强袭（现行移动版文本）：出牌阶段限一次，你可以**弃置一张武器牌，或对你造成 1 点伤害**，
+  // 然后对你攻击范围内的一名其他角色造成 1 点伤害。
+  //
+  // ⚠️ 代价的第一项是「**对你造成 1 点伤害**」，不是「失去 1 点体力」（用户 2026-09-26 口径）——
+  //    这两者**触发的技能链完全不同**：伤害会走完整伤害层（卖血技「受到伤害后」、伤害来源、
+  //    铁索传导、护心镜/减伤…），失去体力则一个都不触发、且没有来源。旧实现用的是 `api.loseHp`。
   activeSkills: [
     {
       id: 'qiangxi',
@@ -11382,8 +11387,9 @@ const DIANWEI: Hero = {
       oncePerTurn: true,
       minTargets: 1,
       maxTargets: 1,
+      // 代价永远付得起（弃武器，或**对自己造成 1 点伤害**——哪怕只剩 1 血也能用，后果自负），
+      // 所以可用性只看「有没有攻击范围内的其他角色」。
       canUse: (state, player) =>
-        (player.hp > 1 || !!player.equipment.weapon) &&
         state.players.some(
           (p) => p.alive && p.seatId !== player.seatId && canTarget(state, player.seatId, p.seatId),
         ),
@@ -11395,24 +11401,31 @@ const DIANWEI: Hero = {
         if (!target || !target.alive) return '目标无效';
         if (!canTarget(state, player.seatId, targetId)) return '目标超出攻击范围';
         const weapon = player.equipment.weapon;
-        const options: { id: string; label: string }[] = [];
-        if (player.hp > 1) options.push({ id: 'loseHp', label: '失去 1 点体力' });
+        const options: { id: string; label: string }[] = [
+          { id: 'selfDamage', label: '对自己造成 1 点伤害' },
+        ];
         if (weapon) options.push({ id: 'weapon', label: `弃置武器【${cardLabel(weapon)}】` });
-        if (options.length === 0) return '没有可支付的代价';
         api.askChoice(state, player.seatId, '【强袭】：选择代价', options, (st, p, picked) => {
+          // 付完代价 → 打目标。两处都放进回调里：代价本身可能挂起（濒死求桃、卖血技）。
+          const hitTarget = (): void => {
+            const t = getPlayer(st, targetId);
+            if (!t || !t.alive) return; // 跨步：目标可能已经不在了
+            api.dealDamage(t, 1, p.seatId);
+          };
           if (picked === 'weapon') {
             const w = p.equipment.weapon;
             if (!w) return;
             // 走 discardCard：弃装备要触发枭姬那类技能
             api.discardCard(p.seatId, w, () => {
               pushLog(st, 'skill', `${p.name} 发动【强袭】，弃置武器【${cardLabel(w)}】。`);
-              api.dealDamage(target, 1, p.seatId);
+              hitTarget();
             });
             return;
           }
-          pushLog(st, 'skill', `${p.name} 发动【强袭】，失去 1 点体力。`);
-          api.loseHp(p, 1);
-          api.dealDamage(target, 1, p.seatId);
+          pushLog(st, 'skill', `${p.name} 发动【强袭】，对自己造成 1 点伤害。`);
+          // ⚠️ 用 `dealDamage`（完整伤害层：**伤害来源＝典韦自己**、卖血技照常触发、濒死照常求桃），
+          //    不是 `loseHp`。打目标那一下等这 1 点伤害结算完再走（它会挂起）。
+          api.dealDamage(p, 1, p.seatId, undefined, hitTarget);
         });
       },
     },
@@ -11420,7 +11433,7 @@ const DIANWEI: Hero = {
   skills: [
     {
       name: '强袭',
-      desc: '出牌阶段限一次，你可以弃置一张武器牌或失去 1 点体力，然后对你攻击范围内的一名其他角色造成 1 点伤害。',
+      desc: '出牌阶段限一次，你可以弃置一张武器牌，或对你造成 1 点伤害，然后对你攻击范围内的一名其他角色造成 1 点伤害。',
     },
   ],
 };

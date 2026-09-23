@@ -6566,7 +6566,7 @@ describe('标准版魏（第二批武将）', () => {
     expect(a.hand).toHaveLength(3); // 跳过了摸牌阶段
   });
 
-  it('强袭：没武器时只能失去 1 点体力，然后造成 1 点伤害', () => {
+  it('强袭：没武器时只能**对自己造成 1 点伤害**，然后造成 1 点伤害', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'dianwei', hand: [], hp: 4 },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
@@ -6578,16 +6578,18 @@ describe('标准版魏（第二批武将）', () => {
     expect(state.pending?.kind).toBe('choice'); // 选代价
     if (state.pending?.kind === 'choice') {
       const opts = state.pending.options.map((o) => o.id);
-      expect(opts).toContain('loseHp');
+      // ⚠️ 口径替换（用户 2026-09-26）：代价是「**对你造成 1 点伤害**」，不是「失去 1 点体力」——
+      //    两者触发的技能链不同（伤害走完整伤害层、有来源、卖血技照常触发）。见 tests/dianwei.test.ts。
+      expect(opts).toContain('selfDamage');
       expect(opts).not.toContain('weapon'); // 没武器
     }
-    ok(act(state, A, { type: 'chooseOption', optionId: 'loseHp' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'selfDamage' }));
     expect(a.hp).toBe(3);
     expect(b.hp).toBe(3);
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
-  it('强袭：有武器时可以弃武器代替失去体力', () => {
+  it('强袭：有武器时可以弃武器代替自伤', () => {
     const state = makeGame([
       { seatId: A, name: '甲', heroId: 'dianwei', hand: [], hp: 4 },
       { seatId: B, name: '乙', heroId: 'vanilla', hand: [] },
