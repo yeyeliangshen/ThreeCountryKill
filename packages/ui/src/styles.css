@@ -3496,3 +3496,17 @@ select:focus-visible,
   color: var(--gold);
   letter-spacing: 0.5px;
 }
+
+/* —— 「当前这条询问与他有关」（引擎下发的 relatedSeats）——
+   徐盛·【疑城】问徐盛时，被保护的那位轻微高亮：玩家一眼看出「我现在保护的是谁」。
+   ⚠️ 它**不改变可点性**（可点与否由 legalTargets / 候选决定），所以只描边、不变指针。 */
+.player.related {
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.55);
+  transition: box-shadow 0.15s ease-out;
+}
+
+/* 自己面板上的同一枚「与我有关」描边（徐盛·疑城保护自己的那种情形） */
+.hero-panel.related {
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.55);
+  transition: box-shadow 0.15s ease-out;
+}

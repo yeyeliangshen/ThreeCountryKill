@@ -148,6 +148,22 @@ describe('【疑城】的目标条件（不偷看暗将底牌）', () => {
     expect(state.log.some((e) => e.message.includes('疑城'))).toBe(false);
   });
 
+  it('只认**【杀】**：南蛮入侵 / 万箭齐发 / 决斗 都不触发', () => {
+    // 疑城的时机是「成为【杀】的目标后」——伤害类**锦囊**不算（它们不是【杀】）
+    for (const type of ['nanman', 'wanjian', 'juedou'] as const) {
+      const state = gz([
+        { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [mk('a1', type, 'spade', 7)] },
+        { seatId: B, name: '徐盛', heroId: 'xusheng', faction: 'wu', hand: [] },
+        { seatId: C, name: '丙', heroId: 'lvmeng', faction: 'wu', hand: [] },
+      ]);
+      state.deck = [mk('d0', 'sha', 'club', 9)];
+      const r = act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] });
+      // 南蛮/万箭是全体目标（不接受 targetIds），决斗要目标 —— 两条都给上
+      if (!r.ok) ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [] }), `${type} 出牌`);
+      expect(state.log.some((e) => e.message.includes('疑城')), `${type} 不该触发疑城`).toBe(false);
+    }
+  });
+
   it('**野心家**之间不算同势力（目标明置成野心家 ⇒ 不触发）', () => {
     const state = field();
     at(state, C).faction = 'ambitionist';
@@ -227,6 +243,35 @@ describe('【疑城】的结算：摸 1 → 目标自己弃 1 → 回到【杀�
     expect(state.pending?.kind).toBe('respondSha');
     ok(act(state, C, { type: 'respondCard', cardId: 'd1' }), '用刚摸到的闪响应');
     expect(state.log.some((e) => e.message.includes('闪避') || e.message.includes('使用了【闪】'))).toBe(true);
+  });
+
+  it('问徐盛时把他**保护的那位**一起下发（界面轻微高亮）', () => {
+    const state = field();
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    const snap = toSnapshot(state, B).prompt;
+    expect(snap?.kind).toBe('choice');
+    expect(snap?.relatedSeats, 'relatedSeats = 被保护的丙').toEqual([C]);
+  });
+
+  it('**别人看不到目标的手牌**：这条弃牌询问只发给目标自己', () => {
+    // 用户 §十五：徐盛发动疑城**不会**因此看到队友的全部手牌；其他人更看不到。
+    // 引擎侧靠「询问只发给当事人」保证：徐盛的快照里根本没有那条带牌名的 choice。
+    const state = field();
+    state.deck = [mk('d0', 'sha', 'club', 9), mk('d1', 'shan', 'heart', 4)];
+    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
+    if (state.pending?.kind === 'choice') ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
+    // 此刻待答的是**丙**（选弃哪张）——
+    const owner = toSnapshot(state, C).prompt;
+    expect(owner?.kind, '当事人看得到').toBe('choice');
+    expect(owner?.choiceOptions?.map((o) => o.id)).toContain('card:c1');
+    // 徐盛与第三方：看不到那条询问，也看不到丙的手牌内容
+    for (const viewer of [B, A]) {
+      const pv = toSnapshot(state, viewer).prompt;
+      expect(pv?.choiceOptions ?? [], `座位 ${viewer} 看不到丙的候选`).toEqual([]);
+    }
+    // 连带：徐盛看到的丙的手牌**只有张数**（没有任何牌面字段）
+    const viewOfC = toSnapshot(state, B).players.find((p) => p.seatId === C)!;
+    expect(JSON.stringify(viewOfC), '别人的手牌不出现在快照里').not.toContain('"c1"');
   });
 
   it('徐盛**不能替目标**挑牌（问的是目标本人；徐盛的候选里没有别人的手牌）', () => {

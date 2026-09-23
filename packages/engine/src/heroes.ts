@@ -3536,6 +3536,11 @@ const XUSHENG: Hero = {
             // 「其弃置一张牌」＝他自己挑（手牌给牌面、装备给牌名；判定区不算）
             pickOneOfTargetCards(st, t, t, ctx.api, '疑城', undefined, { noJudgment: true });
           },
+          undefined,
+          undefined,
+          undefined,
+          // 问徐盛时把**被保护的那位**标出来（界面轻微高亮 ⇒ 一眼看出保护的是谁）
+          [target.seatId],
         );
       },
     },

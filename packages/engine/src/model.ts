@@ -840,6 +840,14 @@ export type Pending =
        * ⚠️ 它**只是布局**——点某一张仍然回 `chooseOption(optionId)`，引擎的解析不变。
        */
       zonePick?: ZonePickLayout;
+      /**
+       * 与这条询问有关的**其他角色**的座位（纯展示，引擎下发的）。
+       *
+       * 例：徐盛·【疑城】问徐盛时，这里是被保护的那位——界面把那张牌**轻微高亮**，
+       * 让徐盛一眼看出「我现在保护的是谁」（用户 2026-09-25 口径）。
+       * ⚠️ 它不改变任何可点性：是否可点仍由 `legalTargets` / 候选决定。
+       */
+      relatedSeats?: string[];
     }
   /**
    * 从一组牌里看/选若干张（选牌原语）。
@@ -867,6 +875,8 @@ export type Pending =
       fromPool?: boolean;
       /** 多目标时的分区布局（见 ZonePickLayout）：界面给每一家画一块独立牌位 */
       zonePick?: ZonePickLayout;
+      /** 与这条询问有关的**其他角色**（纯展示：界面轻微高亮；不影响可点性）——说明见 choice 那份 */
+      relatedSeats?: string[];
       /** 这些牌属于谁（盲选时界面标注「在看谁的手牌」） */
       ownerSeatId?: string;
       /** 其中已因其他效果公开的牌 id（由规则层给，界面照它画牌面） */

@@ -117,6 +117,7 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         // 「操作别人区域里的牌」的分区布局（用户 2026-09-23）：界面据此画多栏 + 区内分区。
         // 没带布局的老询问照旧画成一排按钮。
         ...(pending.zonePick ? { zonePick: pending.zonePick } : {}),
+        ...(pending.relatedSeats?.length ? { relatedSeats: pending.relatedSeats.slice() } : {}),
       };
 
     case 'pickSeats':
@@ -159,6 +160,7 @@ export function buildPrompt(state: GameState, seatId: string): PromptView | null
         ...(pending.fromPool ? { pickFromPool: true } : {}),
         // 多目标分区（突袭那类「每家一块牌背区」）：界面据此画多栏
         ...(pending.zonePick ? { zonePick: pending.zonePick } : {}),
+        ...(pending.relatedSeats?.length ? { relatedSeats: pending.relatedSeats.slice() } : {}),
         ...(pending.ownerSeatId ? { pickOwnerSeatId: pending.ownerSeatId } : {}),
         ...(pending.visibleIds?.length ? { pickVisibleIds: pending.visibleIds.slice() } : {}),
         pickMin: pending.min,

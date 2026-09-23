@@ -54,6 +54,11 @@ export interface HeroPanelProps {
   targetable?: boolean;
   picked?: boolean;
   /**
+   * **当前这条询问与他有关**（引擎下发的 `relatedSeats`，纯展示）：徐盛·【疑城】保护的是**自己**时，
+   * 自己的面板也要轻微描边——和对手那一行的 `.player.related` 同一枚表现。
+   */
+  related?: boolean;
+  /**
    * **装备区的牌可以当代价**时（技能声明了 `costFrom: 'handEquip'`，用户 2026-09-21 口径），
    * 把已装备的牌**点亮成可点按钮**：点一下就是选中它当代价。
    *
@@ -150,6 +155,7 @@ export function HeroPanel({
   onSelect,
   targetable,
   picked,
+  related,
   equipPick,
   equipUse,
   chainFx,
@@ -157,6 +163,7 @@ export function HeroPanel({
 }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
+  const relatedClass = related ? ' related' : ''; // 见 props.related（纯展示的描边）
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
   const faction = mode === 'guozhan' ? me.faction : (slots[0]?.faction ?? null);
   const factionClass = mode === 'guozhan' && me.faction ? `faction-${me.faction}` : '';
@@ -164,7 +171,7 @@ export function HeroPanel({
 
   return (
     <div
-      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''} ${me.chained ? 'chained' : ''} ${chainFx?.cls ?? ''}`}
+      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''}${relatedClass} ${me.chained ? 'chained' : ''} ${chainFx?.cls ?? ''}`}
       onClick={onSelect}
     >
       {/* 连环传导的脉冲（口径④）：延时由引擎给的顺序算出来，逐棒在自己面板上闪一下。

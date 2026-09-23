@@ -1411,6 +1411,9 @@ export function Game() {
                   skillMode?.targetIds.includes(p.seatId) ||
                   lianhengPick === p.seatId));
             const isCurrent = snapshot.turn.seatId === p.seatId;
+            // 与**当前这条询问**有关的其他角色（引擎下发；如徐盛·疑城问徐盛时＝被保护的那位）：
+            // 只做**轻微高亮**，不改变可点性（可点与否仍由 legalTargets / 候选决定）
+            const isRelated = prompt?.relatedSeats?.includes(p.seatId) ?? false;
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
@@ -1429,7 +1432,7 @@ export function Game() {
             return (
               <div className="player-slot" key={p.seatId}>
                 <button
-                  className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${p.chained ? 'chained' : ''} ${chainCls} ${teamClass} ${factionClass}`}
+                  className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${isRelated ? 'related' : ''} ${p.chained ? 'chained' : ''} ${chainCls} ${teamClass} ${factionClass}`}
                   onClick={isTarget ? () => handleTargetClick(p) : undefined}
                   disabled={!isTarget}
                 >
@@ -2266,6 +2269,9 @@ export function Game() {
             // 用的是与对手那张牌上**完全同一个**组件与判据（只是位置换成面板右下角）。
             skillTip={skillTipOf(me.seatId) ?? undefined}
             targetable={canPickSelf}
+            // 「这条询问与我有关」：徐盛·疑城保护的是自己时，自己的面板也轻微描边
+            // （与对手那一行的 .player.related 同一枚表现；判据同样来自引擎的 relatedSeats）
+            related={prompt?.relatedSeats?.includes(me.seatId) ?? false}
             picked={
               !!selected?.picked.includes(me.seatId) || !!skillMode?.targetIds.includes(me.seatId)
             }

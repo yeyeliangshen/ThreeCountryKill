@@ -346,6 +346,11 @@ export interface SkillApi {
      * 判据与选项同源（`targetCardOptions` / `zoneLayoutOf` 派生自同一份 `targetCardZone`）。
      */
     zonePick?: ZonePickLayout,
+    /**
+     * 与这条询问有关的**其他角色**（纯展示：界面把他们轻微高亮，**不影响可点性**）。
+     * 徐盛·【疑城】用它标出「被保护的那位」（用户 2026-09-25 口径）。
+     */
+    relatedSeats?: string[],
   ) => void;
   /**
    * 让某个角色从给定的一组牌里选若干张。

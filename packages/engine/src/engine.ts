@@ -413,6 +413,8 @@ export function askChoice(
    *    （两边都声明了这个可选参数；顺序不一致就赋不上那个类型）。
    */
   zonePick?: ZonePickLayout,
+  /** 与这条询问有关的**其他角色**（纯展示：界面把他们轻微高亮；不影响可点性） */
+  relatedSeats?: string[],
 ): void {
   setPending(state, {
     kind: 'choice',
@@ -422,6 +424,7 @@ export function askChoice(
     resolve,
     returnTo,
     ...(zonePick ? { zonePick } : {}),
+    ...(relatedSeats?.length ? { relatedSeats: relatedSeats.slice() } : {}),
     ...(secret ? { secret: true } : {}),
   });
 }
