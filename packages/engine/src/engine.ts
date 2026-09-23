@@ -132,6 +132,7 @@ import {
   findTargetCardByChoice,
   skillOnField,
   fengyangBlocksEquip,
+  cardTargetsOutside,
   zhidaoTargetsBlocked,
   ROLE_NAME,
   type ActiveSkill,
@@ -1986,6 +1987,8 @@ function enterPlayPhase(state: GameState, player: Player): void {
     state.juejueArmed = false;
     // 「每个出牌阶段限 N 次」的额度：新出牌阶段（含额外出牌阶段）重新发放
     player.flags.skillUsesThisPhase = {};
+    // 「此阶段不能对其他角色使用牌」（双刃没赢）随着**下一个**出牌阶段开始失效
+    player.flags.cannotTargetOthersThisPhase = false;
     runHooksPausable(state, 'playPhase', player, undefined, () => {
       // 张郃·巧变可能在出牌阶段一开始就跳过它（标记在钩子里设）——同样要在这之后判
       if (player.flags.skipPlay) {
@@ -2521,6 +2524,7 @@ function afterTurnEnd(state: GameState): void {
       // 奋迅的「你至其距离视为 1」＋严白虎·雉盗的「只能指定他与你」
       p.flags.distanceToOneThisTurn = null;
       p.flags.cardTargetOnlySeat = null;
+      p.flags.cannotTargetOthersThisPhase = false; // 双刃：本阶段的限制，回合结束一并清
     }
   };
   // 挟天子以令诸侯：本回合结束前若在弃牌阶段弃过牌，追加一个额外回合。
@@ -6129,6 +6133,14 @@ function onPlayCard(
     // 严白虎·雉盗：本回合只能指定「你与他」（含 AOE 那类不指定目标却会打到别人的牌）
     if (zhidaoTargetsBlocked(state, player, card, intent.targetIds)) {
       return err('【雉盗】：本回合只能指定你与你锁定的那名角色');
+    }
+    // 纪灵·双刃（没赢）：**此阶段不能对其他角色使用牌**——桃/酒/装备这类对自己使用的照常
+    // （判据与雉盗同源：`cardTargetsOutside` 只管「作用对象里有没有别人」）
+    if (
+      player.flags.cannotTargetOthersThisPhase &&
+      cardTargetsOutside(state, player, card, intent.targetIds, new Set([player.seatId]))
+    ) {
+      return err('【双刃】没赢：本阶段不能对其他角色使用牌');
     }
     const blocked = blockedForPlay(player, card);
     if (blocked) return err(blocked);

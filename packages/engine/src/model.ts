@@ -247,6 +247,13 @@ export interface PlayerFlags {
   cannotPlayColor: 'red' | 'black' | null;
   /** 本回合不能回复体力（军令「翻面且本回合不能回复体力」那一项） */
   cannotHealThisTurn: boolean;
+  /**
+   * **本阶段不能对「其他角色」使用牌**（纪灵·【双刃】没赢的后果）。
+   *
+   * ⚠️ 只拦「对别人用的牌」：桃 / 酒 / 装备牌这类**对自己**使用的照常能用
+   * （用户 2026-09-26 口径特别点明了这一点）。AOE 那类不指定目标却会打到别人的锦囊同样算「对别人用」。
+   */
+  cannotTargetOthersThisPhase: boolean;
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
@@ -343,6 +350,7 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayCardsThisTurn: false,
     cannotPlayColor: null,
     cannotHealThisTurn: false,
+    cannotTargetOthersThisPhase: false,
     revealRewarded: false,
     wangxiPending: [],
     xuanlveEventId: -1,

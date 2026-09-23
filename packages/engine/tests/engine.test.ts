@@ -11907,7 +11907,7 @@ describe('国战标准版 · 庞德 / 丁奉 / 纪灵', () => {
     expect(state.pending?.kind).toBe('play');
   });
 
-  it('纪灵：双刃没赢 → 结束出牌阶段', () => {
+  it('纪灵：双刃**没赢** → 本阶段不能对其他角色使用牌（不再是「结束出牌阶段」）', () => {
     const state = gz([
       {
         seatId: A,
@@ -11931,9 +11931,15 @@ describe('国战标准版 · 庞德 / 丁奉 / 纪灵', () => {
     ok(act(state, A, { type: 'chooseOption', optionId: B }));
     ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
     ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
-    // 1 < 13 → 甲没赢 → 直接进弃牌阶段（甲此时 0 手牌，不用弃）
+    // ⚠️ 口径更新（用户 2026-09-26）：没赢**不再结束出牌阶段**，而是「此阶段不能对**其他角色**
+    //    使用牌」（对自己使用的桃/酒/装备照常）。旧口径见 docs §5.240。
     expect(state.log.some((e) => e.message.includes('没赢'))).toBe(true);
-    expect(state.pending?.kind === 'play' && state.pending.seatId === A).toBe(false);
+    expect(
+      state.players.find((p) => p.seatId === A)!.flags.cannotTargetOthersThisPhase,
+      '立了「本阶段不能对其他角色使用牌」的标记',
+    ).toBe(true);
+    // 出牌阶段还在他手里（旧实现到这里已经进弃牌阶段了）
+    expect(state.pending?.kind === 'play' && state.pending.seatId === A).toBe(true);
   });
 });
 

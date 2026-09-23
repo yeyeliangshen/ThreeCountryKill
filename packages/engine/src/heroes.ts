@@ -7634,10 +7634,25 @@ export function zhidaoTargetsBlocked(
 ): boolean {
   const locked = player.flags.cardTargetOnlySeat;
   if (!locked) return false;
-  const allowed = new Set([player.seatId, locked]);
+  return cardTargetsOutside(state, player, card, targetIds, new Set([player.seatId, locked]));
+}
+
+/**
+ * 这张牌的**实际作用对象**里，有没有落在 `allowed` 之外的存活角色。
+ *
+ * 两块判据（与雉盗那条共用，见 `zhidaoTargetsBlocked`）：
+ * - 显式目标：`intent.targetIds` 里出现 allowed 之外的座位；
+ * - **不指定目标却会打到别人**的牌（南蛮/万箭/桃园/五谷…）：只有当 allowed 之外没有别的存活角色时才放行。
+ */
+export function cardTargetsOutside(
+  state: GameState,
+  player: Player,
+  card: Card,
+  targetIds: string[],
+  allowed: ReadonlySet<string>,
+): boolean {
   if (targetIds.some((id) => !allowed.has(id))) return true;
-  const aoeLike: ReadonlySet<string> = ZHIDAO_AOE_TRICKS;
-  if (!aoeLike.has(card.type)) return false;
+  if (!ZHIDAO_AOE_TRICKS.has(card.type)) return false;
   return state.players.some((p) => p.alive && !allowed.has(p.seatId));
 }
 
@@ -13507,7 +13522,7 @@ const JILING: Hero = {
   gender: 'male',
   modes: ['guozhan'],
   // 双刃：出牌阶段开始时与一名角色拼点。赢→视为对其或其同势力的另一名角色
-  // 使用一张【杀】（不计入次数）；没赢→结束出牌阶段。
+  // 使用一张【杀】（不计入次数）；**没赢→此阶段不能对其他角色使用牌**（对自己使用的不受影响）。
   hooks: [
     {
       timing: 'playPhase',
@@ -13537,12 +13552,17 @@ const JILING: Hero = {
               (st2, _p2, targetSeatId) => {
                 ctx.api.pindian(player.seatId, targetSeatId, (st3, winnerId) => {
                   if (winnerId !== player.seatId) {
-                    // 没赢：结束出牌阶段（直接进弃牌阶段）
-                    pushLog(st3, 'skill', `${player.name} 的【双刃】没赢，结束出牌阶段。`, {
-                      seat: player.seatId,
-                      action: 'skill',
-                    });
-                    ctx.api.endPlayPhase(player.seatId);
+                    // 没赢（现行文本，用户 2026-09-26 口径）：**此阶段不能对其他角色使用牌**——
+                    // 不是「结束出牌阶段」。
+                    // ⚠️ 只拦「对别人用的牌」：桃 / 酒 / 装备牌这类对自己使用的照常能用
+                    //    （判据见 engine.onPlayCard 里对 `cannotTargetOthersThisPhase` 的检查）。
+                    st3.players.find((p) => p.seatId === player.seatId)!.flags.cannotTargetOthersThisPhase = true;
+                    pushLog(
+                      st3,
+                      'skill',
+                      `${player.name} 的【双刃】没赢：本阶段不能对其他角色使用牌（桃/酒/装备这类对自己使用的照常）。`,
+                      { seat: player.seatId, action: 'skill' },
+                    );
                     return;
                   }
                   // 赢：视为对「拼点对象」或「与其势力相同的另一名角色」使用一张【杀】。
@@ -13584,7 +13604,7 @@ const JILING: Hero = {
   skills: [
     {
       name: '双刃',
-      desc: '出牌阶段开始时，你可以与一名角色拼点。若你赢，你视为对其或与其势力相同的另一名角色使用一张【杀】（不计入出牌阶段使用次数的限制）；若你没赢，你结束出牌阶段。',
+      desc: '出牌阶段开始时，你可以与一名角色拼点。若你赢，你视为对其或与其势力相同的另一名角色使用一张【杀】（不计入出牌阶段使用次数的限制）；若你没赢，此阶段你不能对其他角色使用牌。',
     },
   ],
 };
