@@ -1857,7 +1857,45 @@ const GANNING: Hero = {
   // 奇袭：黑色牌当【过河拆桥】
   canUseAs: (card, type) => type === 'guohe' && !isRed(card),
   skillFields: { 奇袭: ['canUseAs'] },
-  skills: [{ name: '奇袭', desc: '你可以将一张黑色牌当【过河拆桥】使用。' }],
+  hooks: [
+    {
+      // 奋威（**锁定技**，用户 2026-09-26 口径）：**首次明置此武将牌后**，
+      // 令**所有与你势力相同的角色**各获得 1 枚【阴阳鱼】标记。
+      //
+      // 三处要紧（都在用例里钉住）：
+      // ① 「**此**武将牌」＝甘宁这张：payload.heroId 必须就是 ganning——双将里另一张明置时不发；
+      // ② 「**首次**」：本局只发一次（`usedOncePerGame.fenwei`）；
+      // ③ 「同势力」用统一的公开势力键 `sameKnownFaction`：**暗置角色＝势力未确定 ⇒ 不参与**
+      //    （不偷看底牌，与补益/随势/淑慎/疑城同一口径）；**自己也是同势力角色之一 ⇒ 包括自己**。
+      timing: 'heroRevealed',
+      skillId: '奋威',
+      locked: true,
+      handler: (ctx) => {
+        const me = ctx.player;
+        const payload = ctx.payload as { heroId?: string } | undefined;
+        if (payload?.heroId !== 'ganning') return; // ① 只看「这张」武将牌
+        if (me.usedOncePerGame.fenwei) return; // ② 首次
+        me.usedOncePerGame.fenwei = true;
+        const allies = ctx.state.players.filter(
+          (p) => p.alive && sameKnownFaction(ctx.state, me, p),
+        );
+        for (const p of allies) addMarker(p, 'yinyangyu');
+        pushLog(
+          ctx.state,
+          'marker',
+          `${me.name} 的【奋威】生效：${allies.map((p) => p.name).join('、')} 各获得 1 枚【阴阳鱼】。`,
+          { seat: me.seatId },
+        );
+      },
+    },
+  ],
+  skills: [
+    { name: '奇袭', desc: '你可以将一张黑色牌当【过河拆桥】使用。' },
+    {
+      name: '奋威',
+      desc: '锁定技，首次明置此武将牌后，令所有与你势力相同的角色各获得 1 枚【阴阳鱼】标记。',
+    },
+  ],
 };
 
 const HUANGGAI: Hero = {

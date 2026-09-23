@@ -404,7 +404,11 @@ describe('【护援】：结束阶段置入装备（栏位须为空）+ 可选�
     const p = state.pending;
     expect(p?.kind, '选装备牌').toBe('pickCards');
     if (p?.kind === 'pickCards') {
-      expect(p.cards.map((c) => c.id), '只给放得下的那张').toEqual(['h2']);
+      const ids = p.cards.map((c) => c.id);
+      // ⚠️ 别写死整份候选：甲在自己的回合会**摸两张牌**，摸到的若也是装备牌就会进候选（随牌堆而变）。
+      //    要断的是「放不下的那张不在候选里、放得下的那张在」。
+      expect(ids, '武器（全场无处可放）不该在候选里').not.toContain('h1');
+      expect(ids, '防具（栏位空）在候选里').toContain('h2');
     }
     ok(act(state, 's0', { type: 'pickCards', cardIds: ['h2'] }), '选八卦阵');
     ok(act(state, 's0', { type: 'chooseOption', optionId: 's1' }), '给乙（防具栏空）');
