@@ -3524,3 +3524,23 @@ select:focus-visible,
   opacity: 0.85;
   vertical-align: middle;
 }
+
+/* —— 【飞影】与【鹤翼】形态（用户 2026-09-26 口径）——
+   飞影可能来自别人的【鹤翼】⇒ 用一枚小标常驻，悬停/点击写清来源；
+   鹤翼持有者本人则把**当前形态**写在标上（常规 / 队列，两态互斥）。都不加动画。 */
+.feiying-badge,
+.heyi-badge {
+  margin-left: 3px;
+  padding: 0 4px;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.9;
+  vertical-align: middle;
+}
+.heyi-badge.formation {
+  border-style: dashed;
+  opacity: 0.75;
+}

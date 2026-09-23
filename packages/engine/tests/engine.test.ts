@@ -14347,7 +14347,10 @@ describe('国战 · 曹洪（护援）', () => {
     expect(state.discard.some((x) => x.id === 'c1')).toBe(true);
   });
 
-  it('护援：顶掉对方已有的装备（旧的进弃牌堆）', () => {
+  it('护援：**不能**置入已被占用的同类栏位（旧口径「顶掉」已作废）', () => {
+    // ⚠️ 口径更新（用户 2026-09-26）：【护援】是「**置入**装备区」，不是「使用装备牌」——
+    //    对应栏位已有牌时**不能**把它顶掉（旧实现走 giveEquipTo 的替换分支、旧装备进弃牌堆）。
+    //    现在这类接收者**根本不进候选**。旧口径见 docs §5.242。
     const state = gz([
       { seatId: A, name: '甲', heroId: 'caohong', faction: 'wei', hand: [armor('a1')] },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'wu', hand: [] },
@@ -14358,9 +14361,15 @@ describe('国战 · 曹洪（护援）', () => {
     ok(act(state, A, { type: 'endPhase' }));
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     ok(act(state, A, { type: 'pickCards', cardIds: ['a1'] }));
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
-    expect(b.equipment.armor?.id).toBe('a1');
-    expect(state.discard.some((c) => c.id === 'old')).toBe(true);
+    // 乙的防具栏已占 ⇒ 不在候选里
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.options.map((o) => o.id)).not.toContain(B);
+    }
+    ok(act(state, A, { type: 'chooseOption', optionId: A }), '给还是空栏位的自己');
+    const a = state.players.find((p) => p.seatId === A)!;
+    expect(a.equipment.armor?.id).toBe('a1');
+    expect(b.equipment.armor?.id, '乙原来的防具没被动过').toBe('old');
+    expect(state.discard.some((c) => c.id === 'old'), '旧装备没进弃牌堆').toBe(false);
   });
 
   it('护援：手里没有装备牌就不问', () => {

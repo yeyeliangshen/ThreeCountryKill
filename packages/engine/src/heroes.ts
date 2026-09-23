@@ -2851,16 +2851,54 @@ export function besiegingTarget(state: GameState, player: Player): string | null
  * 飞影：别人计算与你的距离 +1。来源有两处——你自己的武将牌写着这个字段，
  * 或者与你**同一队列**的队友有【鹤翼】（阵法技把飞影授予同队列其他人）。
  */
+/**
+ * 【鹤翼】（**2026-08-28 阵法技改版**，用户 2026-09-26 口径）：阵法技、**锁定技**，两态**互斥**——
+ *
+ * - **常规**（没进队列）：**曹洪自己**视为拥有【飞影】（别人算到他的距离 +1）；
+ * - **队列**（与同势力连续相邻 ≥2）：**改为**与曹洪处于同一队列的**其他角色**视为拥有【飞影】，
+ *   曹洪自己**不再**享受。
+ *
+ * ⚠️ 最容易写成「全员都有飞影」的那个 bug（用户点名）：所以这里判定的是「曹洪这个人此刻是不是
+ *    处在队列态」，而不是「只要有人有鹤翼就给全队列加」。
+ * ⚠️ 状态是**派生**的（现算座次 + 当前公开势力），不做 add/remove 技能 ⇒ 不会状态残留；
+ *    队列一断（死亡/调虎离山/亮将变化）下一次查询就自动回到常规态。
+ */
+export function heyiInFormation(state: GameState, caohong: Player): boolean {
+  if (!effectiveHeroes(state, caohong).some((h) => h.grantsFeiyingToQueue === true)) return false;
+  return formationQueue(state, caohong).length >= 2;
+}
+
+/**
+ * 【飞影】如今是**谁给的**（界面用来写清来源：「来源：【鹤翼·曹洪】」——用户 2026-09-26 口径：
+ * 玩家需要知道这不是他自己的武将技）。没有飞影时返回 null。
+ */
+export function feiyingSource(state: GameState, player: Player): string | null {
+  if (!hasFeiying(state, player)) return null;
+  // 自己武将牌上印着飞影 ⇒ 就是他自己
+  if (effectiveHeroes(state, player).some((h) => h.feiying === true)) return player.seatId;
+  // 鹤翼持有者：常规态是他自己，队列态他自己反而没有（那时 hasFeiying 已经是 false）
+  if (effectiveHeroes(state, player).some((h) => h.grantsFeiyingToQueue === true)) {
+    return heyiInFormation(state, player) ? null : player.seatId;
+  }
+  // 其他人：同队列里那位处于队列态的鹤翼持有者
+  const giver = formationQueue(state, player).find(
+    (ally) => ally.seatId !== player.seatId && heyiInFormation(state, ally),
+  );
+  return giver ? giver.seatId : player.seatId;
+}
+
 export function hasFeiying(state: GameState, player: Player): boolean {
   if (effectiveHeroes(state, player).some((h) => h.feiying === true)) return true;
   // 阵法技的**全局前提**：存活角色至少 4 名（残局只剩 3 人时阵法整体不成立）——与风扬同一口径
   if (state.players.filter((p) => p.alive).length < 4) return false;
-  // 同队列里有人有鹤翼 → 我也视为拥有飞影
-  const q = formationQueue(state, player);
-  return q.some(
-    (ally) =>
-      ally.seatId !== player.seatId &&
-      effectiveHeroes(state, ally).some((h) => h.grantsFeiyingToQueue === true),
+  const own = effectiveHeroes(state, player).some((h) => h.grantsFeiyingToQueue === true);
+  if (own) {
+    // 曹洪本人：**常规态**才有飞影；进了队列就转移给同队列的其他人（互斥，不是叠加）
+    return !heyiInFormation(state, player);
+  }
+  // 其他人：同队列里有一位**处在队列态**的鹤翼持有者，才算「鹤翼赋予的飞影」
+  return formationQueue(state, player).some(
+    (ally) => ally.seatId !== player.seatId && heyiInFormation(state, ally),
   );
 }
 
@@ -3120,7 +3158,9 @@ const CAOHONG: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
-  // 鹤翼（阵法技）：与你同一队列的其他角色视为拥有【飞影】——由 distance() 读
+  // 鹤翼（**2026-08-28 阵法技改版**，用户 2026-09-26 口径）：阵法技、锁定技，两态互斥——
+  //   常规：曹洪**自己**视为拥有【飞影】；队列：**改为**同队列的其他角色视为拥有【飞影】。
+  // 状态由 `hasFeiying` / `heyiInFormation` **实时派生**（distance() 读），不做 add/remove 技能。
   grantsFeiyingToQueue: true,
   formation: ['queue'], // 阵法技：队列型
   lockedFields: ['grantsFeiyingToQueue'],
@@ -3130,8 +3170,13 @@ const CAOHONG: Hero = {
       skillId: '护援',
       handler: (ctx) => {
         const me = ctx.player;
-        const equips = me.hand.filter((c) => isEquipCard(c));
-        if (equips.length === 0) return;
+        // 装备牌可以来自**手牌**，也可以来自**自己装备区**（用户 2026-09-26 口径：
+        // 国战文本只写「将一张装备牌置入…」，没有限定手牌；旧 FAQ 也讨论过把已装备的移给别人）。
+        const sources = handAndEquipOf(me).filter((c) => isEquipCard(c));
+        // 「能置入」的接收者：**对应栏位为空**才合法（不能顶掉别人原有的装备）
+        const canReceive = (card: Card): Player[] =>
+          ctx.state.players.filter((x) => canPutEquipment(x, card));
+        if (sources.length === 0 || canReceive(sources[0]!).length === 0) return;
         ctx.api.askChoice(
           ctx.state,
           me.seatId,
@@ -3142,59 +3187,95 @@ const CAOHONG: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            const cards = p.hand.filter((c) => isEquipCard(c));
-            if (cards.length === 0) return;
+            const pool = handAndEquipOf(p).filter((c) => isEquipCard(c));
+            if (pool.length === 0) return;
             ctx.api.askPickCards(
               st,
               p.seatId,
-              '【护援】：选择要置入的装备牌',
-              cards,
+              '【护援】：选择要置入的装备牌（手牌或自己装备区的都可以）',
+              pool,
               1,
               1,
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
-                const others = st2.players.filter((x) => x.alive);
+                const receivers = st2.players.filter((x) => canPutEquipment(x, card));
+                if (receivers.length === 0) return; // 没有合法接收者（不该发生：问之前筛过）
                 ctx.api.askChoice(
                   st2,
                   p2.seatId,
-                  '【护援】：置入谁的装备区？',
-                  others.map((x) => ({ id: x.seatId, label: x.name })),
+                  `【护援】：把【${cardLabel(card)}】置入谁的装备区？（该栏位必须为空）`,
+                  receivers.map((x) => ({ id: x.seatId, label: x.name })),
                   (st3, p3, toId) => {
                     const receiver = getPlayer(st3, toId);
-                    if (!receiver) return;
+                    if (!receiver || !canPutEquipment(receiver, card)) return; // 跨步再校验
+                    const fromEquipSlot = EQUIP_SLOTS.find(
+                      (sl) => p3.equipment[sl]?.id === card.id,
+                    );
+                    const place = (): void => {
+                      // 置入走 giveEquipTo：此刻栏位已确认是空的，不会顶掉任何东西
+                      ctx.api.giveEquipTo(card, toId, () => {
+                        pushLog(
+                          st3,
+                          'skill',
+                          `${p3.name} 发动【护援】，将【${cardLabel(card)}】置入 ${receiver.name} 的装备区。`,
+                        );
+                        // 第二步（可选）：弃置**其**（接收者）距离 1 的一名角色的一张牌。
+                        // ⚠️ 距离必须在装备**置入之后**现算（送的可能正是 ±1 马，关系会变），
+                        //    所以这里才第一次调用 distance()。
+                        const center = getPlayer(st3, toId);
+                        const near =
+                          center && center.alive
+                            ? st3.players.filter(
+                                (x) =>
+                                  x.alive &&
+                                  x.seatId !== toId &&
+                                  distance(st3, toId, x.seatId) === 1,
+                              )
+                            : [];
+                        if (near.length === 0) return;
+                        ctx.api.askChoice(
+                          st3,
+                          p3.seatId,
+                          `【护援】：是否弃置 ${receiver.name} 距离 1 的一名角色的一张牌？`,
+                          [
+                            ...near.map((x) => ({
+                              id: x.seatId,
+                              label: `弃置 ${x.name} 的一张牌`,
+                            })),
+                            { id: 'no', label: '不弃置' },
+                          ],
+                          (st4, p4, pickedId) => {
+                            if (pickedId === 'no') return;
+                            const victim = getPlayer(st4, pickedId);
+                            if (!victim) return;
+                            // 由曹洪挑：明牌给牌名、手牌盲选牌背（不随机）；判定区不在候选
+                            // （「一张牌」不含判定区——用户 2026-09-26 口径：别仅凭这三个字把判定区加进来）
+                            pickOneOfTargetCards(
+                              st4,
+                              p4,
+                              victim,
+                              ctx.api,
+                              '护援',
+                              undefined,
+                              { noJudgment: true },
+                            );
+                          },
+                          undefined,
+                          undefined,
+                          undefined,
+                          // 把「护援中心」（接收装备的那位）标出来，界面轻微描边
+                          [toId],
+                        );
+                      });
+                    };
+                    if (fromEquipSlot) {
+                      // 来源是**自己装备区**：先从槽里摘下来（派「失去装备」那套钩子），再置入
+                      ctx.api.loseEquip(p3.seatId, card, place);
+                      return;
+                    }
                     removeCard(p3.hand, card.id);
-                    // 置入别人的装备区；顶掉旧装备会触发「失去装备」的时机
-                    ctx.api.giveEquipTo(card, toId, () => {
-                      pushLog(
-                        st3,
-                        'skill',
-                        `${p3.name} 发动【护援】，将【${cardLabel(card)}】置入 ${receiver.name} 的装备区。`,
-                      );
-                      // 第二步（可选）：弃置**其**（接收者）距离 1 的一名角色的一张牌
-                      const near = getPlayer(st3, toId)!.alive
-                        ? st3.players.filter(
-                            (x) =>
-                              x.alive && distance(st3, toId, x.seatId) === 1 && x.seatId !== toId,
-                          )
-                        : [];
-                      if (near.length === 0) return;
-                      ctx.api.askChoice(
-                        st3,
-                        p3.seatId,
-                        `【护援】：是否弃置 ${receiver.name} 距离 1 的一名角色的一张牌？`,
-                        [
-                          ...near.map((x) => ({ id: x.seatId, label: `弃置 ${x.name} 的一张牌` })),
-                          { id: 'no', label: '不弃置' },
-                        ],
-                        (st4, p4, pickedId) => {
-                          if (pickedId === 'no') return;
-                          const victim = getPlayer(st4, pickedId);
-                          if (!victim) return;
-                          pickOneOfTargetCards(st4, p4, victim, ctx.api, '护援');
-                        },
-                      );
-                    });
+                    place();
                   },
                 );
               },
@@ -3207,11 +3288,11 @@ const CAOHONG: Hero = {
   skills: [
     {
       name: '护援',
-      desc: '结束阶段，你可以将一张装备牌置入一名角色的装备区，然后你可以弃置其距离为1的一名角色的一张牌。',
+      desc: '结束阶段，你可以将一张装备牌置入一名角色的装备区（该栏位须为空），然后你可以弃置其距离为 1 的一名角色的一张牌。',
     },
     {
       name: '鹤翼',
-      desc: '阵法技，与你处于同一队列的其他角色视为拥有【飞影】。',
+      desc: '阵法技，锁定技。常规：你视为拥有【飞影】；队列：改为与你处于同一队列的其他角色视为拥有【飞影】。',
     },
   ],
   activeSkills: [],
@@ -18344,6 +18425,20 @@ function availableFireDamageCards(state: GameState): FireDamageCardName[] {
       !c.requiresExtension ||
       state.extensions?.[c.requiresExtension as keyof typeof state.extensions] !== 'off',
   );
+}
+
+/**
+ * 这张装备牌能不能**置入**该角色的装备区（用户 2026-09-26 口径，曹洪·【护援】要的判据）。
+ *
+ * 【护援】写的是「将一张装备牌**置入**一名角色的装备区」——**不是「使用一张装备牌」**，
+ * 所以**对应栏位必须为空**：栏位已经被占时不能靠它把人家原本的装备顶掉
+ * （顶掉会触发「失去装备」那套时机，那是另一回事）。别在技能里各写一份槽位规则。
+ */
+export function canPutEquipment(target: Player, card: Card): boolean {
+  if (!target.alive) return false;
+  const slot = card.type as (typeof EQUIP_SLOTS)[number];
+  if (!EQUIP_SLOTS.includes(slot)) return false; // 不是装备牌
+  return !target.equipment[slot];
 }
 
 function handAndEquipOf(p: Player): Card[] {

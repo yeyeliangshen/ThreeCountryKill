@@ -232,6 +232,30 @@ export function HeroPanel({
               用户 2026-09-24：这枚徽标抽成了 `ChainBadge`（对手那一行现在也画同一枚），
               文案与提示词只有一处（ui/src/chainState.ts）。 */}
           {me.chained && <ChainBadge bind={bind} />}
+        {/* 【鹤翼】持有者本人：把**当前形态**写出来（常规＝自己吃飞影；队列＝飞影给同队列的别人）——
+            用户 2026-09-26 口径：两态互斥，界面必须让玩家分得清，别写成「全员都有飞影」。 */}
+        {me.heyiMode && (
+          <span
+            className={`heyi-badge ${me.heyiMode}`}
+            {...bind(
+              '鹤翼',
+              me.heyiMode === 'formation'
+                ? '【鹤翼·队列】与你处于同一队列的其他角色视为拥有【飞影】（你自己不再享受）'
+                : '【鹤翼·常规】你视为拥有【飞影】：其他角色计算与你的距离 +1',
+            )}
+          >
+            鹤翼·{me.heyiMode === 'formation' ? '队列' : '常规'}
+          </span>
+        )}
+        {/* 【飞影】（可能来自【鹤翼·曹洪】）：别的角色算到你的距离 +1 */}
+        {me.feiying && (
+          <span
+            className="feiying-badge"
+            {...bind('飞影', '其他角色计算与你的距离 +1（来源：【鹤翼】）')}
+          >
+            飞影
+          </span>
+        )}
         {/* 本回合被【调虎离山】移出座次（与对手那一行同款）：自己也中招时要看得出来 */}
         {me.removedFromSeating && (
           <span className="removed-badge" {...bind('移出座次', '本回合不计入距离与座次、不能使用牌、不能成为目标（【调虎离山】）')}>

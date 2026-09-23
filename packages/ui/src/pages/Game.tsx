@@ -1414,6 +1414,8 @@ export function Game() {
             // 与**当前这条询问**有关的其他角色（引擎下发；如徐盛·疑城问徐盛时＝被保护的那位）：
             // 只做**轻微高亮**，不改变可点性（可点与否仍由 legalTargets / 候选决定）
             const isRelated = prompt?.relatedSeats?.includes(p.seatId) ?? false;
+            const sourceName = (seatId?: string): string | null =>
+              seatId ? (snapshot.players.find((x) => x.seatId === seatId)?.name ?? null) : null;
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
@@ -1481,6 +1483,21 @@ export function Game() {
                             以前对手这一行**没有任何横置标识**——「谁被铁索连上了」只能靠日志认
                             （用户 2026-09-24 报的正是这条）。 */}
                         {p.chained && <ChainBadge bind={bindTip} />}
+                        {/* 【飞影】（可能来自【鹤翼·曹洪】，不是他自己的武将技）：别的角色算到他的距离 +1。
+                            用户 2026-09-26 口径：悬停/点击要说清**来源**。 */}
+                        {p.feiying && (
+                          <span
+                            className="feiying-badge"
+                            {...bindTip(
+                              '飞影',
+                              `其他角色计算与他的距离 +1（来源：【鹤翼】${
+                                sourceName(p.feiyingFrom) ?? ''
+                              }）`,
+                            )}
+                          >
+                            飞影
+                          </span>
+                        )}
                         {/* 【调虎离山】：本回合不计入距离与座次、不能使用牌也不能被指定。
                             很轻的一枚「移」标——没有它牌桌上看不出谁不在座次里（距离/队列/围攻都变了）。 */}
                         {p.removedFromSeating && (

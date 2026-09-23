@@ -2,9 +2,13 @@ import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
 import {
   effectiveFaction,
+  effectiveHeroes,
+  feiyingSource,
   formationQueue,
   getHeroForMode,
+  hasFeiying,
   hasTianfu,
+  heyiInFormation,
   publicGender,
   tianfuModeOf,
 } from './heroes';
@@ -36,6 +40,9 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
   // 当前**公开**性别（♂/♀；全暗置＝未确定 ⇒ 不给字段）。判据只有 heroes.publicGender 一处，
   // 界面拿它画标记、离间的可点目标也按它算——谁都不许去翻暗将底牌猜性别。
   const genderOf = publicGender(state, p);
+  // 【飞影】的来源（鹤翼两态）与【鹤翼】持有者自己的形态 —— 判据都在 heroes，界面只显示
+  const feiyingFromOf = hasFeiying(state, p) ? feiyingSource(state, p) : null;
+  const hasHeyi = effectiveHeroes(state, p).some((h) => h.grantsFeiyingToQueue === true);
   return {
     seatId: p.seatId,
     name: p.name,
@@ -75,6 +82,9 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     inFormation: formationQueue(state, p).length >= 2,
     // 本回合被【调虎离山】移出座次（公开状态，见 protocol 的字段说明）
     ...(p.flags.removedFromSeating ? { removedFromSeating: true } : {}),
+    // 【飞影】此刻归谁（鹤翼两态：常规＝曹洪自己；队列＝同队列的其他人）——公开状态
+    ...(feiyingFromOf ? { feiying: true, feiyingFrom: feiyingFromOf } : {}),
+    ...(hasHeyi ? { heyiMode: heyiInFormation(state, p) ? 'formation' : 'normal' } : {}),
     // 当前公开性别（♂/♀；全暗置＝性别未确定 ⇒ 不给这个字段）
     ...(publicGender(state, p) ? { gender: publicGender(state, p)! } : {}),
     // 【天覆】的形态只发给本人（技能栏里的说明要跟着变）
