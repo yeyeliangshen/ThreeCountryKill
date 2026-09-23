@@ -13825,7 +13825,7 @@ describe('国战标准版 · 贾诩（乱武）', () => {
   });
 });
 
-/** 徐盛·疑城（2019 文本）：同势力角色成为【杀】目标后，该角色可摸一弃一 */
+/** 徐盛·疑城（**移动版现行文本**）：同势力角色成为【杀】目标后，**徐盛**可令其摸一弃一 */
 describe('国战 · 徐盛（疑城）', () => {
   function gz(
     seats: {
@@ -13864,7 +13864,10 @@ describe('国战 · 徐盛（疑城）', () => {
     return state;
   }
 
-  it('疑城：同势力队友成为【杀】目标 → 他自己决定摸一弃一', () => {
+  it('疑城：同势力队友成为【杀】目标 → **徐盛**决定发动，然后**队友自己**摸一弃一', () => {
+    // ⚠️ 口径替换（用户 2026-09-25）：2019 典藏版把**发动权**给了成为目标的那个角色；
+    //    移动版现行文本是「当一名与你势力相同的角色成为【杀】的目标后，**你可以**令该角色
+    //    摸一张牌，然后**其**弃置一张牌」——发动权在**徐盛**，弃哪张在**队友**（见 §5.230）。
     const state = gz(
       [
         { seatId: A, name: '甲', heroId: 'zhangfei', faction: 'shu', hand: [sha('a1')] },
@@ -13876,17 +13879,21 @@ describe('国战 · 徐盛（疑城）', () => {
     const c = state.players.find((p) => p.seatId === C)!;
     state.deck = [mk('d1', 'sha', 'club', 7)];
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [C] }));
-    // 问的是**目标自己**（丙），不是徐盛
+    // 问的是**徐盛**（乙）
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') {
-      expect(state.pending.seatId).toBe(C);
+      expect(state.pending.seatId, '发动权在徐盛').toBe(B);
       expect(state.pending.title).toContain('疑城');
     }
-    ok(act(state, C, { type: 'chooseOption', optionId: 'yes' }));
+    ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
     expect(c.hand.map((x) => x.id).sort()).toEqual(['c1', 'c2', 'd1']); // 摸了 d1
-    // 然后弃一张
-    expect(state.pending?.kind).toBe('pickCards');
-    ok(act(state, C, { type: 'pickCards', cardIds: ['c1'] }));
+    // 然后**由队友自己**挑一张弃置（自己的手牌给牌面：选项是 `card:<id>`）
+    expect(state.pending?.kind).toBe('choice');
+    if (state.pending?.kind === 'choice') {
+      expect(state.pending.seatId, '弃哪张由队友自己挑').toBe(C);
+      expect(state.pending.options.map((o) => o.id).sort()).toEqual(['card:c1', 'card:c2', 'card:d1']);
+    }
+    ok(act(state, C, { type: 'chooseOption', optionId: 'card:c1' }));
     expect(c.hand.map((x) => x.id).sort()).toEqual(['c2', 'd1']);
     expect(state.discard.some((x) => x.id === 'c1')).toBe(true);
     // 弃完之后继续走原来的结算：等丙出闪
@@ -13922,7 +13929,8 @@ describe('国战 · 徐盛（疑城）', () => {
     expect(state.pending?.kind).toBe('choice');
     if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(B);
     ok(act(state, B, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, B, { type: 'pickCards', cardIds: ['b1'] }));
+    // 自己那一份也走同一套（selfHand：自己的手牌给牌面）
+    ok(act(state, B, { type: 'chooseOption', optionId: 'card:b1' }));
     expect(b.hand.map((x) => x.id)).toEqual(['d1']);
   });
 
@@ -15550,14 +15558,16 @@ describe('国战 · 阵法技（队列 / 围攻关系）', () => {
   });
 
   it('鸟翔：围攻角色出的【杀】指定被围攻者 → 需两张【闪】', () => {
-    // 甲(魏·徐盛) 乙(蜀) 丙(魏) 丁(蜀)：乙被甲、丙围攻 → 甲出杀打乙，徐盛的鸟翔生效
+    // 甲(魏·蒋钦) 乙(蜀) 丙(魏) 丁(蜀)：乙被甲、丙围攻 → 甲出杀打乙，蒋钦的鸟翔生效
+    // ⚠️ 口径修正（用户 2026-09-25）：【鸟翔】属于**蒋钦**，徐盛只有【疑城】——
+    //    这条用例原来把鸟翔挂在徐盛名下（本仓库当时误挂了一份同款实现），本轮换成蒋钦。见 §5.230。
     const state = gz([
-      { seatId: A, name: '甲', heroId: 'xusheng', faction: 'wei', hand: [sha('a1', 'heart')] },
+      { seatId: A, name: '甲', heroId: 'jiangqin', faction: 'wei', hand: [sha('a1', 'heart')] },
       { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu' },
       { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wei' },
       { seatId: D, name: '丁', heroId: 'vanilla', faction: 'shu' },
     ]);
-    // 徐盛是吴将，这里势力给他改成魏只是为了让围攻关系成立（阵法只看势力）
+    // 蒋钦是吴将，这里势力给他改成魏只是为了让围攻关系成立（阵法只看势力）
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     expect(state.pending?.kind).toBe('respondSha');
     if (state.pending?.kind === 'respondSha') expect(state.pending.attack.requiredShan).toBe(2);

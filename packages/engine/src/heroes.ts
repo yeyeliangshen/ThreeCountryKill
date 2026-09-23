@@ -2935,7 +2935,7 @@ const JIANGQIN: Hero = {
   formation: ['siege'],
   hooks: [
     {
-      // 【鸟翔】（阵法技，与徐盛同款）
+      // 【鸟翔】（阵法技，**属于蒋钦**；用户 2026-09-25 口径：徐盛只有【疑城】，别再把它挂到徐盛名下）
       timing: 'othersBecomeTarget',
       skillId: '鸟翔',
       handler: (ctx) => {
@@ -3473,30 +3473,31 @@ const XUSHENG: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
-  // 鸟翔（阵法技，围攻型）
-  formation: ['siege'],
+  // 珠联璧合【丁奉】（现行国战牌面；丁奉那一侧也登记了徐盛）
+  combos: ['dingfeng'],
+  // ⚠️ 【鸟翔】**不属于徐盛**（用户 2026-09-25 口径：当前国战徐盛只有【疑城】，鸟翔是**蒋钦**的）——
+  //    以前这里误挂了一份「与蒋钦同款」的鸟翔钩子 + `formation: ['siege']`，本轮删掉（见 §5.230）。
+  //    蒋钦那边本来就有同款实现，功能没有丢。
   hooks: [
     {
-      // 【鸟翔】（阵法技）：同一个围攻关系里，围攻角色出【杀】指定被围攻者 → 需两张【闪】
-      timing: 'othersBecomeTarget',
-      skillId: '鸟翔',
-      handler: (ctx) => {
-        const payload = ctx.payload as { targetId?: string; attack?: AttackContext } | undefined;
-        const attack = payload?.attack;
-        if (!attack || attack.asType !== 'sha' || !payload?.targetId) return;
-        const victim = besiegedBySha(ctx.state, attack.sourceId, payload.targetId);
-        if (!victim) return;
-        // 本人在这个围攻关系里也是围攻角色吗？
-        const mine = besiegingTarget(ctx.state, ctx.player);
-        if (mine !== victim.seatId) return;
-        attack.requiredShan = Math.max(attack.requiredShan ?? 1, 2);
-        pushLog(ctx.state, 'skill', `【鸟翔】生效：${victim.name} 需依次使用两张【闪】才能抵消。`, {
-          seat: ctx.player.seatId,
-          action: 'skill',
-        });
-      },
-    },
-    {
+      // 【疑城】（移动版现行文本）：当一名与你势力相同的角色成为【杀】的目标后，
+      // **你可以**令该角色摸一张牌，然后**其**弃置一张牌。
+      //
+      // 四件事最容易做错，逐条钉住（用户 2026-09-25 口径）：
+      // · **发动权在徐盛**：文本是「**你可以**令该角色…」（旧实现按 2019 典藏版把发动权给了
+      //   成为目标的那个角色，本轮改回徐盛自己——版本差异见 §5.230）；
+      // · 「与你势力相同」的**自己这一侧**用后台已知的势力（明置前只有自己知道自己的势力，
+      //   预亮后正是这种情况 ⇒ 暗置的徐盛也能被问「是否明置并发动」），**目标那一侧**用公开
+      //   势力（暗将＝未确定 ⇒ 不触发；**野心家各自一种势力、不与任何人相同** ⇒ 也不触发）。
+      //   不许翻暗将底牌判势力；
+      // · 时机＝**成为【杀】的目标后、出【闪】之前**（`othersBecomeTarget` 正是这个位置，
+      //   米一弃一发生在八卦/出闪之前 ⇒ 摸到的【闪】能用来响应这张【杀】）；
+      // · 「其弃置**一张牌**」＝手牌或装备区、**由被保护的角色自己挑**（不随机、不含判定区）
+      //   ⇒ 直接复用共用原语 `pickOneOfTargetCards`（picker === target 时走 selfHand：
+      //   自己的手牌给**牌面**、装备给牌名）。
+      //
+      // 没有「每回合限一次」：**每一次**符合条件的「成为【杀】目标」都可以问一轮
+      // （一张【杀】指定两个同势力角色 ⇒ 两次机会）。
       timing: 'othersBecomeTarget',
       skillId: '疑城',
       handler: (ctx) => {
@@ -3507,35 +3508,33 @@ const XUSHENG: Hero = {
         if (attack.dodged) return;
         const target = getPlayer(ctx.state, tid);
         if (!target || !target.alive) return;
-        const mine = effectiveFaction(ctx.state, ctx.player);
+        // 自己这一侧：后台已知的势力；目标那一侧：**公开**势力
+        const mine = ctx.player.determinedFaction ?? ctx.player.faction;
         const theirs = effectiveFaction(ctx.state, target);
-        if (!mine || mine !== theirs) return;
+        if (!mine || mine === 'ambitionist' || !theirs || theirs === 'ambitionist') return;
+        if (mine !== theirs) return;
         ctx.api.askChoice(
           ctx.state,
-          target.seatId,
-          '【疑城】：是否摸一张牌，然后弃置一张牌？',
+          ctx.player.seatId,
+          `【疑城】：${target.name} 成为【杀】的目标。你可以令其摸一张牌，然后其弃置一张牌。`,
           [
-            { id: 'yes', label: '摸一张牌，然后弃置一张牌' },
             { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
           ],
-          (st, t, picked) => {
+          (st, me, picked) => {
             if (picked !== 'yes') return;
+            const t = getPlayer(st, target.seatId);
+            if (!t || !t.alive) return; // 跨步：目标可能已经阵亡
             const c = drawOne(st);
             if (c) t.hand.push(c);
-            pushLog(st, 'skill', `${t.name} 因【疑城】摸了 1 张牌。`);
-            if (t.hand.length === 0) return;
-            ctx.api.askPickCards(
+            pushLog(
               st,
-              t.seatId,
-              '【疑城】：弃置一张牌',
-              t.hand.slice(),
-              1,
-              1,
-              (st2, t2, chosen) => {
-                const card = chosen[0];
-                if (card) ctx.api.discardCard(t2.seatId, card);
-              },
+              'skill',
+              `${me.name} 发动【疑城】：${t.name} 摸了 1 张牌，然后弃置一张牌。`,
+              { seat: me.seatId },
             );
+            // 「其弃置一张牌」＝他自己挑（手牌给牌面、装备给牌名；判定区不算）
+            pickOneOfTargetCards(st, t, t, ctx.api, '疑城', undefined, { noJudgment: true });
           },
         );
       },
@@ -3544,11 +3543,7 @@ const XUSHENG: Hero = {
   skills: [
     {
       name: '疑城',
-      desc: '当一名与你势力相同的角色成为【杀】的目标后，该角色可以摸一张牌，然后弃置一张牌。',
-    },
-    {
-      name: '鸟翔',
-      desc: '阵法技，在同一个围攻关系中，若你是围攻角色，则你或另一名围攻角色使用【杀】指定被围攻角色为目标后，你令该角色需依次使用两张【闪】才能抵消。',
+      desc: '当一名与你势力相同的角色成为【杀】的目标后，你可以令该角色摸一张牌，然后其弃置一张牌。',
     },
   ],
   activeSkills: [],
