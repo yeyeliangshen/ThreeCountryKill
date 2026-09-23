@@ -3172,11 +3172,16 @@ const CAOHONG: Hero = {
         const me = ctx.player;
         // 装备牌可以来自**手牌**，也可以来自**自己装备区**（用户 2026-09-26 口径：
         // 国战文本只写「将一张装备牌置入…」，没有限定手牌；旧 FAQ 也讨论过把已装备的移给别人）。
-        const sources = handAndEquipOf(me).filter((c) => isEquipCard(c));
         // 「能置入」的接收者：**对应栏位为空**才合法（不能顶掉别人原有的装备）
-        const canReceive = (card: Card): Player[] =>
-          ctx.state.players.filter((x) => canPutEquipment(x, card));
-        if (sources.length === 0 || canReceive(sources[0]!).length === 0) return;
+        const canReceive = (st: GameState, card: Card): Player[] =>
+          st.players.filter((x) => canPutEquipment(x, card));
+        // ⚠️ 只要**有一张**能放下去的装备牌就该给机会——不能只看「第一张」
+        //    （第一张是武器、而全场武器栏都满了，但它手里还有防具、防具栏有空位时，
+        //     原文案照样能发动；只看第一张会把这个机会吞掉）。
+        const sources = handAndEquipOf(me).filter(
+          (c) => isEquipCard(c) && canReceive(ctx.state, c).length > 0,
+        );
+        if (sources.length === 0) return;
         ctx.api.askChoice(
           ctx.state,
           me.seatId,
@@ -3187,7 +3192,10 @@ const CAOHONG: Hero = {
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            const pool = handAndEquipOf(p).filter((c) => isEquipCard(c));
+            // 候选只给**有合法接收者**的那些（别让玩家选了一张没地方放的牌、然后静默结束）
+            const pool = handAndEquipOf(p).filter(
+              (c) => isEquipCard(c) && canReceive(st, c).length > 0,
+            );
             if (pool.length === 0) return;
             ctx.api.askPickCards(
               st,
@@ -3199,7 +3207,7 @@ const CAOHONG: Hero = {
               (st2, p2, chosen) => {
                 const card = chosen[0];
                 if (!card) return;
-                const receivers = st2.players.filter((x) => canPutEquipment(x, card));
+                const receivers = canReceive(st2, card);
                 if (receivers.length === 0) return; // 没有合法接收者（不该发生：问之前筛过）
                 ctx.api.askChoice(
                   st2,

@@ -381,6 +381,36 @@ describe('【护援】：结束阶段置入装备（栏位须为空）+ 可选�
     expect(state.discard.some((c) => c.id === 'c2')).toBe(true);
   });
 
+  it('**只要有任意一张能放下去的装备牌就该问**（旧写法只看第一张 ⇒ 会吞掉机会）', () => {
+    // 甲 手里：青釭剑（武器）+ 八卦阵（防具）；全场武器栏都被占、防具栏都空着
+    // ⇒ 武器放不下、防具放得下 ⇒ **照样应该问**（并且候选里只出现防具那张）
+    const state = endPhase([
+      {
+        seatId: 's0',
+        name: '曹洪',
+        heroId: 'caohong',
+        faction: 'wei',
+        hand: [wpn('h1'), armor('h2')],
+        // 连**自己**的武器栏也占住 ⇒ 全场没有任何一个武器栏是空的（自己也算接收者，别漏了他）
+        equip: { slot: 'weapon', card: wpn('e0') },
+      },
+      { seatId: 's1', name: '乙', heroId: 'zhangfei', faction: 'shu', equip: { slot: 'weapon', card: wpn('b1') } },
+      { seatId: 's2', name: '丙', heroId: 'lvbu', faction: 'shu', equip: { slot: 'weapon', card: wpn('c1') } },
+      { seatId: 's3', name: '丁', heroId: 'guanyu', faction: 'shu', equip: { slot: 'weapon', card: wpn('d1') } },
+    ]);
+    expect(state.pending?.kind, '还有防具能放 ⇒ 该问').toBe('choice');
+    ok(act(state, 's0', { type: 'chooseOption', optionId: 'yes' }), '发动');
+    // 选牌候选里只该有**放得下的**那张（武器放不下）
+    const p = state.pending;
+    expect(p?.kind, '选装备牌').toBe('pickCards');
+    if (p?.kind === 'pickCards') {
+      expect(p.cards.map((c) => c.id), '只给放得下的那张').toEqual(['h2']);
+    }
+    ok(act(state, 's0', { type: 'pickCards', cardIds: ['h2'] }), '选八卦阵');
+    ok(act(state, 's0', { type: 'chooseOption', optionId: 's1' }), '给乙（防具栏空）');
+    expect(at(state, 's1').equipment.armor?.id).toBe('h2');
+  });
+
   it('判定区**不在**第二段的候选里（「一张牌」不含判定区）', () => {
     const state = endPhase([
       { seatId: 's0', name: '曹洪', heroId: 'caohong', faction: 'wei', hand: [armor('h1')] },
