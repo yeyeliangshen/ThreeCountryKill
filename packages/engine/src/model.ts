@@ -1456,14 +1456,24 @@ export function getPlayerOrThrow(state: GameState, seatId: string): Player {
   return p;
 }
 
-/** 从 fromIndex 起（含）下一个存活的座次下标 */
-export function nextAliveSeat(state: GameState, fromIndex: number): number {
+/**
+ * 从 fromIndex 起（不含）下一个存活的座次下标。
+ *
+ * 【调虎离山】「不计入座次」⇒ 默认把被移出的角色从环里**跳过**（既有口径，见 docs）。
+ * `ignoreRemoval` 是给「座次环里只剩自己」那种**退化**情形留的出口：
+ * 被移出的人**还活着**，只是本回合不算座次 ⇒ 需要按正常顺序找下家时用它
+ * （用户 2026-09-25 报的缺陷：回合交接把这种情况当成了「只剩一个人」）。
+ */
+export function nextAliveSeat(
+  state: GameState,
+  fromIndex: number,
+  opts?: { ignoreRemoval?: boolean },
+): number {
   const n = state.seatOrder.length;
   for (let i = 1; i <= n; i++) {
     const idx = (fromIndex + i) % n;
     const p = getPlayer(state, state.seatOrder[idx]!);
-    // 调虎离山：不计入座次的角色直接从环里跳过
-    if (p?.alive && !p.flags.removedFromSeating) return idx;
+    if (p?.alive && (opts?.ignoreRemoval === true || !p.flags.removedFromSeating)) return idx;
   }
   return fromIndex;
 }

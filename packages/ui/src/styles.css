@@ -3510,3 +3510,17 @@ select:focus-visible,
   box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.55);
   transition: box-shadow 0.15s ease-out;
 }
+
+/* —— 「移出座次」（【调虎离山】）：与「队」标同一档的轻标记，不加动画 ——
+   牌桌上必须能看出谁本回合不在座次里（距离/队列/围攻都跟着变了）。 */
+.removed-badge {
+  margin-left: 3px;
+  padding: 0 4px;
+  border: 1px dashed var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.85;
+  vertical-align: middle;
+}

@@ -73,6 +73,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
       : {}),
     // 队列（公开信息）：与天覆/鸟翔/鹤翼同一份判据
     inFormation: formationQueue(state, p).length >= 2,
+    // 本回合被【调虎离山】移出座次（公开状态，见 protocol 的字段说明）
+    ...(p.flags.removedFromSeating ? { removedFromSeating: true } : {}),
     // 当前公开性别（♂/♀；全暗置＝性别未确定 ⇒ 不给这个字段）
     ...(publicGender(state, p) ? { gender: publicGender(state, p)! } : {}),
     // 【天覆】的形态只发给本人（技能栏里的说明要跟着变）

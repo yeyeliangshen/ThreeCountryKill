@@ -2401,7 +2401,15 @@ function resolveJudgment(
         return; // 判定牌已归位，剩下的判定由 after 接着跑
       } else {
         // 不触发 → 移到下家判定区
-        const nextIdx = nextAliveSeat(state, state.seatOrder.indexOf(player.seatId));
+        let nextIdx = nextAliveSeat(state, state.seatOrder.indexOf(player.seatId));
+        // 同一类退化（用户 2026-09-25）：本回合其他人都被【调虎离山】移出座次 ⇒ 座次环里
+        // 只剩自己。但他们**人还在**，【闪电】照常传给下一位（忽略移出标记），
+        // 不然会被「无家可归」地丢进弃牌堆。
+        if (state.seatOrder[nextIdx] === player.seatId) {
+          nextIdx = nextAliveSeat(state, state.seatOrder.indexOf(player.seatId), {
+            ignoreRemoval: true,
+          });
+        }
         const nextPlayer = getPlayer(state, state.seatOrder[nextIdx]!);
         if (nextPlayer && nextPlayer.seatId !== player.seatId) {
           untrackJudgmentCard(state, trick);
@@ -2536,19 +2544,35 @@ function afterTurnEnd(state: GameState): void {
     startTurn(state, idx);
     return;
   }
-  const next = nextAliveSeat(state, state.turn.seatIndex);
+  let next = nextAliveSeat(state, state.turn.seatIndex);
   clearTurnScoped(); // 下家算完了，本回合的临时标记可以清了
   if (next === state.turn.seatIndex) {
-    // 兜底：仅剩 1 人 → 判胜负（「暴露野心 → 建立新势力」那套流程也会在这里接管，见 §5.141）
-    const forceEnd = (): void => {
-      state.gameOver = true;
-      setPending(state, null);
-      state.turn.phase = 'gameOver';
-      pushLog(state, 'gameover', '游戏结束。');
-    };
-    if (checkWin(state, forceEnd)) return;
-    forceEnd();
-    return;
+    /**
+     * 「下家算回自己」有**两种**截然不同的情况，绝不能都当成「只剩一个人」
+     * （用户 2026-09-25 报的缺陷：【调虎离山】会把游戏弄结束）：
+     *
+     *  ① 场上真的只剩他一名**存活**角色 ⇒ 判胜负 / 结束（下面那段兜底）；
+     *  ② 场上还有活人，只是他们**本回合**「不计入座次」（【调虎离山】的目标、吴景·调归
+     *     造出的同类标记）——牌面写的是「**直到回合结束为止**」，而此刻
+     *     `clearTurnScoped()` 刚把标记清掉、座次已经恢复 ⇒ 按**正常顺序**重算一次下家即可，
+     *     **绝不能结束游戏**（以前这里直接进 ①：3 人局把另外两家都调走，人一个没死就「游戏结束」）。
+     */
+    const othersAlive = alivePlayers(state).some(
+      (p) => p.seatId !== state.seatOrder[state.turn.seatIndex],
+    );
+    if (!othersAlive) {
+      const forceEnd = (): void => {
+        state.gameOver = true;
+        setPending(state, null);
+        state.turn.phase = 'gameOver';
+        pushLog(state, 'gameover', '游戏结束。');
+      };
+      if (checkWin(state, forceEnd)) return;
+      forceEnd();
+      return;
+    }
+    // ②：座次只是本回合被清空过 ⇒ 忽略移出标记重算（标记此刻也已清，双保险）
+    next = nextAliveSeat(state, state.turn.seatIndex, { ignoreRemoval: true });
   }
   // 「一轮」走完的标志：座次环**绕过了本轮起点**（见 `roundStartSeat`）。
   //   写法上要相对起点算：`rel(next) <= rel(current)` 等价于「环上绕回去了」——

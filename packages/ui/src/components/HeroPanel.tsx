@@ -232,6 +232,12 @@ export function HeroPanel({
               用户 2026-09-24：这枚徽标抽成了 `ChainBadge`（对手那一行现在也画同一枚），
               文案与提示词只有一处（ui/src/chainState.ts）。 */}
           {me.chained && <ChainBadge bind={bind} />}
+        {/* 本回合被【调虎离山】移出座次（与对手那一行同款）：自己也中招时要看得出来 */}
+        {me.removedFromSeating && (
+          <span className="removed-badge" {...bind('移出座次', '本回合不计入距离与座次、不能使用牌、不能成为目标（【调虎离山】）')}>
+            移
+          </span>
+        )}
         {/* 队列标记（与对手那一行同款）：自己也在队列里时要一眼看得出来 */}
         {me.inFormation && (
           <span

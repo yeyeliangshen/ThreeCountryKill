@@ -9716,14 +9716,24 @@ describe('势备篇 · 调虎离山与水淹七军', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'd1', targetIds: [B] }));
     expect(state.log.some((e) => e.message.includes('调虎离山'))).toBe(true);
     expect(b.hp).toBe(b.maxHp);
-    // 乙也不能出牌（把回合交给他验证）
+    // ⚠️ 这一段以前是**死代码**（用户 2026-09-25 报缺陷时翻出来的）：
+    //    甲把乙、丙**两个人**都调走了 ⇒ `nextAliveSeat` 全跳过 ⇒ 「下家算回自己」⇒
+    //    旧代码当场判「仅剩 1 人、游戏结束」⇒ `pending` 变成 null ⇒ 下面那个 `if` 永不成立、
+    //    断言从没跑过（测试因为缺陷而"通过"）。修掉那个缺陷之后它真的跑起来了，也就能验到真东西：
+    //    ① 游戏**没有**结束；② 「直到回合结束」的标记在本回合结束时就清了 ⇒ 乙的回合照常开始、
+    //    也能正常出牌（「不能使用牌」只在这**一个**回合内有效）。
     ok(act(state, A, { type: 'endPhase' }));
     skipRevealAsk(state);
     skipRevealAsk(state);
-    // 乙的回合：不能出牌
-    if (state.pending?.kind === 'play' && state.pending.seatId === B) {
-      expect(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [C] }).ok).toBe(false);
-    }
+    expect(state.gameOver, '把两个人调走**不是**游戏结束').toBe(false);
+    expect(
+      state.seatOrder[state.turn.seatIndex],
+      '座次本回合被清空 ⇒ 按正常顺序把回合交出去',
+    ).toBe(B);
+    expect(b.flags.removedFromSeating, '标记随回合结束清掉').toBe(false);
+    expect(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [C] }).ok, '乙能正常出牌').toBe(
+      true,
+    );
   });
 
   it('调虎离山：标记在回合结束时清掉', () => {
