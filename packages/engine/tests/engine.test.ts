@@ -38,6 +38,8 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
   poolForMode,
   pushLog,
   toSnapshot,
+  draftOptionsFor,
+  heroCanonicalId,
   emptyFlags,
   attackRange,
   bigFactions,
@@ -48,7 +50,6 @@ import {  fangyuanHandLimitDelta,  woundedFactionCount,
   isSmallFaction,
   factionHelpers,
   isMalePlayer,
-  heroCanonicalId,
 
   sameHeroBody,
 
@@ -891,6 +892,43 @@ describe('国战模式', () => {
     }
     return null;
   }
+
+  it('发将：君主将与其标准版是**同一个武将本体**，只发一个（优先标准版）——用户 2026-09-25 口径', () => {
+    // 8 个座位跑一次真实发将（不给 freePick）：池子里两版都在，但发出来只能是各一个本体
+    const setup: SeatSetup[] = Array.from({ length: 8 }, (_, i) => ({
+      seatId: `s${i}`,
+      name: `P${i}`,
+    }));
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    const all = Object.values(state.draft!.deals).flat();
+    // ① 每个座位照旧 7 张
+    for (const [seat, list] of Object.entries(state.draft!.deals)) {
+      expect(list, `${seat} 应发到 7 张`).toHaveLength(7);
+    }
+    // ② 同一个武将本体（曹操/君曹操 这种）**全场只出现一次**
+    const bodies = all.map((id) => heroCanonicalId(id));
+    expect(new Set(bodies).size, '同一本体不许发给两个人').toBe(bodies.length);
+    // ③ 而且发出来的是**标准版**（君主版由选将时的「换成君主将」给出）
+    expect(all).not.toContain('juncaocao');
+    expect(all).not.toContain('junliubei');
+    expect(all).not.toContain('junsunquan');
+    expect(all).not.toContain('junyuanshao');
+  });
+
+  it('发到标准版【曹操】⇒ 该座位**可以选**君主版【君曹操】（「可以选择变为君主」）', () => {
+    const setup: SeatSetup[] = [
+      { seatId: A, name: '甲' },
+      { seatId: B, name: '乙' },
+    ];
+    const state = createGame(setup, 'TEST', { mode: 'guozhan' });
+    // 手工把发到的将钉成「标准版曹操 + 一个同势力副将」
+    state.draft!.deals[A] = ['caocao', 'zhenji', 'xuchu'];
+    state.draft!.deals[B] = ['guanyu', 'zhangfei'];
+    // 选项里多出君主版（界面据此显示「换成君主将」），且引擎接受这个选择
+    expect(draftOptionsFor(state, A)).toContain('juncaocao');
+    ok(act(state, A, { type: 'pickHero', heroId: 'juncaocao', deputyHeroId: 'zhenji' }));
+    expect(state.players.find((p) => p.seatId === A)!.heroId).toBe('juncaocao');
+  });
 
   it('选将：每人发 7 张，选 2 张同阵营，验证双将与阵营正确设置', () => {
     const setup: SeatSetup[] = [

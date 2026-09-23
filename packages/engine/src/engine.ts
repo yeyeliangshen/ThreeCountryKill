@@ -12397,6 +12397,29 @@ function applyTestScenario(state: GameState, intent: Intent): ApplyResult {
   return { ok: true };
 }
 
+/**
+ * 发将用：**同一武将本体只留一条**（君主将 / 标准版算同一个本体，见 `heroCanonicalId`），
+ * 并**优先留标准版**——君主版由选将时的「换成君主将」给出（`draftOptionsFor`）。
+ *
+ * 顺序沿用入参（＝洗牌后的顺序），所以只要在 `shuffle` **之后**调用，随机流就不会变。
+ */
+function uniqueHeroBodies(ids: string[]): string[] {
+  const order: string[] = [];
+  const rep = new Map<string, string>();
+  for (const id of ids) {
+    const body = heroCanonicalId(id) ?? id;
+    const cur = rep.get(body);
+    if (cur === undefined) {
+      order.push(body);
+      rep.set(body, id);
+      continue;
+    }
+    // 已有代表；若当前代表是君主版、而这条是标准版，就换成标准版（同势力的一对里优先标准版）
+    if (getHero(cur)?.isLord && !getHero(id)?.isLord) rep.set(body, id);
+  }
+  return order.map((b) => rep.get(b)!);
+}
+
 export function createGame(
   seats: SeatSetup[],
   roomCode: string,
@@ -12527,9 +12550,19 @@ export function createGame(
   const deals: Record<string, string[]> = {};
   if (opts?.freePick) {
     // 测试用：每人拿到的「可选项」就是整个池子，想选谁选谁
+    // （这一支**不去重**：池子成员本身就是这条用例要验的东西，见 config.test 的「君主进池」）
     for (const s of seats) deals[s.seatId] = allIds.slice();
   } else {
-    const heroIds = shuffle(allIds, opts?.rng);
+    // 随机发将：洗牌之后**按「武将本体」去重**（用户 2026-09-25 口径）。
+    // 【君曹操】与【曹操】是同一名武将的两个版本（`canonicalId` 相同），官方口径是君主将
+    // **替换**同名标准武将登场 —— 所以只发**一个**（优先发标准版），另一个版本由选将时的
+    // 「换成君主将」给出（`draftOptionsFor` 会把互换版本并进该座位的选项里）。
+    // 改动前两个版本各算一条，会被发给**两个不同的人**：场上出现「两个曹操」，
+    // 而且拿到标准版那位还换不过去（君主版在别人手里）。见 docs §5.221。
+    //
+    // ⚠️ 去重放在 `shuffle` **之后**：洗牌的入参长度不变，随机流就与改动前完全一致
+    //    （否则每种随机的下游结果都会移位，一堆固定种子的用例要跟着改；踩过）。
+    const heroIds = uniqueHeroBodies(shuffle(allIds, opts?.rng));
     let cursor = 0;
     for (const s of seats) {
       if (cursor + k > heroIds.length) {
