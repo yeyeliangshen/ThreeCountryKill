@@ -11616,7 +11616,9 @@ describe('国战标准版 · 马腾 / 潘凤 / 孙坚', () => {
     expect(distance(state, A, C)).toBe(1); // 马术 -1
   });
 
-  it('潘凤：狂斧把目标装备区的一张牌取走', () => {
+  it('潘凤：狂斧**获得**目标装备区的一张牌（进手牌，不再只进装备区）', () => {
+    // ⚠️ 口径更新（用户 2026-09-26）：现行是「弃置**或获得**其一张牌」，范围**手牌 + 装备区**；
+    //    旧版只能处置装备区的牌、而且「取走」是**置入自己装备区**。旧口径见 docs §5.241。
     const state = gz([
       { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
       { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [], equip: [qinggang] },
@@ -11627,14 +11629,17 @@ describe('国战标准版 · 马腾 / 潘凤 / 孙坚', () => {
     expect(b.hp).toBe(3);
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'pickCards', cardIds: ['e1'] }));
-    ok(act(state, A, { type: 'chooseOption', optionId: 'take' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'take' }), '选「获得」');
+    // 选哪张牌：装备是明牌（`card:e1`）
+    expect(state.pending?.kind).toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:e1' }));
     const a = state.players.find((p) => p.seatId === A)!;
-    expect(a.equipment.weapon?.id).toBe('e1');
+    expect(a.hand.map((c) => c.id), '获得 ⇒ 进**手牌**').toContain('e1');
+    expect(a.equipment.weapon ?? null, '不再自动进装备区').toBeNull();
     expect(b.equipment.weapon).toBeNull();
   });
 
-  it('潘凤：狂斧也可以选择弃置', () => {
+  it('潘凤：狂斧也可以选择**弃置**', () => {
     const state = gz([
       { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
       { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [], equip: [qinggang] },
@@ -11643,20 +11648,29 @@ describe('国战标准版 · 马腾 / 潘凤 / 孙坚', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     ok(act(state, B, { type: 'pass' }));
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'pickCards', cardIds: ['e1'] }));
-    ok(act(state, A, { type: 'chooseOption', optionId: 'drop' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'drop' }), '选「弃置」');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'card:e1' }));
     expect(b.equipment.weapon).toBeNull();
     expect(state.discard.some((c) => c.id === 'e1')).toBe(true);
   });
 
-  it('潘凤：目标装备区空着就不问', () => {
-    const state = gz([
+  it('潘凤：目标**一张牌都没有**时才不问（空手但有装备 ⇒ 照问）', () => {
+    const none = gz([
       { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
       { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [] },
     ]);
-    ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
-    ok(act(state, B, { type: 'pass' }));
-    expect(state.pending?.kind).toBe('play'); // 没有狂斧的询问
+    ok(act(none, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(none, B, { type: 'pass' }));
+    expect(none.pending?.kind, '没牌可动 ⇒ 不问').toBe('play');
+
+    // 对照组：空手**但有装备** ⇒ 照问（旧实现的口径是「装备区空着就不问」，反过来了）
+    const withEquip = gz([
+      { seatId: A, name: '甲', heroId: 'panfeng', faction: 'qun', hand: [sha('a1')] },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [], equip: [qinggang] },
+    ]);
+    ok(act(withEquip, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
+    ok(act(withEquip, B, { type: 'pass' }));
+    expect(withEquip.pending?.kind, '有装备 ⇒ 问').toBe('choice');
   });
 
   it('孙坚：英魂只在受伤时发动（未受伤不问）', () => {

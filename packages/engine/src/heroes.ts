@@ -3731,10 +3731,14 @@ function takeOneOfTargetCards(
   api: SkillApi,
   skillName: string,
   after?: () => void,
+  // 潘凤·狂斧那种「一张牌」**不含判定区**（与死谏同一口径）；缺省仍是三个区域都给
+  opts?: { noJudgment?: boolean },
 ): void {
-  // 三个区域统一走「目标区域选牌」原语：明牌精确选、**手牌盲选一张牌背**（不再随机抽）。
+  // 区域统一走「目标区域选牌」原语：明牌精确选、**手牌盲选一张牌背**（不再随机抽）。
   // 取牌交给 `api.transferCard`（它自己会摘牌并派发「失去装备」那套）——所以这里只**查**不取。
-  const options = targetCardOptions(state, picker.seatId, target, '获得');
+  const options = targetCardOptions(state, picker.seatId, target, '获得', {
+    ...(opts?.noJudgment ? { noJudgment: true } : {}),
+  });
   if (options.length === 0) {
     after?.();
     return;
@@ -3751,6 +3755,17 @@ function takeOneOfTargetCards(
         return;
       }
       api.transferCard(target.seatId, card, picker.seatId, after);
+    },
+    undefined,
+    undefined,
+    // 「操作别人区域里的牌」的分区面板（与 pickOneOfTargetCards 同一个）
+    {
+      targets: [
+        zoneLayoutOf(target, {
+          ...(opts?.noJudgment ? { noJudgment: true } : {}),
+          selfHand: picker.seatId === target.seatId,
+        }),
+      ],
     },
   );
 }
@@ -13210,8 +13225,13 @@ const PANFENG: Hero = {
   maxHp: 4,
   gender: 'male',
   modes: ['guozhan'],
-  // 狂斧：当你使用【杀】对目标造成伤害后，你可以将其装备区里的一张牌
-  // 置入你的装备区（同栏位顶替）或弃置之。
+  // 狂斧（**现行文本**，用户 2026-09-26 口径）：当你使用【杀】对目标角色**造成伤害后**，
+  // 你可以**弃置或获得其一张牌**——范围是**手牌 + 装备区**，不再是「只操作装备区」。
+  //
+  // ⚠️ 与旧文本的差别（这一轮改掉）：旧版写的是「将其装备区里的一张牌**置入你的装备区**」，
+  //    所以只给装备、而且**只能放进自己装备区**；现行是「弃置**或获得**」——获得＝进**手牌**
+  //    （走共用原语 `takeOneOfTargetCards`，与横征/凶虐同一条路）。
+  //    判定区**不在**候选里（「一张牌」不含判定区，与死谏同一口径）。
   hooks: [
     {
       timing: 'afterDamageDealt',
@@ -13223,60 +13243,43 @@ const PANFENG: Hero = {
         if (attack.sourceId !== ctx.player.seatId) return;
         const target = getPlayer(ctx.state, attack.targetId);
         if (!target || !target.alive || target.seatId === ctx.player.seatId) return;
-        const equips = EQUIP_SLOTS.map((slot) => target.equipment[slot]).filter(Boolean) as Card[];
-        if (equips.length === 0) return;
         const me = ctx.player;
+        // 「其一张牌」＝手牌 + 装备区（判定区不算）
+        const hasCard =
+          target.hand.length > 0 || EQUIP_SLOTS.some((slot) => !!target.equipment[slot]);
+        if (!hasCard) return; // 没牌可动 ⇒ 不产生无意义询问
         ctx.api.askChoice(
           ctx.state,
           me.seatId,
-          `【狂斧】：是否处置 ${target.name} 装备区里的一张牌？`,
+          `【狂斧】：是否处置 ${target.name} 的一张牌？`,
           [
             { id: 'no', label: '不发动' },
-            { id: 'yes', label: '发动（取走或弃置一张）' },
+            { id: 'yes', label: '发动' },
           ],
           (st, _p, picked) => {
             if (picked !== 'yes') return;
-            ctx.api.askPickCards(
+            ctx.api.askChoice(
               st,
               me.seatId,
-              `【狂斧】：选择 ${target.name} 装备区里的一张牌`,
-              equips,
-              1,
-              1,
-              (st2, p2, chosen) => {
-                const card = chosen[0];
-                if (!card) return;
-                // 结算期间那张牌可能已经被挪走/弃掉了
-                if (!EQUIP_SLOTS.some((slot) => target.equipment[slot]?.id === card.id)) return;
-                ctx.api.askChoice(
-                  st2,
-                  p2.seatId,
-                  `【狂斧】：把【${cardLabel(card)}】怎么办？`,
-                  [
-                    { id: 'take', label: '置入自己的装备区' },
-                    { id: 'drop', label: '弃置' },
-                  ],
-                  (st3, p3, how) => {
-                    if (how === 'take') {
-                      // moveFieldCard 会顶掉自己同栏位里的旧装备
-                      ctx.api.moveFieldCard(card, p3.seatId);
-                      pushLog(
-                        st3,
-                        'skill',
-                        `${p3.name} 发动【狂斧】，取走了 ${target.name} 的【${cardLabel(card)}】。`,
-                        { seat: p3.seatId, action: 'equip' },
-                      );
-                    } else {
-                      ctx.api.discardCard(target.seatId, card);
-                      pushLog(
-                        st3,
-                        'skill',
-                        `${p3.name} 发动【狂斧】，弃置了 ${target.name} 的【${cardLabel(card)}】。`,
-                        { seat: p3.seatId, action: 'discard' },
-                      );
-                    }
-                  },
-                );
+              '【狂斧】：弃置还是获得？',
+              [
+                { id: 'drop', label: '弃置其一张牌' },
+                { id: 'take', label: '获得其一张牌' },
+              ],
+              (st2, _p2, how) => {
+                const t = getPlayer(st2, target.seatId);
+                if (!t || !t.alive) return; // 跨步：目标已经不在了
+                if (how === 'take') {
+                  // 获得：牌进**手牌**（装备牌也一样，之后可以自己装），走共用原语
+                  takeOneOfTargetCards(st2, me, t, ctx.api, '狂斧', undefined, {
+                    noJudgment: true,
+                  });
+                  return;
+                }
+                // 弃置：明牌精确选、手牌盲选牌背（不随机）；判定区不可选
+                pickOneOfTargetCards(st2, me, t, ctx.api, '狂斧', undefined, {
+                  noJudgment: true,
+                });
               },
             );
           },
@@ -13287,11 +13290,10 @@ const PANFENG: Hero = {
   skills: [
     {
       name: '狂斧',
-      desc: '当你使用【杀】对目标角色造成伤害后，你可以将其装备区里的一张牌置入你的装备区或弃置之。',
+      desc: '当你使用【杀】对目标角色造成伤害后，你可以弃置或获得其一张牌。',
     },
   ],
 };
-
 const SUNJIAN: Hero = {
   id: 'sunjian',
   name: '孙坚',
