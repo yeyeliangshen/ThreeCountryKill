@@ -24,3 +24,6 @@ Thumbs.db
 # env
 .env
 .env.local
+
+# 生成产物（按需导出，不进版本库；要入库请连生成脚本一起加）
+guozhan-skills.txt
