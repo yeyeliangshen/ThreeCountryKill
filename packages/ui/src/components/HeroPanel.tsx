@@ -193,6 +193,24 @@ export function HeroPanel({
             <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
           )}
           {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+          {/* 当前**公开**性别（与对手那一行同一枚标记）。判据在引擎的 `publicGender`：
+              只明置一张按那张、双亮按**主将**、全暗置＝未确定（画「?」）。
+              离间之类「只能选男性」的技能全靠它，玩家一眼看出自己/别人为什么能/不能被点。 */}
+          {mode === 'guozhan' && (
+            <span
+              className={`gender-mark ${me.gender ?? 'unknown'}`}
+              {...bind(
+                '性别',
+                me.gender === 'male'
+                  ? '当前公开性别：男性（只明置一张时按那一张，主副均明置时按主将）'
+                  : me.gender === 'female'
+                    ? '当前公开性别：女性（只明置一张时按那一张，主副均明置时按主将）'
+                    : '性别未确定：两张武将牌都没明置，【离间】这类技能不能选你为目标',
+              )}
+            >
+              {me.gender === 'male' ? '♂' : me.gender === 'female' ? '♀' : '?'}
+            </span>
+          )}
           {/* ⚠️ 国战标记**不在这里放**（用户 2026-09-21）：它们已经和技能一起排在技能条上，
               在武将框里再放一份是重复信息。这里的「翻/横」是**状态**不是标记，留着。 */}
           {me.flipped && (

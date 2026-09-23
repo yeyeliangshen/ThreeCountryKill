@@ -142,6 +142,30 @@ export interface ActiveSkill {
    */
   targetPairOk?: (state: GameState, player: Player, a: Player, b: Player) => boolean;
   /**
+   * **单个目标**的额外合法性（缺省＝除自己外的所有存活角色）。
+   *
+   * 例：貂蝉·离间只能选**男性**角色（按**当前公开性别**判，见 `publicGender`）。
+   * 引擎在 `execute` 里照样再校验一遍；这个钩子只是让**界面**能把不合法的角色置灰
+   * （用户 2026-09-25 口径：不要让玩家点一个必然被拒的目标，也别只说「非法目标」）。
+   */
+  targetOk?: (state: GameState, player: Player, target: Player) => boolean;
+  /**
+   * **有序目标**每个位置的角色说明（第 i 个目标是什么角色），例如
+   * `['【决斗】的目标', '发动【决斗】的角色']`（貂蝉·离间：现行文本要先点目标、再点使用者）。
+   *
+   * 只有**顺序有语义**的技能才填。界面据此把提示写成「请选择<第 i 项>」，
+   * 并在已选中的角色上标出他担任的是哪个角色——用户 2026-09-25 点名了
+   * 「离间最容易点反」（「后者对前者使用【决斗】」光看文本很难记住）。
+   */
+  targetSlotLabels?: string[];
+  /**
+   * **方向预览模板**（纯展示）：`{1}`/`{2}`… 会替换成第 i 个已选目标的**名字**。
+   *
+   * 例：离间 `'{2} ──【决斗】──▶ {1}'`——「令后者视为对前者使用【决斗】」这句话玩家极易记反，
+   * 界面照着模板把方向画出来。**规则文本留在引擎**，界面只做占位替换。
+   */
+  targetPreview?: string;
+  /**
    * 界面上的**预览形态**（纯展示用，不参与规则）。目前只有一种：
    * - `'equipSwap'`：吴国太·甘露——两个目标都选好之后，在牌桌中央列出双方**完整装备区**
    *   （按牌名）并要求确认，而不是让玩家盲着点「确认技能」（用户 2026-09-25 口径：
@@ -910,7 +934,11 @@ const DIAOCHAN: Hero = {
   maxHp: 3,
   gender: 'female',
   combos: ['lvbu'],
-  // 离间：弃1牌→选2名男性角色→令A对B出杀，A不出则受1伤害
+  // 离间（现行移动版文本）：出牌阶段限一次，你可以弃置一张牌，**依次**选择两名男性其他角色，
+  // 令**后者**视为对**前者**使用一张【决斗】。
+  //
+  // ⚠️ 顺序（用户 2026-09-25 口径，最容易点反的一条）：**第一个选的是【决斗】的目标、
+  //    第二个选的是【决斗】的使用者**。旧实现是反的（第一个当使用者），见 docs §5.228。
   activeSkills: [
     {
       id: 'lilian',
@@ -922,6 +950,13 @@ const DIAOCHAN: Hero = {
       // 「弃置一张牌」→ 手牌 + **自己装备区**（用户 2026-09-21 口径）
       costFrom: 'handEquip',
       maxCards: () => 1,
+      // 目标只能是**男性**（按当前公开性别：全暗置＝性别未确定 ⇒ 不可选）。
+      // 界面据此把女性/未确定的角色置灰（用户 2026-09-25 §十七）；execute 里再校验一遍。
+      targetOk: (state, player, t) => t.seatId !== player.seatId && isMalePlayer(state, t),
+      // 有序目标：第 1 个＝【决斗】目标、第 2 个＝【决斗】使用者（界面照这个写提示与标记）
+      targetSlotLabels: ['【决斗】的目标', '发动【决斗】的角色'],
+      // 方向预览：**第二个**（使用者）对**第一个**（目标）使用【决斗】
+      targetPreview: '{2} ──【决斗】──▶ {1}',
       canUse: (state, player) => {
         if (handAndEquipOf(player).length === 0) return false;
         const males = state.players.filter(
@@ -932,13 +967,16 @@ const DIAOCHAN: Hero = {
       execute: (state, player, intent, api) => {
         const ids = intent.cardIds ?? [];
         if (ids.length === 0) return '请选择一张牌弃置';
-        const aId = intent.targetIds[0];
-        const bId = intent.targetIds[1];
-        if (!aId || !bId) return '请选择两名男性角色';
-        const a = getPlayer(state, aId);
-        const b = getPlayer(state, bId);
-        if (!a || !b) return '目标不存在';
-        if (!isMalePlayer(state, a) || !isMalePlayer(state, b)) return '目标须为男性角色';
+        // 顺序：**第一个是【决斗】的目标、第二个是【决斗】的使用者**（「令后者对前者」）
+        const targetId = intent.targetIds[0];
+        const userId = intent.targetIds[1];
+        if (!targetId || !userId) return '请依次选择两名男性角色';
+        const duelTarget = getPlayer(state, targetId);
+        const duelUser = getPlayer(state, userId);
+        if (!duelTarget || !duelUser) return '目标不存在';
+        if (!isMalePlayer(state, duelTarget) || !isMalePlayer(state, duelUser)) {
+          return '目标须为男性角色';
+        }
         const cost = handAndEquipOf(player).find((x) => x.id === ids[0]!);
         if (!cost) return '这张牌不在你的手牌或装备区';
         // 先付代价（弃置一张牌：手牌或装备区都行）→ 再生成虚拟【决斗】
@@ -946,20 +984,28 @@ const DIAOCHAN: Hero = {
           pushLog(
             state,
             'skill',
-            `${player.name} 发动【离间】：弃置【${cardLabel(cost)}】，令 ${a.name} 视为对 ${b.name} 使用【决斗】。`,
+            `${player.name} 发动【离间】：弃置【${cardLabel(cost)}】，令 ${duelUser.name} 视为对 ${duelTarget.name} 使用【决斗】。`,
           );
-          // 生成一张**虚拟【决斗】**，由 A 对 B 使用（用户 2026-09-21 给的现行文本：
-          // 「令一名男性角色视为对另一名男性角色使用一张【决斗】」）。
+          // 生成一张**虚拟【决斗】**：**第二个目标**对**第一个目标**使用（现行文本
+          // 「令后者视为对前者使用一张【决斗】」）。
           //
           // ⚠️ 必须走**正常锦囊流程**（`api.useVirtualTrick`）而不是手搓 pending：
           //    这张【决斗】**本身可以被无懈**（离间这个技能不能），也要能被「成为目标时」
           //    的技能响应。旧实现（手搓一个 需出【杀】的 respondTrick）把这两样都绕过去了，
-          //    而且文本本身也是简化版（docs §5.179）。
+          //    而且当时的文本还是简化版（docs §5.179）。伤害来源＝这张【决斗】的使用者
+          //    （`TrickContext.sourceId`）⇒ 击杀奖惩/随势/补益那些「伤害来源」技能认的是他，
+          //    不是貂蝉（用户 2026-09-25 §二十二 点名要测的那条）。
           api.useVirtualTrick(
-            aId,
-            { id: `lilian-${aId}-${bId}`, type: 'juedou', suit: 'heart', rank: 0, virtual: true },
-            [bId],
-            // ⚠️ 控制权还给**貂蝉**：这张【决斗】的“使用者”虽是关羽，但回合仍是貂蝉的出牌阶段
+            userId,
+            {
+              id: `lilian-${duelUser.seatId}-${duelTarget.seatId}`,
+              type: 'juedou',
+              suit: 'heart',
+              rank: 0,
+              virtual: true,
+            },
+            [duelTarget.seatId],
+            // ⚠️ 控制权还给**貂蝉**：这张【决斗】的“使用者”虽然是他，但回合仍是貂蝉的出牌阶段
             player.seatId,
           );
         });
@@ -994,7 +1040,7 @@ const DIAOCHAN: Hero = {
   skills: [
     {
       name: '离间',
-      desc: '出牌阶段限一次，弃一张牌并选两名男性角色，令A对B使用【杀】。A不出则受1伤害。（简化版）',
+      desc: '出牌阶段限一次，你可以弃置一张牌，依次选择两名男性其他角色，令后者视为对前者使用一张【决斗】。',
     },
     { name: '闭月', desc: '结束阶段开始时，你可以摸一张牌。' },
   ],
@@ -18165,16 +18211,30 @@ export function skillNameForField(heroes: Hero[], field: FieldSkill): string | n
 }
 
 /**
- * 判断玩家是否为男性。
+ * 这个角色**当前公开的性别**（界面上的 ♂ / ♀ / ?）。
  *
- * 取的是**明置**的武将：国战里暗置的武将牌**没有性别**，所以暗将既不是男性
- * 也不是女性（雌雄双股剑、结姻这些「异性 / 男性」判定都不认它）。
- * 两张都明置时按官方规则**取主将的性别**。
+ * 取的是**明置**的武将：国战里暗置的武将牌**没有性别**，所以全暗置＝`null`
+ * （未确定）——雌雄双股剑、结姻、离间这些「异性 / 男性」判定都不认它。
+ * - 只明置一张（主将或副将）⇒ 按**那一张**的性别；
+ * - 主副均明置 ⇒ 官方规则**按主将的性别**（`revealedHeroes` 主将在前）。
+ *
+ * ⚠️ 一律走这里，**不许**去翻暗将的底牌判性别：那会把隐藏信息泄露得明明白白
+ * （用户 2026-09-25 口径：暗将不能因为后台知道底牌是男性就突然能被离间点中）。
+ */
+export function publicGender(state: GameState, player: Player): 'male' | 'female' | null {
+  const heroes = revealedHeroes(state.mode, player);
+  if (heroes.length === 0) return null; // 全暗置：性别未确定
+  return heroes[0]!.gender ?? null;
+}
+
+/**
+ * 判断玩家是否为男性（＝当前公开性别是男性）。
+ *
+ * 保留这个薄包装是因为调用点读起来更直白（雌雄双股剑、结姻、离间…），
+ * 判据只有 `publicGender` 一处。
  */
 export function isMalePlayer(state: GameState, player: Player): boolean {
-  const heroes = revealedHeroes(state.mode, player);
-  if (heroes.length === 0) return false; // 全暗置：没有性别
-  return heroes[0]!.gender === 'male';
+  return publicGender(state, player) === 'male';
 }
 
 // —— 身份显示名（军争模式） ——

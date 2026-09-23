@@ -438,9 +438,10 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
   //    「自己能不能被选」由**每张牌/每个技能自己的目标规则**决定，单独放在 `selfTargetUses`
   //    （牌）与 `legalSkills[].selfTarget`（技能）里下发（用户 2026-09-24 口径）。
   //    界面把两者拼起来才是完整的可点集合，不许自己再加一条「不能选自己」。
-  const legalTargetIds = state.players
-    .filter((p) => p.alive && p.seatId !== seatId && !p.flags.cannotBeTargetThisTurn)
-    .map((p) => p.seatId);
+  const targetablePlayers = state.players.filter(
+    (p) => p.alive && p.seatId !== seatId && !p.flags.cannotBeTargetThisTurn,
+  );
+  const legalTargetIds = targetablePlayers.map((p) => p.seatId);
   // 可用主动技能：武将主动技 + 标记技能
   const legalSkillIds: string[] = [];
   const legalSkills: NonNullable<ReturnType<typeof buildPlayPrompt>['legalSkills']> = [];
@@ -482,6 +483,9 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
           }
         }
       }
+      // 技能**自己的**目标过滤（貂蝉·离间只认男性）：界面据此把其他人置灰。
+      // 引擎在 execute 里照样再校验一遍——这份只是「别让玩家点一个必然被拒的人」。
+      const targetOk = skill.targetOk;
       legalSkills.push({
         id: skill.id,
         name: skill.name,
@@ -489,6 +493,11 @@ function buildPlayPrompt(state: GameState, seatId: string): PromptView {
         needsCards: skill.needsCards === true,
         minTargets: skill.minTargets,
         maxTargets: skill.maxTargets,
+        ...(targetOk
+          ? { legalTargets: targetablePlayers.filter((t) => targetOk(state, player, t)).map((t) => t.seatId) }
+          : {}),
+        ...(skill.targetSlotLabels ? { targetSlotLabels: skill.targetSlotLabels } : {}),
+        ...(skill.targetPreview ? { targetPreview: skill.targetPreview } : {}),
         ...(pairOk ? { legalTargetPairs: pairs } : {}),
         ...(skill.preview ? { preview: skill.preview } : {}),
         // 技能**自己的**目标规则：写「一名角色」的技能声明了 selfTarget ⇒ 界面可以点自己

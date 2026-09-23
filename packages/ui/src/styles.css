@@ -3445,3 +3445,54 @@ select:focus-visible,
   opacity: 0.9;
   vertical-align: middle;
 }
+
+/* —— 公开性别标记（用户 2026-09-25 口径）——
+   离间这类「只能选男性」的技能极度依赖性别，所以角色牌上要有一枚**很轻**的 ♂/♀；
+   双暗置＝性别未确定，画「?」（不是随便猜一个）。判据在引擎 `publicGender`。 */
+.gender-mark {
+  margin-left: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  opacity: 0.9;
+}
+.gender-mark.male {
+  color: #6fb3e0;
+}
+.gender-mark.female {
+  color: #e08fb0;
+}
+.gender-mark.unknown {
+  color: #7a7a7a;
+}
+
+/* —— 有序目标的「谁担任什么角色」+ 方向预览（离间：令后者对前者）——
+   技能面板里画出「① 关羽 · 【决斗】的目标」这种标记，玩家不用去背技能文本。
+   文案全部来自引擎（targetSlotLabels / targetPreview），这里只管排版。 */
+.target-slots {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.slot-chip {
+  padding: 1px 7px;
+  border: 1px solid rgba(212, 175, 55, 0.55);
+  border-radius: 999px;
+  font-size: 12px;
+  color: #e8dcc0;
+  background: rgba(0, 0, 0, 0.25);
+}
+.slot-chip b {
+  color: var(--gold);
+}
+.slot-chip em {
+  font-style: normal;
+  color: #bdb08a;
+}
+.slot-arrow {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.5px;
+}

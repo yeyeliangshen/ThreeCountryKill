@@ -95,7 +95,10 @@ describe('接线守门（源码字符串，无 jsdom）', () => {
     expect(game).toContain("skillMode.skill.preview === 'equipSwap'");
     expect(game, '牌名要用 cardShortName（不能只写「武器」）').toContain('cardShortName(c)');
     expect(game, '核对说明').toContain('equipSwapNote(');
-    expect(game, '确认按钮在预览时叫「交换」').toContain("? '交换' : '确认技能'");
+    // 确认按钮的文案：预览形态（甘露）时叫「交换」，其余技能叫「确认<技能名>」
+    // （用户 2026-09-25 口径：离间要写成「确认离间」，让玩家知道自己在确认什么）
+    expect(game, '确认按钮在预览时叫「交换」').toContain("? '交换'");
+    expect(game, '其余技能叫「确认<技能名>」').toContain('确认${skillMode.skill.name}');
   });
 
   it('界面**不**自己写死「甘露」这两个字（限制与预览都由引擎下发的字段驱动）', () => {

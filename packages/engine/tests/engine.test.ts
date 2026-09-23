@@ -2091,29 +2091,36 @@ describe('武将技能（Step 6）', () => {
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 
-  // 10. 貂蝉·离间：令男性 A **视为对男性 B 使用一张【决斗】**（用户 2026-09-21 给的现行文本）
+  // 10. 貂蝉·离间：**依次**选两名男性角色，令**后者**视为对**前者**使用一张【决斗】。
   //
-  // ⚠️ 口径替换记录：旧实现是「令 A 对 B 出【杀】，A 不出则受 1 伤害」的**简化版**，
-  //    手搓了一个 respondTrick 假 pending —— 于是这张虚拟锦囊**绕过了无懈窗口**
-  //    （而它本身就是一张锦囊，应当可被无懈）。旧口径与来源见 docs §5.179。
-  it('貂蝉·离间：令关羽视为对张飞使用【决斗】，张飞不出杀 → 受伤', () => {
+  // ⚠️ 口径替换记录（两层）：
+  //    ① 旧实现是「令 A 对 B 出【杀】，A 不出则受 1 伤害」的**简化版**，手搓了一个
+  //       respondTrick 假 pending —— 于是这张虚拟锦囊**绕过了无懈窗口**（它本身就是锦囊，
+  //       应当可被无懈）。旧口径与来源见 docs §5.179；
+  //    ② 2026-09-25 用户给了**逐字现行文本**（「依次选择两名男性其他角色，令后者视为对前者
+  //       使用一张【决斗】」）——原来实现把**第一个**目标当成了使用者，是**反的**（用户点名
+  //       「离间最容易点反」）。这里按现行文本翻正：**第一个＝【决斗】目标、第二个＝使用者**，
+  //       旧方向见 docs §5.228。
+  it('貂蝉·离间：令张飞（第二）视为对关羽（第一）使用【决斗】，关羽不出杀 → 受伤', () => {
     const state = makeGame([
       { seatId: A, name: '貂蝉', heroId: 'diaochan', hand: [sha('a1')] },
       { seatId: B, name: '关羽', heroId: 'guanyu', hand: [sha('b1')] },
       { seatId: C, name: '张飞', heroId: 'zhangfei', hand: [] },
     ]);
-    // 貂蝉弃 1 牌，选 B（关羽）对 C（张飞）使用【决斗】
+    // 貂蝉弃 1 牌，依次选 B（关羽·**决斗目标**）、C（张飞·**使用者**）
     ok(act(state, A, { type: 'useSkill', skillId: 'lilian', cardIds: ['a1'], targetIds: [B, C] }));
     // 这张虚拟【决斗】走**正常锦囊流程**：只要场上有【无懈可击】（含国/看破那类转化），
     // 就会先开无懈窗口——这条在本局没有无懈，所以窗口不存在，直接进响应
     // （「带无懈时会开窗、且这张决斗可被抵消」见 tests/wuxie.test.ts 的 ⑪）。
     expect(state.pending?.kind).toBe('respondTrick');
-    // 轮到决斗的目标 C（张飞）出杀 → 弃权 → 受 1 点伤害
-    expect(state.pending?.kind).toBe('respondTrick');
-    ok(act(state, C, { type: 'pass' }));
-    const c = state.players.find((p) => p.seatId === C)!;
-    expect(c.hp).toBe(3);
-    expect(state.log.some((e) => e.message.includes('令 关羽 视为对 张飞 使用【决斗】'))).toBe(true);
+    // 决斗的**目标**（关羽·第一个选的）先出杀 → 弃权 → 受 1 点伤害
+    if (state.pending?.kind === 'respondTrick') expect(state.pending.responderId).toBe(B);
+    ok(act(state, B, { type: 'pass' }));
+    const b = state.players.find((p) => p.seatId === B)!;
+    expect(b.hp).toBe(3);
+    expect(state.log.some((e) => e.message.includes('令 张飞 视为对 关羽 使用【决斗】'))).toBe(true);
+    // 张飞（使用者）也要接一轮
+    if (state.pending?.kind === 'respondTrick') ok(act(state, C, { type: 'pass' }));
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
 

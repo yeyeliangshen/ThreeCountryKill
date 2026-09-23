@@ -1,6 +1,13 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
-import { effectiveFaction, formationQueue, getHeroForMode, hasTianfu, tianfuModeOf } from './heroes';
+import {
+  effectiveFaction,
+  formationQueue,
+  getHeroForMode,
+  hasTianfu,
+  publicGender,
+  tianfuModeOf,
+} from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -26,6 +33,9 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
   const showDeputy = isMe || !isGuozhan || p.deputyRevealed || !p.alive || state.gameOver;
   const showFaction =
     isMe || !isGuozhan || p.heroRevealed || p.deputyRevealed || !p.alive || state.gameOver;
+  // 当前**公开**性别（♂/♀；全暗置＝未确定 ⇒ 不给字段）。判据只有 heroes.publicGender 一处，
+  // 界面拿它画标记、离间的可点目标也按它算——谁都不许去翻暗将底牌猜性别。
+  const genderOf = publicGender(state, p);
   return {
     seatId: p.seatId,
     name: p.name,
@@ -63,6 +73,8 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
       : {}),
     // 队列（公开信息）：与天覆/鸟翔/鹤翼同一份判据
     inFormation: formationQueue(state, p).length >= 2,
+    // 当前公开性别（♂/♀；全暗置＝性别未确定 ⇒ 不给这个字段）
+    ...(publicGender(state, p) ? { gender: publicGender(state, p)! } : {}),
     // 【天覆】的形态只发给本人（技能栏里的说明要跟着变）
     ...(isMe && hasTianfu(state, p) ? { tianfuMode: tianfuModeOf(state, p) } : {}),
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上

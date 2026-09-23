@@ -352,6 +352,24 @@ export function Game() {
        * 判据在 ../skillTargets.ts，引擎在 execute 里照样再校验一遍）。
        */
       legalTargetPairs?: string[][];
+      /**
+       * **这个技能**自己的可点目标（引擎下发；缺省＝所有其他存活角色）。
+       * 例：貂蝉·离间只认**男性**（按当前公开性别）——界面据此把女性/未确定的角色置灰，
+       * 不让玩家点一个必然被引擎拒绝的人（用户 2026-09-25 口径）。
+       */
+      legalTargets?: string[];
+      /**
+       * **有序目标**每个位置的角色说明（引擎下发）。例：离间＝
+       * `['【决斗】的目标', '发动【决斗】的角色']`——玩家立刻知道第 1/第 2 个点的人是谁，
+       * 不必去背「令后者对前者」（用户 2026-09-25 点名了「离间最容易点反」）。
+       */
+      targetSlotLabels?: string[];
+      /**
+       * 方向预览模板（引擎下发，`{1}`/`{2}` 是第 i 个已选目标的**名字**）。
+       * 例：离间 `'{2} ──【决斗】──▶ {1}'` ⇒ 面板上直接写出「谁对谁用决斗」。
+       * 规则文本留在引擎，界面只做占位替换（与 desc / targetSlotLabels 同一条规矩）。
+       */
+      targetPreview?: string;
       /** 界面预览形态（纯展示；'equipSwap' ＝ 甘露那种「列双方装备区再确认」） */
       preview?: 'equipSwap';
       /**
@@ -740,6 +758,10 @@ export function Game() {
             ...heroSkill,
             selfTarget: given?.selfTarget ?? heroSkill.selfTarget,
             legalTargetPairs: given?.legalTargetPairs,
+            // 目标相关的那三项都以**服务端**那份为准（标记技能只有服务端带得回来）
+            legalTargets: given?.legalTargets,
+            targetSlotLabels: given?.targetSlotLabels,
+            targetPreview: given?.targetPreview,
           }
         : {
             id: skillId,
@@ -750,6 +772,9 @@ export function Game() {
             maxTargets: given!.maxTargets,
             selfTarget: given!.selfTarget,
             legalTargetPairs: given!.legalTargetPairs,
+            legalTargets: given!.legalTargets,
+            targetSlotLabels: given!.targetSlotLabels,
+            targetPreview: given!.targetPreview,
           },
       cardIds: [],
       targetIds: [],
@@ -816,6 +841,42 @@ export function Game() {
   }
 
   // 技能确认按钮是否可用
+  /**
+   * 有序目标技能（离间）的**分步提示**：按「已经选了几个」取下一个位置的角色说明。
+   * 文案来自引擎（`legalSkills[].targetSlotLabels`），界面只挑下标——不许自己写规则文本。
+   */
+  const skillSlotLabel = (() => {
+    const labels = skillMode?.skill.targetSlotLabels;
+    if (!labels || labels.length === 0) return '';
+    return labels[skillMode!.targetIds.length] ?? '';
+  })();
+  /** 已选目标各担任什么角色（第几个点的 + 引擎给的说明），画在技能面板里 */
+  const skillSlotChips = (() => {
+    if (!skillMode) return [] as { id: string; name: string; label: string; index: number }[];
+    const labels = skillMode.skill.targetSlotLabels;
+    if (!labels || labels.length === 0) return [];
+    return skillMode.targetIds.map((id, i) => ({
+      id,
+      index: i,
+      name: snapshot?.players.find((x) => x.seatId === id)?.name ?? id,
+      label: labels[i] ?? '',
+    }));
+  })();
+  /**
+   * 方向预览（引擎给的模板 + 名字替换）：离间的 `'{2} ──【决斗】──▶ {1}'`
+   *   ⇒ 面板上画出「谁对谁用决斗」。**规则文本在引擎**，界面只做占位替换。
+   * 只在目标选够（达到 minTargets）时才画。
+   */
+  const skillPreviewText = (() => {
+    const tpl = skillMode?.skill.targetPreview;
+    if (!skillMode || !tpl) return '';
+    if (skillMode.targetIds.length < skillMode.skill.minTargets) return '';
+    const names = skillMode.targetIds.map(
+      (id) => snapshot?.players.find((x) => x.seatId === id)?.name ?? id,
+    );
+    return tpl.replace(/[{](\d+)[}]/g, (m, n: string) => names[Number(n) - 1] ?? m);
+  })();
+
   function skillCanConfirm(): boolean {
     if (!skillMode) return false;
     const { skill, cardIds, targetIds } = skillMode;
@@ -1102,8 +1163,13 @@ export function Game() {
     if (!targeting) return false;
     if (skillMode) {
       if (skillMode.targetIds.includes(p.seatId)) return true;
+      // 技能**自己的**可点目标（引擎下发）优先于通用的「所有其他角色」：
+      // 例：离间只认男性 ⇒ 女性/未确定性别的角色直接置灰
+      const allowed = skillMode.skill.legalTargets
+        ? new Set(skillMode.skill.legalTargets)
+        : targetSet;
       return (
-        targetSet.has(p.seatId) &&
+        allowed.has(p.seatId) &&
         skillMode.targetIds.length < skillMode.skill.maxTargets &&
         // 「一对目标」的限制（甘露）：跟已选的那个凑不出合法对 ⇒ 直接不可点（置灰）
         pairAllowsMore(skillMode.skill.legalTargetPairs, skillMode.targetIds, p.seatId)
@@ -1385,6 +1451,23 @@ export function Game() {
                         {isLord && p.isAlive && <span className="lord-tag">主</span>}
                         {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
                           <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
+                        )}
+                        {/* 当前**公开**性别（♂/♀；双暗＝未确定画「?」）。判据在引擎
+                            （`publicGender`：只亮一张按那张、双亮按主将），界面只显示——
+                            离间这类「只能选男性」的技能全靠它，玩家一眼看出「为什么这个人点不了」。 */}
+                        {isGuozhan && (
+                          <span
+                            className={`gender-mark ${p.gender ?? 'unknown'}`}
+                            title={
+                              p.gender === 'male'
+                                ? '男性'
+                                : p.gender === 'female'
+                                  ? '女性'
+                                  : '性别未确定（武将牌未明置）'
+                            }
+                          >
+                            {p.gender === 'male' ? '♂' : p.gender === 'female' ? '♀' : '?'}
+                          </span>
                         )}
                         {isGuozhan && p.faction && (
                           <span className={`faction-badge ${p.faction}`}>
@@ -1834,8 +1917,21 @@ export function Game() {
                         : ' · 请点手牌')}
                     {skillMode.skill.minTargets > 0 &&
                       skillMode.targetIds.length < skillMode.skill.minTargets &&
-                      ' · 请点角色'}
+                      // 有序目标的技能（离间）按位置给提示：「请选择【决斗】的目标」……
+                      // 文案来自引擎的 targetSlotLabels，界面不自己编规则文本
+                      (skillSlotLabel ? ` · 请选择${skillSlotLabel}` : ' · 请点角色')}
                   </span>
+                  {skillSlotChips.length > 0 && (
+                    <span className="target-slots">
+                      {skillSlotChips.map((c) => (
+                        <span className="slot-chip" key={c.id}>
+                          <b>{c.index + 1}</b> {c.name}
+                          {c.label && <em> · {c.label}</em>}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                  {skillPreviewText && <span className="slot-arrow">{skillPreviewText}</span>}
                   {skillMode.skill.desc && (
                     <span className="use-effect-desc">{skillMode.skill.desc}</span>
                   )}
@@ -1877,7 +1973,9 @@ export function Game() {
                     </div>
                   )}
                   <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
-                    {skillMode.skill.preview === 'equipSwap' ? '交换' : '确认技能'}
+                    {skillMode.skill.preview === 'equipSwap'
+                      ? '交换'
+                      : `确认${skillMode.skill.name}`}
                   </button>
                   <button className="ghost" onClick={() => setSkillMode(null)}>
                     取消
