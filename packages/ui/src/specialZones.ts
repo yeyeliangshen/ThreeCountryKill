@@ -20,6 +20,7 @@ export type SpecialZoneView = Pick<
   | 'tianCount'
   | 'qianhuanCount'
   | 'hunCount'
+  | 'hunNames'
   | 'kongchengCount'
   | 'wounds'
   | 'quan'
@@ -58,7 +59,18 @@ export function specialZoneChips(p: SpecialZoneView | null | undefined): ZoneChi
   };
   count(p.tianCount, '田', '邓艾·屯田放在武将牌上的牌：距离 -X');
   count(p.qianhuanCount, '幻', '于吉·千幻放在武将牌上的牌');
-  count(p.hunCount, '魂', '左慈·役鬼扣在武将牌上的武将牌');
+  // 「魂」是**私有资源**（用户 2026-09-25 口径）：本人的快照里带 `hunNames`（具体是哪几张武将牌），
+  // 别人的只有数量 ⇒ 本人看到名字、别人只看到张数。
+  if (p.hunNames && p.hunNames.length > 0) {
+    out.push({
+      // key 与 `count` 那套保持一致（都用中文标签）
+      key: '魂',
+      label: `魂·${p.hunNames.join('、')}`,
+      tip: `左慈·役鬼扣在武将牌上的武将牌（只有你看得到具体是哪几张）：${p.hunNames.join('、')}`,
+    });
+  } else {
+    count(p.hunCount, '魂', '左慈·役鬼扣在武将牌上的武将牌（别人的只看得到张数）');
+  }
   count(p.wounds?.length, '创', '周泰·不屈扣在武将牌上的牌（点数都不同才挡得住死）');
   count(p.kongchengCount, '城', '国战【空城】暂存牌：下个摸牌阶段开始时一次性获得');
   count(p.luCount, '戮', '孙綝·嗜戮扣在武将牌上的武将牌');

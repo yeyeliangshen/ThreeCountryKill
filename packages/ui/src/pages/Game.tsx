@@ -1961,6 +1961,17 @@ export function Game() {
                     【傲才】看牌堆顶两张
                   </button>
                 )}
+              {/* 左慈·【役鬼】：把这次响应「视为打出」——点了之后由左慈自己挑移去哪张「魂」
+                  （引擎校验：牌名本回合没用过、有魂；不合法会被拒并说明原因）。 */}
+              {(prompt.kind === 'respondSha' ||
+                prompt.kind === 'respondDeath' ||
+                prompt.kind === 'respondTrick' ||
+                prompt.kind === 'wuxieQueue') &&
+                (me.hunCount ?? 0) > 0 && (
+                  <button className="ghost" onClick={() => sendIntent({ type: 'yiguiRespond' })}>
+                    【役鬼】用「魂」响应
+                  </button>
+                )}
               {/* 弃权按钮（响应类提示） */}
               {prompt.kind === 'respondSha' && (
                 <button className="ghost" onClick={() => sendIntent({ type: 'pass' })}>
@@ -2105,6 +2116,7 @@ export function Game() {
               sendIntent({ type: 'testScenario', deals: [{ seatId, cardId, zone }] })
             }
             onJie={(seatId, count) => sendIntent({ type: 'testScenario', jie: [{ seatId, count }] })}
+            onHun={(seatId, count) => sendIntent({ type: 'testScenario', hun: [{ seatId, count }] })}
             onClose={() => setDevOpen(false)}
           />
         ) : null}

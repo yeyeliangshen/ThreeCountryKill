@@ -49,6 +49,11 @@ export type Intent =
     }
   // 不响应（弃权）
   | { type: 'aocai' } // 诸葛恪·傲才：用牌堆顶的实体基本牌满足当前响应
+  /**
+   * 左慈·【役鬼】：移去一张「魂」，**视为打出**一张满足当前响应请求的牌
+   * （闪/桃/无懈/杀…）——与【傲才】同一条路，只是产出的是一张**虚拟牌**。
+   */
+  | { type: 'yiguiRespond' }
   | { type: 'pass' }
   // 结束当前阶段（出牌阶段结束等）
   | { type: 'endPhase' }
@@ -112,6 +117,14 @@ export type Intent =
       deals?: { seatId: string; cardId: string; zone: TestDealZone }[];
       /** 给谁几张「节」（陆逊·谦逊收集的牌；测试「度势②」用，上限 3） */
       jie?: { seatId: string; count: number }[];
+      /**
+       * 给谁几张「魂」（左慈·役鬼扣在武将牌上的**未加入游戏的武将牌**）。
+       *
+       * 为什么测试面板需要它：左慈的全部资源都来自那个堆，而**选将不限**会把整池发掉 ⇒
+       * 真机想造「有魂的左慈」几乎不可能，所以和「节」同款给一行。
+       * 抽牌走的是 `state.heroPool.shift()`（与技能本身同一条路）。
+       */
+      hun?: { seatId: string; count: number }[];
     };
 
 /**

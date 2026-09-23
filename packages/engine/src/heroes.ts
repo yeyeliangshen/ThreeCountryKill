@@ -54,6 +54,8 @@ import {
   getPlayer,
   heartCardsInDiscardThisTurn,
   pushLog,
+  hunMarkUsed,
+  hunUsedNames,
   toDiscard,
 } from './model';
 
@@ -8637,13 +8639,7 @@ const ZUOCI: Hero = {
          *    与「「魂」是私有信息、别人只知道数量」这条口径直接冲突（见 `hunCount` 的下发）。
          *    现在：选项只发给左慈本人（询问本来就是按座位下发的），日志只写「移去一张「魂」」。
          */
-        const soulOptions = player.hun.map((id, i) => {
-          const hero = getHeroForMode(id, state.mode);
-          const fac = printedFactionsOf(id)
-            .map((f) => FACTION_NAME[f] ?? f)
-            .join('/');
-          return { id: String(i), label: `${hero?.name ?? id}（${fac || '未确定'}）` };
-        });
+        const soulOptions = soulOptionsOf(state, player);
         const afterSoul = (idx: number): void => {
           const heroId = player.hun[idx];
           if (heroId === undefined) return;
@@ -8807,19 +8803,17 @@ function hunFactionOk(
 }
 
 /**
- * 【役鬼】「每种牌名每回合限一次」——**按全局当前回合**记账（用户 2026-09-25 口径 §四：
- * 「每回合」指当前回合，不是左慈自己的回合）。与吴国太·补益同一套做法（`hookUsedTurnSeq`）。
+ * 【役鬼】选「魂」的选项（**只发给左慈本人**，`secret: true`）：文案里带武将名与势力——
+ * 这正是「本人看得到、别人只知道数量」那条口径的落点（主动发动与响应入口共用这一份）。
  */
-function hunUsedNames(state: GameState, player: Player): string[] {
-  return player.flags.hunUsedTurnSeq === state.turnSeq ? player.flags.hunUsedNames : [];
-}
-
-function hunMarkUsed(state: GameState, player: Player, name: string): void {
-  if (player.flags.hunUsedTurnSeq !== state.turnSeq) {
-    player.flags.hunUsedNames = [];
-    player.flags.hunUsedTurnSeq = state.turnSeq;
-  }
-  player.flags.hunUsedNames.push(name);
+export function soulOptionsOf(state: GameState, player: Player): { id: string; label: string }[] {
+  return player.hun.map((id, i) => {
+    const hero = getHeroForMode(id, state.mode);
+    const fac = printedFactionsOf(id)
+      .map((f) => FACTION_NAME[f] ?? f)
+      .join('/');
+    return { id: String(i), label: `${hero?.name ?? id}（${fac || '未确定'}）` };
+  });
 }
 
 /** 役鬼的候选目标（势力限制 + 距离等既有合法性） */

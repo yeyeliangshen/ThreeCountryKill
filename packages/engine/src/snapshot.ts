@@ -56,6 +56,11 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     kongchengCount: p.kongcheng.length,
     qianhuanCount: p.qianhuan.length,
     hunCount: p.hun.length,
+    // 「魂」的具体是哪几张武将牌：**只给持有者本人**（别人只知道数量）——
+    // 左慈的「役鬼」要由他本人挑移去哪张，界面上也得让他看得到自己的魂区。
+    ...(isMe
+      ? { hunNames: p.hun.map((id) => getHeroForMode(id, state.mode)?.name ?? id) }
+      : {}),
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
     wounds: p.wounds.slice(),
     han: p.han.slice(),

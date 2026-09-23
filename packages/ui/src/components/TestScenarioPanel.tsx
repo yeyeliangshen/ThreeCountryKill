@@ -28,6 +28,8 @@ export interface TestScenarioPanelProps {
   catalog: TestScenarioCard[];
   onDeal: (seatId: string, cardId: string, zone: TestDealZone) => void;
   onJie: (seatId: string, count: number) => void;
+  /** 给目标发 N 张「魂」（左慈·役鬼的资源；从「未加入游戏的武将牌堆」里抽） */
+  onHun: (seatId: string, count: number) => void;
   onClose: () => void;
 }
 
@@ -44,6 +46,7 @@ export function TestScenarioPanel({
   catalog,
   onDeal,
   onJie,
+  onHun,
   onClose,
 }: TestScenarioPanelProps) {
   const [seatId, setSeatId] = useState<string | null>(defaultSeatId ?? players[0]?.seatId ?? null);
@@ -51,6 +54,8 @@ export function TestScenarioPanel({
   const [cardId, setCardId] = useState<string | null>(null);
   const [zone, setZone] = useState<TestDealZone>('hand');
   const [jieCount, setJieCount] = useState(3);
+  /** 「魂」默认发 2 张（左慈首次明置就是 2 张，正好对上） */
+  const [hunCount, setHunCount] = useState(2);
 
   const shown = useMemo(() => {
     const kw = filter.trim();
@@ -167,6 +172,30 @@ export function TestScenarioPanel({
           }}
         >
           发放节
+        </button>
+      </div>
+
+      <div className="ds-row ds-hun">
+        <span className="ds-label">「魂」</span>
+        <span className="ds-hint">
+          给目标扣 N 张「魂」（左慈·役鬼的私有资源；从「未加入游戏的武将牌堆」里抽）
+        </span>
+        <input
+          className="ds-count"
+          type="number"
+          min={1}
+          max={8}
+          value={hunCount}
+          onChange={(e) => setHunCount(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
+        />
+        <button
+          className="ds-deal"
+          disabled={!seatId}
+          onClick={() => {
+            if (seatId) onHun(seatId, hunCount);
+          }}
+        >
+          发放魂
         </button>
       </div>
 

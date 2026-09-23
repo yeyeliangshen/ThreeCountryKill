@@ -56,7 +56,8 @@ import {
   type Player,
   type TakeoverRecord,
   type TrickContext,
-} from './model';
+  hunMarkUsed,
+  hunUsedNames,} from './model';
 import { attackRange, canTarget, distance } from './distance';
 import { delayedTrickTargetInRange } from './delayedTrickTargets';
 import {
@@ -121,6 +122,7 @@ import {
   heroCanonicalId,
   knownFactionCount,
   sameHeroBody,
+  soulOptionsOf,
   sameKnownFaction,
   hasOperableTargetCard,
   targetCardOptions,
@@ -5923,6 +5925,8 @@ function applyIntentInner(state: GameState, seatId: string, intent: Intent): App
       return onPass(state, seatId);
     case 'aocai':
       return onAocai(state, seatId);
+    case 'yiguiRespond':
+      return onYiguiResponse(state, seatId);
     case 'endPhase':
       return onEndPhase(state, seatId);
     case 'discard':
@@ -6724,8 +6728,18 @@ function startTrickResolution(
  * 群体锦囊现在每个目标前都要问一次，不做这一步会变成刷屏式点击。
  */
 function canUseWuxie(state: GameState, player: Player): boolean {
-  return usableCardsOf(player).some(
-    (c) => isWuxieLike(c) || canUseAsCard(state, player, c, 'wuxie'),
+  if (
+    usableCardsOf(player).some((c) => isWuxieLike(c) || canUseAsCard(state, player, c, 'wuxie'))
+  ) {
+    return true;
+  }
+  // 左慈·【役鬼】也能**打出**一张无懈（移去一张「魂」视为打出）：他手里没有无懈类牌，
+  // 但只要还有「魂」、本回合没用役鬼产生过无懈，就该进这一轮的询问队列——
+  // 否则「有魂的左慈」会被这个队列过滤掉，无懈窗口根本不开给他（用户 2026-09-25 口径 §九）。
+  return (
+    player.hun.length > 0 &&
+    !hunUsedNames(state, player).includes('wuxie') &&
+    activeHeroes(state, player).some((h) => (h.activeSkills ?? []).some((s) => s.name === '役鬼'))
   );
 }
 
@@ -9876,6 +9890,101 @@ function onRespondCardInner(
 }
 
 /**
+ * 左慈·【役鬼】的**响应入口**（用户 2026-09-25 口径 §九：「役鬼既是主动技能，也是
+ * CardRequest 的替代供牌器」）——技能文本里的「使用**或打出**」的那个「打出」。
+ *
+ * 与【傲才】同一条路（见下面那条注释）：按当前 pending 认出「这次要什么牌」，
+ * 移去一张「魂」，造一张**虚拟牌**喂进**既有**的响应分支
+ * （`respondSha` / `respondDeathSave` / `onRespondTrick` / `onRespondWuxie`），
+ * 所以闪、濒死求桃、无懈链的后续结算还是原来那一套——这里**不重写任何牌的规则**。
+ *
+ * 两个额外约束（技能文本）：
+ * - 「每种牌名每回合限一次」：按**全局当前回合**记（`hunUsedNames` / `hunUsedTurnSeq`）；
+ * - 「魂」是私有资源：选魂的询问带 `secret`，日志不写是哪张武将牌。
+ */
+function onYiguiResponse(state: GameState, seatId: string): ApplyResult {
+  const p = getPlayer(state, seatId);
+  if (!p || !p.alive) return err('无效的操作者');
+  if (!activeHeroes(state, p).some((h) => (h.activeSkills ?? []).some((s) => s.name === '役鬼')))
+    return err('你没有【役鬼】');
+  const pending = state.pending;
+  if (!pending) return err('当前没有需要响应的牌');
+  // 这次请求要什么牌（与【傲才】同一张表；多一条无懈窗口）
+  let need: CardType | null = null;
+  if (pending.kind === 'respondSha' && pending.responderId === seatId) need = 'shan';
+  else if (pending.kind === 'respondDeath' && pending.askQueue[pending.askIndex] === seatId)
+    need = 'tao';
+  else if (pending.kind === 'respondTrick' && pending.responderId === seatId) {
+    const t = pending.ctx.card.type;
+    if (t === 'wanjian') need = 'shan';
+    else if (t === 'nanman' || t === 'juedou' || t === 'jiedao') need = 'sha';
+  } else if (pending.kind === 'wuxieQueue' && pending.askQueue[pending.askIndex] === seatId)
+    need = 'wuxie';
+  if (!need) return err('当前不是可以使用「役鬼」的请求');
+  if (p.hun.length === 0) return err('你没有「魂」牌');
+  if (hunUsedNames(state, p).includes(need))
+    return err(`本回合已经用【役鬼】产生过【${CARD_TYPE_NAME[need]}】`);
+
+  /** 移去第 idx 张「魂」→ 记账 → 造虚拟牌 → 走既有响应分支 */
+  const finish = (idx: number): ApplyResult => {
+    const heroId = p.hun[idx];
+    if (heroId === undefined) return err('没有这张「魂」');
+    p.hun.splice(idx, 1);
+    hunMarkUsed(state, p, need!);
+    pushLog(
+      state,
+      'skill',
+      `${p.name} 发动【役鬼】：移去一张「魂」，视为打出【${CARD_TYPE_NAME[need!]}】。`,
+      { seat: p.seatId, action: 'skill' },
+    );
+    // 虚拟牌：没有实体牌面，`toDiscard` 会跳过它（不进弃牌堆）
+    const card: Card = {
+      id: `virtual-yigui-${state.yiguiVirtualSeq++}`,
+      type: need!,
+      suit: 'spade',
+      rank: 0,
+      virtual: true,
+    };
+    // ⚠️ 与【傲才】同一手法：**临时进手牌**再复用既有响应分支（那些分支都按 cardId 从手牌里找）
+    p.hand.push(card);
+    const asIntent = { type: 'respondCard' as const, cardId: card.id };
+    const res =
+      pending.kind === 'respondSha'
+        ? respondSha(state, seatId, asIntent)
+        : pending.kind === 'respondDeath'
+          ? respondDeathSave(state, seatId, asIntent, pending)
+          : pending.kind === 'wuxieQueue'
+            ? onRespondWuxie(state, seatId, asIntent, pending)
+            : pending.kind === 'respondTrick'
+              ? onRespondTrick(state, seatId, asIntent, pending.ctx)
+              : err('当前不能响应');
+    // 兜底：异常路径下别留一张凭空多出来的手牌
+    removeCard(p.hand, card.id);
+    return res;
+  };
+
+  if (p.hun.length === 1) return finish(0);
+  // 多张「魂」：由左慈自己挑（**保密**——选项里带着是哪张武将牌、什么势力）
+  const reqPending = pending;
+  askChoice(
+    state,
+    seatId,
+    '【役鬼】：选择要移去的「魂」',
+    soulOptionsOf(state, p),
+    (st2, _pl, picked) => {
+      // ⚠️ 与【傲才】同一个坑：回答那一步会把 pending 清成 null，而下面的响应分支
+      //    （respondSha / respondDeathSave / onRespondTrick / onRespondWuxie）需要
+      //    「请求还挂着」才跑得通 ⇒ 先把请求摆回去，再做响应。
+      setPending(st2, reqPending);
+      finish(Number(picked));
+    },
+    undefined,
+    true,
+  );
+  return { ok: true };
+}
+
+/**
  * 诸葛恪·【傲才】：**回合外**被要求使用/打出**基本牌**时，观看牌堆顶两张，用其中一张
  * **满足请求的实体基本牌**完成这次响应——**不经过手牌**（`toHand=false`）、**不是虚拟牌**（真花色点数）。
  *
@@ -12332,7 +12441,9 @@ function applyTestScenario(state: GameState, intent: Intent): ApplyResult {
   if (state.gameOver) return err('游戏已结束');
   const deals = intent.deals ?? [];
   const jieSpecs = intent.jie ?? [];
-  if (deals.length === 0 && jieSpecs.length === 0) return err('没有要布置的内容');
+  const hunSpecs = intent.hun ?? [];
+  if (deals.length === 0 && jieSpecs.length === 0 && hunSpecs.length === 0)
+    return err('没有要布置的内容');
 
   // —— 校验（只读，不改变任何状态）——
   const seen = new Set<string>();
@@ -12354,6 +12465,17 @@ function applyTestScenario(state: GameState, intent: Intent): ApplyResult {
     }
     if (d.zone === 'judge' && target.judgment.some((t) => t.type === card.type)) {
       return err(`${target.name} 的判定区已有【${cardShortName(card)}】`);
+    }
+  }
+  for (const h of hunSpecs) {
+    const target = getPlayer(state, h.seatId);
+    if (!target || !target.alive) return err(`目标无效：${h.seatId}`);
+    if (!Number.isInteger(h.count) || h.count <= 0) return err('「魂」的张数必须是正整数');
+    if (target.hun.length + h.count > 8) {
+      return err(`${target.name} 的「魂」最多 8 张（当前 ${target.hun.length}，要发 ${h.count}）`);
+    }
+    if (state.heroPool.length < h.count) {
+      return err(`未加入游戏的武将牌只有 ${state.heroPool.length} 张，发不出 ${h.count} 张「魂」`);
     }
   }
   for (const j of jieSpecs) {
@@ -12386,6 +12508,24 @@ function applyTestScenario(state: GameState, intent: Intent): ApplyResult {
       state,
       'testOverride',
       `TEST_DEAL_OVERRIDE：${target.name} 从${from}取【${cardShortName(card)}】放入${TEST_DEAL_ZONE_LABEL[d.zone]}。`,
+      { seat: target.seatId, action: 'testOverride' },
+    );
+  }
+  for (const h of hunSpecs) {
+    const target = getPlayerOrThrow(state, h.seatId);
+    const got: string[] = [];
+    for (let i = 0; i < h.count; i++) {
+      const id = state.heroPool.shift();
+      if (!id) break;
+      target.hun.push(id);
+      got.push(getHeroForMode(id, state.mode)?.name ?? id);
+    }
+    pushLog(
+      state,
+      'testOverride',
+      // ⚠️ 只写张数与武将名给**日志**（牌局日志是公开的；「魂」的内容本来只有本人可见，
+      //    测试面板是开发工具，这里把名字写出来是为了造现场时一眼能核对）
+      `TEST_DEAL_OVERRIDE：${target.name} 获得 ${got.length} 张「魂」（${got.join('、')}）。`,
       { seat: target.seatId, action: 'testOverride' },
     );
   }
@@ -12623,6 +12763,7 @@ export function createGame(
     deckGainOwner: {},
     extraResolvedCards: [],
     jiliVirtualSeq: 0,
+    yiguiVirtualSeq: 0,
     round: 1,
     damageLedgerThisTurn: [],
     liangfanHanIds: [],
@@ -12803,7 +12944,11 @@ function finishDraft(state: GameState): void {
     const dealt = new Set<string>();
     const deals = state.draft?.deals ?? {};
     for (const list of Object.values(deals)) for (const id of list as string[]) dealt.add(id);
+    // ⚠️ 中立（占位武将「平民」）不进这个堆：它是界面/测试用的空壳，不是一张真的武将牌——
+    //    否则左慈的「魂」、变包的「变更副将」都可能抽到「平民」（真机上撞到过：
+    //    选将不限把整池发完，剩下的唯一一张就是这个占位）。
     state.heroPool = poolForMode('guozhan')
+      .filter((h) => h.faction !== 'neutral')
       .map((h) => h.id)
       .filter((id) => !dealt.has(id));
   }

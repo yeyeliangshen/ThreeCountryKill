@@ -35,6 +35,7 @@ const html = (over: Partial<Parameters<typeof TestScenarioPanel>[0]> = {}) =>
       catalog={catalog}
       onDeal={() => {}}
       onJie={() => {}}
+      onHun={() => {}}
       onClose={() => {}}
       {...over}
     />,

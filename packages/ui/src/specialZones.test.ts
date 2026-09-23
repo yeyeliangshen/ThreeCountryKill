@@ -41,6 +41,19 @@ describe('武将牌上的牌区（自己 / 对手共用）', () => {
     expect(new Set(chips.map((c) => c.key)).size).toBe(chips.length);
   });
 
+  it('「魂」是私有资源：本人看到具体武将牌，别人只看到张数（用户 2026-09-25 口径）', () => {
+    // 本人的快照带 hunNames ⇒ 逐张列名字
+    const mine = specialZoneChips({ hunNames: ['张角', '周瑜'], hunCount: 2 } as never);
+    const label = mine.find((c) => c.key === '魂')!.label;
+    expect(label).toContain('张角');
+    expect(label).toContain('周瑜');
+    // 别人的快照只有 hunCount ⇒ 只画张数
+    const others = specialZoneChips({ hunCount: 2 } as never);
+    const other = others.find((c) => c.key === '魂')!.label;
+    expect(other).toBe('魂·2');
+    expect(other).not.toContain('张角');
+  });
+
   it('没有这些牌区 → 空列表（调用方据此整块不渲染）', () => {
     expect(specialZoneChips({} as never)).toEqual([]);
     expect(specialZoneChips(null)).toEqual([]);

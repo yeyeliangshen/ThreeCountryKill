@@ -16545,6 +16545,77 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     ).toBe(false);
   });
 
+  it('役鬼·**响应**：被【杀】指定时用「魂」视为打出【闪】（用户 2026-09-25 口径 §九）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hun = ['zhangjiao'];
+    state.turn = { seatIndex: state.seatOrder.indexOf(B), phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    expect(state.pending?.kind).toBe('respondSha');
+    // 走响应入口：移去一张魂 → 虚拟【闪】→ 走**既有**的闪响应分支
+    ok(act(state, A, { type: 'yiguiRespond' }));
+    expect(a.hun, '魂被移去').toHaveLength(0);
+    expect(a.hp, '出了闪 ⇒ 没掉血').toBe(a.maxHp);
+    expect(state.discard.some((c) => c.id.startsWith('virtual-yigui-')), '虚拟牌不进弃牌堆').toBe(
+      false,
+    );
+    // 同一回合内同一个牌名不能再产生一次
+    // （这一回合已经用过【闪】⇒ 记在 hunUsedNames 里）
+    expect(a.flags.hunUsedNames).toContain('shan');
+  });
+
+  it('役鬼·**响应**：无懈窗口里用「魂」视为打出【无懈可击】（并走正常抵消链）', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      // 用【无中生有】开无懈窗口（它没有「先选目标牌」那一步，窗口来得最干净）
+      { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [mk('b1', 'wuzhong', 'club', 3)] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hun = ['zhangjiao'];
+    // 这个 describe 的 helper 默认把回合给甲 —— 本用例要让乙动手（同「役鬼【杀】」那条）
+    state.turn = { seatIndex: state.seatOrder.indexOf(B), phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    // 乙用【无中生有】→ 开无懈窗口
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [B] }));
+    expect(state.pending?.kind, '无懈窗口').toBe('wuxieQueue');
+    // 轮到甲被问时用役鬼
+    while (state.pending?.kind === 'wuxieQueue' && state.pending.askQueue[state.pending.askIndex] !== A) {
+      ok(act(state, state.pending.askQueue[state.pending.askIndex]!, { type: 'pass' }));
+    }
+    ok(act(state, A, { type: 'yiguiRespond' }));
+    expect(state.log.some((e) => e.message.includes('无懈可击'))).toBe(true);
+    expect(a.hun).toHaveLength(0);
+    // 抵消链生效：丙的牌没被拆（这里只断言「无懈打出去了、牌局继续」——链的细节由 wuxie 用例覆盖）
+    expect(state.discard.some((c) => c.id.startsWith('virtual-yigui-'))).toBe(false);
+  });
+
+  it('役鬼·**响应**：濒死求桃时用「魂」视为打出【桃】自救', () => {
+    const state = gz([
+      { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+      { seatId: B, name: '乙', heroId: 'zhangfei', faction: 'shu', hand: [sha('b1')] },
+      { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+    ]);
+    const a = state.players.find((p) => p.seatId === A)!;
+    a.hp = 1;
+    a.hun = ['zhangjiao'];
+    state.turn = { seatIndex: state.seatOrder.indexOf(B), phase: 'play' };
+    state.pending = { kind: 'play', seatId: B };
+    // 乙杀甲：甲不闪 → 掉到 0 → 濒死
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    expect(state.pending?.kind).toBe('respondDeath');
+    ok(act(state, A, { type: 'yiguiRespond' }));
+    expect(a.alive).toBe(true);
+    expect(a.hp, '用虚拟【桃】回到 1 血').toBe(1);
+    expect(a.hun).toHaveLength(0);
+  });
+
   it('汲魂：**每一次**受到伤害后都能发动（文本里没有「每回合/每局一次」——用户 2026-09-25 校对）', () => {
     const state = gz(
       [

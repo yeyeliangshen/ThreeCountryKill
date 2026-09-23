@@ -1131,6 +1131,8 @@ export interface GameState {
    * 严白虎·寄篱造出来的虚拟牌**发号器**（id 带序号 → 唯一；记在 state 上 → 同种子可重放）。
    */
   jiliVirtualSeq: number;
+  /** 【役鬼】造虚拟牌用的自增号（与 jiliVirtualSeq 同一个用途） */
+  yiguiVirtualSeq: number;
   /**
    * 轮号：从 **1** 开始，座次绕回首位时 +1（见 afterTurnEnd）。徐庶·荐才的
    * 「获知数量补足到 轮数×3」用它；`roundStart` 时机在 +1 之后派发。
@@ -1501,9 +1503,31 @@ export function toDiscard(state: GameState, ...cards: Card[]): void {
       pushLog(state, 'discard', `【木牛流马】下扣置的 ${cargo.length} 张牌一同进入弃牌堆。`);
       toDiscard(state, ...cargo);
     }
+    // 虚拟牌（技能「视为使用/打出」造出来的）没有实体牌面，**不进弃牌堆**：
+    // 它本来就不在牌堆里，丢进去会让「弃牌堆里的牌都来自牌堆」这条账目失真
+    // （左慈·役鬼的「视为打出」走的正是这条路）。
+    if (c.virtual) continue;
     state.discard.push(c);
     state.discardThisTurn.push(c);
   }
+}
+
+/**
+ * 【役鬼】「每种牌名每回合限一次」——**按全局当前回合**记账（用户 2026-09-25 口径 §四：
+ * 「每回合」指当前回合，不是左慈自己的回合；与吴国太·补益同一套做法）。
+ *
+ * 放在 model 层是因为**两处**都要用：技能侧的主动发动（heroes）与响应入口（engine）。
+ */
+export function hunUsedNames(state: GameState, player: Player): string[] {
+  return player.flags.hunUsedTurnSeq === state.turnSeq ? player.flags.hunUsedNames : [];
+}
+
+export function hunMarkUsed(state: GameState, player: Player, name: string): void {
+  if (player.flags.hunUsedTurnSeq !== state.turnSeq) {
+    player.flags.hunUsedNames = [];
+    player.flags.hunUsedTurnSeq = state.turnSeq;
+  }
+  player.flags.hunUsedNames.push(name);
 }
 
 /** 本回合进入弃牌堆的**红桃**牌数（孟获·再起）。 */
