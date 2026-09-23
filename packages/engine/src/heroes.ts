@@ -11939,7 +11939,12 @@ const YUEJIN: Hero = {
                   pushLog(st2, 'skill', `${p2.name} 发动【骁果】，弃置【${cardLabel(c)}】。`);
                   const slots = EQUIP_SLOTS.filter((s) => turnP.equipment[s]);
                   const opts: { id: string; label: string }[] = [];
-                  if (slots.length > 0) opts.push({ id: 'discard', label: '弃置一张装备牌' });
+                  if (slots.length > 0) {
+                    opts.push({
+                      id: 'discard',
+                      label: `弃置一张装备牌（${p2.name} 摸一张牌）`,
+                    });
+                  }
                   opts.push({ id: 'damage', label: `受到 ${p2.name} 造成的 1 点伤害` });
                   ctx.api.askChoice(
                     st2,
@@ -11967,6 +11972,21 @@ const YUEJIN: Hero = {
                           if (!card) return;
                           ctx.api.discardCard(p4.seatId, card, () => {
                             pushLog(st4, 'skill', `${p4.name} 弃置了装备【${cardLabel(card)}】。`);
+                            // ⚠️ 现行文本：目标**弃置装备牌**这一项之后，**发动者（乐进）摸一张牌**
+                            //    （用户 2026-09-26 口径：「目标弃装备后没有收益」＝漏了这一步）。
+                            //    另一项（受到 1 点伤害）**不摸**；「没有装备牌可弃、改为受伤」那条也不摸。
+                            const yuejin = getPlayer(st4, p2.seatId);
+                            if (!yuejin || !yuejin.alive) return;
+                            const drawn = drawOne(st4);
+                            if (drawn) yuejin.hand.push(drawn);
+                            if (drawn) {
+                              pushLog(
+                                st4,
+                                'skill',
+                                `${yuejin.name} 因【骁果】摸了 1 张牌。`,
+                                { seat: yuejin.seatId },
+                              );
+                            }
                           });
                         },
                       );
@@ -11983,7 +12003,7 @@ const YUEJIN: Hero = {
   skills: [
     {
       name: '骁果',
-      desc: '其他角色的结束阶段，你可以弃置一张基本牌，令该角色选择一项：弃置一张装备牌，或受到你造成的 1 点伤害。',
+      desc: '其他角色的结束阶段，你可以弃置一张基本牌，令该角色选择一项：弃置一张装备牌，然后你摸一张牌；或受到你造成的 1 点伤害。',
     },
   ],
 };
