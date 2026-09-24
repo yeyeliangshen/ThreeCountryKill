@@ -7,9 +7,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ClientMessage, RoomSummary, ServerMessage } from '@sgs/protocol';
+import type { ApplyResult } from '@sgs/engine';
 import { Room } from './room';
 
 const PORT = Number(process.env.PORT ?? 8080);
+
+/**
+ * **开发工具开关**（「测试场景编辑器」/ Test Scenario Setup，见 docs §5.206）。
+ *
+ * 判定顺序：`SGS_DEV_TOOLS=1/true` 强制开、`=0/false` 强制关；没设就按「非 production 即开」
+ * （`pnpm dev` 默认开着，pm2 的 `NODE_ENV=production` 默认关着）。
+ * 它只影响房间里能不能布置测试场景，**不进任何规则路径**。
+ */
+const DEV_TOOLS = ((): boolean => {
+  const raw = process.env.SGS_DEV_TOOLS;
+  if (raw === '1' || raw === 'true') return true;
+  if (raw === '0' || raw === 'false') return false;
+  return process.env.NODE_ENV !== 'production';
+})();
 
 /**
  * 离线座位保留多久（毫秒）。默认 10 分钟，可用 `IDLE_SEAT_MS` 覆盖；
@@ -235,7 +250,7 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
         leaveCurrentRoom();
-        const r = new Room(allocateRoomCode());
+        const r = new Room(allocateRoomCode(), 8, DEV_TOOLS);
         rooms.set(r.roomCode, r);
         // 创建者自动落座 1 号位，并成为房主（新房还没有房主，claimSeat 会指派）
         const created = r.claimSeat('1', ws, name);
@@ -399,7 +414,17 @@ wss.on('connection', (ws: WebSocket) => {
           send(ws, { type: 'error', message: '请先落座' });
           break;
         }
-        const res = room.handleIntent(seatId, msg.intent);
+        // ⚠️ 兜底：意图是**外部输入**。引擎里已经把缺字段补齐了（applyIntent 的边界），
+        //    但任何一处没料到的异常/断言都不该把整个服务端进程带走——那会同时干掉所有房间。
+        //    这里只对这一条消息负责：报错给这个客户端，游戏继续。
+        let res: ApplyResult;
+        try {
+          res = room.handleIntent(seatId, msg.intent);
+        } catch (e) {
+          console.error('[三国杀] 处理意图时抛异常（已吞掉，房间继续）:', msg.intent, e);
+          send(ws, { type: 'error', message: '这条操作无法处理（内部错误）' });
+          break;
+        }
         if (!res.ok) send(ws, { type: 'error', message: res.error });
         else room.broadcastSnapshots();
         break;

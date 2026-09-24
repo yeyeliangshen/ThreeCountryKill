@@ -7,6 +7,8 @@ import type {
   DamageAttribute,
   PindianView,
   PublicPoolView,
+  ChainSpreadView,
+  SkillFxView,
   Faction,
   GameMode,
   LogEntry,
@@ -67,6 +69,19 @@ export interface PlayerFlags {
   taoSaveCountThisTurn: number;
   /** 本回合已用主动技能标记 */
   skillUsedThisTurn: Record<string, boolean>;
+  /**
+   * **每回合限一次**的**钩子**技能：技能名 → 发动时的 `state.turnSeq`。
+   *
+   * ⚠️ 与 `skillUsedThisTurn` 的区别是「回合」指谁的：
+   * - `skillUsedThisTurn` 随**这名角色自己的回合**重置（管「出牌阶段限一次」的主动技，对的）；
+   * - 这一份按**全局当前回合**（`state.turnSeq`，每次回合交接 +1）判——文本写「每回合限一次」
+   *   的钩子技指的是**当前这一回合**，不是「你自己的回合」。吴国太·补益就是：别人的回合里
+   *   同势力角色脱离濒死也能发动；同一回合内只许一次，下一名角色的回合立刻重置。
+   *
+   * 用户 2026-09-25 口径：「程序不要把 counter 挂在吴国太自己的 turn，
+   * 应该是随全局当前回合变化重置」。
+   */
+  hookUsedTurnSeq: Record<string, number>;
   /**
    * 技能自己用的每回合计数（仁德记「本阶段给出几张」、苦肉记次数…）。
    * 随 emptyFlags() 每回合清零。键名建议用 `<技能id>_<含义>`。
@@ -135,6 +150,11 @@ export interface PlayerFlags {
    * 左慈·役鬼：「本回合内已以此法使用过哪些牌名」（按牌名限一次，回合开始清零）。
    */
   hunUsedNames: string[];
+  /**
+   * 【役鬼】「每种牌名每回合限一次」记的是**哪个回合**（`state.turnSeq`）——
+   * 「每回合」＝当前回合，不是左慈自己的回合（与 `hookUsedTurnSeq` 同一条口径）。
+   */
+  hunUsedTurnSeq: number;
   /**
    * 吕范·典财：本**出牌阶段**你失去了几张牌（cardsLost 那个公共事件上累加，
    * 出牌阶段结束时清零）。「其他角色的出牌阶段结束时」按它跟体力值比。
@@ -227,6 +247,13 @@ export interface PlayerFlags {
   cannotPlayColor: 'red' | 'black' | null;
   /** 本回合不能回复体力（军令「翻面且本回合不能回复体力」那一项） */
   cannotHealThisTurn: boolean;
+  /**
+   * **本阶段不能对「其他角色」使用牌**（纪灵·【双刃】没赢的后果）。
+   *
+   * ⚠️ 只拦「对别人用的牌」：桃 / 酒 / 装备牌这类**对自己**使用的照常能用
+   * （用户 2026-09-26 口径特别点明了这一点）。AOE 那类不指定目标却会打到别人的锦囊同样算「对别人用」。
+   */
+  cannotTargetOthersThisPhase: boolean;
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
@@ -289,6 +316,7 @@ export function emptyFlags(): PlayerFlags {
     jiuActive: false,
     taoSaveCountThisTurn: 0,
     skillUsedThisTurn: {},
+    hookUsedTurnSeq: {},
     skillNumbers: {},
     usedCardsInPlayPhase: [],
     skipPlay: false,
@@ -301,6 +329,7 @@ export function emptyFlags(): PlayerFlags {
     hengjiangTarget: null,
     lostCardsThisPhase: 0,
     hunUsedNames: [],
+    hunUsedTurnSeq: -1,
     targetedOtherFactionThisTurn: false,
     targetedOtherThisTurn: false,
     wenjiCardId: null,
@@ -321,6 +350,7 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayCardsThisTurn: false,
     cannotPlayColor: null,
     cannotHealThisTurn: false,
+    cannotTargetOthersThisPhase: false,
     revealRewarded: false,
     wangxiPending: [],
     xuanlveEventId: -1,
@@ -416,6 +446,12 @@ export interface Player {
    * 暗置 → 用的时候随机移去一张，并把那张武将牌亮出来（势力决定目标限制）。
    */
   hun: string[];
+  /**
+   * 【观星】的 X 被**固定**成这个数（姜维·【遗志】：主将已有【观星】时把它固定为 5）。
+   * 不填＝按常规口径算（存活角色数，至多 5）。见 heroes.guanxing。
+   * ⚠️ 放在 Player 上而不是 flags 里：flags 每回合开始会被 emptyFlags 清掉，而它是**整局**参数。
+   */
+  guanxingFixed?: number;
   /** 孟达·【求安】的「函」：扣在武将牌旁的伤害牌（公开；不属于手牌/装备/弃牌堆） */
   han: Card[];
   /**
@@ -799,11 +835,27 @@ export type Pending =
        */
       returnTo?: string;
       /**
+       * **回答内容保密**：选完之后日志只写「谁做出了一项选择」，不写选项文案。
+       *
+       * 给「选项本身就含隐藏信息」的询问用（左慈·役鬼的「魂」是私有资源：选项里带着
+       * 是哪张武将牌、什么势力，写进公开日志等于把所有玩家的信息差抹平）。
+       * 与 `askPickCards` 的 `secret` 同一条口径。
+       */
+      secret?: boolean;
+      /**
        * 「操作**别人区域里的牌**」的**分区布局**（用户 2026-09-23 的口径）：不同角色横向分栏、
        * 同一角色内部按 hand/equip/judge 纵向分区。
        * ⚠️ 它**只是布局**——点某一张仍然回 `chooseOption(optionId)`，引擎的解析不变。
        */
       zonePick?: ZonePickLayout;
+      /**
+       * 与这条询问有关的**其他角色**的座位（纯展示，引擎下发的）。
+       *
+       * 例：徐盛·【疑城】问徐盛时，这里是被保护的那位——界面把那张牌**轻微高亮**，
+       * 让徐盛一眼看出「我现在保护的是谁」（用户 2026-09-25 口径）。
+       * ⚠️ 它不改变任何可点性：是否可点仍由 `legalTargets` / 候选决定。
+       */
+      relatedSeats?: string[];
     }
   /**
    * 从一组牌里看/选若干张（选牌原语）。
@@ -829,6 +881,10 @@ export type Pending =
        * 改为直接点牌桌中央那张牌（点完立即拿走）。见 `GameState.publicPool`。
        */
       fromPool?: boolean;
+      /** 多目标时的分区布局（见 ZonePickLayout）：界面给每一家画一块独立牌位 */
+      zonePick?: ZonePickLayout;
+      /** 与这条询问有关的**其他角色**（纯展示：界面轻微高亮；不影响可点性）——说明见 choice 那份 */
+      relatedSeats?: string[];
       /** 这些牌属于谁（盲选时界面标注「在看谁的手牌」） */
       ownerSeatId?: string;
       /** 其中已因其他效果公开的牌 id（由规则层给，界面照它画牌面） */
@@ -985,6 +1041,29 @@ export interface GameState {
    * 与拼点不同，它**跨多个 intent 存活**（每人一次选牌），所以不能在 applyIntent 里清。
    */
   publicPool?: PublicPoolView | null;
+  /**
+   * **属性伤害沿横置角色传导**的瞬时视图（`ChainSpreadView`，用户 2026-09-24 口径④）。
+   *
+   * 引擎里传导是**有序**的（`queueChainSpread` 记名单 → `chainStep` 按名单逐个结算），
+   * 但整段传导通常在同一条 intent 里同步跑完，界面只靠 diff `Player.chained` 拿不到先后。
+   * 所以把「源头 + 按顺序的名单」写在这里下发（只带座次与序号，不带牌面）。
+   * 生命周期同 `pindianView`：下一次任何 intent 时清空。
+   */
+  chainView?: ChainSpreadView | null;
+  /** 传导视图的自增号（`ChainSpreadView.seq`）：界面靠它认出「新的一次传导」 */
+  chainSeq: number;
+  /**
+   * **刚发动 / 刚触发的技能**（`SkillFxView`，用户 2026-09-25 口径①~④）。
+   *
+   * 写入口**唯一**：`pushLog` 收到 `kind === 'skill'` 且此刻有技能身份（`withSkillCtx`，
+   * 钩子派发 / 主动技执行处声明）时写一条——见 model.ts 的 `announceSkill`。
+   * 生命周期与拼点区/连环不同：不是「下一次 intent 一律清」，而是
+   * 「下一次 intent 时，**已经结算完**（`settling === false`）的才让位」——
+   * 用户口径③要求「等待响应／多步结算期间保持提示」（见 applyIntentInner）。
+   */
+  skillFx?: SkillFxView | null;
+  /** 技能视图的自增号（`SkillFxView.seq`）：界面靠它认出「新的一次发动」 */
+  skillFxSeq?: number;
   players: Player[];
   seatOrder: string[]; // 回合顺序
   deck: Card[];
@@ -1076,6 +1155,8 @@ export interface GameState {
    * 严白虎·寄篱造出来的虚拟牌**发号器**（id 带序号 → 唯一；记在 state 上 → 同种子可重放）。
    */
   jiliVirtualSeq: number;
+  /** 【役鬼】造虚拟牌用的自增号（与 jiliVirtualSeq 同一个用途） */
+  yiguiVirtualSeq: number;
   /**
    * 轮号：从 **1** 开始，座次绕回首位时 +1（见 afterTurnEnd）。徐庶·荐才的
    * 「获知数量补足到 轮数×3」用它；`roundStart` 时机在 +1 之后派发。
@@ -1256,6 +1337,30 @@ export interface GameState {
   gameOver: boolean;
   winner: string | null; // 胜方标识（阵营/队伍/身份方），未结束时为 null
   log: LogEntry[];
+  /**
+   * **本局先手**：`createGame` 的 `opts.firstSeat` 指定的座位（没有就是 null）。
+   *
+   * 只在选将结束时用一次——没有指定时按模式规则定：军争=主公、其余模式=**随机**一名角色
+   * （用户 2026-09-23 报的缺陷：原来写死「座次 0 先手」，等于房主永远先手）。见 docs §5.205。
+   * 存这一份是因为定先手的时机在 `finishDraft`，那里拿不到 `createGame` 的 opts。
+   */
+  forcedFirstSeat: string | null;
+  /**
+   * **开发工具开关**：本局是否接受「测试场景布置」意图（`createGame` 的 `testScenario`）。
+   *
+   * 正式对局恒为 false —— 服务端只在开发模式（`SGS_DEV_TOOLS` / 非 production）下开启，
+   * fuzz / smoke / 常规回归都不开。见 docs §5.206。
+   */
+  testScenario: boolean;
+  /**
+   * **当前这一轮的起点座位**（`seatOrder` 的下标）＝本局先手所在的位置。
+   *
+   * 「一轮」是座次环上从先手走一圈，所以判「是否进入新一轮」必须**相对它**算，
+   * 不能拿绝对的 `next < current` 去比——那个写法其实是把「座次 0」当成了每轮的起点
+   * （先手变成随机座位之后，从座次 2 开局就会出现「一圈走完了却判不出新一轮」）。
+   * 见 docs §5.205。
+   */
+  roundStartSeat: number;
   /** 日志自增序号：快照只带最近若干条，客户端靠它判断哪些是新事件 */
   logSeq: number;
   /** 国战：全场第一个明置武将的座次（先驱标记发给它），无人明置时为 null */
@@ -1359,14 +1464,24 @@ export function getPlayerOrThrow(state: GameState, seatId: string): Player {
   return p;
 }
 
-/** 从 fromIndex 起（含）下一个存活的座次下标 */
-export function nextAliveSeat(state: GameState, fromIndex: number): number {
+/**
+ * 从 fromIndex 起（不含）下一个存活的座次下标。
+ *
+ * 【调虎离山】「不计入座次」⇒ 默认把被移出的角色从环里**跳过**（既有口径，见 docs）。
+ * `ignoreRemoval` 是给「座次环里只剩自己」那种**退化**情形留的出口：
+ * 被移出的人**还活着**，只是本回合不算座次 ⇒ 需要按正常顺序找下家时用它
+ * （用户 2026-09-25 报的缺陷：回合交接把这种情况当成了「只剩一个人」）。
+ */
+export function nextAliveSeat(
+  state: GameState,
+  fromIndex: number,
+  opts?: { ignoreRemoval?: boolean },
+): number {
   const n = state.seatOrder.length;
   for (let i = 1; i <= n; i++) {
     const idx = (fromIndex + i) % n;
     const p = getPlayer(state, state.seatOrder[idx]!);
-    // 调虎离山：不计入座次的角色直接从环里跳过
-    if (p?.alive && !p.flags.removedFromSeating) return idx;
+    if (p?.alive && (opts?.ignoreRemoval === true || !p.flags.removedFromSeating)) return idx;
   }
   return fromIndex;
 }
@@ -1422,9 +1537,31 @@ export function toDiscard(state: GameState, ...cards: Card[]): void {
       pushLog(state, 'discard', `【木牛流马】下扣置的 ${cargo.length} 张牌一同进入弃牌堆。`);
       toDiscard(state, ...cargo);
     }
+    // 虚拟牌（技能「视为使用/打出」造出来的）没有实体牌面，**不进弃牌堆**：
+    // 它本来就不在牌堆里，丢进去会让「弃牌堆里的牌都来自牌堆」这条账目失真
+    // （左慈·役鬼的「视为打出」走的正是这条路）。
+    if (c.virtual) continue;
     state.discard.push(c);
     state.discardThisTurn.push(c);
   }
+}
+
+/**
+ * 【役鬼】「每种牌名每回合限一次」——**按全局当前回合**记账（用户 2026-09-25 口径 §四：
+ * 「每回合」指当前回合，不是左慈自己的回合；与吴国太·补益同一套做法）。
+ *
+ * 放在 model 层是因为**两处**都要用：技能侧的主动发动（heroes）与响应入口（engine）。
+ */
+export function hunUsedNames(state: GameState, player: Player): string[] {
+  return player.flags.hunUsedTurnSeq === state.turnSeq ? player.flags.hunUsedNames : [];
+}
+
+export function hunMarkUsed(state: GameState, player: Player, name: string): void {
+  if (player.flags.hunUsedTurnSeq !== state.turnSeq) {
+    player.flags.hunUsedNames = [];
+    player.flags.hunUsedTurnSeq = state.turnSeq;
+  }
+  player.flags.hunUsedNames.push(name);
 }
 
 /** 本回合进入弃牌堆的**红桃**牌数（孟获·再起）。 */
@@ -1454,8 +1591,116 @@ export interface LogExtra {
   action?: string;
 }
 
+/**
+ * 「此刻正在跑哪个技能」——**统一的技能事件源**（用户 2026-09-25 口径①~④）。
+ *
+ * 用法（引擎内部）：在**每一个**技能的执行点上用 `withSkillCtx` 声明身份——钩子派发
+ * （`runHooks` / `runHooksFrom` / 判定链 / 拼点链）与主动技执行（`onUseSkill`）。
+ * 声明之后，该技能在这段代码里写的 `kind === 'skill'` 日志会顺手把结构化信息
+ * （谁 / 技能名 / 还在不在结算）写进 `state.skillFx` 下发（见 `pushLog`）。
+ *
+ * 为什么挂在 `pushLog` 上而不是逐处调用：全仓库有 300+ 处技能日志，逐个改必漏；
+ * 而且「写了技能日志」本身就是「这个技能真的发动了」的口径——注册了钩子但没发动的技能
+ * （例如【咆哮】只在自己的第 2 张【杀】上生效）不会误报。
+ *
+ * 嵌套（钩子里又触发别人的技能）靠栈式保存/还原隔离，同一次发动只写一条提示。
+ */
+export interface SkillCtx {
+  /** 发动者座次（提示贴谁身上） */
+  seatId: string;
+  /** 技能拼音 id（只有主动技有） */
+  skillId?: string;
+  /** 技能中文名 */
+  skillName: string;
+  /** 本次发动是否已经写过提示（同一次发动里的多条日志只写一条） */
+  announced?: boolean;
+}
+
+let activeSkillCtx: SkillCtx | null = null;
+
+/**
+ * 声明「接下来这段代码是我在跑」：期间写的技能日志都归到这个技能名下。
+ *
+ * ⚠️ 必须栈式还原（try/finally）：钩子里可能触发别人的钩子（伤害 → 卖血技），
+ *    不还原就会把内层技能的日志记到外层技能身上。
+ */
+export function withSkillCtx<T>(ctx: SkillCtx, fn: () => T): T {
+  const prev = activeSkillCtx;
+  activeSkillCtx = ctx;
+  try {
+    return fn();
+  } finally {
+    activeSkillCtx = prev;
+  }
+}
+
+/**
+ * 记一条「技能发动」事件（瞬时视图）：界面上那个角色的附近会浮现技能名。
+ *
+ * 序号自增：界面靠 `seq` 变没变认出「新的一次发动」，同一份快照重复到达不会重播。
+ */
+export function announceSkill(
+  state: GameState,
+  seatId: string,
+  skillName: string,
+  skillId?: string,
+): void {
+  state.skillFxSeq = (state.skillFxSeq ?? 0) + 1;
+  state.skillFx = {
+    seq: state.skillFxSeq,
+    seatId,
+    ...(skillId ? { skillId } : {}),
+    skillName,
+    settling: isWaitingPending(state.pending),
+  };
+}
+
+/**
+ * 「此刻是不是有人在等回答」——技能提示的「保持」判据（`SkillFxView.settling`）。
+ *
+ * 出牌阶段的占位空位（`kind === 'play'`）不算：那一格是「谁都能动」，不是「在等某人回应」。
+ * 其余（choice / pickCards / pickSeats / respondSha / respondDeath / respondTrick /
+ * discard / viewCards / wuxieQueue / factionCall…）都算——多步结算正卡在这些询问上。
+ */
+export function isWaitingPending(pending: GameState['pending']): boolean {
+  return pending !== null && pending.kind !== 'play';
+}
+
+/** 询问换了一格（`setPending` 里调）：把技能提示的「还在结算中」跟着刷新 */
+export function syncSkillSettling(state: GameState): void {
+  if (!state.skillFx) return;
+  state.skillFx.settling = isWaitingPending(state.pending);
+}
+
+/**
+ * **询问产生了 ⇒ 此刻运行的技能就是「真发动了」**（`setPending` 里调）。
+ *
+ * 为什么除了「写了技能日志」还要这一条：有些技能是**先问再写日志**的——典型是
+ * 【刚烈】（问伤害来源「弃两张手牌 / 受 1 点伤害」）、【反馈】（问是否发动）、
+ * 【洛神】（问要不要继续判）。若只认日志，提示要等到玩家**答完**才出现，
+ * 而用户口径③要的正是「正在等待玩家响应时**保持**提示」——那就太晚了。
+ * 询问出现的那一刻就是最好的宣告时刻：谁在做什么，一目了然。
+ *
+ * 反过来，**没问也没写日志**的技能（注册了钩子但这次不发动，例如【咆哮】只在
+ * 自己的第 2 张【杀】上生效）依然不会误报——这正是这条判据取「有副作用」而不是
+ * 「钩子被派发」的原因。
+ */
+export function announceSkillOnAsk(state: GameState): void {
+  const ctx = activeSkillCtx;
+  if (!ctx || ctx.announced) return;
+  if (!isWaitingPending(state.pending)) return; // 出牌阶段的占位空位不算「询问」
+  ctx.announced = true;
+  announceSkill(state, ctx.seatId, ctx.skillName, ctx.skillId);
+}
+
 export function pushLog(state: GameState, kind: string, message: string, extra?: LogExtra): void {
   state.log.push({ id: state.logSeq++, kind, message, ...extra });
+  // **统一的技能事件源**：技能日志＝这个技能真的发动了 ⇒ 给界面写一条技能提示。
+  // 放在这里而不是逐处调用，是为了「所有武将（含将来新增的）自动生效」（用户口径④）。
+  if (kind === 'skill' && activeSkillCtx && !activeSkillCtx.announced) {
+    activeSkillCtx.announced = true;
+    announceSkill(state, activeSkillCtx.seatId, activeSkillCtx.skillName, activeSkillCtx.skillId);
+  }
   // 保留最近 200 条，避免无限增长
   if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
 }

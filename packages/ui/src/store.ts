@@ -28,6 +28,11 @@ export interface LobbyState {
   /** 房主是否开了「势备篇（+52 张）」（只对国战生效） */
   /** 国战扩展开关（服务端权威；房主在大厅可改，开局后冻结） */
   config: GuozhanRoomConfig;
+  /**
+   * 服务端是否开了**开发工具**（「测试场景编辑器」，docs §5.206）。
+   * 只有它为 true、且是 dev 构建时，对局页面才会出现那个面板——正式对局恒为 false。
+   */
+  devTools: boolean;
 }
 
 interface Store {
@@ -130,6 +135,8 @@ export const useStore = create<Store>()((set, get) => {
             mySeatId: msg.mySeatId,
             mode: msg.mode,
             freePick: msg.freePick,
+      // 老服务端不带这个字段时当作关闭（前向兼容：绝不因为字段缺失而把开发工具点亮）
+      devTools: msg.devTools ?? false,
             config: msg.config,
           };
           // 记住「我在哪」：刷新/锁屏回来时靠它自动回到原房间原座位

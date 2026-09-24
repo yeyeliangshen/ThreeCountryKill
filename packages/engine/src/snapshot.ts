@@ -1,6 +1,17 @@
 import type { Card, PlayerView, Snapshot } from '@sgs/protocol';
 import { MARKER_NAME, MARKER_ORDER } from '@sgs/protocol';
-import { effectiveFaction, getHeroForMode } from './heroes';
+import {
+  effectiveFaction,
+  effectiveHeroes,
+  feiyingSource,
+  formationQueue,
+  getHeroForMode,
+  hasFeiying,
+  hasTianfu,
+  heyiInFormation,
+  publicGender,
+  tianfuModeOf,
+} from './heroes';
 import type { GameState, Player } from './model';
 import { getPlayer } from './model';
 import { buildPrompt } from './legal';
@@ -26,6 +37,12 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
   const showDeputy = isMe || !isGuozhan || p.deputyRevealed || !p.alive || state.gameOver;
   const showFaction =
     isMe || !isGuozhan || p.heroRevealed || p.deputyRevealed || !p.alive || state.gameOver;
+  // 当前**公开**性别（♂/♀；全暗置＝未确定 ⇒ 不给字段）。判据只有 heroes.publicGender 一处，
+  // 界面拿它画标记、离间的可点目标也按它算——谁都不许去翻暗将底牌猜性别。
+  const genderOf = publicGender(state, p);
+  // 【飞影】的来源（鹤翼两态）与【鹤翼】持有者自己的形态 —— 判据都在 heroes，界面只显示
+  const feiyingFromOf = hasFeiying(state, p) ? feiyingSource(state, p) : null;
+  const hasHeyi = effectiveHeroes(state, p).some((h) => h.grantsFeiyingToQueue === true);
   return {
     seatId: p.seatId,
     name: p.name,
@@ -56,6 +73,22 @@ function toPlayerView(p: Player, viewerSeatId: string, state: GameState): Player
     kongchengCount: p.kongcheng.length,
     qianhuanCount: p.qianhuan.length,
     hunCount: p.hun.length,
+    // 「魂」的具体是哪几张武将牌：**只给持有者本人**（别人只知道数量）——
+    // 左慈的「役鬼」要由他本人挑移去哪张，界面上也得让他看得到自己的魂区。
+    ...(isMe
+      ? { hunNames: p.hun.map((id) => getHeroForMode(id, state.mode)?.name ?? id) }
+      : {}),
+    // 队列（公开信息）：与天覆/鸟翔/鹤翼同一份判据
+    inFormation: formationQueue(state, p).length >= 2,
+    // 本回合被【调虎离山】移出座次（公开状态，见 protocol 的字段说明）
+    ...(p.flags.removedFromSeating ? { removedFromSeating: true } : {}),
+    // 【飞影】此刻归谁（鹤翼两态：常规＝曹洪自己；队列＝同队列的其他人）——公开状态
+    ...(feiyingFromOf ? { feiying: true, feiyingFrom: feiyingFromOf } : {}),
+    ...(hasHeyi ? { heyiMode: heyiInFormation(state, p) ? 'formation' : 'normal' } : {}),
+    // 当前公开性别（♂/♀；全暗置＝性别未确定 ⇒ 不给这个字段）
+    ...(publicGender(state, p) ? { gender: publicGender(state, p)! } : {}),
+    // 【天覆】的形态只发给本人（技能栏里的说明要跟着变）
+    ...(isMe && hasTianfu(state, p) ? { tianfuMode: tianfuModeOf(state, p) } : {}),
     // 「创」（周泰·不屈）也是公开信息：牌就扣在武将牌上
     wounds: p.wounds.slice(),
     han: p.han.slice(),
@@ -138,5 +171,15 @@ export function toSnapshot(state: GameState, seatId: string): Snapshot {
             state.pending.seatId === seatId,
         }
       : null,
+    // 属性伤害这次沿连环角色传导的**顺序**（用户 2026-09-24 口径④）：源头 + 按顺序的名单。
+    // 顺序只有引擎知道（见 `queueChainSpread` / `chainStep`），界面照 index 排动画。
+    // 只带座次与序号，不带牌面。
+    chain: state.chainView ?? null,
+    // 「刚发动 / 刚触发的技能」（用户 2026-09-25 口径①~④）：界面据此在**那个角色附近**浮现技能名，
+    // 点开看完整描述。写入点是 `pushLog`（`kind === 'skill'` 且此刻有技能身份，
+    // 见 model.ts 的 `withSkillCtx` / `announceSkill`）——**不认牌、不认武将**，
+    // 也不带任何武将牌信息，所以暗将的技能不会因为这条提示泄露。
+    // `settling` 一并下发：别人的询问不在我的 `prompt` 里，界面只能靠它判断「要不要保持提示」。
+    skillFx: state.skillFx ?? null,
   };
 }

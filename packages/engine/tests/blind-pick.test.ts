@@ -13,7 +13,14 @@
  * 引擎侧的「谁看得见」另一半（观察者快照里手牌只有张数）由既有用例覆盖，这里只管盲选。
  */
 import { describe, it, expect } from 'vitest';
-import { applyIntent, buildPrompt, createGame, emptyFlags, type GameState } from '../src';
+import {
+  applyIntent,
+  buildPrompt,
+  createGame,
+  emptyFlags,
+  targetCardOptions,
+  type GameState,
+} from '../src';
 import { askPickCards } from '../src/engine';
 import type { Card } from '@sgs/protocol';
 
@@ -281,5 +288,49 @@ describe('盲选：混区域的候选（手牌隐藏 + 装备公开）', () => {
     expect(applyIntent(state, B, { type: 'pickCards', cardIds: ['ar1'] }).ok).toBe(true);
     expect(a.equipment.armor).toBeNull();
     expect(b.hand.map((c) => c.id)).toContain('ar1');
+  });
+});
+
+/**
+ * **自己操作自己的牌 ⇒ 不许盲选**（用户 2026-09-25 报的缺陷：陈武董袭【奋命】要弃自己的牌时
+ * 系统直接随机/按「第 N 张暗牌」处理，玩家挑不了）。
+ *
+ * 盲选的适用前提是「候选来自**别人的未知手牌**」。自己的手牌自己是知道的，
+ * 所以选项必须是**真牌面**（`card:<id>`），文案也要写「你的【…】」而不是「其第 N 张（暗）」。
+ * 这条直接钉在共用原语 `targetCardOptions` 上——它是「从某人的区域里挑一张」的唯一出口，
+ * 修在这里 ⇒ 所有用它（或它的两个包装 `pickOneOfTargetCards` / `takeOneOfTargetCards`）的技能
+ * 一起生效，不是给某个武将打补丁。
+ */
+describe('自己操作自己的牌：给真牌面，不是盲选（用户 2026-09-25）', () => {
+  it('目标=自己 ⇒ `card:<id>` + 「弃置你的【牌名】」；目标=别人 ⇒ 仍是「第 k 张（暗）」', () => {
+    const state = gz();
+    const a = seat(state, A);
+    const c = seat(state, C);
+    a.hand = [mk('a1', 'tao', 'heart', 9)];
+    c.hand = [mk('c1', 'sha', 'spade', 13), mk('c2', 'tao', 'diamond', 7)];
+
+    const own = targetCardOptions(state, A, a, '弃置');
+    expect(own.map((o) => o.id), '自己的牌按牌 id 给选项').toEqual(['card:a1']);
+    expect(own[0]!.label).toBe('弃置你的【红桃9·桃】');
+    expect(own[0]!.label, '不许出现「其第 N 张（暗）」').not.toContain('暗');
+
+    const other = targetCardOptions(state, A, c, '弃置');
+    expect(other.map((o) => o.id), '别人的手牌照旧盲选').toEqual(['hand:0', 'hand:1']);
+    expect(other[0]!.label).toBe('弃置其第 1 张手牌（暗，共 2 张）');
+    // 别人的候选里不许出现牌面（连牌名都不能有）
+    expect(JSON.stringify(other)).not.toContain('杀');
+    expect(JSON.stringify(other)).not.toContain('桃');
+    expect(JSON.stringify(other)).not.toContain('黑桃');
+  });
+
+  it('装备区/判定区两种身份都给真牌面（公开区本来就不是暗信息）', () => {
+    const state = gz();
+    const a = seat(state, A);
+    a.hand = [];
+    a.equipment.weapon = { id: 'w1', type: 'weapon', suit: 'spade', rank: 6, equipName: 'qinggang' };
+    a.judgment.push(mk('j1', 'lebu', 'heart', 6));
+    const ids = targetCardOptions(state, A, a, '弃置').map((o) => o.id);
+    expect(ids).toContain('card:w1');
+    expect(ids).toContain('card:j1');
   });
 });

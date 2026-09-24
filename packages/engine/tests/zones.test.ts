@@ -10,7 +10,15 @@
  * `api.discardCard/discardCards`（本来就认两个区、会派钩子）。
  */
 import { describe, it, expect } from 'vitest';
-import { applyIntent, createGame, emptyFlags, getHero, toSnapshot, type GameState } from '../src';
+import {
+  applyIntent,
+  createGame,
+  emptyFlags,
+  getHero,
+  toSnapshot,
+  zoneLayoutOf,
+  type GameState,
+} from '../src';
 import type { Card } from '@sgs/protocol';
 
 const A = 's0';
@@ -181,6 +189,22 @@ describe('区域选牌的分区布局（zonePick）', () => {
       'hand:0',
       'hand:1',
     ]);
+  });
+
+  it('操作**自己**的牌（selfHand）：手牌那一区也给牌面——自己挑自己的牌要看得见牌名', () => {
+    // 用户 2026-09-25 的缺陷（陈武董袭·奋命弃自己的牌）落在这条上：别人的手牌是**暗信息**
+    // （只给 optionId、画牌背），自己的手牌是自己已知的信息（给牌面、按牌 id 回答）。
+    const state = guoheGame();
+    const b = state.players.find((p) => p.seatId === B)!;
+    const handOf = (opts) =>
+      zoneLayoutOf(b, opts).zones.find((z) => z.zone === 'hand')!;
+    const mine = handOf({ selfHand: true });
+    expect(mine.items.map((i) => i.optionId)).toEqual(['card:b1', 'card:b2']);
+    expect(mine.items.every((i) => !!i.card), '自己的牌给牌面').toBe(true);
+    // 对照组：操作别人的牌时手牌**只有 optionId**（牌面不出服务端）
+    const others = handOf(undefined);
+    expect(others.items.map((i) => i.optionId)).toEqual(['hand:0', 'hand:1']);
+    expect(others.items.every((i) => i.card === undefined)).toBe(true);
   });
 
   it('寒冰剑：区域限制（不含判定区）会体现在布局里', () => {

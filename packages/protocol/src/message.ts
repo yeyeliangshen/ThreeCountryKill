@@ -68,6 +68,11 @@ export type ServerMessage =
       /** 当前房间的国战扩展开关（仅国战有意义；大厅里房主可改，开局后冻结） */
       config: GuozhanRoomConfig;
       freePick: boolean; // 房主是否开了「选将不限（测试用）」
+      /**
+       * 服务端是否开启了**开发工具**（`SGS_DEV_TOOLS`，缺省在非 production 下开）。
+       * 前端只有在它为 true（且是 dev 构建）时才显示「测试场景编辑器」面板。
+       */
+      devTools: boolean;
       // （原来的 `shibei: boolean` 已并入 `config.extensions.shibei`）
     }
   /** 房间被删了（房主离开且没人留下，或房主解散）：客户端回大厅并提示 */

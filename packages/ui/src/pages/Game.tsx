@@ -28,25 +28,38 @@ import {
   lordVariantOf,
   getHeroForMode,
   heroCanUseAs,
+  isLockedSkillOf,
   ROLE_NAME,
   FACTION_NAME,
   MARKER_DESC,
   type Hero,
   type ActiveSkill,
+  testScenarioCatalog,
 } from '@sgs/engine';
 import { EquipChip } from '../components/EquipChip';
 import { HeroPanel, type HeroSlot } from '../components/HeroPanel';
+import { TestScenarioPanel } from '../components/TestScenarioPanel';
 import { specialZoneChips } from '../specialZones';
 import { cardUses, useActionOf, type CardUse } from '../cardUses';
+import { effectiveCardName, playConfirmText, playHintText } from '../playFlow';
+import { equipSwapNote, pairAllowsMore, pairComplete } from '../skillTargets';
 import { PindianTable } from '../components/PindianTable';
 import { PublicPoolTable } from '../components/PublicPoolTable';
+import { ChainBadge, ChainSpreadTable, useChainFx } from '../components/ChainFx';
+import { SkillTipChip, useSkillTip } from '../components/SkillTip';
+import { skillTipDesc, type SkillTip } from '../skillTips';
 import { ZonePickPanel } from '../components/ZonePickPanel';
-import { targetNeedsHandCards } from '../targetRules';
+import {
+  cardSelfTargetAllowed,
+  skillSelfTargetAllowed,
+  targetNeedsHandCards,
+} from '../targetRules';
 import { HeroChips, heroChipsOf } from '../components/HeroChips';
 import { SkillButtons, type SkillRow } from '../components/SkillButtons';
 import { heroArt } from '../components/heroArt';
 import { cardBack } from '../components/cardBack';
 import { blindPickOwnerText, pickIsFaceDown } from '../blindPick';
+import { darkSkillAction } from '../darkSkillAction';
 import { useHoverTip } from '../components/HoverTip';
 import { effectConfirmFor, needsEffectConfirm } from '../components/effectConfirm';
 import { nextGuozhanSlots } from '../draftSlots';
@@ -148,28 +161,31 @@ function targetRange(
   card: Card,
   as?: CardType,
   shaMaxTargets?: number,
-): { min: number; max: number; self: boolean } {
+): { min: number; max: number } {
   // 转化牌按转化后的类型算需要几个目标（大乔·国色：方块牌当【乐不思蜀】要 1 个目标）
   const type = as ?? card.type;
   const effective: Card = type === card.type ? card : { ...card, type };
-  if (type === 'tiesuo') return { min: 1, max: 2, self: true };
-  // 调虎离山：一至两名**其他**角色（不能选自己）
-  if (type === 'tiaohu') return { min: 1, max: 2, self: false };
-  if (isEquipCard(effective)) return { min: 0, max: 0, self: false };
-  if (type === 'tao' || type === 'jiu') return { min: 0, max: 0, self: false };
-  if (type === 'wuzhong' || type === 'taoyuan') return { min: 0, max: 0, self: false };
-  if (type === 'shandian') return { min: 0, max: 0, self: false };
-  if (type === 'nanman' || type === 'wanjian') return { min: 0, max: 0, self: false };
-  if (type === 'yiyi' || type === 'wugu') return { min: 0, max: 0, self: false };
-  if (type === 'jiedao') return { min: 2, max: 2, self: false };
+  if (type === 'tiesuo') return { min: 1, max: 2 };
+  // 调虎离山：一至两名角色（**「其他」那一条由引擎判**，界面不在这里管能不能选自己）
+  if (type === 'tiaohu') return { min: 1, max: 2 };
+  if (isEquipCard(effective)) return { min: 0, max: 0 };
+  if (type === 'tao' || type === 'jiu') return { min: 0, max: 0 };
+  if (type === 'wuzhong' || type === 'taoyuan') return { min: 0, max: 0 };
+  if (type === 'shandian') return { min: 0, max: 0 };
+  if (type === 'nanman' || type === 'wanjian') return { min: 0, max: 0 };
+  if (type === 'yiyi' || type === 'wugu') return { min: 0, max: 0 };
+  if (type === 'jiedao') return { min: 2, max: 2 };
   // 敕令：目标是规则算出来的（所有没有势力的角色），不用点
-  if (type === 'chiling') return { min: 0, max: 0, self: false };
+  if (type === 'chiling') return { min: 0, max: 0 };
   // 联军盛宴：点一个代表角色 = 选一个「其他势力」
-  if (type === 'lianjun') return { min: 1, max: 1, self: false };
+  if (type === 'lianjun') return { min: 1, max: 1 };
   if (type === 'sha' && (shaMaxTargets ?? 1) > 1) {
-    return { min: 1, max: shaMaxTargets!, self: false };
+    return { min: 1, max: shaMaxTargets! };
   }
-  return { min: 1, max: 1, self: false }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
+  // ⚠️ 这里**不再**返回 `self`：以前那张「哪几张牌能选自己」的表是界面自己写的第二套规则，
+  // 和引擎对不上（火攻/号令天下/克复中原就是这么被挡住的）。现在一律读服务端下发的
+  // `prompt.selfTargetUses`——见 targetRules.ts 与 docs §5.209（用户 2026-09-24 口径）。
+  return { min: 1, max: 1 }; // sha, juedou, guohe, shunshou, huogong, lebu, bingliang, yuanjiao, zhibi
 }
 
 /** 从快照获取当前玩家的活跃武将（国战：已亮将；其他：主将） */
@@ -224,6 +240,15 @@ export function Game() {
   const sendPickCards = useStore((s) => s.pickCards);
   const sendFactionCall = useStore((s) => s.factionCall);
   const leaveRoom = useStore((s) => s.leaveRoom);
+  const lobby = useStore((s) => s.lobby);
+  // 「测试场景编辑器」只在**开发模式**出现：服务端开了 devTools + 本地是 dev 构建
+  //（正式构建里 `import.meta.env.DEV` 是 false，面板整段不会渲染）。见 docs §5.206。
+  const devTools = Boolean(lobby?.devTools) && import.meta.env.DEV;
+  const [devOpen, setDevOpen] = useState(false);
+  const devCatalog = useMemo(
+    () => (devTools && lobby ? testScenarioCatalog({ mode: lobby.mode, config: lobby.config }) : []),
+    [devTools, lobby],
+  );
 
   // 出牌阶段：选中一张需目标的牌后，再选目标
   const [selected, setSelected] = useState<{
@@ -234,8 +259,11 @@ export function Game() {
     /** 至少/至多几个目标（铁索连环是 1–2 名，所以是个区间） */
     min: number;
     max: number;
-    /** 是否允许把自己选成目标（铁索连环） */
-    self: boolean;
+    /**
+     * ⚠️ 这里**没有** `self` 字段（以前有，是界面自己写的一张「哪些牌能选自己」的表）。
+     * 用户 2026-09-24 口径：能否选自己由**牌/技能自己的**目标规则决定，界面只读服务端下发的
+     * `prompt.selfTargetUses`（见 targetRules.ts 的 `cardSelfTargetAllowed`）。
+     */
     picked: string[];
     /** 【丈八蛇矛】：与 cardId 一起当【杀】的第二张手牌 */
     extraCardIds?: string[];
@@ -318,27 +346,87 @@ export function Game() {
       maxCards?: ActiveSkill['maxCards'];
       /** 代价能取自哪个区（'handEquip' ＝自己装备区的牌也可点；见 protocol 的 legalSkills） */
       costFrom?: 'hand' | 'handEquip';
+      /**
+       * **合法目标对**（引擎下发；只有限制落在「一对目标」上的技能才有，目前只有甘露）。
+       * 界面据此把「跟已选目标凑不出合法对」的座位置灰（用户 2026-09-25。
+       * 判据在 ../skillTargets.ts，引擎在 execute 里照样再校验一遍）。
+       */
+      legalTargetPairs?: string[][];
+      /**
+       * **这个技能**自己的可点目标（引擎下发；缺省＝所有其他存活角色）。
+       * 例：貂蝉·离间只认**男性**（按当前公开性别）——界面据此把女性/未确定的角色置灰，
+       * 不让玩家点一个必然被引擎拒绝的人（用户 2026-09-25 口径）。
+       */
+      legalTargets?: string[];
+      /**
+       * **有序目标**每个位置的角色说明（引擎下发）。例：离间＝
+       * `['【决斗】的目标', '发动【决斗】的角色']`——玩家立刻知道第 1/第 2 个点的人是谁，
+       * 不必去背「令后者对前者」（用户 2026-09-25 点名了「离间最容易点反」）。
+       */
+      targetSlotLabels?: string[];
+      /**
+       * 方向预览模板（引擎下发，`{1}`/`{2}` 是第 i 个已选目标的**名字**）。
+       * 例：离间 `'{2} ──【决斗】──▶ {1}'` ⇒ 面板上直接写出「谁对谁用决斗」。
+       * 规则文本留在引擎，界面只做占位替换（与 desc / targetSlotLabels 同一条规矩）。
+       */
+      targetPreview?: string;
+      /** 界面预览形态（纯展示；'equipSwap' ＝ 甘露那种「列双方装备区再确认」） */
+      preview?: 'equipSwap';
+      /**
+       * 技能**自己的**目标规则：允不允许把使用者自己选成目标。
+       * 服务端 `legalSkills[].selfTarget` 与武将定义上的 `ActiveSkill.selfTarget` 是**同一个
+       * 字段**（标记技能只有服务端那份带得回来），界面只读它，不自己判断（用户 2026-09-24 口径）。
+       */
+      selfTarget?: boolean;
     };
     cardIds: string[];
     targetIds: string[];
   } | null>(null);
   /**
-   * 「生效前的确认」（用户 2026-09-18 要求）：**主动发起的效果**——【杀】【酒】、装装备、武将技能——
-   * 真正发出去之前先摆一句「它到底干什么」，确认了才发。
+   * 多选座位（`pickSeats` 提示）：点亮了几家，确认时才发出去
    *
-   * 为什么要它：这几类点一下就生效，而牌面说明平时只有**悬停**才看得到（触屏上根本没有悬停）；
-   * 装装备尤其疼（点错就把装备丢进装备区、还顶掉原来那件）。
+   * ⚠️ 这里以前还有一个 `confirmUse` 状态（「生效前的确认」弹框，用户 2026-09-18 要求）：
+   * 【杀】【酒】、装装备这类「点一下就生效」的牌先弹一句说明再发。用户 2026-09-25 把口径
+   * 统一成了**一套两步流程**——首次点击只选中并展示、点「使用/确定」才打出；那个弹框与选中态
+   * 说的其实是同一件事，留着就是**两条出牌路径**（还给「无需目标的牌」开了特判），所以删掉，
+   * 效果说明改由选中态的 `selectedEffectDesc()` 显示（见 §5.210）。
    */
-  /** 多选座位（`pickSeats` 提示）：点亮了几家，确认时才发出去 */
   const [seatPick, setSeatPick] = useState<string[]>([]);
-  const [confirmUse, setConfirmUse] = useState<{
-    title: string;
-    desc: string;
-    ok: () => void;
-  } | null>(null);
   // 手牌悬停提示（固定定位，避免被 .hand 的滚动容器裁切）。
   // 武将技能用的是同一套，见 components/HoverTip.tsx
-  const { bind: bindTip, hide: hideTip, tipNode } = useHoverTip();
+  const { bind: bindTip, tipNode } = useHoverTip();
+
+  // 连环（横置）状态的四种表现（用户 2026-09-24 口径①~④）：**绑定「连环状态」本身**——
+  // 判据是相邻两份快照里 `players[].chained` 的翻转（`diffChainStates`）＋ 引擎下发的
+  // 传导顺序（`snapshot.chain`，见 engine 的 `queueChainSpread`）。
+  // 所以【铁索连环】【勠力同心】以及将来任何令角色横置/重置的技能，都会走到同一套表现上。
+  // ⚠️ 必须在下面那些 early return 之前调用（hooks 规则）。
+  const chainFx = useChainFx(snapshot?.players ?? [], snapshot?.chain ?? null);
+
+  // 技能提示（用户 2026-09-25 口径①~④）：**统一事件源**——只看引擎下发的
+  // `snapshot.skillFx`（谁、哪个技能、还在不在结算），界面不解析日志、不认武将。
+  // 判据在 `skillTips.ts`（纯函数），这里只把结果贴到发动者旁边。
+  // ⚠️ 同样必须在下面那些 early return 之前调用（hooks 规则）。
+  const skillTip = useSkillTip(snapshot?.skillFx ?? null);
+  /**
+   * 「这一格（座次）现在该显示哪条技能提示」——没有就是 null。
+   *
+   * 判据（谁的、什么时候收）全在 `skillTips.ts`，这里只补上展示需要的另外两样：
+   * 发动者名（无障碍播报）与技能描述（按**引擎宣布过的技能名**去武将技能文本里查，
+   * 见 `skillTipDesc`——不新造规则文本，也不会因为查描述泄露暗将）。
+   */
+  const skillTipOf = (
+    seatId: string,
+  ): { tip: SkillTip; seatName: string; desc: string; onToggle: () => void } | null => {
+    const tip = skillTip.tip;
+    if (!tip || tip.seatId !== seatId) return null;
+    return {
+      tip,
+      seatName: snapshot?.players.find((p) => p.seatId === seatId)?.name ?? seatId,
+      desc: skillTipDesc(snapshot?.mode ?? 'junzheng', snapshot?.players ?? [], seatId, tip.skillName),
+      onToggle: skillTip.toggle,
+    };
+  };
 
   // 提示内容一变就清空本地选择。
   //
@@ -438,35 +526,27 @@ export function Game() {
   const lianhengTargets = prompt?.kind === 'play' ? (prompt.lianhengTargets ?? []) : [];
   const lianhengSet = new Set(lianhengTargets);
 
-  /** 已经选定用法、开始出这张牌：要目标就进选择模式，不要就直接发 */
+  /**
+   * 已经选定用法、开始出这张牌：**一律先进选中态**（两步流程的第一步）。
+   *
+   * ⚠️ 这里以前有一条**按目标数分流**的捷径：`range.max === 0`（【无中生有】【桃园结义】
+   * 【五谷丰登】【南蛮入侵】【万箭齐发】【酒】、装备牌…）**直接 `sendIntent({ type: 'playCard' })`**
+   * ——「不需要选目标」被当成了「可以省掉确认」，于是手牌区点一下【无中生有】就立即使用、
+   * 不可撤销（用户 2026-09-25 报的缺陷，见 docs §5.210）。
+   *
+   * 现在这条捷径**没有了**：出牌只有一条路——选中（`selected`）→ 点「使用/确定」按钮
+   * （`confirmTargets`，唯一一处发出 `playCard` 的地方）。**不是给某张牌特判**，
+   * 所以【无中生有】与【杀】用的是同一套确认逻辑；装备牌/【酒】原来靠 `confirmUse` 弹框
+   * 做的那次确认，改由选中态这一步统一承担（效果说明照旧显示，见 `selectedEffectDesc`）。
+   */
   function beginPlay(card: Card, as?: CardType, asAttribute?: DamageAttribute) {
     const range = targetRange(card, as, shaMaxTargetsFor(card));
-    if (range.max === 0) {
-      const fire = (): void => {
-        sendIntent({
-          type: 'playCard',
-          cardId: card.id,
-          ...(as ? { as } : {}),
-          ...(asAttribute ? { asAttribute } : {}),
-          targetIds: [],
-        });
-      };
-      // 【酒】/装装备这类「不需要目标」的牌原先点一下就发——现在先生效前确认（§5.144）
-      if (needsEffectConfirm(card, as)) {
-        const info = effectConfirmFor(card, as, snapshot?.mode);
-        setConfirmUse({ title: info.title, desc: info.desc, ok: () => { setConfirmUse(null); fire(); } });
-        return;
-      }
-      fire();
-      return;
-    }
     setSelected({
       cardId: card.id,
       ...(as ? { as } : {}),
       ...(asAttribute ? { asAttribute } : {}),
       min: range.min,
       max: range.max,
-      self: range.self,
       picked: [],
     });
   }
@@ -505,12 +585,13 @@ export function Game() {
     // 当【杀】使用 → 复用现有的选目标流程。
     // 目标是**一名**角色：丈八蛇矛与方天画戟都是武器，不可能同时装备，
     // 所以这里不存在「方天画戟那种多目标」的情况。
+    // 【杀】的目标限「其他角色」（见引擎的 targetRule 表），所以这里也不可能有「选自己」那一支：
+    // 能不能选自己由服务端下发的 selfTargetUses 说了算，而不是本地写死。
     setSelected({
       cardId: first!,
       extraCardIds: [second!],
       min: 1,
       max: 1,
-      self: false,
       picked: [],
     });
     setZhangbaMode(null);
@@ -519,6 +600,17 @@ export function Game() {
   // —— 出牌：这张牌有几种用法就先让玩家挑 ——
   function pickPlayCard(card: Card) {
     if (!prompt || prompt.kind !== 'play' || !legalSet.has(card.id)) return;
+    // 再点一次同一张牌＝取消选中（与「取消」按钮同义）：两步流程里点两下不该把牌打出去。
+    // 只在「还没点任何目标」时生效——已经选了目标的，再点这张牌是重新开始选目标。
+    if (
+      selected &&
+      selected.cardId === card.id &&
+      selected.picked.length === 0 &&
+      !selected.extraCardIds
+    ) {
+      setSelected(null);
+      return;
+    }
     const hasZhuque = me.equipment.some((c) => c.equipName === 'zhuque');
     const uses = cardUses(
       card,
@@ -563,15 +655,20 @@ export function Game() {
     return selected.picked.length >= selected.min && selected.picked.length <= selected.max;
   }
 
-  /** 确认按钮文案：把「对谁用什么」写清楚，免得又误点 */
+  /** 确认按钮文案：把「对谁用什么」写清楚，免得又误点；无需目标的牌写「使用【无中生有】」 */
   function selectedConfirmLabel(): string {
     if (!selected) return '确认使用';
     const card = myUsableCards.find((c) => c.id === selected.cardId);
-    const name = selected.as ? CARD_TYPE_NAME[selected.as] : card ? cardShortName(card) : '这张牌';
-    const who = selected.picked
-      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
-      .join('、');
-    return `确认：对 ${who} 使用【${name}】`;
+    const name = card ? effectiveCardName(card, selected.as) : '这张牌';
+    return playConfirmText(name, selectedTargetNames());
+  }
+
+  /** 已点选的目标名（没有就空数组——「无需目标的牌」与「还没点人」都走这一支） */
+  function selectedTargetNames(): string[] {
+    if (!selected) return [];
+    return selected.picked.map(
+      (id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id,
+    );
   }
 
   /**
@@ -585,7 +682,7 @@ export function Game() {
     return effectConfirmFor(card, selected.as, snapshot?.mode).desc;
   }
 
-  /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去 */
+  /** 铁索连环这类「一至两名」的牌：攒够了就把目标发出去；**无需目标的牌也在这里发出** */
   function confirmTargets() {
     if (!selected) return;
     if (selected.picked.length < selected.min || selected.picked.length > selected.max) return;
@@ -654,14 +751,31 @@ export function Game() {
     if (!heroSkill && !given) return;
     setSkillMode({
       skillId,
-      skill: heroSkill ?? {
-        id: skillId,
-        name: given!.name,
-        desc: given!.desc,
-        needsCards: given!.needsCards,
-        minTargets: given!.minTargets,
-        maxTargets: given!.maxTargets,
-      },
+      skill: heroSkill
+        ? // 本地武将定义：selfTarget 优先用**服务端下发**的那份（两边是同一个字段，
+          // 服务端是权威——用户 2026-09-24 口径「能否选自己读服务端下发的合法目标」）
+          {
+            ...heroSkill,
+            selfTarget: given?.selfTarget ?? heroSkill.selfTarget,
+            legalTargetPairs: given?.legalTargetPairs,
+            // 目标相关的那三项都以**服务端**那份为准（标记技能只有服务端带得回来）
+            legalTargets: given?.legalTargets,
+            targetSlotLabels: given?.targetSlotLabels,
+            targetPreview: given?.targetPreview,
+          }
+        : {
+            id: skillId,
+            name: given!.name,
+            desc: given!.desc,
+            needsCards: given!.needsCards,
+            minTargets: given!.minTargets,
+            maxTargets: given!.maxTargets,
+            selfTarget: given!.selfTarget,
+            legalTargetPairs: given!.legalTargetPairs,
+            legalTargets: given!.legalTargets,
+            targetSlotLabels: given!.targetSlotLabels,
+            targetPreview: given!.targetPreview,
+          },
       cardIds: [],
       targetIds: [],
     });
@@ -708,36 +822,70 @@ export function Game() {
     setDeputyPick(next.deputy);
   }
 
-  // 判定当前选中牌的目标提示文案
+  /**
+   * 判定当前选中牌的提示文案——文案本身是**纯函数**（`playHintText`，单测在 playFlow.test.ts）。
+   *
+   * ⚠️ 那个 `max === 0` 分支就是本次缺陷的正面：无需目标的牌以前根本没机会进选中态
+   * （点了就发），现在它和需要目标的牌共用这条提示，并且**明确指向「使用」按钮**。
+   */
   function selectedHint(): string {
     if (!selected) return '';
-    const names = selected.picked
-      .map((id) => snapshot?.players.find((p) => p.seatId === id)?.name ?? id)
-      .join('、');
-    // 目标够了：把「对谁用」摆出来，并提示还要点一下确认（点目标不再直接出牌）
-    if (selected.picked.length >= selected.min) {
-      if (selected.min === 2) {
-        return `已选：${names}（第 1 个是武器持有者、第 2 个是出杀目标）——点「确认」发出`;
-      }
-      return `目标：${names} —— 点「确认」发出`;
-    }
-    if (selected.min === 2) {
-      if (selected.picked.length === 0) return '请选择武器持有者';
-      return '请选择出杀目标';
-    }
-    if (selected.max > 1) {
-      return `请选择 1 至 2 名目标（${selected.self ? '可含自己' : '不含自己'}），已选 ${selected.picked.length} 名`;
-    }
-    return '请选择目标（点上方对手，选完再点确认）';
+    const card = myUsableCards.find((c) => c.id === selected.cardId);
+    return playHintText({
+      name: card ? effectiveCardName(card, selected.as) : '这张牌',
+      min: selected.min,
+      max: selected.max,
+      targetNames: selectedTargetNames(),
+      canTargetSelf: selectedCanTargetSelf,
+    });
   }
 
   // 技能确认按钮是否可用
+  /**
+   * 有序目标技能（离间）的**分步提示**：按「已经选了几个」取下一个位置的角色说明。
+   * 文案来自引擎（`legalSkills[].targetSlotLabels`），界面只挑下标——不许自己写规则文本。
+   */
+  const skillSlotLabel = (() => {
+    const labels = skillMode?.skill.targetSlotLabels;
+    if (!labels || labels.length === 0) return '';
+    return labels[skillMode!.targetIds.length] ?? '';
+  })();
+  /** 已选目标各担任什么角色（第几个点的 + 引擎给的说明），画在技能面板里 */
+  const skillSlotChips = (() => {
+    if (!skillMode) return [] as { id: string; name: string; label: string; index: number }[];
+    const labels = skillMode.skill.targetSlotLabels;
+    if (!labels || labels.length === 0) return [];
+    return skillMode.targetIds.map((id, i) => ({
+      id,
+      index: i,
+      name: snapshot?.players.find((x) => x.seatId === id)?.name ?? id,
+      label: labels[i] ?? '',
+    }));
+  })();
+  /**
+   * 方向预览（引擎给的模板 + 名字替换）：离间的 `'{2} ──【决斗】──▶ {1}'`
+   *   ⇒ 面板上画出「谁对谁用决斗」。**规则文本在引擎**，界面只做占位替换。
+   * 只在目标选够（达到 minTargets）时才画。
+   */
+  const skillPreviewText = (() => {
+    const tpl = skillMode?.skill.targetPreview;
+    if (!skillMode || !tpl) return '';
+    if (skillMode.targetIds.length < skillMode.skill.minTargets) return '';
+    const names = skillMode.targetIds.map(
+      (id) => snapshot?.players.find((x) => x.seatId === id)?.name ?? id,
+    );
+    return tpl.replace(/[{](\d+)[}]/g, (m, n: string) => names[Number(n) - 1] ?? m);
+  })();
+
   function skillCanConfirm(): boolean {
     if (!skillMode) return false;
     const { skill, cardIds, targetIds } = skillMode;
     const cardsOk = !skill.needsCards || cardIds.length >= 1;
     const targetsOk = targetIds.length >= skill.minTargets && targetIds.length <= skill.maxTargets;
-    return cardsOk && targetsOk;
+    // 「一对目标」还要真的成对（甘露：选了两个凑不成合法对的人 ⇒ 不给确认；
+    // 正常流程里第二个人根本点不亮，这里是给「先选了两个、后来体力变了」这类边界兜底）
+    const pairOk = pairComplete(skill.legalTargetPairs, targetIds);
+    return cardsOk && targetsOk && pairOk;
   }
 
   // 选将阶段：聚焦选将面板，不渲染空牌桌 / 0 体力条
@@ -984,11 +1132,23 @@ export function Game() {
    * 【火攻】（用户 2026-09-22 报的缺陷）：目标要展示一张手牌，**没有手牌的角色不能被指定**。
    * 引擎侧在 `resolvePlayedCard` 的校验里同样拦（见那里的注释），两边是同一个判据。
    */
-  const selectedTargetNeedsHand = (() => {
+  /** 当前选中那张牌的**生效牌型**（有转化用法时是 `as`；用来查「目标门槛」与「能否选自己」） */
+  const selectedEffectiveType = (() => {
     if (!selected) return null;
-    const eff = selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type;
-    return targetNeedsHandCards(eff) ? true : null;
+    return selected.as ?? myUsableCards.find((c) => c.id === selected.cardId)?.type ?? null;
   })();
+  const selectedTargetNeedsHand = selected
+    ? targetNeedsHandCards(selectedEffectiveType)
+      ? true
+      : null
+    : null;
+  /**
+   * 当前这张牌**按这个用法**能不能把自己选成目标——**读服务端下发的合法目标**
+   * （`prompt.selfTargetUses`，用户 2026-09-24 口径：能否选自己由牌/技能文本决定，
+   * 不许界面自己加通用规则）。见 targetRules.ts。
+   */
+  const selectedCanTargetSelf =
+    !!selected && cardSelfTargetAllowed(prompt, selected.cardId, selectedEffectiveType);
 
   // 判断某对手是否可被点击（选目标 / 技能选目标）
   function canClickTarget(p: PlayerView): boolean {
@@ -1003,7 +1163,17 @@ export function Game() {
     if (!targeting) return false;
     if (skillMode) {
       if (skillMode.targetIds.includes(p.seatId)) return true;
-      return targetSet.has(p.seatId) && skillMode.targetIds.length < skillMode.skill.maxTargets;
+      // 技能**自己的**可点目标（引擎下发）优先于通用的「所有其他角色」：
+      // 例：离间只认男性 ⇒ 女性/未确定性别的角色直接置灰
+      const allowed = skillMode.skill.legalTargets
+        ? new Set(skillMode.skill.legalTargets)
+        : targetSet;
+      return (
+        allowed.has(p.seatId) &&
+        skillMode.targetIds.length < skillMode.skill.maxTargets &&
+        // 「一对目标」的限制（甘露）：跟已选的那个凑不出合法对 ⇒ 直接不可点（置灰）
+        pairAllowsMore(skillMode.skill.legalTargetPairs, skillMode.targetIds, p.seatId)
+      );
     }
     if (selected) {
       if (selected.picked.includes(p.seatId)) return true;
@@ -1049,14 +1219,28 @@ export function Game() {
     // 主动明置只在**准备阶段**（判定阶段是另一个阶段了，不能亮）
     (phase === 'prepare' || (phase === 'play' && hero?.canRevealInPlayPhase === true));
   const canRevealNow = canRevealSlot(myHero);
-  // 铁索连环可以把「自己」选成目标：这时自己的武将面板整体可点
+  /**
+   * 自己的武将面板此刻可点吗（＝把自己选成目标）。
+   *
+   * 判据全部来自**服务端下发的自身合法目标**，界面不写「哪张牌能选自己」这类规则
+   * （用户 2026-09-24 口径）：
+   * - 出牌阶段选牌中：`prompt.selfTargetUses` 里有「这张牌 + 当前用法」才能点自己
+   *   （所以【火攻】【铁索连环】【号令天下】【克复中原】点得动，【杀】【顺手牵羊】点不动）；
+   * - 技能模式：该技能自己声明了 `selfTarget` 才能点自己（青囊/凶算/甘露/排异/存嗣）。
+   */
   const canPickSelf =
-    !!selected &&
     !lianhengCard &&
-    selected.self &&
-    prompt?.kind === 'play' &&
-    !selected.picked.includes(me.seatId) &&
-    selected.picked.length < selected.max;
+    !selected?.picked.includes(me.seatId) &&
+    (selected
+      ? prompt?.kind === 'play' &&
+        selectedCanTargetSelf &&
+        selected.picked.length < selected.max
+      : !!skillMode &&
+        skillSelfTargetAllowed(skillMode.skill) &&
+        !skillMode.targetIds.includes(me.seatId) &&
+        skillMode.targetIds.length < skillMode.skill.maxTargets &&
+        // 「一对目标」的限制同样管着自己（甘露可以选自己）
+        pairAllowsMore(skillMode.skill.legalTargetPairs, skillMode.targetIds, me.seatId));
   const heroSlots: HeroSlot[] = isGuozhan
     ? [
         {
@@ -1097,13 +1281,19 @@ export function Game() {
   // 国战暗置的武将牌：技能不生效，但界面要给出**预亮**入口——
   // - 触发技：点一下预亮/取消预亮，等它自己的时机到来时引擎会问是否发动；
   // - 主动技：点一下就等于「明置该武将并发动」（引擎会先明置）；
-  // - 锁定技 / 转化技（马术、咆哮、武圣…）：只能靠亮将，这里显示成不可点。
-  // 「哪些技能可预亮」由服务端下发（prompt.prelitableSkills），界面不自己判断。
+  // - **锁定技**（用户 2026-09-22 口径）：自己的出牌阶段点它＝**主动明置该武将**
+  //   （intent `revealBySkill`，只是明置、不是发动技能）；其余时机退回预亮开关。
+  //   不能因为它是锁定技、或因为它已经预亮，就把这个亮将入口去掉。
+  // - 常驻字段技（马术那类没有钩子的）：不能预亮，只能靠出牌阶段点它明置（或在准备阶段亮将）。
+  // 「哪些技能可预亮」由服务端下发（prompt.prelitableSkills），界面不自己判断；
+  // 「哪些算锁定技」与引擎共用 `isLockedSkillOf`（三种落法 + 描述兜底）。
   // 出牌阶段 / 弃牌阶段的服务端技能定义（含不属于任何武将的**国战标记**，见上面 skillIds 的注释）
   const legalSkills = skillEntryShown(prompt?.kind) ? (prompt!.legalSkills ?? []) : [];
   // 可预亮的名单在快照上（随时可预亮，不必等自己的出牌阶段）
   const prelitable = new Set(me.prelitableSkills ?? []);
   const prelit = new Set(me.prelitSkills ?? []);
+  // 锁定技的亮将入口只在**我的出牌阶段**（引擎侧同一判据：onRevealBySkill 的时机守卫）
+  const myPlayPhase = myTurn && phase === 'play';
   const skillRows: SkillRow[] = [];
   const coveredSkillIds = new Set<string>();
   for (const hero of isGuozhan ? [myHero, myDeputyHero] : [myHero]) {
@@ -1113,6 +1303,43 @@ export function Game() {
       const act = hero.activeSkills?.find((a) => a.name === s.name);
       if (act) coveredSkillIds.add(act.id);
       const active = !!act && skillMode?.skillId === act.id;
+      if (hidden && isLockedSkillOf(hero, s.name)) {
+        // 锁定技：出牌阶段的空闲窗口＝明置该武将；其余时机＝原来的预亮开关
+        const clickAction = darkSkillAction({
+          locked: true,
+          prelitable: prelitable.has(s.name),
+          myPlayPhase,
+          busy: !!selected || !!skillMode,
+        });
+        const on = prelit.has(s.name);
+        skillRows.push({
+          name: s.name,
+          desc: s.desc,
+          usable: clickAction !== 'none',
+          active: clickAction === 'prelight' && on,
+          state:
+            clickAction === 'reveal'
+              ? 'reveal'
+              : clickAction === 'prelight' && on
+                ? 'prelit'
+                : 'dark',
+          // 同一个 chip 两条路，文案必须说清点下去是「明置」还是「预亮」
+          action:
+            clickAction === 'reveal'
+              ? '点击＝明置该武将（锁定技）'
+              : clickAction === 'prelight'
+                ? on
+                  ? '已预亮，点击取消'
+                  : '点击＝预亮'
+                : undefined,
+          onClick: () => {
+            if (clickAction === 'reveal') sendIntent({ type: 'revealBySkill', skillName: s.name });
+            else if (clickAction === 'prelight')
+              sendIntent({ type: 'prelightSkill', skillName: s.name });
+          },
+        });
+        continue;
+      }
       if (hidden && prelitable.has(s.name)) {
         // 可预亮的触发技
         const on = prelit.has(s.name);
@@ -1128,11 +1355,23 @@ export function Game() {
       }
       skillRows.push({
         name: s.name,
-        desc: s.desc,
+        // 【天覆】的说明跟着**当前形态**走（形态由引擎下发 `me.tianfuMode`，界面不自己算）：
+        // 队列＝同队列角色的回合内黑色手牌；常规＝自己回合内黑桃手牌。
+        desc:
+          s.name === '天覆' && me.tianfuMode
+            ? `${s.desc}
+——当前形态：${
+                me.tianfuMode === 'formation' ? '队列（黑色手牌 → 无懈可击）' : '常规（你的回合内：黑桃手牌 → 无懈可击）'
+              }`
+            : s.desc,
         usable: !!act && skillIds.includes(act.id) && !selected && (!skillMode || active),
         active,
         // 暗置但可以点（主动技点了就明置发动）
         state: hidden ? 'dark' : undefined,
+        // **已生效的锁定技**（用户 2026-09-25 口径）：武将已明置、技能有效 ⇒ 它一直在生效，
+        // 不是「点了才发动」。chip 上标「锁」、悬停/点击的说明里写明「持续生效」。
+        // 判定用引擎的 isLockedSkillOf（界面不另写一份，见 darkSkillAction.test 的同款守门）。
+        always: !hidden && isLockedSkillOf(hero, s.name),
         onClick: () => {
           if (!act) return;
           if (active) setSkillMode(null);
@@ -1172,104 +1411,200 @@ export function Game() {
                   skillMode?.targetIds.includes(p.seatId) ||
                   lianhengPick === p.seatId));
             const isCurrent = snapshot.turn.seatId === p.seatId;
+            // 与**当前这条询问**有关的其他角色（引擎下发；如徐盛·疑城问徐盛时＝被保护的那位）：
+            // 只做**轻微高亮**，不改变可点性（可点与否仍由 legalTargets / 候选决定）
+            const isRelated = prompt?.relatedSeats?.includes(p.seatId) ?? false;
+            const sourceName = (seatId?: string): string | null =>
+              seatId ? (snapshot.players.find((x) => x.seatId === seatId)?.name ?? null) : null;
             const isLord = p.role === 'lord';
             const teamClass = snapshot.mode === '2v2' ? `team-${p.team ?? 0}` : '';
             const factionClass = isGuozhan && p.faction ? `faction-${p.faction}` : '';
             const zoneChips = specialZoneChips(p);
+            // 连环（横置）状态的表现（用户 2026-09-24）：
+            //   ② 常驻：`.chained` 的虚线描边 + 一枚「横」徽标（下面 `.p-name` 里）
+            //   ①③ 进入/解除：`chain-in-*` / `chain-out-*` 动画类（判据是状态翻转，不是这张牌）
+            //   ④ 传导：`.chain-hit` 脉冲，延时由引擎给的顺序算好（`chainFx.hits`）
+            const chainCls = chainFx.cardClass[p.seatId] ?? '';
+            const chainHit = chainFx.hits[p.seatId];
+            // 技能提示（用户 2026-09-25 口径①~④）：他刚发动/触发的技能，浮在他这张牌旁边。
+            // ⚠️ 提示**不能**放进那张 `<button>` 里：没被选为目标时它是 `disabled`，
+            //    而禁用元素（含其子元素）收不到鼠标事件 ⇒ 点不开技能描述。
+            //    所以外面包一层 `.player-slot` 当定位父级，提示与按钮是兄弟。
+            const skillTipHere = skillTipOf(p.seatId);
             return (
-              <button
-                key={p.seatId}
-                className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${teamClass} ${factionClass}`}
-                onClick={isTarget ? () => handleTargetClick(p) : undefined}
-                disabled={!isTarget}
-              >
-                <div className="p-top">
-                  {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
-                      悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
-                  <HeroChips chips={heroChipsOf(p, snapshot.mode)} />
-                  <span className="p-info">
-                    <span className="p-name">
-                      {p.name}
-                      {isCurrent && <span className="dot">●</span>}
-                      {isLord && p.isAlive && <span className="lord-tag">主</span>}
-                      {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
-                        <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
-                      )}
-                      {isGuozhan && p.faction && (
-                        <span className={`faction-badge ${p.faction}`}>
-                          {FACTION_NAME[p.faction]}
-                        </span>
-                      )}
-                    </span>
-                    <span className="p-hp">
-                      {Array.from({ length: p.maxHp }).map((_, i) => (
-                        <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
-                      ))}
-                    </span>
-                    <span className="p-hand">手 {p.handCount}</span>
-                  </span>
-                </div>
-                {/* 装备区（花色 + 点数 + 牌名，与自己的面板同一个组件） */}
-                {p.equipment.length > 0 && (
-                  <div className="p-equip">
-                    {p.equipment.map((c) => (
-                      <EquipChip key={c.id} card={c} mode={snapshot.mode} bind={bindTip} />
-                    ))}
-                  </div>
-                )}
-                {/* 国战标记（公开信息，用户 2026-09-21 要求）：看得到对手手上还有哪些标记 */}
-                {p.markers && p.markers.length > 0 && (
-                  <div className="p-markers">
-                    {p.markers.map((m) => (
-                      <span
-                        key={m.id}
-                        className={`marker-chip mark-${m.id}`}
-                        {...bindTip(
-                          `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
-                          MARKER_DESC[m.id] ?? '',
+              <div className="player-slot" key={p.seatId}>
+                <button
+                  className={`player ${isCurrent ? 'current' : ''} ${!p.isAlive ? 'dead' : ''} ${isTarget ? 'targetable' : ''} ${isPickedTarget ? 'picked-target' : ''} ${isRelated ? 'related' : ''} ${p.chained ? 'chained' : ''} ${chainCls} ${teamClass} ${factionClass}`}
+                  onClick={isTarget ? () => handleTargetClick(p) : undefined}
+                  disabled={!isTarget}
+                >
+                  {/* 传导脉冲（口径④）：绝对定位、不吃点击，逐棒按引擎顺序闪 */}
+                  {chainHit && (
+                    <span
+                      className={`chain-hit ${chainHit.cls}`}
+                      style={{ animationDelay: `${chainHit.delayMs}ms` }}
+                    />
+                  )}
+                  <div className="p-top">
+                    {/* 武将小卡：国战画**两张**（主将 / 副将），暗置那张只显示「暗」；
+                        悬浮（手机长按）能看到明置武将的技能名与效果——用户 2026-09-21 要求 */}
+                    <HeroChips chips={heroChipsOf(p, snapshot.mode)} />
+                    <span className="p-info">
+                      <span className="p-name">
+                        {p.name}
+                        {isCurrent && <span className="dot">●</span>}
+                        {isLord && p.isAlive && <span className="lord-tag">主</span>}
+                        {!p.isAlive && p.role && snapshot.mode === 'junzheng' && (
+                          <span className={`role-badge role-${p.role}`}>{ROLE_NAME[p.role]}</span>
                         )}
-                      >
-                        {m.label}
-                        {m.count > 1 && <span className="marker-count">{m.count}</span>}
+                        {/* 当前**公开**性别（♂/♀；双暗＝未确定画「?」）。判据在引擎
+                            （`publicGender`：只亮一张按那张、双亮按主将），界面只显示——
+                            离间这类「只能选男性」的技能全靠它，玩家一眼看出「为什么这个人点不了」。 */}
+                        {isGuozhan && (
+                          <span
+                            className={`gender-mark ${p.gender ?? 'unknown'}`}
+                            title={
+                              p.gender === 'male'
+                                ? '男性'
+                                : p.gender === 'female'
+                                  ? '女性'
+                                  : '性别未确定（武将牌未明置）'
+                            }
+                          >
+                            {p.gender === 'male' ? '♂' : p.gender === 'female' ? '♀' : '?'}
+                          </span>
+                        )}
+                        {isGuozhan && p.faction && (
+                          <span className={`faction-badge ${p.faction}`}>
+                            {FACTION_NAME[p.faction]}
+                          </span>
+                        )}
+                        {/* 横置（铁索连环状态）：公开信息，与自己的武将面板上那枚「横」同款。
+                            以前对手这一行**没有任何横置标识**——「谁被铁索连上了」只能靠日志认
+                            （用户 2026-09-24 报的正是这条）。 */}
+                        {p.chained && <ChainBadge bind={bindTip} />}
+                        {/* 【飞影】（可能来自【鹤翼·曹洪】，不是他自己的武将技）：别的角色算到他的距离 +1。
+                            用户 2026-09-26 口径：悬停/点击要说清**来源**。 */}
+                        {p.feiying && (
+                          <span
+                            className="feiying-badge"
+                            {...bindTip(
+                              '飞影',
+                              `其他角色计算与他的距离 +1（来源：【鹤翼】${
+                                sourceName(p.feiyingFrom) ?? ''
+                              }）`,
+                            )}
+                          >
+                            飞影
+                          </span>
+                        )}
+                        {/* 【调虎离山】：本回合不计入距离与座次、不能使用牌也不能被指定。
+                            很轻的一枚「移」标——没有它牌桌上看不出谁不在座次里（距离/队列/围攻都变了）。 */}
+                        {p.removedFromSeating && (
+                          <span
+                            className="removed-badge"
+                            {...bindTip('移出座次', '本回合不计入距离与座次、不能使用牌、不能成为目标（【调虎离山】）')}
+                          >
+                            移
+                          </span>
+                        )}
+                        {/* 队列（连续相邻同势力 ≥ 2 人）：很轻的一枚「队」标，不带动画
+                            （用户 2026-09-24 口径 §六：国战桌面信息本来就多） */}
+                        {p.inFormation && (
+                          <span
+                            className="queue-badge"
+                            {...bindTip('队列', '与相邻的同势力角色组成队列（阵法技的前提）')}
+                          >
+                            队
+                          </span>
+                        )}
                       </span>
-                    ))}
-                  </div>
-                )}
-                {/* 武将牌上的牌区（公开信息，与自己的面板**同一份列表**）：田/权/创/节…
-                    以前对手这里看不到，于是「对方陆逊有几张节（满 3 就不再被谦逊挡）」这类
-                    关键信息只能靠日志猜（真机验收时发现）。 */}
-                {zoneChips.length > 0 && (
-                  <div className="p-zones">
-                    {zoneChips.map((c) => (
-                      <span
-                        key={c.key}
-                        className="zone-chip"
-                        {...bindTip(c.label.split('·')[0]!, c.tip)}
-                      >
-                        {c.label}
+                      <span className="p-hp">
+                        {Array.from({ length: p.maxHp }).map((_, i) => (
+                          <span key={i} className={`hp-cell ${i < p.hp ? 'on' : ''}`} />
+                        ))}
                       </span>
-                    ))}
+                      <span className="p-hand">手 {p.handCount}</span>
+                    </span>
                   </div>
-                )}
-                {/* 判定区 */}
-                {p.judgment.length > 0 && (
-                  <div className="p-judge">
-                    {p.judgment.map((c) => (
-                      <span
-                        key={c.id}
-                        className="judge-icon"
-                        {...bindTip(cardShortName(c), cardDescription(c, snapshot.mode))}
-                      >
-                        {cardShortName(c)}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {!p.isAlive && <div className="p-dead">阵亡</div>}
-              </button>
+                  {/* 装备区（花色 + 点数 + 牌名，与自己的面板同一个组件） */}
+                  {p.equipment.length > 0 && (
+                    <div className="p-equip">
+                      {p.equipment.map((c) => (
+                        <EquipChip key={c.id} card={c} mode={snapshot.mode} bind={bindTip} />
+                      ))}
+                    </div>
+                  )}
+                  {/* 国战标记（公开信息，用户 2026-09-21 要求）：看得到对手手上还有哪些标记 */}
+                  {p.markers && p.markers.length > 0 && (
+                    <div className="p-markers">
+                      {p.markers.map((m) => (
+                        <span
+                          key={m.id}
+                          className={`marker-chip mark-${m.id}`}
+                          {...bindTip(
+                            `【${m.label}】${m.count > 1 ? ` ×${m.count}` : ''}`,
+                            MARKER_DESC[m.id] ?? '',
+                          )}
+                        >
+                          {m.label}
+                          {m.count > 1 && <span className="marker-count">{m.count}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* 武将牌上的牌区（公开信息，与自己的面板**同一份列表**）：田/权/创/节…
+                      以前对手这里看不到，于是「对方陆逊有几张节（满 3 就不再被谦逊挡）」这类
+                      关键信息只能靠日志猜（真机验收时发现）。 */}
+                  {zoneChips.length > 0 && (
+                    <div className="p-zones">
+                      {zoneChips.map((c) => (
+                        <span
+                          key={c.key}
+                          className="zone-chip"
+                          {...bindTip(c.label.split('·')[0]!, c.tip)}
+                        >
+                          {c.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* 判定区 */}
+                  {p.judgment.length > 0 && (
+                    <div className="p-judge">
+                      {p.judgment.map((c) => (
+                        <span
+                          key={c.id}
+                          className="judge-icon"
+                          {...bindTip(cardShortName(c), cardDescription(c, snapshot.mode))}
+                        >
+                          {cardShortName(c)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {!p.isAlive && <div className="p-dead">阵亡</div>}
+                </button>
+                {/* 技能提示（口径①~④）：他刚发动的技能浮在他这张牌右下角——那块地方是布局上
+                    天然的留白（名字/血量在左上、装备与判定从左边排起），不盖手牌、不盖血量。
+                    点它展开完整描述；`skillTips.ts` 判据说了什么时候收（结算完 + 兜底超时）。 */}
+                {skillTipHere && <SkillTipChip {...skillTipHere} />}
+              </div>
             );
           })}
         </div>
+
+        {/* 连环传导（**牌桌中央**，用户 2026-09-24 口径④）：按**引擎给的顺序**逐棒点亮——
+            源头 + 每一名被传导到的横置角色，延时 = 序号 × 步长。顺序来自快照的 `chain`
+            （引擎 `queueChainSpread` 里写下的实际结算名单），界面不自己排。
+            与拼点区/牌池同一处：`.board` 主列中部。 */}
+        {chainFx.spread && (
+          <ChainSpreadTable
+            steps={chainFx.spread.steps}
+            players={snapshot.players}
+            meSeatId={snapshot.seatId}
+          />
+        )}
 
         {/* 牌桌上公开摆着的牌池（【五谷丰登】，用户 2026-09-23）：固定顺序平铺、依次点牌拿走、
             拿走的留在原位标上「谁拿走」。所有人都看得到；能不能点由快照的 interactive 说了算。 */}
@@ -1382,7 +1717,36 @@ export function Game() {
               候选牌不一定在手牌里，所以这里单独铺一行牌面，不复用手牌区 */}
               {/* ⚠️ `pickFromPool`（五谷那类「从牌桌上那排牌里拿」）不画这个通用框——
                   牌桌中央的牌池那排牌**就是**选择界面，避免同一个选择出现两套 UI */}
-              {prompt.kind === 'pickCards' && prompt.pickCards && !prompt.pickFromPool && (
+              {/* 多目标盲选（【突袭】那类）：每家一块**独立牌背区**，点选后统一确认
+                  （用户 2026-09-23：「多目标各自独立牌背区、每名目标选 1 张」） */}
+              {prompt.kind === 'pickCards' && prompt.pickCards && prompt.zonePick && (
+                <div className="pick-cards">
+                  <ZonePickPanel
+                    layout={prompt.zonePick}
+                    players={snapshot.players}
+                    onPick={() => {}}
+                    pickedIds={pickSel}
+                    onToggle={togglePickCard}
+                    bindTip={bindTip}
+                  />
+                  <button
+                    className="primary"
+                    aria-disabled={
+                      pickSel.length < (prompt.pickMin ?? 0) ||
+                      pickSel.length > (prompt.pickMax ?? 0)
+                    }
+                    onClick={confirmPickCards}
+                  >
+                    确定（已选 {pickSel.length} / {prompt.pickMin}
+                    {prompt.pickMin === prompt.pickMax ? '' : `-${prompt.pickMax}`} 张）
+                  </button>
+                </div>
+              )}
+
+              {prompt.kind === 'pickCards' &&
+                prompt.pickCards &&
+                !prompt.pickFromPool &&
+                !prompt.zonePick && (
                 <div className="pick-cards">
                   {/*
                     **盲选**（`pickHidden`，用户 2026-09-22 的通用机制）：候选来自其他角色的
@@ -1429,13 +1793,11 @@ export function Game() {
                           key={card.id}
                           className={`card ${isRed(card) ? 'red' : 'black'} legal ${on ? 'picked' : ''} ${catClass}`}
                           aria-label={cardLabel(card)}
-                          onMouseEnter={
-                            bindTip(
-                              `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
-                              cardDescription(card, snapshot.mode),
-                            ).onMouseEnter
-                          }
-                          onMouseLeave={hideTip}
+                          // 整套 bind（鼠标 + 触摸）：只挂鼠标那一半的话，手机点出来的说明关不掉
+                          {...bindTip(
+                            `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}`,
+                            cardDescription(card, snapshot.mode),
+                          )}
                           onClick={() => togglePickCard(card.id)}
                         >
                           <span className="c-idx">
@@ -1549,8 +1911,10 @@ export function Game() {
                 </div>
               )}
 
-              {/* 出牌阶段：结束出牌（主动技能在武将面板里发动） */}
-              {prompt.kind === 'play' && !skillMode && !selected && !confirmUse && (
+              {/* 出牌阶段：结束出牌（主动技能在武将面板里发动）。
+                  ⚠️ 选中态（含无需目标的牌）下藏起来：这时「结束出牌」与「使用」并排会点错，
+                  要收手先点「取消」——与需要目标的牌一直是同一套节奏 */}
+              {prompt.kind === 'play' && !skillMode && !selected && (
                 <>
                   <button className="ghost" onClick={() => sendIntent({ type: 'endPhase' })}>
                     结束出牌
@@ -1583,13 +1947,65 @@ export function Game() {
                         : ' · 请点手牌')}
                     {skillMode.skill.minTargets > 0 &&
                       skillMode.targetIds.length < skillMode.skill.minTargets &&
-                      ' · 请点角色'}
+                      // 有序目标的技能（离间）按位置给提示：「请选择【决斗】的目标」……
+                      // 文案来自引擎的 targetSlotLabels，界面不自己编规则文本
+                      (skillSlotLabel ? ` · 请选择${skillSlotLabel}` : ' · 请点角色')}
                   </span>
+                  {skillSlotChips.length > 0 && (
+                    <span className="target-slots">
+                      {skillSlotChips.map((c) => (
+                        <span className="slot-chip" key={c.id}>
+                          <b>{c.index + 1}</b> {c.name}
+                          {c.label && <em> · {c.label}</em>}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                  {skillPreviewText && <span className="slot-arrow">{skillPreviewText}</span>}
                   {skillMode.skill.desc && (
                     <span className="use-effect-desc">{skillMode.skill.desc}</span>
                   )}
+                  {/* 【甘露】这类「交换双方整个装备区」的技能：两个目标都定下来之后，
+                      在中央把**双方完整装备区**按牌名列出来再让玩家确认（用户 2026-09-25 口径：
+                      换的是整个装备区、玩家不挑具体装备，所以界面要把「换的是什么」说清楚）。 */}
+                  {skillMode.skill.preview === 'equipSwap' && skillMode.targetIds.length === 2 && (
+                    <div className="equip-swap">
+                      {skillMode.targetIds.map((seatId) => {
+                        const t = snapshot.players.find((p) => p.seatId === seatId);
+                        const equips = t?.equipment ?? [];
+                        return (
+                          <div className="es-side" key={seatId}>
+                            <span className="es-name">{t?.name ?? seatId}</span>
+                            {equips.length > 0 ? (
+                              <span className="es-list">
+                                {equips.map((c) => (
+                                  <span className="es-item" key={c.id}>
+                                    {cardShortName(c)}
+                                  </span>
+                                ))}
+                              </span>
+                            ) : (
+                              <span className="es-empty">（装备区为空）</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <span className="es-arrow" aria-hidden="true">⇄</span>
+                      <span className="es-note">
+                        {equipSwapNote(
+                          snapshot.players.find((p) => p.seatId === skillMode.targetIds[0])?.equipment
+                            .length ?? 0,
+                          snapshot.players.find((p) => p.seatId === skillMode.targetIds[1])?.equipment
+                            .length ?? 0,
+                          me.maxHp - me.hp,
+                        )}
+                      </span>
+                    </div>
+                  )}
                   <button className="primary" disabled={!skillCanConfirm()} onClick={confirmSkill}>
-                    确认技能
+                    {skillMode.skill.preview === 'equipSwap'
+                      ? '交换'
+                      : `确认${skillMode.skill.name}`}
                   </button>
                   <button className="ghost" onClick={() => setSkillMode(null)}>
                     取消
@@ -1659,23 +2075,9 @@ export function Game() {
                 </>
               )}
 
-              {/* 生效前的确认：主动发起的效果先说明再发（【杀】【酒】/装装备，见 effectConfirm.ts） */}
-              {confirmUse && prompt.kind === 'play' && (
-                <div className="use-confirm">
-                  <div className="use-confirm-title">{confirmUse.title}</div>
-                  <div className="use-confirm-desc">{confirmUse.desc}</div>
-                  <div className="use-confirm-actions">
-                    <button className="primary" onClick={confirmUse.ok}>
-                      确认使用
-                    </button>
-                    <button className="ghost" onClick={() => setConfirmUse(null)}>
-                      取消
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 选目标提示 */}
+              {/* 选中态 = 两步流程的第一步（**所有**要打出去的牌都经过这里，包括【无中生有】
+                  这类无需目标的牌）：提示 + （【杀】/【酒】/装备的）效果说明 + 「使用/确定」+「取消」。
+                  点目标**不再直接出牌**，点这张牌也只到这里为止——误触到这一步还能取消。 */}
               {selected && prompt.kind === 'play' && (
                 <>
                   <span className="hint">{selectedHint()}</span>
@@ -1703,6 +2105,17 @@ export function Game() {
                 (me.heroId === 'zhugeke' || me.deputyHeroId === 'zhugeke') && (
                   <button className="ghost" onClick={() => sendIntent({ type: 'aocai' })}>
                     【傲才】看牌堆顶两张
+                  </button>
+                )}
+              {/* 左慈·【役鬼】：把这次响应「视为打出」——点了之后由左慈自己挑移去哪张「魂」
+                  （引擎校验：牌名本回合没用过、有魂；不合法会被拒并说明原因）。 */}
+              {(prompt.kind === 'respondSha' ||
+                prompt.kind === 'respondDeath' ||
+                prompt.kind === 'respondTrick' ||
+                prompt.kind === 'wuxieQueue') &&
+                (me.hunCount ?? 0) > 0 && (
+                  <button className="ghost" onClick={() => sendIntent({ type: 'yiguiRespond' })}>
+                    【役鬼】用「魂」响应
                   </button>
                 )}
               {/* 弃权按钮（响应类提示） */}
@@ -1784,13 +2197,11 @@ export function Game() {
                   className={`card ${isRed(card) ? 'red' : 'black'} ${dimmed ? 'dim' : 'legal'} ${isPick ? 'picked' : ''} ${isSkillCard ? 'picked' : ''} ${fireClass} ${thunderClass} ${catClass} ${isCargo ? 'cargo' : ''}`}
                   aria-disabled={cardDisabled}
                   aria-label={cardLabel(card)}
-                  onMouseEnter={
-                    bindTip(
-                      `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}${isCargo ? '（木牛流马·辎）' : ''}`,
-                      cardDescription(card, snapshot.mode),
-                    ).onMouseEnter
-                  }
-                  onMouseLeave={hideTip}
+                  // 整套 bind（鼠标 + 触摸）：手机点一下就有说明，点空白/再点一次就收
+                  {...bindTip(
+                    `${SUIT_NAME[card.suit]}${rankLabel(card.rank)} · ${name}${isCargo ? '（木牛流马·辎）' : ''}`,
+                    cardDescription(card, snapshot.mode),
+                  )}
                   onClick={() => {
                     // 【丈八蛇矛】模式优先：这时候点牌是「凑两张」而不是出牌
                     if (zhangbaMode) {
@@ -1832,6 +2243,30 @@ export function Game() {
       <aside className="side">
         <SkillButtons skills={skillRows} />
 
+        {/* 测试场景编辑器（开发工具）：入口只在开发模式出现，正式对局看不到 */}
+        {devTools ? (
+          <button
+            className="ghost dev-setup-toggle"
+            title="开发工具：给指定角色发指定的牌（场景构造，日志里会打 TEST_DEAL_OVERRIDE）"
+            onClick={() => setDevOpen((v) => !v)}
+          >
+            测试场景编辑器
+          </button>
+        ) : null}
+        {devTools && devOpen ? (
+          <TestScenarioPanel
+            players={snapshot.players.map((p) => ({ seatId: p.seatId, name: p.name }))}
+            defaultSeatId={snapshot.seatId}
+            catalog={devCatalog}
+            onDeal={(seatId, cardId, zone) =>
+              sendIntent({ type: 'testScenario', deals: [{ seatId, cardId, zone }] })
+            }
+            onJie={(seatId, count) => sendIntent({ type: 'testScenario', jie: [{ seatId, count }] })}
+            onHun={(seatId, count) => sendIntent({ type: 'testScenario', hun: [{ seatId, count }] })}
+            onClose={() => setDevOpen(false)}
+          />
+        ) : null}
+
         <div className="side-main">
           {/* 出牌记录 */}
           <div className="center">
@@ -1854,9 +2289,21 @@ export function Game() {
             me={me}
             mode={snapshot.mode}
             slots={heroSlots}
-            targetable={canPickSelf && !selected!.picked.includes(me.seatId)}
-            picked={!!selected?.picked.includes(me.seatId)}
-            onSelect={canPickSelf ? () => pickTarget(me.seatId) : undefined}
+            // 连环状态的进入/解除动画与传导脉冲（用户 2026-09-24）：自己这一格也要有——
+            // 我就是横置角色时，传导到我这一棒同样按引擎顺序闪（`chainFx.hits[me.seatId]`）。
+            chainFx={{ cls: chainFx.cardClass[me.seatId], hit: chainFx.hits[me.seatId] }}
+            // 技能提示（用户 2026-09-25 口径①~④）：轮到我发动的技能同样浮在自己面板上，
+            // 用的是与对手那张牌上**完全同一个**组件与判据（只是位置换成面板右下角）。
+            skillTip={skillTipOf(me.seatId) ?? undefined}
+            targetable={canPickSelf}
+            // 「这条询问与我有关」：徐盛·疑城保护的是自己时，自己的面板也轻微描边
+            // （与对手那一行的 .player.related 同一枚表现；判据同样来自引擎的 relatedSeats）
+            related={prompt?.relatedSeats?.includes(me.seatId) ?? false}
+            picked={
+              !!selected?.picked.includes(me.seatId) || !!skillMode?.targetIds.includes(me.seatId)
+            }
+            // 选牌模式与技能模式都走 handleTargetClick 的同一套分派（点自己＝选中自己）
+            onSelect={canPickSelf ? () => handleTargetClick(me) : undefined}
             // 装备牌自带可用主动技（木牛流马）→ 点这张装备牌＝发动它（用户 2026-09-22 报的缺口）
             equipUse={{
               skillIds: skillIds,

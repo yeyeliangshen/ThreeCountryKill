@@ -1,4 +1,5 @@
-import type { Card, DamageAttribute, Suit, TrickType } from '@sgs/protocol';
+import type {
+  ZonePickLayout, Card, DamageAttribute, Suit, TrickType } from '@sgs/protocol';
 import type { GameState, Player } from './model';
 
 // 事件时序点（时机）。
@@ -336,6 +337,20 @@ export interface SkillApi {
     options: { id: string; label: string }[],
     resolve: (state: GameState, player: Player, optionId: string) => void,
     returnTo?: string,
+    /** 回答内容保密（选项里带隐藏信息时用，如左慈·役鬼的「魂」） */
+    secret?: boolean,
+    /**
+     * 「操作别人区域里的牌」的**分区布局**（用户 2026-09-23 口径）：不同角色横向分栏、
+     * 同一角色内部按 hand/equip/judge 纵向分区。只是布局说明——回答仍走 `chooseOption(opt.id)`。
+     * 手牌那一区只给 optionId（界面画牌背），装备/判定区带牌面。
+     * 判据与选项同源（`targetCardOptions` / `zoneLayoutOf` 派生自同一份 `targetCardZone`）。
+     */
+    zonePick?: ZonePickLayout,
+    /**
+     * 与这条询问有关的**其他角色**（纯展示：界面把他们轻微高亮，**不影响可点性**）。
+     * 徐盛·【疑城】用它标出「被保护的那位」（用户 2026-09-25 口径）。
+     */
+    relatedSeats?: string[],
   ) => void;
   /**
    * 让某个角色从给定的一组牌里选若干张。
@@ -365,6 +380,11 @@ export interface SkillApi {
       hidden?: boolean;
       ownerSeatId?: string;
       visibleIds?: string[];
+      /**
+       * 多目标时的**分区布局**（用户 2026-09-23）：每一名目标一块牌位（横向分栏），
+       * 每块只有规则允许的区域。【突袭】用它做到「每家一块独立牌背区、每家选 1 张」。
+       */
+      zonePick?: ZonePickLayout;
     },
   ) => void;
   /**
@@ -621,6 +641,14 @@ export interface SkillApi {
     initiatorSeatId: string,
     executorSeatId: string,
     onDone: (state: GameState, executed: boolean) => void,
+    opts?: {
+      /**
+       * 「拒绝执行会怎样」——写进**执行者**看到的询问里（用户 2026-09-25 口径：
+       * 「这里尤其应该把拒绝的后果写出来，否则玩家根本不知道不执行意味着什么」）。
+       * 例：吴国太·补益 ⇒「不执行则 孙权 回复 1 点体力」。
+       */
+      refuseHint?: string;
+    },
   ) => void;
   /**
    * 令**多名**角色依次决定是否执行**同一条**军令（王平·将略）。
@@ -637,6 +665,8 @@ export interface SkillApi {
     opts?: {
       /** 拒绝执行时的额外结算（诸葛恪·黩武）；不填＝公共规则（什么都不发生） */
       onRefuse?: (st: GameState, executorSeatId: string, next: () => void) => void;
+      /** 「拒绝执行会怎样」——同 `armyOrder.refuseHint`，写进执行者的询问里 */
+      refuseHint?: string;
     },
   ) => void;
   /**

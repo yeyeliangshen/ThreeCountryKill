@@ -67,8 +67,15 @@ export class Room {
   /** 开局那一刻的配置快照（只读）；`started` 之后一切以此为准 */
   frozenConfig: Readonly<GuozhanRoomConfig> | null = null;
 
-  constructor(roomCode: string, maxSeats = 8) {
+  /**
+   * 开发工具开关（「测试场景编辑器」）：由服务端启动时决定（`SGS_DEV_TOOLS` / 非 production），
+   * 房间只负责把它转达给引擎与大厅。**正式对局恒为 false**，见 docs §5.206。
+   */
+  readonly devTools: boolean;
+
+  constructor(roomCode: string, maxSeats = 8, devTools = false) {
     this.roomCode = roomCode;
+    this.devTools = devTools;
     this.maxSeats = maxSeats;
     this.seats = Array.from({ length: maxSeats }, (_, i) => ({
       seatId: String(i + 1),
@@ -359,6 +366,8 @@ export class Room {
       freePick: this.freePick,
       // 扩展开关用房间里存的那份（房主在大厅设过），**开局即冻结**
       config: this.frozenConfig ?? this.config,
+      // 开发工具（测试场景布置）：只有开发模式的服务器才开，正式对局传 false
+      testScenario: this.devTools,
     });
     this.started = true;
     this.frozenConfig = freezeConfig(this.config);
@@ -412,6 +421,7 @@ export class Room {
           mySeatId: s.seatId,
           mode: this.pendingMode,
           freePick: this.freePick,
+          devTools: this.devTools,
           config: this.currentConfig() as GuozhanRoomConfig,
 
         });

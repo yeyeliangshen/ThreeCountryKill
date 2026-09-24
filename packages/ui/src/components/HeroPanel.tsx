@@ -23,6 +23,9 @@ import {
   type PlayerView,
 } from '@sgs/protocol';
 import { EquipChip } from './EquipChip';
+import { ChainBadge } from './ChainFx';
+import { SkillTipChip } from './SkillTip';
+import type { SkillTip } from '../skillTips';
 import { equipSkillButtonOf } from '../equipSkill';
 import { specialZoneChips } from '../specialZones';
 import { heroArt } from './heroArt';
@@ -51,6 +54,11 @@ export interface HeroPanelProps {
   targetable?: boolean;
   picked?: boolean;
   /**
+   * **当前这条询问与他有关**（引擎下发的 `relatedSeats`，纯展示）：徐盛·【疑城】保护的是**自己**时，
+   * 自己的面板也要轻微描边——和对手那一行的 `.player.related` 同一枚表现。
+   */
+  related?: boolean;
+  /**
    * **装备区的牌可以当代价**时（技能声明了 `costFrom: 'handEquip'`，用户 2026-09-21 口径），
    * 把已装备的牌**点亮成可点按钮**：点一下就是选中它当代价。
    *
@@ -72,6 +80,34 @@ export interface HeroPanelProps {
     /** 服务端下发的可用技能 id 列表（`prompt.legalSkillIds`） */
     skillIds: readonly string[];
     onUse: (skillId: string) => void;
+  };
+  /**
+   * 连环状态的进入 / 解除动画类与传导脉冲（用户 2026-09-24 口径①③④）。
+   *
+   * 只接受**算好的类名与延时**（判据与顺序都在 `chainState.ts` / `useChainFx` 里，
+   * 见 `packages/ui/src/components/ChainFx.tsx`）——面板自己不判断连环状态，
+   * 免得又变成第二套规则。`chained` 的常驻标记仍由 `me.chained` 直接决定。
+   */
+  chainFx?: {
+    /** 贴在面板根上的动画类（`chain-in-a` / `chain-out-b` …）；没有就不传 */
+    cls?: string;
+    /** 传导脉冲：类名 + 延时（延时 = 引擎给的传导序号 × 步长） */
+    hit?: { cls: string; delayMs: number };
+  };
+  /**
+   * **我自己刚发动 / 刚触发的技能提示**（用户 2026-09-25 口径①~④）。
+   *
+   * 只接受上层算好的那一条（判据在 `ui/src/skillTips.ts`，组件是 `components/SkillTip.tsx`）——
+   * 面板自己不判断「哪个技能该显示、什么时候收」，免得又变成第二套规则。
+   * 对手那一行用的是同一个组件，只是挂在对方那张牌的右下角（见 Game.tsx 的 `.player-slot`）。
+   */
+  skillTip?: {
+    tip: SkillTip;
+    /** 发动者名（只用于无障碍播报） */
+    seatName: string;
+    /** 技能完整描述（来自引擎的武将技能文本） */
+    desc: string;
+    onToggle: () => void;
   };
 }
 
@@ -119,11 +155,15 @@ export function HeroPanel({
   onSelect,
   targetable,
   picked,
+  related,
   equipPick,
   equipUse,
+  chainFx,
+  skillTip,
 }: HeroPanelProps) {
   const { bind, tipNode } = useHoverTip();
   const teamClass = mode === '2v2' ? `team-${me.team ?? 0}` : '';
+  const relatedClass = related ? ' related' : ''; // 见 props.related（纯展示的描边）
   // 国战用玩家的阵营（可能是野心家），其他模式用武将自身的阵营
   const faction = mode === 'guozhan' ? me.faction : (slots[0]?.faction ?? null);
   const factionClass = mode === 'guozhan' && me.faction ? `faction-${me.faction}` : '';
@@ -131,9 +171,17 @@ export function HeroPanel({
 
   return (
     <div
-      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''}`}
+      className={`hero-panel ${teamClass} ${factionClass} ${me.isAlive ? '' : 'dead'} ${targetable ? 'targetable' : ''} ${picked ? 'picked-target' : ''}${relatedClass} ${me.chained ? 'chained' : ''} ${chainFx?.cls ?? ''}`}
       onClick={onSelect}
     >
+      {/* 连环传导的脉冲（口径④）：延时由引擎给的顺序算出来，逐棒在自己面板上闪一下。
+          绝对定位 + `pointer-events: none`（见 styles.css），不占位、不挡点击。 */}
+      {chainFx?.hit && (
+        <span
+          className={`chain-hit ${chainFx.hit.cls}`}
+          style={{ animationDelay: `${chainFx.hit.delayMs}ms` }}
+        />
+      )}
       {/* 左列：顶部是国家徽章 + 竖排武将名，底部是装备判定 + 竖排血量 */}
       <div className="hero-info">
         {/* 特殊牌区（公开信息）：口径统一在 specialZones.ts —— 自己的面板与**对手那一行**
@@ -152,6 +200,24 @@ export function HeroPanel({
             <span className={`role-badge role-${me.role}`}>{ROLE_NAME[me.role]}</span>
           )}
           {faction && <span className={`faction-badge ${faction}`}>{FACTION_NAME[faction]}</span>}
+          {/* 当前**公开**性别（与对手那一行同一枚标记）。判据在引擎的 `publicGender`：
+              只明置一张按那张、双亮按**主将**、全暗置＝未确定（画「?」）。
+              离间之类「只能选男性」的技能全靠它，玩家一眼看出自己/别人为什么能/不能被点。 */}
+          {mode === 'guozhan' && (
+            <span
+              className={`gender-mark ${me.gender ?? 'unknown'}`}
+              {...bind(
+                '性别',
+                me.gender === 'male'
+                  ? '当前公开性别：男性（只明置一张时按那一张，主副均明置时按主将）'
+                  : me.gender === 'female'
+                    ? '当前公开性别：女性（只明置一张时按那一张，主副均明置时按主将）'
+                    : '性别未确定：两张武将牌都没明置，【离间】这类技能不能选你为目标',
+              )}
+            >
+              {me.gender === 'male' ? '♂' : me.gender === 'female' ? '♀' : '?'}
+            </span>
+          )}
           {/* ⚠️ 国战标记**不在这里放**（用户 2026-09-21）：它们已经和技能一起排在技能条上，
               在武将框里再放一份是重复信息。这里的「翻/横」是**状态**不是标记，留着。 */}
           {me.flipped && (
@@ -162,18 +228,49 @@ export function HeroPanel({
               翻
             </span>
           )}
-          {/* 横置状态（铁索连环）：属性伤害会沿横置的角色蔓延 */}
-          {me.chained && (
-            <span
-              className="marker-chip mark-chained"
-              {...bind(
-                '横置',
-                '处于铁索连环状态：受到属性伤害时会重置，并让其他横置的角色受到同样的伤害。',
-              )}
-            >
-              横
-            </span>
-          )}
+          {/* 横置状态（铁索连环）：属性伤害会沿横置的角色蔓延。
+              用户 2026-09-24：这枚徽标抽成了 `ChainBadge`（对手那一行现在也画同一枚），
+              文案与提示词只有一处（ui/src/chainState.ts）。 */}
+          {me.chained && <ChainBadge bind={bind} />}
+        {/* 【鹤翼】持有者本人：把**当前形态**写出来（常规＝自己吃飞影；队列＝飞影给同队列的别人）——
+            用户 2026-09-26 口径：两态互斥，界面必须让玩家分得清，别写成「全员都有飞影」。 */}
+        {me.heyiMode && (
+          <span
+            className={`heyi-badge ${me.heyiMode}`}
+            {...bind(
+              '鹤翼',
+              me.heyiMode === 'formation'
+                ? '【鹤翼·队列】与你处于同一队列的其他角色视为拥有【飞影】（你自己不再享受）'
+                : '【鹤翼·常规】你视为拥有【飞影】：其他角色计算与你的距离 +1',
+            )}
+          >
+            鹤翼·{me.heyiMode === 'formation' ? '队列' : '常规'}
+          </span>
+        )}
+        {/* 【飞影】（可能来自【鹤翼·曹洪】）：别的角色算到你的距离 +1 */}
+        {me.feiying && (
+          <span
+            className="feiying-badge"
+            {...bind('飞影', '其他角色计算与你的距离 +1（来源：【鹤翼】）')}
+          >
+            飞影
+          </span>
+        )}
+        {/* 本回合被【调虎离山】移出座次（与对手那一行同款）：自己也中招时要看得出来 */}
+        {me.removedFromSeating && (
+          <span className="removed-badge" {...bind('移出座次', '本回合不计入距离与座次、不能使用牌、不能成为目标（【调虎离山】）')}>
+            移
+          </span>
+        )}
+        {/* 队列标记（与对手那一行同款）：自己也在队列里时要一眼看得出来 */}
+        {me.inFormation && (
+          <span
+            className="queue-badge"
+            {...bind('队列', '与相邻的同势力角色组成队列（阵法技的前提）')}
+          >
+            队
+          </span>
+        )}
           <span className="hi-name">{slots.map((s) => s.name).join(' + ')}</span>
         </div>
 
@@ -240,6 +337,16 @@ export function HeroPanel({
       </div>
 
       {tipNode}
+      {/* 技能提示（口径①~④）：我自己发动的技能同样要看得见（别人有提示、自己没有会显得漏了）。
+          挂在面板右下角，与对手那张牌上的提示同一个组件、同一套判据。 */}
+      {skillTip && (
+        <SkillTipChip
+          tip={skillTip.tip}
+          seatName={skillTip.seatName}
+          desc={skillTip.desc}
+          onToggle={skillTip.onToggle}
+        />
+      )}
     </div>
   );
 }

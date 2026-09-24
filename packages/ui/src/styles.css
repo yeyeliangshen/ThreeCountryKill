@@ -739,7 +739,8 @@ button:disabled {
 /* —— 国战暗置的技能 ——
    暗置：虚线边 + 墨字，表示「技能还没生效，点一下预亮」。
    预亮：虚线金边 + 墨底金字，表示「时机到了引擎会问你发不发动」。
-   这两种都还得能点（预亮开关），所以不靠 aria-disabled 表达。 */
+   明置（锁定技自己的出牌阶段）：金底 + 虚线边 + 「明置」小标，表示「点它＝亮出这张武将牌」。
+   这三种都还得能点，所以不靠 aria-disabled 表达。 */
 .skill-chip.dark {
   border-style: dashed;
   color: var(--ink);
@@ -749,6 +750,32 @@ button:disabled {
   border-color: var(--gold);
   background: #2a2110;
   color: #f0c96a;
+}
+.skill-chip.reveal {
+  border-style: dashed;
+  border-color: #8a6a1a;
+  background: var(--gold);
+  color: #2a2110;
+}
+/* chip 上的动作小标（「明置」）：手机上要长按才看得到悬停说明，所以把动作写进 chip */
+.chip-action {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+/* 已生效的锁定技（用户 2026-09-25 口径：【红颜】这类是**持续生效**、没有「是否发动」这一步）。
+   一枚小「锁」标：与 .chip-action 的「明置」同款位置，但换成边框样式，表示是状态而不是动作。 */
+.chip-lock {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.9;
 }
 
 /* —— 牌桌 ——
@@ -1933,6 +1960,11 @@ select:focus-visible,
   pointer-events: none;
   z-index: 300;
 }
+/* 上方放不下（贴着屏幕上沿的元素）⇒ 翻到元素下方：原来这种情况下说明会被顶出可视区，
+   表现出来就是「点了没反应」（手机顶部那一排对手的牌与图标最容易撞上）。 */
+.hover-tip.below {
+  transform: translate(-50%, 22px);
+}
 .hover-tip-name {
   color: var(--gold);
   font-weight: 700;
@@ -2261,6 +2293,56 @@ select:focus-visible,
   object-fit: cover;
   display: block;
 }
+/* 多选模式：选中的牌背/牌面给金框高亮 + 序号（每家拿第几张一眼看出） */
+.zp-card.picked {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(200, 164, 92, 0.55);
+  filter: brightness(1.15);
+  position: relative;
+}
+.zp-card .zp-order {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: #2a2118;
+  color: #f3d9a4;
+  border: 1px solid #c8a45c;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+/* 窄屏：把牌位收小一号，让**两个角色的分栏能并排**（用户要的「横向分栏」在手机上也要成立）——
+   4 张牌背 × 2 栏 ≈ 300px，390 宽的屏放得下；不收的话每栏 166px，两栏就会被挤成上下叠。 */
+@media (max-width: 480px) {
+  .zone-pick {
+    gap: 6px;
+    padding: 6px;
+  }
+  .zp-target {
+    padding: 4px 5px;
+    gap: 4px;
+  }
+  .zp-zone {
+    gap: 3px;
+  }
+  .zp-back {
+    width: 26px;
+    height: 37px;
+  }
+  .zp-back-img {
+    width: 24px;
+    height: 35px;
+  }
+  .zp-face {
+    min-width: 38px;
+    font-size: 10px;
+    padding: 3px 4px;
+  }
+}
+
 /* 牌面（装备/判定/已公开）：稍宽，能读出牌名 */
 .zp-face {
   min-width: 46px;
@@ -2489,6 +2571,585 @@ select:focus-visible,
   }
 }
 
+/* —— 技能提示浮层（用户 2026-09-25 口径①~④）——
+   其他角色发动技能时，以前本地玩家只能看到最终结果（血量/手牌变了），认不出是哪个技能。
+   现在由**统一的技能事件源**驱动（快照的 `skillFx`，判据在 `ui/src/skillTips.ts`）：
+
+     ① 发动/触发：技能名在**发动者那张牌 / 他的武将面板附近**浮现一下（`.skill-tip`）
+     ② 点一下（或悬停/长按）展开完整技能描述（`.st-desc`）
+     ③ 引擎说还在等响应/多步结算 ⇒ `.settling`：呼吸的点 + 一行「结算中」，提示**保持**
+     ④ 结算完自动收起（判据里带兜底上限，绝不会长期占着牌桌）
+
+   位置：**那张牌自己的右下角**（`.player-slot` / `.hero-panel` 里绝对定位）。
+   为什么不悬在牌外：`.players-row` 会换行，悬在外面必然盖到隔壁那张牌的血量/手牌数；
+   牌内右下角是**布局上天然留白**的一块（名字/血量在左上、装备与判定从左边排起）。
+   `pointer-events` 只开在 `.skill-tip` 自己身上：牌桌（出牌、选目标、手牌）照常点。 */
+.player-slot {
+  /* 技能提示的定位父级（原来 flex 项目就是 `.player` 自己，现在多包一层） */
+  position: relative;
+  display: flex;
+  /* 槽位承担原来的尺寸规则，卡面填满槽位——换行/居中行为与以前完全一致 */
+  flex: 0 1 190px;
+  min-width: 150px;
+}
+.player-slot > .player {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+.skill-tip {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: min(240px, calc(100vw - 24px));
+  /* 只占自己那一小块：牌桌其余地方该怎么点还怎么点 */
+  pointer-events: none;
+}
+/* 只有技能名那一枚**可点**（点它展开 / 收起完整描述）。描述块自己**不接指针**——
+   它可能盖到中央那几块牌桌面板上，不能顺手把那里的点击吃掉（真机验过：
+   展开后的说明块 width≈186、height≈70，盖到哪一块都不该影响那里的操作）。 */
+.st-name {
+  /* 展开的说明块以它为锚往下挂（见 .st-desc） */
+  position: relative;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--gold);
+  background: linear-gradient(180deg, rgba(28, 34, 44, 0.96) 0%, rgba(16, 20, 26, 0.96) 100%);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  /* game-feel：浮现时轻轻弹一下（缓动 + 轻微过冲），不是硬闪 */
+  animation: skill-tip-in 0.22s cubic-bezier(0.34, 1.32, 0.64, 1) both;
+}
+.st-name:hover {
+  border-color: #f0d089;
+  color: #fff6dd;
+}
+/* 呼吸的点：一眼能看出「这条提示是活的」，与具体是哪个技能无关 */
+.st-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 6px rgba(212, 168, 75, 0.9);
+  animation: skill-tip-pulse 1.1s ease-in-out infinite;
+}
+.st-wait {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(212, 168, 75, 0.18);
+  color: #f0d089;
+  font-size: 10px;
+  font-weight: 400;
+}
+.skill-tip.settling .st-name {
+  border-color: #f0d089;
+  box-shadow: 0 0 10px rgba(212, 168, 75, 0.35);
+}
+/* 口径②：点开的完整技能描述。**从技能名那一枚往**下**挂**（`.st-name` 是定位父级）。
+   为什么不是「在容器里排在技能名上面」：容器是用 `bottom: 4px` 钉住下沿的，内容往**上**长
+   ——第一排对手的牌本来就在屏幕顶端，说明块会把技能名自己顶出视口（真机实测：
+   `.skill-tip` 的 y 变成 -17，技能名整枚看不见了）。挂到下面这一段落在牌桌中部
+   （中央那几块面板都是 `pointer-events: none`），并且**不接指针**、带 max-height 兜底。 */
+.st-desc {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  /* 绝对定位的元素会被**定位父级的宽度**（技能名那一枚，几十 px）挤成一竖条：
+     真机实测过 width≈59、height 顶满 max-height，读起来像一条被折断的句子。
+     所以宽度取内容宽度（上限 max-width），再从右边往左展开。 */
+  width: max-content;
+  max-width: min(240px, calc(100vw - 24px));
+  max-height: min(28vh, 150px);
+  overflow: auto;
+  pointer-events: none;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--gold);
+  background: rgba(18, 14, 10, 0.97);
+  color: #d8d0c0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-line;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+  animation: skill-tip-in 0.18s ease-out both;
+}
+/* 无障碍播报（口径①的「技能名」不只靠动画） */
+.st-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+@keyframes skill-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes skill-tip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.72);
+  }
+}
+/* 窄屏：提示块更小一点，别把那张牌挤满（390×844 实测用） */
+@media (max-width: 480px) {
+  .st-name {
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+  .st-desc {
+    font-size: 11px;
+  }
+}
+/* 无障碍（与拼点区/连环同一条）：开了「减少动态效果」时动静全关掉，
+   信息仍在（技能名与描述都是文字，不依赖动画） */
+@media (prefers-reduced-motion: reduce) {
+  .st-name,
+  .st-desc,
+  .st-dot,
+  .skill-tip.settling .st-name {
+    animation: none !important;
+  }
+}
+
+/* —— 连环（横置）状态的表现（用户 2026-09-24 口径①~④）——
+   绑定的是「连环状态」本身（`PlayerView.chained`），不是【铁索连环】这张牌：
+   任何令角色横置 / 重置的技能都走这一套。四层表现：
+
+     ① 进入：卡面「锁链收紧」——轻微倾斜 + 一段金属扫描带扫过（`chain-in-*`）
+     ② 常驻：一圈**虚线内描边** + 一枚「横」徽标（与武将面板上那枚同款）
+     ③ 解除：卡面「抖断」——横向抖动 + 亮闪（`chain-out-*`），描边与徽标同时消失
+     ④ 传导：牌桌中央的面板按**引擎给的顺序**逐棒点亮（`.cs-*`），
+        每一棒对应的卡面同时闪一下（`.chain-hit`，延时 = 引擎序号 × 步长）
+
+   为什么常驻标识用 outline：`.player.current` 用 box-shadow 画金框、`.player.targetable`
+   用 box-shadow 呼吸，再加一条 box-shadow 会互相覆盖；border 会改尺寸（牌桌会抖一像素）。
+   outline 不占位、可与它们共存。 */
+.player,
+.hero-panel {
+  /* `.chain-hit` 脉冲要绝对定位盖在卡面上 */
+  position: relative;
+}
+/* ② 常驻标识：虚线内描边（细、不占位、不遮任何文字），一眼看出「这张牌横着」 */
+.player.chained,
+.hero-panel.chained {
+  outline: 1px dashed rgba(127, 176, 217, 0.8);
+  outline-offset: -4px;
+}
+/* —— ④ 传导脉冲：盖在卡面/面板上的一圈光晕 + 金属边。
+   绝对定位 + pointer-events: none：不占位、绝不吃点击（牌桌交互不受影响）。 —— */
+.chain-hit {
+  position: absolute;
+  inset: -2px;
+  border-radius: 12px;
+  pointer-events: none;
+  opacity: 0;
+  /* ⚠️ 用 forwards 而不是 both：这些脉冲靠行内 `animation-delay` 错开，
+     `both` 会在**延时期间**就套上 0% 的关键帧（opacity 1）→ 所有棒一次性全亮，
+     顺序就看不出来了。forwards 让延时期间保持基样式（opacity 0），到点才闪。 */
+  animation: chain-hit 0.62s ease-out forwards;
+}
+.chain-hit.hit-a {
+  animation-name: chain-hit;
+}
+.chain-hit.hit-b {
+  animation-name: chain-hit-b;
+}
+/* 源头（吃到属性伤害的那位）用偏红的版本：它是这次伤害的落点 */
+.chain-hit.hit-src {
+  animation-name: chain-hit-src;
+}
+@keyframes chain-hit {
+  0% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 2px rgba(176, 216, 240, 0.95),
+      0 0 18px 4px rgba(127, 176, 217, 0.75);
+    background: rgba(127, 176, 217, 0.16);
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      inset 0 0 0 1px rgba(176, 216, 240, 0.2),
+      0 0 4px 0 rgba(127, 176, 217, 0.1);
+    background: transparent;
+  }
+}
+@keyframes chain-hit-b {
+  0% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 2px rgba(176, 216, 240, 0.95),
+      0 0 18px 4px rgba(127, 176, 217, 0.75);
+    background: rgba(127, 176, 217, 0.16);
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      inset 0 0 0 1px rgba(176, 216, 240, 0.2),
+      0 0 4px 0 rgba(127, 176, 217, 0.1);
+    background: transparent;
+  }
+}
+@keyframes chain-hit-src {
+  0% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 2px rgba(240, 186, 150, 0.95),
+      0 0 20px 5px rgba(217, 105, 58, 0.8);
+    background: rgba(217, 105, 58, 0.2);
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    background: transparent;
+  }
+}
+/* —— ① 进入 / ③ 解除：卡面本身的动作（倾斜收紧 / 抖断）。
+   只用 transform + filter：不碰 outline / box-shadow，所以与常驻描边、金框、呼吸动画都不打架。
+   `-a` / `-b` 两份内容相同的 keyframes：同一座次连着两次也能重新播一遍（动画名变了 → 重启）。 —— */
+.player.chain-in-a,
+.player.chain-in-b,
+.hero-panel.chain-in-a,
+.hero-panel.chain-in-b {
+  animation: chain-link-in 0.72s cubic-bezier(0.34, 1.32, 0.64, 1) both;
+}
+.player.chain-in-a,
+.hero-panel.chain-in-a {
+  animation-name: chain-link-in;
+}
+.player.chain-in-b,
+.hero-panel.chain-in-b {
+  animation-name: chain-link-in-b;
+}
+@keyframes chain-link-in {
+  0% {
+    transform: rotate(-2.6deg) scale(1.045);
+    filter: brightness(1.75) saturate(1.25);
+  }
+  38% {
+    transform: rotate(-1.2deg) scale(1.02);
+    filter: brightness(1.3);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes chain-link-in-b {
+  0% {
+    transform: rotate(-2.6deg) scale(1.045);
+    filter: brightness(1.75) saturate(1.25);
+  }
+  38% {
+    transform: rotate(-1.2deg) scale(1.02);
+    filter: brightness(1.3);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+.player.chain-out-a,
+.player.chain-out-b,
+.hero-panel.chain-out-a,
+.hero-panel.chain-out-b {
+  animation: chain-break 0.72s ease-out both;
+}
+.player.chain-out-b,
+.hero-panel.chain-out-b {
+  animation-name: chain-break-b;
+}
+@keyframes chain-break {
+  0% {
+    transform: rotate(0.6deg) translateX(0);
+    filter: brightness(1.5);
+  }
+  18% {
+    transform: translateX(-4px) rotate(-0.8deg);
+  }
+  36% {
+    transform: translateX(4px) rotate(0.8deg);
+  }
+  54% {
+    transform: translateX(-2px);
+  }
+  72% {
+    transform: translateX(2px);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes chain-break-b {
+  0% {
+    transform: rotate(0.6deg) translateX(0);
+    filter: brightness(1.5);
+  }
+  18% {
+    transform: translateX(-4px) rotate(-0.8deg);
+  }
+  36% {
+    transform: translateX(4px) rotate(0.8deg);
+  }
+  54% {
+    transform: translateX(-2px);
+  }
+  72% {
+    transform: translateX(2px);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+/* ①③ 的「一道金属扫描带」：卡面 ::after 上一道窄光带扫过去（只在这两个动画类在时才有 content） */
+.chain-in-a::after,
+.chain-in-b::after,
+.chain-out-a::after,
+.chain-out-b::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 32%,
+    rgba(198, 228, 246, 0.55) 50%,
+    transparent 68%
+  );
+  animation: chain-sweep 0.72s ease-out both;
+}
+.chain-out-a::after,
+.chain-out-b::after {
+  background: linear-gradient(
+    100deg,
+    transparent 32%,
+    rgba(255, 196, 150, 0.5) 50%,
+    transparent 68%
+  );
+}
+@keyframes chain-sweep {
+  0% {
+    opacity: 0.9;
+    transform: translateX(-110%);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(110%);
+  }
+}
+
+/* —— ④ 牌桌中央的**连环传导**面板：按引擎给的顺序逐棒点亮 ——
+   与拼点区/牌池同一处、同一套视觉语言（深色面板 + 金边）。
+   `pointer-events: none`：它只是演出，绝不许抢牌桌的点击（手牌/目标选择照常点）。 */
+.chain-spread-table {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(18, 24, 32, 0.94) 0%, rgba(26, 38, 50, 0.94) 100%);
+  border: 1px solid #6f9dc0;
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 24px rgba(127, 176, 217, 0.14);
+}
+.cs-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #bcd9ee;
+}
+.cs-title .cs-progress {
+  font-weight: 400;
+  color: #8fa7b8;
+}
+.cs-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+/* 一棒：一个角色。位置固定，靠宽度自适应；窄屏换行也不会溢出（flex-wrap） */
+.cs-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 176, 217, 0.45);
+  background: rgba(0, 0, 0, 0.25);
+  min-width: 62px;
+}
+.cs-node.src {
+  border-color: #d98a5a;
+  background: rgba(80, 40, 20, 0.28);
+}
+/* 前两棒之间画一节「链环」：直观表示伤害是从左边这一棒传到右边这一棒 */
+.cs-node .cs-link {
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 8px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #7fb0d9, #dceaf5);
+  opacity: 0.75;
+}
+.cs-node:first-child .cs-link {
+  display: none;
+}
+.cs-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #eaf4fb;
+  white-space: nowrap;
+}
+.cs-node.src .cs-name {
+  color: #ffd9c0;
+}
+.cs-order {
+  font-size: 10px;
+  color: #9fb6c6;
+}
+.cs-node.src .cs-order {
+  color: #e8a878;
+}
+.cs-me {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  font-size: 9px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--gold);
+  color: #1a1208;
+  font-weight: 700;
+}
+/* 逐棒点亮的闪光：延时由**引擎给的序号**算出来（行内 style），这里只定义形状 */
+.cs-flash {
+  position: absolute;
+  inset: -3px;
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  /* 同 `.chain-hit`：延时期间必须保持不可见，否则四棒会一起亮 */
+  animation: chain-flash 0.62s ease-out forwards;
+}
+.cs-flash.flash-src {
+  animation-name: chain-flash-src;
+}
+@keyframes chain-flash {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 16px 4px rgba(127, 176, 217, 0.85);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 4px 0 rgba(127, 176, 217, 0.15);
+  }
+}
+@keyframes chain-flash-src {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 16px 4px rgba(217, 138, 90, 0.85);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 4px 0 rgba(217, 138, 90, 0.15);
+  }
+}
+/* 窄屏：面板不铺满整行（免得看起来像一块挡住牌桌的东西），节点标题缩一档 */
+@media (max-width: 480px) {
+  .chain-spread-table {
+    align-self: center;
+    padding: 6px 8px;
+  }
+  .cs-title {
+    font-size: 12px;
+    letter-spacing: 0;
+  }
+  .cs-node {
+    padding: 3px 7px;
+    min-width: 54px;
+  }
+  .cs-name {
+    font-size: 11px;
+  }
+}
+/* 无障碍（与拼点区同一条）：开了「减少动态效果」时，动静全部关掉——顺序信息仍在
+   （面板里的「源头 / 1 / 2 …」是文字，不依赖动画），常驻描边与徽标也照旧。 */
+@media (prefers-reduced-motion: reduce) {
+  .chain-hit,
+  .cs-flash,
+  .chain-in-a::after,
+  .chain-in-b::after,
+  .chain-out-a::after,
+  .chain-out-b::after,
+  .player.chain-in-a,
+  .player.chain-in-b,
+  .player.chain-out-a,
+  .player.chain-out-b,
+  .hero-panel.chain-in-a,
+  .hero-panel.chain-in-b,
+  .hero-panel.chain-out-a,
+  .hero-panel.chain-out-b {
+    animation: none !important;
+  }
+}
+
 /* 特殊牌区（权 / 异 / 函 / 戮）：紧挨武将名的一条小徽章行 */
 .special-zones {
   display: flex;
@@ -2560,4 +3221,326 @@ select:focus-visible,
 .p-heroes .portrait-tag {
   font-size: 8px;
   padding: 0 3px;
+}
+
+/* ===== 测试场景编辑器（开发工具，docs §5.206）=====
+   只在开发模式渲染（Game 页里 `import.meta.env.DEV && lobby.devTools`），
+   正式对局看不到。做成固定浮层：不挤占牌桌布局，手机上可滚动。 */
+.dev-setup-toggle {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+}
+.dev-setup {
+  position: fixed;
+  right: 12px;
+  top: 64px;
+  z-index: 320;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(78vh, 640px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.ds-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ds-title {
+  font-size: 13px;
+  color: var(--gold);
+}
+.ds-close {
+  font-size: 12px;
+}
+.ds-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ds-label {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 56px;
+}
+.ds-seats,
+.ds-zones {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ds-seat,
+.ds-zone,
+.ds-card {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+.ds-seat.picked,
+.ds-zone.picked,
+.ds-card.picked {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(212, 175, 55, 0.16);
+}
+.ds-zone:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.ds-filter,
+.ds-count {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text);
+}
+.ds-filter {
+  flex: 1;
+  min-width: 160px;
+}
+.ds-count {
+  width: 56px;
+}
+.ds-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 176px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.ds-copies {
+  margin-left: 3px;
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+.ds-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ds-deal {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(212, 175, 55, 0.22);
+  border: 1px solid var(--gold);
+  color: var(--gold);
+}
+.ds-deal:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ds-jie .ds-hint {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 120px;
+}
+.ds-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ds-note code {
+  color: var(--gold);
+}
+@media (max-width: 480px) {
+  /* 窄屏是单列布局：固定浮层必然会压住点什么。压到 38vh 以内、自己可滚，
+     真要清空视野就点「关闭」——开发工具，不跟对局界面抢地方 */
+  .dev-setup {
+    top: auto;
+    bottom: 6px;
+    right: 6px;
+    left: 6px;
+    width: auto;
+    max-height: min(38vh, 320px);
+  }
+  .ds-cards {
+    max-height: 96px;
+  }
+}
+
+
+/* —— 【甘露】交换预览（用户 2026-09-25 口径）——
+   换的是**双方整个装备区**，玩家不挑具体装备，所以两个目标定下来之后在中央把两边装备区
+   按牌名列出来、把「牌数差 vs 已损失体力」的核对写清楚，再让玩家确认（按钮文案同时也变成「交换」）。
+   与库里其它浮层同一条规矩：不接指针的地方一律 pointer-events: none（这里是纯展示）。 */
+.equip-swap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  background: rgba(18, 14, 10, 0.92);
+  pointer-events: none;
+}
+.equip-swap .es-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 92px;
+}
+.equip-swap .es-name {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 12px;
+}
+.equip-swap .es-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.equip-swap .es-item {
+  padding: 1px 5px;
+  border: 1px solid var(--panel-2);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.equip-swap .es-empty {
+  color: var(--muted, #8b8578);
+  font-size: 11px;
+}
+.equip-swap .es-arrow {
+  font-size: 16px;
+  color: var(--gold);
+}
+.equip-swap .es-note {
+  color: #d8d0c0;
+  font-size: 11px;
+}
+
+/* —— 队列标记（用户 2026-09-24 口径 §六）——
+   连续相邻的同势力角色（≥2 人）组成「队列」，是阵法技的前提。表现要**很轻**：
+   一枚小徽标，不加动画、不连线（国战牌桌本来就挤）。判据由引擎下发 `PlayerView.inFormation`。 */
+.queue-badge {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.9;
+  vertical-align: middle;
+}
+
+/* —— 公开性别标记（用户 2026-09-25 口径）——
+   离间这类「只能选男性」的技能极度依赖性别，所以角色牌上要有一枚**很轻**的 ♂/♀；
+   双暗置＝性别未确定，画「?」（不是随便猜一个）。判据在引擎 `publicGender`。 */
+.gender-mark {
+  margin-left: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  opacity: 0.9;
+}
+.gender-mark.male {
+  color: #6fb3e0;
+}
+.gender-mark.female {
+  color: #e08fb0;
+}
+.gender-mark.unknown {
+  color: #7a7a7a;
+}
+
+/* —— 有序目标的「谁担任什么角色」+ 方向预览（离间：令后者对前者）——
+   技能面板里画出「① 关羽 · 【决斗】的目标」这种标记，玩家不用去背技能文本。
+   文案全部来自引擎（targetSlotLabels / targetPreview），这里只管排版。 */
+.target-slots {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.slot-chip {
+  padding: 1px 7px;
+  border: 1px solid rgba(212, 175, 55, 0.55);
+  border-radius: 999px;
+  font-size: 12px;
+  color: #e8dcc0;
+  background: rgba(0, 0, 0, 0.25);
+}
+.slot-chip b {
+  color: var(--gold);
+}
+.slot-chip em {
+  font-style: normal;
+  color: #bdb08a;
+}
+.slot-arrow {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.5px;
+}
+
+/* —— 「当前这条询问与他有关」（引擎下发的 relatedSeats）——
+   徐盛·【疑城】问徐盛时，被保护的那位轻微高亮：玩家一眼看出「我现在保护的是谁」。
+   ⚠️ 它**不改变可点性**（可点与否由 legalTargets / 候选决定），所以只描边、不变指针。 */
+.player.related {
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.55);
+  transition: box-shadow 0.15s ease-out;
+}
+
+/* 自己面板上的同一枚「与我有关」描边（徐盛·疑城保护自己的那种情形） */
+.hero-panel.related {
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.55);
+  transition: box-shadow 0.15s ease-out;
+}
+
+/* —— 「移出座次」（【调虎离山】）：与「队」标同一档的轻标记，不加动画 ——
+   牌桌上必须能看出谁本回合不在座次里（距离/队列/围攻都跟着变了）。 */
+.removed-badge {
+  margin-left: 3px;
+  padding: 0 4px;
+  border: 1px dashed var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.85;
+  vertical-align: middle;
+}
+
+/* —— 【飞影】与【鹤翼】形态（用户 2026-09-26 口径）——
+   飞影可能来自别人的【鹤翼】⇒ 用一枚小标常驻，悬停/点击写清来源；
+   鹤翼持有者本人则把**当前形态**写在标上（常规 / 队列，两态互斥）。都不加动画。 */
+.feiying-badge,
+.heyi-badge {
+  margin-left: 3px;
+  padding: 0 4px;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: 0.9;
+  vertical-align: middle;
+}
+.heyi-badge.formation {
+  border-style: dashed;
+  opacity: 0.75;
 }

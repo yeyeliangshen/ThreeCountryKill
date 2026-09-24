@@ -49,6 +49,11 @@ export type Intent =
     }
   // 不响应（弃权）
   | { type: 'aocai' } // 诸葛恪·傲才：用牌堆顶的实体基本牌满足当前响应
+  /**
+   * 左慈·【役鬼】：移去一张「魂」，**视为打出**一张满足当前响应请求的牌
+   * （闪/桃/无懈/杀…）——与【傲才】同一条路，只是产出的是一张**虚拟牌**。
+   */
+  | { type: 'yiguiRespond' }
   | { type: 'pass' }
   // 结束当前阶段（出牌阶段结束等）
   | { type: 'endPhase' }
@@ -58,6 +63,18 @@ export type Intent =
   | { type: 'pickHero'; heroId: string; deputyHeroId?: string }
   // 国战：出牌阶段主动亮将（传入要亮的武将 id）
   | { type: 'revealHero'; heroId: string }
+  /**
+   * 国战：**用锁定技主动明置该武将牌**（skillName 是技能中文名）。
+   *
+   * 用户 2026-09-22 口径：锁定技也能被点击亮将——「不能因为技能属于锁定技，或已经存在
+   * 「预亮」机制，就取消主动亮将入口」。语义是**明置，不是发动技能**：
+   * 在自己的出牌阶段，某张**暗置**武将牌上的这个技能只要是**锁定技**，就明置那张牌
+   * （锁定的触发效果此后按明置后的正常状态结算）。
+   *
+   * 时机只有**自己的出牌阶段**；准备阶段另有 `revealHero`（亮将询问那个入口）。
+   * 邹氏·祸水「其回合内其他角色不能明置」与君主旗【建安】的封锁照旧生效。
+   */
+  | { type: 'revealBySkill'; skillName: string }
   // 主动技能：出牌阶段使用武将主动技能（制衡/苦肉/离间等）
   | { type: 'useSkill'; skillId: string; cardIds?: string[]; targetIds: string[] } // 通用「选择一项」：技能要求某个角色在若干选项里选一个（反间/铁骑/除疠…）
   | { type: 'chooseOption'; optionId: string }
@@ -81,4 +98,37 @@ export type Intent =
    * 一名势力不同或未确定势力的角色（交给势力不同的角色时摸一张牌）。
    * 它**不是「使用牌」**，所以不触发任何 useCard 钩子。
    */
-  | { type: 'lianheng'; cardId: string; targetSeatId: string };
+  | { type: 'lianheng'; cardId: string; targetSeatId: string }
+  /**
+   * **测试场景布置**（开发工具，不是游戏规则 —— 见 docs §5.206）。
+   *
+   * 只有 `createGame(..., { testScenario: true })` 的对局才接受它（服务端由
+   * `SGS_DEV_TOOLS` / `NODE_ENV` 决定，正式对局一律拒绝）。用途是**构造现场**：
+   * 给指定角色发指定的牌到指定区域，省掉「刷牌刷到为止」的成本。
+   *
+   * 布置**不走技能钩子**（不会触发【谦逊】这类「成为目标时」的询问），但牌的移动
+   * 走引擎既有的搬运逻辑（装备走 `playEquip`、判定区照 `playDelayedTrick` 的校验、
+   * 弃置一律 `toDiscard`），所以布置出来的局面与真打出来的局面**同构**。
+   * 每次布置都会在牌局日志里留 `TEST_DEAL_OVERRIDE` 标记。
+   */
+  | {
+      type: 'testScenario';
+      /** 发牌：谁 / 哪张牌（实例 id）/ 放到哪个区域 */
+      deals?: { seatId: string; cardId: string; zone: TestDealZone }[];
+      /** 给谁几张「节」（陆逊·谦逊收集的牌；测试「度势②」用，上限 3） */
+      jie?: { seatId: string; count: number }[];
+      /**
+       * 给谁几张「魂」（左慈·役鬼扣在武将牌上的**未加入游戏的武将牌**）。
+       *
+       * 为什么测试面板需要它：左慈的全部资源都来自那个堆，而**选将不限**会把整池发掉 ⇒
+       * 真机想造「有魂的左慈」几乎不可能，所以和「节」同款给一行。
+       * 抽牌走的是 `state.heroPool.shift()`（与技能本身同一条路）。
+       */
+      hun?: { seatId: string; count: number }[];
+    };
+
+/**
+ * 测试场景布置里能指定的区域。
+ * 手牌谁都能放；装备区只放装备牌；判定区只放延时锦囊（且不能与已有的同名）。
+ */
+export type TestDealZone = 'hand' | 'equip' | 'judge';
