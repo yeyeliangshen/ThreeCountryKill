@@ -1737,6 +1737,7 @@ const ZHOUYU: Hero = {
                 `${target2.name} 交给 ${zhouyu.name} ${cardLabel(give)}，并获得 ${cardLabel(shownCard)}。`,
               );
             },
+            { returnTo: player.seatId },
           );
         } else {
           pushLog(state, 'skill', `${target.name} 无不同类型手牌，受到 1 点伤害。`);

@@ -7009,7 +7009,13 @@ function endTrickResolution(state: GameState, ctx: TrickContext): void {
       },
       () =>
         runContinuation(state, `${ctx.cardUseId}:trick-end`, () =>
-          resumePlay(state, ctx.sourceId, ctx.pendingFence),
+          // ⚠️ 与上面 `!needed` 的快路径**同一判据**：虚拟锦囊（貂蝉·离间、克复中原…）的
+          // 「使用者」≠ 回合玩家——控制权必须还给 `resumeSeatId`（发起者）。
+          // 以前这里漏写，只在没有 cardUseEnded 听众时才对：只要场上活着一名许攸（成略），
+          // 离间那张虚拟【决斗】打完就把出牌阶段塞给**决斗使用者**（他不是回合玩家）⇒
+          // 他的界面上冒出「结束出牌」、一点就把**貂蝉的**回合结束掉（用户 2026-09-26 报的
+          // 「跳到别人的回合」正是这一条，见 docs §5.245）。
+          resumePlay(state, ctx.resumeSeatId ?? ctx.sourceId, ctx.pendingFence),
         ),
     );
   };
