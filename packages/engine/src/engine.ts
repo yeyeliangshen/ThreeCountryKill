@@ -395,6 +395,7 @@ export function setPending(state: GameState, next: GameState['pending']): void {
   // 施工方案 Step 4.5/4.6：**所有**「询问生命周期推进」（被换掉 / 被释放成空）都在这里收口——
   // 唤醒在等旧那一格的收尾（窗口自动推进、advanceTrick、endTurn、doDeath、release 全覆盖）。
   if (prev && prev !== next) completePendingRequest(state, pendingIdOf(prev));
+
 }
 
 export function askChoice(
@@ -2015,7 +2016,13 @@ function enterPlayPhase(state: GameState, player: Player): void {
           // 玉玺（锁定技）：出牌阶段开始时，视为使用一张【知己知彼】。
           // 放在**设置出牌 pending 之前**——它是这个阶段的开场动作，结算完才轮到玩家正常出牌。
           askYuxiZhibi(state, player, () => {
-            setPending(state, { kind: 'play', seatId: player.seatId });
+            // ⚠️ 必须**takePlayPhase**、不许裸 setPending（§5.240 quirk 的根因）：
+            //    「出牌阶段开始」的这条续接在钩子链（双刃/奋迅的拼点、询问…）之后才跑，
+            //    而且被**陈旧重放**过一次（实测：栈 2025 ← askYuxiZhibi ← step）——若裸写，
+            //    重放的那次会把玩家刚用 endPhase 摆上的**弃牌询问**直接压掉（phase 已是 discard、
+            //    pending 被塞回 play ⇒ 界面上要再点一次「结束」才正常）。takePlayPhase 自带
+            //    「已进弃牌阶段就不许回来占」的围栏（见上面的 phase-guard），陈旧重放会被丢弃。
+            takePlayPhase(state, player.seatId);
           });
         },
         player.seatId,

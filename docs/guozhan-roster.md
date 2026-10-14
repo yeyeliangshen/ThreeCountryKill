@@ -11034,3 +11034,45 @@ if (p.seatId === turnSeat) return; // 屯田那种「回合外失去牌」才派
 - 新增 `tests/sanyao.test.ts` 4 条：自己体力最大 ⇒ 选自己成立（hp 4→3）/ 自己不是最大 ⇒ 拒（条件不满足）
   / 选别人照常（对照）/ 挑衅文案含「其他」且选自己被拒。
 - `pnpm test` 全绿（engine **1456** / ui 248 / server 37）；typecheck / build 全绿；txt 已重新生成。
+
+## §5.249 修掉 §5.240 登记的 quirk：钩子询问后的第一次 endPhase 不摆弃牌询问（用户：「把剩下的做完」）
+
+### 一、定位过程（打点追栈）
+
+先写**红用例**复现（`tests/endphase-quirk.test.ts`）：双刃没赢 ⇒ endPhase ⇒ `phase='discard'` 但
+`pending={kind:'play'}`。给 `setPending` 挂探针追**转回 play 的那一次**的调用栈：
+
+```
+setPending (engine.ts:401)
+← engine.ts:2025                     ← enterPlayPhase 玉玺回调里的裸 setPending(play)
+← askYuxiZhibi (engine.ts:8972)
+← runAllPlayersHooks 的 step (engine.ts:4650)
+```
+
+**根因**：`enterPlayPhase` 的「出牌阶段开始」续接（playPhase 钩子链 → othersPlayPhase →
+玉玺 → `setPending play`）在钩子链（双刃的拼点、奋迅的询问…）之后才跑，而且会被
+**陈旧重放**一次——重放的那次落在玩家已经 endPhase、`beginDiscard` 刚摆上弃牌询问之后，
+把弃牌询问**直接压掉**（phase 已是 discard、pending 被塞回 play ⇒ 界面上要再点一次「结束」）。
+
+为什么奋迅那条用例本来就绿：奋迅只问一句、链短，重放窗口没被踩到；双刃的拼点链
+（choice → choice → pickCards → pickCards）足够长，稳定踩中。
+
+### 二、修法（一行——用现成的围栏，不新造机制）
+
+把 `engine.ts:2025` 的裸 `setPending(state, { kind: 'play', seatId })` 换成
+**`takePlayPhase(state, player.seatId)`**。`takePlayPhase` 本来就带着「已进弃牌阶段就不许
+回来占出牌阶段」的**阶段围栏**（模糊网不变量 6 修出来的那套，见它上面的注释）——陈旧重放
+在围栏处被**丢弃**，正常首次进入则照旧（phase 本来就是 play，行为不变）。
+
+### 三、用例（engine 1456 → 1460）
+
+`tests/endphase-quirk.test.ts` 4 条：
+- 双刃没赢 ⇒ 第一次 endPhase 就把弃牌询问摆上槽（count/座位都断言），**直接能弃牌**；
+- 奋迅（同为出牌阶段开始钩子）之后也一样（这条修复前就是绿的——链短不踩，留着当回归）；
+- 对照组：不经过钩子询问的 endPhase 一次就对（既有行为不许回归）；
+- 界面侧：第一次 endPhase 之后快照下发的提示就是 `discard`（玩家的确认按钮直接是「弃牌（n/m）」）。
+
+### 四、门禁（真实结果）
+
+- `pnpm test` 全绿（engine **1460** / ui 248 / server 37）——含 fuzz 与冒烟，**未放宽**。
+- `pnpm typecheck` / `pnpm build` 全绿（提交前显式过闸）。
