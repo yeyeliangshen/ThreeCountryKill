@@ -12102,6 +12102,20 @@ function makeSkillApi(
       moveCardBetweenPlayers(state, fromSeatId, card, toSeatId, after, 'give', opts?.actor),
     // 「视为使用一张锦囊」（貂蝉·离间的虚拟【决斗】）：走正常锦囊流程，
     // 所以它**能被无懈**、也能被「成为目标时」的技能响应（用户 2026-09-21 口径）。
+    playVirtualBasic: (seatId, type) => {
+      const p = getPlayer(state, seatId);
+      if (!p || !p.alive) return err('无效的操作者');
+      // 虚拟基本牌：没有实体牌面，`toDiscard` 会跳过（不进弃牌堆）
+      const card: Card = {
+        id: `virtual-basic-${state.yiguiVirtualSeq++}`,
+        type,
+        suit: 'spade',
+        rank: 0,
+        virtual: true,
+      };
+      // 复用真正的使用入口（含校验 + useCard 钩子 + 寄篱那类收口）
+      return type === 'tao' ? playTao(state, p, card) : playJiu(state, p, card);
+    },
     useVirtualTrick: (sourceSeatId, card, targetIds, resumeSeatId) => {
       const src = getPlayer(state, sourceSeatId);
       if (!src) return;

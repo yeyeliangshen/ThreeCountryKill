@@ -16714,13 +16714,36 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
       B,
     );
     const a = state.players.find((p) => p.seatId === A)!;
-    // 乙用两张【杀】打甲，甲都不闪 → 两次「受到伤害后」⇒ 两张魂
+    // 乙用两张【杀】打甲，甲都不闪 → 两次「受到伤害后」⇒ 两次询问（都答「发动」）⇒ 两张魂
+    // ⚠️ 2026-09-26 口径更新：文本是「你**可以**…」——要**问一句**，不再是自动收。
     ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
     ok(act(state, A, { type: 'pass' }));
+    expect(state.pending?.kind, '受伤后先问汲魂').toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(a.hun, '第一次受伤 → 一张魂').toHaveLength(1);
     ok(act(state, B, { type: 'playCard', cardId: 'b2', targetIds: [A] }));
     ok(act(state, A, { type: 'pass' }));
-    expect(a.hun, '第二次受伤还能再补一张（不受「每回合/每局一次」限制）').toHaveLength(2);
+    expect(state.pending?.kind, '第二次受伤照样问（没有次数限制）').toBe('choice');
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
+    expect(a.hun, '第二次受伤还能再补一张').toHaveLength(2);
+  });
+
+  it('汲魂：问了也可以**不发动**（对照组——「可以」意味着可拒绝）', () => {
+    const state = gz(
+      [
+        { seatId: A, name: '甲', heroId: 'zuoci', faction: 'qun' },
+        { seatId: B, name: '乙', heroId: 'vanilla', faction: 'shu', hand: [sha('b1')] },
+        { seatId: C, name: '丙', heroId: 'vanilla', faction: 'wu' },
+      ],
+      ['zhangliao'],
+      B,
+    );
+    const a = state.players.find((p) => p.seatId === A)!;
+    ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
+    ok(act(state, A, { type: 'pass' }));
+    ok(act(state, A, { type: 'chooseOption', optionId: 'no' }), '不发动');
+    expect(a.hun, '没有补魂').toHaveLength(0);
+    expect(state.heroPool, '牌堆原样').toHaveLength(1);
   });
 
   it('汲魂：受到伤害后补一张「魂」；同势力的濒死结束不给', () => {
@@ -16735,7 +16758,8 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     );
     const a = state.players.find((p) => p.seatId === A)!;
     ok(act(state, B, { type: 'playCard', cardId: 'b1', targetIds: [A] }));
-    ok(act(state, A, { type: 'pass' })); // 甲不闪 → 受伤 → 汲魂
+    ok(act(state, A, { type: 'pass' })); // 甲不闪 → 受伤 → 问汲魂 → 发动
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(a.hun).toHaveLength(1);
     expect(state.log.some((e) => e.message.includes('汲魂'))).toBe(true);
   });
@@ -16765,6 +16789,10 @@ describe('国战 · 左慈（役鬼 / 汲魂）', () => {
     ok(act(state, A, { type: 'pass' })); // 左慈不出桃
     ok(act(state, B, { type: 'respondCard', cardId: 'b2' })); // 乙用桃救
     expect(c.hp).toBe(1);
+    // 脱离濒死后**问一句**（2026-09-26 口径：可以 ⇒ 询问），答「发动」
+    expect(state.pending?.kind, '同势力脱离濒死 → 问汲魂').toBe('choice');
+    if (state.pending?.kind === 'choice') expect(state.pending.seatId).toBe(A);
+    ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
     expect(a.hun).toHaveLength(1); // 与左慈**同势力** + 存活 → 补一张魂
     expect(pool).toHaveLength(2);
 

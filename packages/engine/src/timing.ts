@@ -474,6 +474,18 @@ export interface SkillApi {
    * 目前的使用者：貂蝉·离间（生成那张【决斗】，用户 2026-09-21 口径）。
    * `sourceSeatId` 是**视为使用这张牌的人**（不一定是技能的拥有者）。
    */
+  /**
+   * 「视为使用一张**基本牌**」（左慈·【役鬼】的【桃】/【酒】——没有角色目标、
+   * 也没有响应窗口的那两种）。内部走 `playTao` / `playJiu`（**含它们自己的校验**，
+   * 例如「体力已满不能使用【桃】」），牌是**虚拟的**（`virtual: true`，不进弃牌堆）。
+   *
+   * ⚠️ 别在技能里手写「设 jiuActive / 直接 heal」——那就绕过了 useCard 钩子与
+   *    使用条件（用户 2026-09-26 点名的架构红线：技能生成牌，不重写牌的规则）。
+   */
+  playVirtualBasic: (
+    seatId: string,
+    type: 'tao' | 'jiu',
+  ) => { ok: boolean; error?: string };
   useVirtualTrick: (
     sourceSeatId: string,
     card: Card,

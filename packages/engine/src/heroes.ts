@@ -8861,16 +8861,31 @@ const ZUOCI: Hero = {
       applies: (ctx) => damagedPositive(ctx) && ctx.state.heroPool.length > 0,
       handler: (ctx) => {
         const me = ctx.player;
-        // 用户 2026-09-25 口径：文本是「当你受到伤害后，**可以**…」——**每次**受到伤害都能发动，
-        // 没有「每回合/每局一次」的限制（一次 3 点伤害也只按这一次伤害事件处理一次，
-        // 因为它就是 `afterDamage` 这一个事件）。参见 docs §5.222。
-        const id = ctx.state.heroPool.shift();
-        if (!id) return;
-        me.hun.push(id);
-        pushLog(ctx.state, 'skill', `${me.name} 发动【汲魂】，扣置一张武将牌作为「魂」。`, {
-          seat: me.seatId,
-          action: 'gain',
-        });
+        // 用户 2026-09-26 复述口径：文本是「当你受到伤害后，你**可以**…」——要**问一句**，
+        // 不是自动收（旧实现直接收，本轮改回询问）。**每次**受到伤害都能发动、没有次数限制；
+        // 一次 3 点伤害也只按**这一次伤害事件**问一次（`afterDamage` 本来就是逐事件的）。
+        // ⚠️ 上面的 `applies` 只是「声明版」守卫（引擎只在多钩子排序那条路读它）——
+        //    处理函数里要**自己**判牌堆空，否则会冒出一个「答了也没牌可扣」的询问。
+        if (ctx.state.heroPool.length === 0) return;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          '是否发动【汲魂】？（从剩余武将牌堆随机扣置一张作为「魂」）',
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const id = st.heroPool.shift();
+            if (!id) return;
+            p.hun.push(id);
+            pushLog(st, 'skill', `${p.name} 发动【汲魂】，扣置一张武将牌作为「魂」。`, {
+              seat: p.seatId,
+              action: 'gain',
+            });
+          },
+        );
       },
     },
     {
@@ -8879,19 +8894,33 @@ const ZUOCI: Hero = {
       handler: (ctx) => {
         const payload = ctx.payload as { dyingSeatId?: string; alive?: boolean } | undefined;
         const dying = payload?.dyingSeatId ? getPlayer(ctx.state, payload.dyingSeatId) : undefined;
-        if (!dying || !payload?.alive) return; // 「存活」才给
-        if (dying.seatId === ctx.player.seatId) return;
+        if (!dying || !payload?.alive) return; // 「成功脱离濒死」才触发（不是「进入濒死」）
+        if (dying.seatId === ctx.player.seatId) return; // ⚠️「含不含左慈自己」官方没写死，先排除（见 §5.246 待核对）
         // 用户 2026-09-25 口径（当前移动版国战）：**与你势力相同**的角色脱离濒死才触发。
         // ⚠️ 改动前这里是反的（`sameKnownFaction` 为真就 return ⇒ 只对**不同**势力触发）——
-        //    与技能文本完全相反，是本次校对里最严重的一处。
+        //    与技能文本完全相反，是 §5.222 校对里最严重的一处。
         if (!sameKnownFaction(ctx.state, ctx.player, dying)) return;
-        const id = ctx.state.heroPool.shift();
-        if (!id) return;
-        ctx.player.hun.push(id);
-        pushLog(ctx.state, 'skill', `${ctx.player.name} 因【汲魂】扣置一张武将牌作为「魂」。`, {
-          seat: ctx.player.seatId,
-          action: 'gain',
-        });
+        if (ctx.state.heroPool.length === 0) return; // 没牌可扣就不问（不产生无意义询问）
+        const me = ctx.player;
+        ctx.api.askChoice(
+          ctx.state,
+          me.seatId,
+          `是否发动【汲魂】？（${dying.name} 脱离了濒死状态）`,
+          [
+            { id: 'no', label: '不发动' },
+            { id: 'yes', label: '发动' },
+          ],
+          (st, p, picked) => {
+            if (picked !== 'yes') return;
+            const id = st.heroPool.shift();
+            if (!id) return;
+            p.hun.push(id);
+            pushLog(st, 'skill', `${p.name} 发动【汲魂】，扣置一张武将牌作为「魂」。`, {
+              seat: p.seatId,
+              action: 'gain',
+            });
+          },
+        );
       },
     },
   ],
@@ -8935,14 +8964,14 @@ const ZUOCI: Hero = {
               action: 'skill',
             });
             if (picked === 'sha' || picked === 'jiu' || picked === 'tao') {
-              if (picked === 'jiu') {
-                p.flags.jiuActive = true;
-                pushLog(st, 'skill', `${p.name} 视为使用了一张【酒】。`);
-                return;
-              }
-              if (picked === 'tao') {
-                const healed = api.heal(p, 1);
-                pushLog(st, 'skill', `${p.name} 视为使用了一张【桃】，回复 ${healed} 点体力。`);
+              if (picked === 'jiu' || picked === 'tao') {
+                // ⚠️ 用户 2026-09-26 架构红线：「绝不能丢魂→直接执行某张牌的结果」。
+                //    旧实现手写 `jiuActive = true` / `api.heal`——绕过了 useCard 钩子、
+                //    绕过了【桃】「体力已满不能使用」的使用条件（满血会把魂白白吞掉）。
+                //    现在造**虚拟基本牌**、复用真正的使用入口（playJiu/playTao），
+                //    与【杀】/锦囊那两条（castVirtualSha/castVirtualTrick）同一层。
+                const r = api.playVirtualBasic(p.seatId, picked);
+                if (!r.ok) pushLog(st, 'skill', `【役鬼】未生效：${r.error ?? ''}`);
                 return;
               }
               // 【杀】：选一个符合势力限制的目标
@@ -9014,7 +9043,7 @@ const ZUOCI: Hero = {
   skills: [
     {
       name: '役鬼',
-      desc: '当你首次明置武将牌后，你将剩余武将牌堆中的两张武将牌扣置于武将牌上，称为「魂」牌；你可以移去一张「魂」牌，视为使用一张你于当前回合内未以此法使用过的基本牌或普通锦囊牌，且目标必须为与此「魂」牌势力相同或未确定势力的角色。',
+      desc: '当你首次明置武将牌后，你将剩余武将牌堆中的两张武将牌扣置于武将牌上，称为「魂」牌；你可以移去一张「魂」牌，视为使用或打出一张你于当前回合内未以此法使用过的基本牌或普通锦囊牌，若该牌有角色目标，则目标必须为未确定势力、野心家或与此「魂」牌势力相同的角色。',
     },
     {
       name: '汲魂',
@@ -9037,6 +9066,9 @@ function hunOptions(
     ['tao', '桃'],
   ] as const) {
     if (used.has(id)) continue;
+    // 【桃】的使用条件前置到候选层：满血时根本不该给选（真牌在 playTao 里也会拦，
+    // 这里拦是为了「选进去才发现白丢一张魂」——用户口径 §七：不合法的牌直接置灰）
+    if (id === 'tao' && player.hp >= player.maxHp) continue;
     out.push({ id, label: name });
   }
   for (const spec of QICE_TRICKS) {
@@ -9101,7 +9133,9 @@ function hunTargets(
     ? alive.filter(
         (p) =>
           p.seatId !== player.seatId &&
-          !heroBlocksBeingTarget(state, p, cardOfType('juedou'), player) &&
+          // ⚠️ 传**【杀】的牌面**（原来借【决斗】：帷幕那类「不能成为锦囊目标」的锁定技
+          //    会把不该挡的杀目标也挡掉——帷幕不挡杀）
+          !heroBlocksBeingTarget(state, p, cardOfSha(), player) &&
           distance(state, player.seatId, p.seatId) <= attackRange(state, player),
       )
     : qiceTargets(state, player, trickType ?? 'guohe');
