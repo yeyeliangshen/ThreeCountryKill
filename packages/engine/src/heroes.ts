@@ -5878,17 +5878,17 @@ const MASU: Hero = {
       oncePerTurn: true,
       minTargets: 1,
       maxTargets: 1,
-      // ⚠️ 本轮**不声明** selfTarget：本地文案写「一名体力值最大的角色」（没有「其他」），
-      //    与下面的 `不能选择自己` 冲突 —— 文本未核到，按用户口径「核不到就标待核对、不猜」
-      //    保持既有行为（候选不含自己 + 执行里拒绝）。见 docs §5.209 待核对项。
+      // ✅ 2026-09-26 结清（用户裁定 §5.247 之 09）：文本＝「一名**体力值最大的角色**」
+      //    （2013 君临天下·变 印刷版，已核）——**没有「其他」二字** ⇒ 按仓库统一口径
+      //    （§5.209：能否选自己由文本决定，写「一名角色」的＝可选自己）声明 selfTarget，
+      //    马谡自己是全场体力最大之一时也可以把自己选为目标（对自己造成 1 点伤害）。
+      selfTarget: true,
       needsCards: true,
       maxCards: () => 1,
       canUse: (state, player) => {
         if (player.hand.length === 0) return false;
-        const pool = state.players.filter((x) => x.alive && x.seatId !== player.seatId);
-        if (pool.length === 0) return false;
         const top = Math.max(...state.players.filter((x) => x.alive).map((x) => x.hp));
-        return pool.some((x) => x.hp === top);
+        return state.players.some((x) => x.alive && x.hp === top);
       },
       execute: (state, player, intent, api) => {
         const cardId = intent.cardIds?.[0];
@@ -5898,7 +5898,6 @@ const MASU: Hero = {
         if (!targetId) return '请选择一名体力值最大的角色';
         const target = getPlayer(state, targetId);
         if (!target || !target.alive) return '目标无效';
-        if (target.seatId === player.seatId) return '不能选择自己';
         const top = Math.max(...state.players.filter((x) => x.alive).map((x) => x.hp));
         if (target.hp !== top) return '只能选择体力值最大的角色';
         removeCard(player.hand, card.id);
@@ -12710,9 +12709,10 @@ const JIANGWEI: Hero = {
         ),
       execute: (state, player, intent, api) => {
         const targetId = intent.targetIds[0];
-        if (!targetId) return '请选择一名攻击范围内包含你的角色';
+        if (!targetId) return '请选择一名攻击范围内包含你的其他角色';
         const target = getPlayer(state, targetId);
         if (!target || !target.alive) return '目标无效';
+        // ✅ 官方通行口径带「**其他**」（用户裁定 §5.247 之 10 核定的三环节之①）⇒ 与文本对齐
         if (target.seatId === player.seatId) return '不能选择自己';
         if (attackRange(state, target) < distance(state, target.seatId, player.seatId)) {
           return '该角色的攻击范围不包含你';
@@ -12789,7 +12789,7 @@ const JIANGWEI: Hero = {
     },
     {
       name: '挑衅',
-      desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的角色对你使用一张【杀】，否则你弃置其一张牌。',
+      desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的其他角色对你使用一张【杀】，否则你弃置其一张牌。',
     },
   ],
   /**
@@ -12819,7 +12819,7 @@ const JIANGWEI: Hero = {
     skills: [
       {
         name: '挑衅',
-        desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的角色对你使用一张【杀】，否则你弃置其一张牌。',
+        desc: '出牌阶段限一次，你可以令一名攻击范围内包含你的其他角色对你使用一张【杀】，否则你弃置其一张牌。',
       },
       {
         name: '天覆',

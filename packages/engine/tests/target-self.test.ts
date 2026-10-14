@@ -389,11 +389,13 @@ describe('⑤ 技能自己的目标规则（ActiveSkill.selfTarget）', () => {
       //    它的目标规则仍是「一名**其他**角色」（钩子里 `q.seatId !== me.seatId` 过滤 + askPickSeats 候选），
       //    与这里的原判据一致。见 docs §5.238。
       zhijian: false, // 一名**其他**角色
-      tiaoxin: false, // 一名攻击范围内包含你的角色（文本待核对，本轮保持排除）
+      tiaoxin: false, // ✅ 结清：官方文本带「其他」（§5247 之 10）⇒ 不声明（排除自己），文案已补二字
       lilian: false, // 两名男性角色（性别条件本就排除貂蝉自己）
       jieyin: false, // 一名已受伤的男性角色（同上）
       quanjin: false, // 官方裁定：不能选自己（QUANJIN_CAN_TARGET_SELF）
-      sanyao: false, // 一名体力值最大的角色（文本与实现冲突 → 待核对，本轮保持排除）
+      // ✅ 2026-09-26 结清（§5.247 之 09）：文本无「其他」⇒ 声明 true（可选自己）。
+      //    挑衅那条也结了（官方带「其他」⇒ 保持 false、文案补上二字）。
+      sanyao: true,
     };
     for (const [id, self] of Object.entries(want)) {
       const skill = ALL_ACTIVE_SKILLS.find((s) => s.id === id);
