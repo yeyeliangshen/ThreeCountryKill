@@ -845,6 +845,15 @@ export function canUseAsCard(
   card: Card,
   type: CardType,
 ): boolean {
+  // ⚠️ 转化材料的**区域守卫**（用户 2026-09-26 裁定 §5.247 之 12）：技能文本几乎都写
+  //    「将一张**手牌**当…」⇒ **装备区/判定区**里的牌不能当转化材料；「田」不是手牌，
+  //    唯一放行的是邓艾·急袭那条（材料明确是「田」、目标只有【顺手牵羊】）。
+  //    ⚠️ 按牌**实际所在区域**判、而不是「必须在手牌里找到」：这个谓词还被当**纯函数**用
+  //    （legal 的候选过滤 + 一批单测传独立牌对象问「这张牌能不能转」）， detached 的牌对象
+  //    查不到所在区域就**放行**（那不是本守卫要拦的场景）。
+  if (EQUIP_SLOTS.some((sl) => player.equipment[sl]?.id === card.id)) return false;
+  if (player.judgment.some((c) => c.id === card.id)) return false;
+  if (card.tian === true && type !== 'shunshou') return false;
   const heroes = activeHeroes(state, player);
   if (
     heroes.some(
@@ -3050,6 +3059,10 @@ function playSha(
   asType: import('@sgs/protocol').CardType,
   asAttribute?: DamageAttribute,
 ): ApplyResult {
+  // 【天义】拼点没赢（含平局）：本回合**不能使用【杀】**——硬禁，早于次数上限的判定
+  // （用户 2026-09-26 裁定：增加出杀次数的技能抵消不了；只限「使用」，响应打出不受影响）
+  if (source.flags.cannotUseShaThisTurn)
+    return err('【天义】拼点未获胜：本回合不能使用【杀】');
   // 朱雀羽扇：可以把一张**普通**【杀】当具火焰伤害的【杀】使用。
   // 只认普通杀（火杀/雷杀不能被它改属性），且必须真的装备着这把扇子。
   if (asAttribute) {
@@ -6528,16 +6541,16 @@ function playTrick(
     if (trickNeedsCardsInHand(type) && targetHandLeft === 0)
       return err(`【${CARD_TYPE_NAME[type]}】的目标必须有手牌`);
   } else if (type === 'jiedao') {
-    // ⚠️ 审计留痕（§5.209）：武器持有者这一层**没有**自身校验——本地文案
-    //    「指定一名装备了武器的角色…」缺「其他」二字，而官方通行口径含「其他角色」。
-    //    文本未核到 ⇒ 按用户口径「核不到就标待核对、不猜」，本轮保持既有行为
-    //    （候选只给其他人：legal.ts 的 `p.seatId !== seatId`）。等文本核对后再决定是否加。
-    //    「另一名角色」那一半（出杀目标 ≠ 武器持有者）仍是硬规则，见下面那条。
+    // 用户 2026-09-26 裁定（§5.247 之 08）：文案补「**其他**」⇒ 校验与之对齐——
+    // 武器持有者**不能是自己**（以前只靠界面候选兜着，绕过界面就能指自己）。
+    // 「另一名角色」那一半（出杀目标 ≠ 武器持有者）仍是硬规则，见下面那条；
+    // 出杀目标**可以**是借刀的使用者自己（「另一名」只排除持有者）。
     if (intent.targetIds.length !== 2)
       return err('借刀杀人需指定 2 名目标（武器持有者 + 出杀目标）');
     const [holderId, shaTargetId] = intent.targetIds;
     const holder = getPlayer(state, holderId!);
     if (!holder || !holder.alive) return err('武器持有者无效');
+    if (holderId === player.seatId) return err('武器持有者不能是你自己');
     if (!holder.equipment.weapon) return err('目标没有武器');
     const shaTarget = getPlayer(state, shaTargetId!);
     if (!shaTarget || !shaTarget.alive) return err('出杀目标无效');

@@ -879,15 +879,7 @@ const HUANGZHONG: Hero = {
         if (!target) return;
         if (target.hand.length >= ctx.player.hand.length || target.hp <= ctx.player.hp) {
           payload.attack.requiredShan = Infinity;
-          // 【乘势】（现行文本，用户 2026-09-26 口径）：发动【烈弓】后，此【杀】对**该目标**伤害 +1。
-          // ⚠️ 改的是**这一份** attack 上下文（引擎对每个目标各建一份）⇒ 只影响这个目标。
-          //    与「界徐盛那类」同一条写法：挂在这张【杀】的基础伤害上，酒/防具/其它技能照常叠。
-          payload.attack.damage += 1;
-          pushLog(
-            ctx.state,
-            'skill',
-            `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避，且对其伤害 +1！`,
-          );
+          pushLog(ctx.state, 'skill', `${ctx.player.name} 发动【烈弓】，此【杀】不可闪避！`);
         }
       },
     },
@@ -895,7 +887,7 @@ const HUANGZHONG: Hero = {
   skills: [
     {
       name: '烈弓',
-      desc: '当你使用【杀】指定目标后，若目标手牌数≥你或体力≤你，此【杀】不可被闪避，且【乘势】：此【杀】对该角色造成的伤害 +1。',
+      desc: '当你使用【杀】指定目标后，若目标手牌数≥你或体力≤你，此【杀】不可被闪避。',
     },
   ],
   // 国战：烈弓的判定条件与身份局不同——
@@ -3794,7 +3786,14 @@ const TAISHICI: Hero = {
         if (target.hand.length === 0) return '该角色没有手牌，无法拼点';
         api.pindian(player.seatId, targetId, (st, winner) => {
           if (winner !== player.seatId) {
-            pushLog(st, 'skill', `${player.name} 的【天义】拼点未获胜。`);
+            // 没赢（含平局）：本回合不能使用【杀】——OL 文本是「本回合」（用户 2026-09-26 裁定
+            // §5.247 之 07）。硬禁标记，不走「次数上限 -1」（那会被咆哮之类的加次技能抵消）。
+            player.flags.cannotUseShaThisTurn = true;
+            pushLog(
+              st,
+              'skill',
+              `${player.name} 的【天义】拼点未获胜：本回合不能使用【杀】。`,
+            );
             return;
           }
           // 额外一张【杀】：**上限 +1**（不能退已出杀数——发动时通常还没出过杀，退了是空操作）
@@ -3812,7 +3811,7 @@ const TAISHICI: Hero = {
   skills: [
     {
       name: '天义',
-      desc: '出牌阶段限一次，你可以与一名其他角色拼点：若你赢，本回合你可以额外使用一张【杀】，且你使用【杀】无距离限制。',
+      desc: '出牌阶段限一次，你可以与一名其他角色拼点：若你赢，本回合你可以额外使用一张【杀】，且你使用【杀】无距离限制；若你没赢，本回合你不能使用【杀】。',
     },
   ],
 };
@@ -13043,29 +13042,42 @@ const GANFUREN: Hero = {
   modes: ['guozhan'],
   hooks: [
     {
+      // 淑慎①：当你回复 1 点体力后，你可以令一名**与你势力相同的其他角色**摸一张牌。
+      //
+      // ⚠️ 用户 2026-09-26 裁定（§5.247 之 05）：现行国战文本里**两个分支**的摸牌目标
+      //    都限定「与你势力相同的**其他**角色」（旧实现①的目标是任意其他角色）。
+      //    统一用 `sameKnownFaction`（暗将不算、野心家互不相认），没有合法对象就不问。
       timing: 'afterHeal',
       skillId: '淑慎',
       handler: (ctx) => {
-        const others = ctx.state.players.filter((p) => p.alive && p.seatId !== ctx.player.seatId);
-        if (others.length === 0) return;
+        const allies = ctx.state.players.filter(
+          (p) => p.alive && p.seatId !== ctx.player.seatId && sameKnownFaction(ctx.state, ctx.player, p),
+        );
+        if (allies.length === 0) return;
         ctx.api.askChoice(
           ctx.state,
           ctx.player.seatId,
-          '是否发动【淑慎】？',
+          '是否发动【淑慎】？（令一名与你势力相同的其他角色摸一张牌）',
           [
-            { id: 'yes', label: '发动（令一名其他角色摸一张牌）' },
+            { id: 'yes', label: '发动' },
             { id: 'no', label: '不发动' },
           ],
           (st, p, picked) => {
             if (picked !== 'yes') return;
-            ctx.api.askChoice(
+            const cands = st.players.filter(
+              (q) => q.alive && q.seatId !== p.seatId && sameKnownFaction(st, p, q),
+            );
+            if (cands.length === 0) return;
+            ctx.api.askPickSeats(
               st,
               p.seatId,
               '【淑慎】：选择摸牌的角色',
-              others.map((t) => ({ id: t.seatId, label: t.name })),
-              (st2, p2, targetId) => {
-                const target = getPlayer(st2, targetId);
-                if (!target) return;
+              cands.map((q) => q.seatId),
+              1,
+              1,
+              (st2, p2, seatIds) => {
+                const target = seatIds[0] ? getPlayer(st2, seatIds[0]) : undefined;
+                if (!target || !target.alive) return;
                 const c = drawOne(st2);
                 if (c) target.hand.push(c);
                 pushLog(st2, 'skill', `${p2.name} 发动【淑慎】，令 ${target.name} 摸一张牌。`);
@@ -13172,7 +13184,7 @@ const GANFUREN: Hero = {
   skills: [
     {
       name: '淑慎',
-      desc: '当你回复 1 点体力后，你可以令一名其他角色摸一张牌；当你一次失去的牌数大于你的体力值时，你可以令一名与你势力相同的其他角色摸一张牌。',
+      desc: '当你回复 1 点体力后，或你一次失去的牌数大于你的体力值时，你可以令一名与你势力相同的其他角色摸一张牌。',
     },
     {
       name: '神智',

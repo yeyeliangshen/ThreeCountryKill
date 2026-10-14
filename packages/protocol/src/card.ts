@@ -401,7 +401,7 @@ export const CARD_DESC: Record<CardType, string> = {
   juedou: '指定一名其他角色，与其轮流打出【杀】，先不出【杀】的一方受到 1 点伤害。',
   nanman: '其他所有角色依次需打出【杀】，否则受到 1 点伤害。',
   wanjian: '其他所有角色依次需打出【闪】，否则受到 1 点伤害。',
-  jiedao: '指定一名装备了武器的角色，令其对你指定的另一名角色使用【杀】，否则你获得其武器。',
+  jiedao: '指定一名装备了武器的其他角色，令其对你指定的另一名角色使用【杀】，否则你获得其武器。',
   guohe: '弃置一名其他角色（不限距离）区域内的一张牌（手牌/装备/判定牌）。',
   shunshou: '获得距离 1 以内的一名其他角色区域内的一张牌（手牌/装备/判定牌）。',
   wuzhong: '摸两张牌。',
@@ -640,6 +640,7 @@ export const CARD_TARGET_EXCLUDES_SELF: ReadonlySet<CardType> = new Set<CardType
   'juedou',
   'guohe',
   'shunshou',
+  'jiedao', // 用户 2026-09-26 裁定（§5.247 之 08）：文案补「其他」⇒ 武器持有者不能是自己（与 desc 对齐）
   'tiaohu',
   'shuiyan',
   'zhibi',

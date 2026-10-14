@@ -254,6 +254,12 @@ export interface PlayerFlags {
    * （用户 2026-09-26 口径特别点明了这一点）。AOE 那类不指定目标却会打到别人的锦囊同样算「对别人用」。
    */
   cannotTargetOthersThisPhase: boolean;
+  /**
+   * **本回合不能使用【杀】**（太史慈·【天义】拼点**没赢**——含平局——的后果；用户 2026-09-26
+   * 裁定 §5.247 之 07：OL 文本是「本回合」，是**硬禁**，增加出杀次数的技能【咆哮】之类抵消不了）。
+   * 只限「**使用**」：响应时**打出**【杀】（决斗/南蛮/借刀）不受影响。
+   */
+  cannotUseShaThisTurn: boolean;
   /** 国战：双将首次同时明置的奖励（阴阳鱼/珠联璧合）是否已结算过 */
   revealRewarded: boolean;
   /**
@@ -351,6 +357,7 @@ export function emptyFlags(): PlayerFlags {
     cannotPlayColor: null,
     cannotHealThisTurn: false,
     cannotTargetOthersThisPhase: false,
+    cannotUseShaThisTurn: false,
     revealRewarded: false,
     wangxiPending: [],
     xuanlveEventId: -1,

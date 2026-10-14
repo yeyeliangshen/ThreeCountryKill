@@ -1842,9 +1842,9 @@ describe('武将技能（Step 6）', () => {
     ok(act(state, A, { type: 'playCard', cardId: 'a1', targetIds: [B] }));
     // A 出杀后手牌 0，B 手牌 2 ≥ 0 → 不可闪避
     const b = state.players.find((p) => p.seatId === B)!;
-    // ⚠️ 口径更新（用户 2026-09-26）：现行【烈弓】还带 **【乘势】**——发动后此【杀】对该目标伤害 +1
-    //    ⇒ 这里从掉 1 点（3）改成掉 2 点（2）。旧口径见 docs §5.237。
-    expect(b.hp).toBe(2);
+    // ⚠️ 口径更新（用户 2026-09-26 第二次裁定 §5.247 之 03）：【乘势】只在**国战版**（身份版撤下、
+    //    版本待源）⇒ 身份局仍只掉 1 点（3）。加乘势那一轮曾把这里改成 2，见 docs §5.237/§5.247。
+    expect(b.hp).toBe(3);
     expect(b.hand).toHaveLength(2); // 未使用闪
     expect(state.pending).toEqual({ kind: 'play', seatId: A });
   });
@@ -7542,9 +7542,9 @@ describe('甘夫人（淑慎 / 神智）与孟获（祸首 / 再起）', () => {
     // 回复 1 点 → 先问是否发动淑慎
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    // 再选摸牌的人
-    expect(state.pending?.kind).toBe('choice');
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    // 再选摸牌的人——⚠️ 2026-09-26 裁定（§5.247 之 05）：目标限「同势力其他角色」⇒ 改成牌桌点选
+    expect(state.pending?.kind).toBe('pickSeats');
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B] }));
     expect(b.hand.map((c) => c.id)).toEqual(['d1']);
     expect(a.flags).toBeTruthy();
     // 选完回到出牌阶段
@@ -7595,10 +7595,11 @@ describe('甘夫人（淑慎 / 神智）与孟获（祸首 / 再起）', () => {
     expect(a.hand).toHaveLength(0);
     expect(a.hp).toBe(3);
     expect(state.log.some((e) => e.message.includes('神智'))).toBe(true);
-    // 回复触发了淑慎：问是否发动 → 选乙摸牌
+    // 回复触发了淑慎：问是否发动 → 选同势力的乙摸牌（⚠️ 2026-09-26 裁定 §5.247 之 05：
+    // 目标限「同势力其他角色」⇒ 目标改成牌桌点选）
     expect(state.pending?.kind).toBe('choice');
     ok(act(state, A, { type: 'chooseOption', optionId: 'yes' }));
-    ok(act(state, A, { type: 'chooseOption', optionId: B }));
+    ok(act(state, A, { type: 'pickSeats', seatIds: [B] }));
     const b = at(state, B);
     expect(b.hand).toHaveLength(1);
   });

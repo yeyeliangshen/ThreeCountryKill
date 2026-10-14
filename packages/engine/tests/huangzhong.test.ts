@@ -106,7 +106,7 @@ describe('【烈弓】+【乘势】：发动后此【杀】对该目标伤害 +1
     expect(at(state, 's1').hp, '伤害 1').toBe(3);
   });
 
-  it('身份版（军争）同样有【乘势】', () => {
+  it('身份版**没有**【乘势】（用户 2026-09-26 二次裁定：版本待源，只在国战保留）', () => {
     const state = createGame(
       [
         { seatId: 's0', name: '黄忠', heroId: 'huangzhong' },
@@ -117,30 +117,28 @@ describe('【烈弓】+【乘势】：发动后此【杀】对该目标伤害 +1
       { mode: 'identity' },
     );
     state.draft = null;
-    for (const p of state.players) {
-      // ⚠️ 跳过选将阶段时 `createGame` 不会落 heroId（两个模式都一样）——夹具要自己指派
-      p.heroId = p.seatId === 's0' ? 'huangzhong' : p.seatId === 's1' ? 'xuchu' : 'lvbu';
-      p.heroRevealed = true;
-      p.deputyRevealed = true;
-      p.flags = emptyFlags();
-      p.maxHp = 4;
-      p.hp = 4;
+    for (const pl of state.players) {
+      pl.heroId = pl.seatId === 's0' ? 'huangzhong' : pl.seatId === 's1' ? 'xuchu' : 'lvbu';
+      pl.heroRevealed = true;
+      pl.deputyRevealed = true;
+      pl.flags = emptyFlags();
+      pl.maxHp = 4;
+      pl.hp = 4;
     }
     at(state, 's0').hand = [sha('a1')];
-    at(state, 's1').hand = [mk('b1', 'shan', 'heart', 2), mk('b2', 'shan', 'heart', 3)]; // 例：2 ≥ 1 ✓
+    at(state, 's1').hand = [mk('b1', 'shan', 'heart', 2), mk('b2', 'shan', 'heart', 3)];
     state.turn = { seatIndex: 0, phase: 'play' };
     state.pending = { kind: 'play', seatId: 's0' };
     state.log = [];
-    ok(act(state, 's0', { type: 'playCard', cardId: 'a1', targetIds: ['s1'] }), '出杀');
-    if (state.pending?.kind === 'respondSha') ok(act(state, 's1', { type: 'pass' }));
-    expect(at(state, 's1').hp, '身份版也是 2 点').toBe(2);
+    ok(act(state, 's0', { type: 'playCard', cardId: 'a1', targetIds: ['s1'] }));
+    expect(at(state, 's1').hp, '身份版只掉 1 点').toBe(3);
   });
 
-  it('两版文本都写了【乘势】', () => {
+  it('文本：国战版有【乘势】、身份版没有（版本待源，见 §5.247 之 03）', () => {
     const idDesc = getHeroForMode('huangzhong', 'identity')!.skills.find((s) => s.name === '烈弓')!.desc ?? '';
     const gzDesc = getHeroForMode('huangzhong', 'guozhan')!.skills.find((s) => s.name === '烈弓')!.desc ?? '';
-    expect(idDesc).toContain('乘势');
     expect(gzDesc).toContain('乘势');
     expect(gzDesc).toContain('伤害 +1');
+    expect(idDesc, '身份版不带').not.toContain('乘势');
   });
 });
