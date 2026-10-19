@@ -49,6 +49,7 @@ import { ChainBadge, ChainSpreadTable, useChainFx } from '../components/ChainFx'
 import { SkillTipChip, useSkillTip } from '../components/SkillTip';
 import { skillTipDesc, type SkillTip } from '../skillTips';
 import { ZonePickPanel } from '../components/ZonePickPanel';
+import { GuanxingPanel, isGuanxingPick } from '../components/GuanxingPanel';
 import {
   cardSelfTargetAllowed,
   skillSelfTargetAllowed,
@@ -1743,10 +1744,44 @@ export function Game() {
                 </div>
               )}
 
+              {/* 观星（用户 §十一）：中央观星区 + 拖动排序的专用大面板——
+                  它只是 pickCards 的一种皮肤（intent 形状不变），其它选牌照旧走下面的通用行 */}
               {prompt.kind === 'pickCards' &&
                 prompt.pickCards &&
                 !prompt.pickFromPool &&
-                !prompt.zonePick && (
+                !prompt.pickHidden &&
+                isGuanxingPick(prompt.pickTitle) && (
+                  <GuanxingPanel
+                    title={prompt.pickTitle ?? '【观星】'}
+                    cards={prompt.pickCards}
+                    selected={pickSel}
+                    onAdd={(id) => {
+                      if (!pickSel.includes(id) && pickSel.length < (prompt.pickMax ?? 0)) {
+                        setPickSel((prev) => [...prev, id]);
+                      }
+                    }}
+                    onRemove={(id) => setPickSel((prev) => prev.filter((c) => c !== id))}
+                    onReorder={(id, targetIndex) =>
+                      setPickSel((prev) => {
+                        const from = prev.indexOf(id);
+                        if (from < 0) return prev;
+                        const next = prev.filter((c) => c !== id);
+                        next.splice(Math.max(0, Math.min(targetIndex, next.length)), 0, id);
+                        return next;
+                      })
+                    }
+                    min={prompt.pickMin ?? 0}
+                    max={prompt.pickMax ?? 0}
+                    onConfirm={confirmPickCards}
+                    bindTip={bindTip}
+                  />
+                )}
+
+              {prompt.kind === 'pickCards' &&
+                prompt.pickCards &&
+                !prompt.pickFromPool &&
+                !prompt.zonePick &&
+                !isGuanxingPick(prompt.pickTitle) && (
                 <div className="pick-cards">
                   {/*
                     **盲选**（`pickHidden`，用户 2026-09-22 的通用机制）：候选来自其他角色的

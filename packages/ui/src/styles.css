@@ -3544,3 +3544,78 @@ select:focus-visible,
   border-style: dashed;
   opacity: 0.75;
 }
+
+/* —— 观星大面板（用户 §十一：中央观星区 + 拖动排序）——
+   牌桌中央的一块独立面板：上半＝已选（置顶/沉底，带 ①②③ 序号、可拖动重排），
+   下半＝未安排。拖动只在桌面有效；手机用点选 + 牌上的 ◀▶ 微调（与旧交互兼容）。 */
+.guanxing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  background: rgba(18, 14, 10, 0.96);
+  max-width: min(640px, calc(100vw - 24px));
+}
+.gx-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  line-height: 1.4;
+}
+.gx-zone {
+  border: 1px dashed rgba(212, 175, 55, 0.4);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-height: 56px;
+}
+.gx-zone.gx-top {
+  background: rgba(212, 175, 55, 0.06);
+}
+.gx-zone.gx-rest {
+  background: rgba(255, 255, 255, 0.02);
+}
+.gx-zone-label {
+  font-size: 11px;
+  color: #bdb08a;
+  margin-bottom: 4px;
+}
+.gx-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 44px;
+  align-items: center;
+}
+.gx-cards .card {
+  position: relative;
+  cursor: grab;
+}
+.gx-cards .card:active {
+  cursor: grabbing;
+}
+.gx-empty {
+  font-size: 12px;
+  color: #7a7a7a;
+  padding: 8px 4px;
+}
+/* 手机重排的小按钮（桌面上也可用）：盖在牌的底边，不挡牌面 */
+.gx-nudge {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: auto;
+}
+.gx-nudge span {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--gold);
+  border: 1px solid rgba(212, 175, 55, 0.5);
+}
