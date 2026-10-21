@@ -843,26 +843,20 @@ describe('不臣篇 · 双势力规则（第①步）', () => {
         const asked = state.pending.askQueue[state.pending.askIndex]!;
         act(state, asked, { type: 'pass' });
       }
-      // ① 甲被**强制**暴露（拦截即暴露，不问玩家）→ 建国 → 一上来就是邀请
+      // ① 两阶段（用户 2026-10-22 裁定 §5.252 之 15）：甲、丙**先都被强制暴露+建国**
+      //    （阶段一全自动、无任何询问），全部建完才轮到甲的邀请。
       const force1 = a.forceId!;
       expect(force1, '甲暴露即建国').toBeTruthy();
-      // 丙不加入、丁加入甲的新势力
-      const q2 = state.pending;
-      if (q2?.kind !== 'choice') throw new Error(`预期邀请丙，实际是 ${q2?.kind}`);
-      expect(q2.seatId).toBe('C');
-      act(state, 'C', { type: 'chooseOption', optionId: 'no' });
-      const q2b = state.pending;
-      if (q2b?.kind !== 'choice') throw new Error(`预期补偿询问（丙），实际是 ${q2b?.kind}`);
-      act(state, 'C', { type: 'chooseOption', optionId: 'no' }); // 补偿是可选的，这里不领
-      const q3 = state.pending;
-      if (q3?.kind !== 'choice') throw new Error(`预期邀请丁，实际是 ${q3?.kind}`);
-      expect(q3.seatId).toBe('D');
-      act(state, 'D', { type: 'chooseOption', optionId: 'yes' });
-      expect(d.forceId, '丁加入了甲的新势力').toBe(force1);
-      // ② 结构变了、但丙还是没暴露的野心家武将 → 丙同样被**强制**暴露（也不问）
-      expect(c.heroRevealed, '丙同样被强制暴露').toBe(true);
+      expect(c.heroRevealed, '丙在阶段一同样被强制暴露（先于任何邀请）').toBe(true);
       const force2 = c.forceId!;
       expect(force2, '丙建国拿到**自己的** forceId').not.toBe(force1);
+      // 阶段二：甲的邀请——⚠️ 两阶段下**丙已是建国者**（不再是可被拉拢的候选），
+      // 甲的名单只剩丁（乙已阵亡）⇒ 第一问就是丁
+      const q3 = state.pending;
+      if (q3?.kind !== 'choice') throw new Error(`预期邀请丁，实际是 ${q3?.kind}`);
+      expect(q3.seatId, '丙已建国 ⇒ 不再被甲拉拢').toBe('D');
+      act(state, 'D', { type: 'chooseOption', optionId: 'yes' });
+      expect(d.forceId, '丁加入了甲的新势力').toBe(force1);
       // ③ 丙的邀请名单里**不该有**甲（建国发起者）与丁（已加入甲的新势力）→ 没有人可问，直接收口
       expect(
         !!state.pending && state.pending.kind === 'choice' && state.pending.title.includes('是否加入'),

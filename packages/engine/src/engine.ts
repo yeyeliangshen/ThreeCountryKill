@@ -5319,13 +5319,28 @@ function fireFactionCountChange(
  * 多个野心家同时暴露时谁先被问（按座次）、邀请其他玩家的顺序（发起者的下家起按座次）。
  * 另外「不暴露 / 不建国 / 不领补偿」都做成**询问**——若实机是无条件自动执行，改这里即可。
  */
-function interceptVictoryForAmbition(state: GameState, resume?: () => void): boolean {
+function interceptVictoryForAmbition(
+  state: GameState,
+  resume?: () => void,
+  /** 阶段一自己的递归（settleAfterAmbition 打回来的）——跳过下面的重入门闩 */
+  internal = false,
+): boolean {
   const verdict = guozhanWinner(state);
   if (!verdict) {
-    state.ambitionAsked = []; // 这一轮没有胜利条件了 → 下次重新给机会
-    state.ambitionJoined = [];
+    // ⚠️ 阶段二进行中**不许**清 `ambitionFounders`（拉拢的名单还在用它）；
+    //    拉拢全部结束（recruitAllForces 尾部）才统一清账。
+    if (state.ambitionFounders.length === 0) {
+      state.ambitionAsked = []; // 这一轮没有胜利条件了 → 下次重新给机会
+      state.ambitionJoined = [];
+    }
     return false;
   }
+  // ⚠️ 两阶段的重入门闩（§5.252 之 15）：建国流程**已经开始**（founders 非空）时，
+  //    中途的胜利判定**不许再触发新一轮暴露**——否则每暴露一个，场上势力人数一变、
+  //    checkWin 又进来，同一个人会被暴露第二次（实测 6 条「暴露野心」日志就是这么来的）。
+  //    阶段一的续接全靠 settleAfterAmbition 递归；外部 checkWin 打进来时直接「不接管」，
+  //    等流程自己收尾后由 recruitAllForces 尾部统一重判。
+  if (!internal && state.ambitionFounders.length > 0) return false;
   const captains = orderFromTurnPlayer(
     state,
     unexposedAmbitionistCaptains(state)
@@ -5349,9 +5364,28 @@ function interceptVictoryForAmbition(state: GameState, resume?: () => void): boo
   return true;
 }
 
-/** 一条暴露/建国流程跑完（或某人拒绝）之后：还有别的野心家要问就接着问，否则判胜负/交回控制权 */
+/** 一条暴露/建国流程跑完之后：还有没暴露的野心家就**继续暴露**；全部建完 ⇒ 阶段二拉拢。
+ *
+ * ⚠️ 阶段一的续接**不看中途胜负**（实测踩过）：每暴露一人、场上确定势力人数就变一次，
+ * `guozhanWinner` 会在「过半／不过半」之间摆动——乙暴露后蜀只剩丙一人 ⇒ verdict 变 null ⇒
+ * 旧写法（先调 intercept）会在这里**提前进阶段二**，丙还没暴露就被拉拢、流程末尾直接结算胜负。
+ * 一旦拦截器接管，阶段一就必须把**所有**符合条件的野心家都走完，才轮到拉拢/重判。
+ */
 function settleAfterAmbition(state: GameState, resume?: () => void): void {
-  if (interceptVictoryForAmbition(state, resume)) return;
+  const remaining = unexposedAmbitionistCaptains(state).filter(
+    (p) => !state.ambitionAsked.includes(p.seatId),
+  );
+  if (remaining.length > 0) {
+    const cur = remaining[0]!;
+    state.ambitionAsked.push(cur.seatId);
+    exposeAmbition(state, cur, (st, p) => buildForce(st, p, resume));
+    return;
+  }
+  // 阶段二（两阶段口径 §5.252 之 15）：本轮有人建了国、且没有更多野心家要暴露 ⇒ 拉拢
+  if (state.ambitionFounders.length > 0) {
+    recruitAllForces(state, resume);
+    return;
+  }
   const v = guozhanWinner(state);
   if (v !== null) {
     setWinner(state, v);
@@ -5405,80 +5439,115 @@ function exposeAmbition(
   after(state, p);
 }
 
-/** 建国 + 逐个邀请其他存活玩家（顺序：发起者的下家起、按座次） */
+/**
+ * 建国流程（**两阶段**，用户 2026-10-22 裁定 §5.252 之 15）：
+ *
+ *   阶段一「found」：符合条件的野心家**依次全部**暴露 + 建国（A 建 → B 建 → C 建）；
+ *   阶段二「recruit」：全部建完之后，**按同一顺序**逐人拉拢（A 邀请 → B 邀请 → C 邀请）。
+ *
+ * ⚠️ 与旧实现的差别：旧的是「每个野心家**完整**走完（建国+全部邀请）才轮到下一个」——
+ *    社区实测资料（不臣篇真机规则总结）记载的是「先多名野心家依次建国、再依次拉拢人心」。
+ *    该排序证据来自**较早的社区实测**，不是 2023 公告（公告只改了三件事，没写排序）——
+ *    已按两阶段实现并保留「待真机（TC02）复核」的标记（见 docs §5.252）。
+ *
+ * 顺序细节：两阶段共用 `orderFromTurnPlayer`（以当前回合角色为基准、按座次）；
+ * 邀请名单**排除本次已加入过新势力的人**（一名角色一次流程最多加入一个，
+ * 用户 2026-09-18 口径；2023 公告只放开「一个建国者可接纳多人」）。
+ * 补偿给**不加入者**且可选（2023-08-30 公告；旧攻略写给「加入者」的作废）。
+ */
 function buildForce(state: GameState, p: Player, resume?: () => void): void {
+  // 阶段一：建国（不邀请）。记录发起者，把控制权交回拦截器——
+  // 它会继续问下一个野心家；全部建完后自动进入阶段二。
   p.forceId = p.forceId ?? `force:${++state.forceSeq}`;
-  // 发起者本人也算「本次已经有了新势力」：他不会被别的野心家的邀请名单收进来
-  // （否则建国者会被邀请去加入别人的势力——那不是「加入」，是倒戈）
+  if (!state.ambitionFounders.includes(p.seatId)) state.ambitionFounders.push(p.seatId);
+  // 发起者本人也算「本次已经有了新势力」：阶段二的邀请名单不含他（倒戈不是「加入」）
   if (!state.ambitionJoined.includes(p.seatId)) state.ambitionJoined.push(p.seatId);
-  pushLog(state, 'faction', `${p.name} 建立新势力，其他存活角色可选择是否加入。`, {
-    seat: p.seatId,
-  });
+  pushLog(state, 'faction', `${p.name} 建立新势力。`, { seat: p.seatId });
   fireFactionCountChange(state, 'ambitionist', 0, 1, () => {
-    // 顺序与「多名野心家」同一套：**以当前回合角色为基准、按座次**（旧移动版实测口径）。
-    // 名单里**排除本次已经加入过新势力的人**——一名角色在这一次建国总流程里最多加入一个新势力
-    // （用户 2026-09-18 明确：不许「先加入甲、再改投乙」；2023 公告只放开了「一个建国者可以接纳多人」）。
+    settleAfterAmbition(state, resume);
+  });
+}
+
+/** 阶段二：全部建国完成后，按同一顺序逐人拉拢。
+ *
+ * ⚠️ 游标**按座位 id、不按下标**（踩过）：候选列表是每次重算的——有人加入后名单会**缩短**，
+ * 下标游标会把「滑进当前下标的那位」直接跳过（实测：乙加入后丙就被跳过、流程提前收尾结算）。
+ * 所以每个发起者带一份「已经问过的座位」集合，每次取**第一个没问过**的候选。
+ */
+function recruitAllForces(state: GameState, resume?: () => void): void {
+  const founders = state.ambitionFounders
+    .map((sid) => getPlayer(state, sid))
+    .filter((p): p is Player => !!p && p.alive);
+  const askedPerFounder: Set<string>[] = founders.map(() => new Set<string>());
+  const step = (fi: number): void => {
+    if (fi >= founders.length) {
+      // 全部邀请走完 → 清账、重判胜负/交回控制权
+      state.ambitionFounders = [];
+      settleAfterAmbition(state, resume);
+      return;
+    }
+    const p = founders[fi]!;
+    const asked = askedPerFounder[fi]!;
     const others = orderFromTurnPlayer(
       state,
       state.players
         .filter((x) => x.alive && x.seatId !== p.seatId && !state.ambitionJoined.includes(x.seatId))
         .map((x) => x.seatId),
     );
-    const step = (i: number): void => {
-      const cur = i < others.length ? getPlayer(state, others[i]!) : undefined;
-      if (!cur || !cur.alive) {
-        if (i < others.length) step(i + 1);
-        else settleAfterAmbition(state, resume);
-        return;
-      }
-      askChoice(
-        state,
-        cur.seatId,
-        `【${p.name}】建立了新势力，是否加入？`,
-        [
-          { id: 'yes', label: '加入' },
-          { id: 'no', label: '不加入' },
-        ],
-        (st, cp, picked) => {
-          if (picked === 'yes') {
-            joinForce(st, cp, p, () => step(i + 1));
-            return;
-          }
-          // 不加入的补偿是**可选**的（官方用「可」，见 §5.141）
-          askChoice(
-            st,
-            cp.seatId,
-            '【不加入】：是否将手牌补至 4 张并回复 1 点体力？',
-            [
-              { id: 'yes', label: '领取补偿' },
-              { id: 'no', label: '不领取' },
-            ],
-            (st2, cp2, pick2) => {
-              if (pick2 === 'yes') {
-                let got = 0;
-                while (cp2.hand.length < 4) {
-                  const c = drawOne(st2);
-                  if (!c) break;
-                  cp2.hand.push(c);
-                  got++;
-                }
-                const healed = cp2.hp < cp2.maxHp ? 1 : 0;
-                cp2.hp = Math.min(cp2.maxHp, cp2.hp + 1);
-                pushLog(
-                  st2,
-                  'faction',
-                  `${cp2.name} 不加入新势力：将手牌补至 4 张（摸 ${got} 张）并回复 ${healed} 点体力。`,
-                  { seat: cp2.seatId },
-                );
+    const nextId = others.find((sid) => !asked.has(sid));
+    const cur = nextId ? getPlayer(state, nextId) : undefined;
+    if (!cur || !cur.alive) {
+      step(fi + 1);
+      return;
+    }
+    asked.add(cur.seatId);
+    askChoice(
+      state,
+      cur.seatId,
+      `【${p.name}】建立了新势力，是否加入？`,
+      [
+        { id: 'yes', label: '加入' },
+        { id: 'no', label: '不加入' },
+      ],
+      (st, cp, picked) => {
+        if (picked === 'yes') {
+          joinForce(st, cp, p, () => step(fi));
+          return;
+        }
+        // 不加入的补偿是**可选**的（2023-08-30 公告：给「不选择加入者」，官方用「可」）
+        askChoice(
+          st,
+          cp.seatId,
+          '【不加入】：是否将手牌补至 4 张并回复 1 点体力？',
+          [
+            { id: 'yes', label: '领取补偿' },
+            { id: 'no', label: '不领取' },
+          ],
+          (st2, cp2, pick2) => {
+            if (pick2 === 'yes') {
+              let got = 0;
+              while (cp2.hand.length < 4) {
+                const c = drawOne(st2);
+                if (!c) break;
+                cp2.hand.push(c);
+                got++;
               }
-              step(i + 1);
-            },
-          );
-        },
-      );
-    };
-    step(0);
-  });
+              const healed = cp2.hp < cp2.maxHp ? 1 : 0;
+              cp2.hp = Math.min(cp2.maxHp, cp2.hp + 1);
+              pushLog(
+                st2,
+                'faction',
+                `${cp2.name} 不加入新势力：将手牌补至 4 张（摸 ${got} 张）并回复 ${healed} 点体力。`,
+                { seat: cp2.seatId },
+              );
+            }
+            step(fi);
+          },
+        );
+      },
+    );
+  };
+  step(0);
 }
 
 /** 加入新势力：势力/归属键改为发起者的，并派发旧势力的人数变化（可能归零 → 会盟要听到） */
@@ -12867,6 +12936,7 @@ export function createGame(
     extensions: ext,
     forceSeq: 0,
     ambitionAsked: [],
+    ambitionFounders: [],
     ambitionJoined: [],
     deferredEndOfIntentHooks: [],
     exiled: [],

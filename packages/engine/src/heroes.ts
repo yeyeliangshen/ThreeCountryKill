@@ -1800,10 +1800,10 @@ const ZHOUYU: Hero = {
                 return;
               }
               // 展示手牌，然后弃置**与此牌花色相同的所有牌**——手牌 **＋装备区**。
-              // ⚠️ 装备牌**是有花色的**（deck.ts 的 mk() 每张都带 suit，牌面也印着，
-              //    例如 ♠5 青龙偃月刀），所以「掉不了装备」不是数据问题、是这里漏了：
-              //    原来只 `p.hand.filter(...)`。文本对比也支持：前一句写「展示所有**手牌**」，
-              //    这一句写「弃置与此牌花色相同的**所有牌**」（没有「手牌」二字）。
+              // ⚠️ 装备牌**是有花色的**（deck.ts 的 mk() 每张都带 suit，牌面也印着）——
+              //    OL 官方攻略明确「同花色装备也要弃」（用户 2026-10-22 裁定 §5.252 之 11）。
+              //    判定区是**配置点**不是定案：官方没给逐区裁定，先不纳入
+              //    （FANJIAN_MATCH_ZONES / judgmentZoneVerified=false），真机后改数组即可。
               pushLog(
                 st,
                 'skill',
@@ -1812,7 +1812,14 @@ const ZHOUYU: Hero = {
               const equipped = EQUIP_SLOTS.map((slot) => p.equipment[slot]).filter(
                 (c): c is Card => c !== null,
               );
-              const same = [...p.hand, ...equipped].filter((c) => c.suit === card.suit);
+              const zones: Record<'hand' | 'equip' | 'judge', Card[]> = {
+                hand: p.hand,
+                equip: equipped,
+                judge: FANJIAN_MATCH_ZONES.includes('judge') ? p.judgment : [],
+              };
+              const same = FANJIAN_MATCH_ZONES.flatMap((z) => zones[z]).filter(
+                (c) => c.suit === card.suit,
+              );
               pushLog(
                 st,
                 'skill',
@@ -3288,8 +3295,11 @@ const CAOHONG: Hero = {
                             if (pickedId === 'no') return;
                             const victim = getPlayer(st4, pickedId);
                             if (!victim) return;
-                            // 由曹洪挑：明牌给牌名、手牌盲选牌背（不随机）；判定区不在候选
-                            // （「一张牌」不含判定区——用户 2026-09-26 口径：别仅凭这三个字把判定区加进来）
+                            // 由曹洪挑：明牌给牌名、手牌盲选牌背（不随机）。
+                            // ⚠️ 判定区是**配置点**不是定案（用户 2026-10-22 裁定 §5.252 之 05/06）：
+                            //    普通国战文本写「一张牌」、十年经典写「区域里的牌」——两者表述不一致，
+                            //    不能凭后者推断前者，判定区先**不含**（judgmentZoneVerified=false），
+                            //    真机/裁定落地后改 HUYUAN_DISCARD_ZONES 即可。
                             pickOneOfTargetCards(
                               st4,
                               p4,
@@ -3297,7 +3307,7 @@ const CAOHONG: Hero = {
                               ctx.api,
                               '护援',
                               undefined,
-                              { noJudgment: true },
+                              { noJudgment: !HUYUAN_DISCARD_ZONES.includes('judge') },
                             );
                           },
                           undefined,
@@ -14218,6 +14228,13 @@ const ZHANGZHAO_ZHANGHONG: Hero = {
   ],
 };
 
+/**
+ * 国战【反间】「弃置与此牌花色相同的所有牌」的匹配区域（用户 2026-10-22 裁定 §5.252 之 11）：
+ * 手牌 + 装备区（OL 官方攻略明确）；**判定区待逐区裁定**（官方没写、社区也没测出），
+ * 先不纳入。真机确认后把 'judge' 加进数组即可。
+ */
+const FANJIAN_MATCH_ZONES: ReadonlyArray<'hand' | 'equip' | 'judge'> = ['hand', 'equip'];
+
 const TIANFENG: Hero = {
   id: 'tianfeng',
   name: '田丰',
@@ -18527,6 +18544,14 @@ function availableFireDamageCards(state: GameState): FireDamageCardName[] {
  * 所以**对应栏位必须为空**：栏位已经被占时不能靠它把人家原本的装备顶掉
  * （顶掉会触发「失去装备」那套时机，那是另一回事）。别在技能里各写一份槽位规则。
  */
+/**
+ * 【护援】第二段「弃置一张牌」的可选区域（用户 2026-10-22 裁定 §5.252 之 05/06）：
+ * 普通国战文本写「一张牌」（未逐区划定）、十年经典版写「区域里的牌」——表述不一致，
+ * **不能**凭十年经典推断普通国战，判定区先不纳入（`judgmentZoneVerified: false`）。
+ * 真机（TC01）或官方逐区裁定落地后：把 'judge' 加进数组即可，第二段自动跟着放开。
+ */
+const HUYUAN_DISCARD_ZONES: ReadonlyArray<'hand' | 'equip' | 'judge'> = ['hand', 'equip'];
+
 export function canPutEquipment(target: Player, card: Card): boolean {
   if (!target.alive) return false;
   const slot = card.type as (typeof EQUIP_SLOTS)[number];
