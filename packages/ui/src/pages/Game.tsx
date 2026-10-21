@@ -641,13 +641,18 @@ export function Game() {
    * 现在统一成「选中 → 确认」两步，已选中的再点一下＝取消该目标。
    */
   function pickTarget(targetId: string) {
-    if (!selected) return;
-    if (selected.picked.includes(targetId)) {
-      setSelected({ ...selected, picked: selected.picked.filter((t) => t !== targetId) });
-      return;
-    }
-    if (selected.picked.length >= selected.max) return;
-    setSelected({ ...selected, picked: [...selected.picked, targetId] });
+    // ⚠️ 必须**函数式更新**（读 prev，不读渲染闭包里的 selected）：
+    //    连续快速点两个目标（同一帧内两次 click）时，第二次读到的是**还没重渲染的旧 selected**
+    //    ⇒ `[...selected.picked, id]` 把第一个目标**覆盖**掉，只留下最后一个
+    //    （真机调虎离山验收时抓到：两张目标牌只生效了后点的那家）。max 上限判断同理。
+    setSelected((prev) => {
+      if (!prev) return prev;
+      if (prev.picked.includes(targetId)) {
+        return { ...prev, picked: prev.picked.filter((t) => t !== targetId) };
+      }
+      if (prev.picked.length >= prev.max) return prev;
+      return { ...prev, picked: [...prev.picked, targetId] };
+    });
   }
 
   /** 选中的目标够不够（够就可以点确认了） */
